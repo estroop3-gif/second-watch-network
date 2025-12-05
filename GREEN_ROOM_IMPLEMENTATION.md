@@ -83,6 +83,30 @@ class Vote(SQLModel, table=True):
     # Constraint: unique(user_id, project_id)
 ```
 
+### Database Migration
+
+**Migration File:** `database/migrations/006_greenroom_tables.sql`
+
+**Tables Created:**
+- `greenroom_cycles` - Voting cycles
+- `greenroom_projects` - Project submissions
+- `greenroom_voting_tickets` - Purchased tickets
+- `greenroom_votes` - Cast votes
+
+**Features:**
+- ✅ Automatic vote counting (denormalized for performance)
+- ✅ Automatic ticket availability tracking
+- ✅ Row Level Security (RLS) policies
+- ✅ Optimized indexes for common queries
+- ✅ Triggers for updated_at timestamps
+- ✅ Vote finality enforcement (unique constraints)
+
+**To Run Migration:**
+1. Go to Supabase SQL Editor
+2. Copy contents of `database/migrations/006_greenroom_tables.sql`
+3. Run the migration
+4. See `database/GREEN_ROOM_MIGRATION.md` for detailed instructions
+
 ### API Endpoints
 
 **Minimal Change to Existing:**

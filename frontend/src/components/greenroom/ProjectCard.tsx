@@ -2,14 +2,11 @@
  * Project Card Component
  * Displays project with voting interface
  */
-'use client';
-
 import { Project } from '@/lib/api/greenroom';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Film, ThumbsUp, User, Calendar } from 'lucide-react';
-import Image from 'next/image';
 
 interface ProjectCardProps {
   project: Project;
@@ -43,11 +40,10 @@ export function ProjectCard({
       {/* Project Image */}
       {project.image_url && (
         <div className="relative w-full h-48 overflow-hidden rounded-t-lg">
-          <Image
+          <img
             src={project.image_url}
             alt={project.title}
-            fill
-            className="object-cover"
+            className="w-full h-full object-cover"
           />
         </div>
       )}

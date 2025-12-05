@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -79,6 +79,10 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
       <MenuItem to="/the-backlot" onClick={onLinkClick}>
         <MessagesSquare className="mr-3 h-5 w-5" />
         <span>The Backlot</span>
+      </MenuItem>
+      <MenuItem to="/greenroom" onClick={onLinkClick}>
+        <Trophy className="mr-3 h-5 w-5" />
+        <span>Green Room</span>
       </MenuItem>
       {canSubmitAndManageSubmissions && (
         <MenuItem to="/submit-project" onClick={onLinkClick}>

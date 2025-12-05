@@ -2,8 +2,6 @@
  * Vote Modal Component
  * Interface for allocating tickets to a project
  */
-'use client';
-
 import { useState } from 'react';
 import { Project, VotingTicket } from '@/lib/api/greenroom';
 import {

@@ -50,6 +50,11 @@ import BillingReturn from "./pages/BillingReturn";
 import Donations from "./pages/Donations";
 import PartnerApply from "./pages/PartnerApply";
 
+// Green Room Pages
+import GreenRoom from "./pages/GreenRoom";
+import GreenRoomCycle from "./pages/GreenRoomCycle";
+import GreenRoomSubmit from "./pages/GreenRoomSubmit";
+
 // Admin Pages
 import AdminLayout from "./pages/admin/Layout";
 import AdminDashboard from "./pages/admin/Dashboard";
@@ -131,7 +136,12 @@ const App = () => (
                     <Route path="/filmmakers" element={<Filmmakers />} />
                     <Route path="/the-backlot" element={<TheBacklot />} />
                     <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
-                    
+
+                    {/* Green Room Routes */}
+                    <Route path="/greenroom" element={<GreenRoom />} />
+                    <Route path="/greenroom/cycles/:id" element={<GreenRoomCycle />} />
+                    <Route path="/greenroom/submit" element={<GreenRoomSubmit />} />
+
                     {/* Filmmaker-only Routes (also accessible by admin) */}
                     <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin']} />}>
                       <Route path="/submit-project" element={<FilmmakerSubmissions />} />
