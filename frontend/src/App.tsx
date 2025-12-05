@@ -1,0 +1,181 @@
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import Index from "./pages/Index";
+import LandingPage from "./pages/LandingPage";
+import NotFound from "./pages/NotFound";
+import Originals from "./pages/Originals";
+import SubmitContent from "./pages/SubmitContent";
+import Shop from "./pages/Shop";
+import WatchNow from "./pages/WatchNow";
+import DashboardFree from "./pages/DashboardFree";
+import ScrollToTop from "./components/ScrollToTop";
+import ServeItUp from "./pages/ServeItUp";
+import CoastalTorque from "./pages/CoastalTorque";
+import ServingForGreece from "./pages/ServingForGreece";
+import FailureToThrive from "./pages/FailureToThrive";
+import CuedUp from "./pages/CuedUp";
+import Terms from "./pages/Terms";
+import Login from "./pages/Login";
+import Signup from "./pages/Signup";
+import AuthCallback from "./pages/AuthCallback";
+import ResetPassword from "./pages/ResetPassword";
+import { AuthProvider } from "./context/AuthContext";
+import { SettingsProvider } from "./context/SettingsContext";
+import Dashboard from "./pages/Dashboard";
+import Account from "./pages/Account";
+import ConfirmEmail from "./pages/ConfirmEmail";
+import AuthenticatedLayout from "./components/AuthenticatedLayout";
+import PublicLayout from "./components/PublicLayout";
+import TheBacklot from "./pages/TheBacklot";
+import ThreadPage from "./pages/ThreadPage";
+import FilmmakerSubmissions from "./pages/FilmmakerSubmissions";
+import Messages from "./pages/Messages";
+import Filmmakers from "./pages/Filmmakers";
+import FilmmakerProfile from "./pages/FilmmakerProfile";
+import MySubmissions from "./pages/MySubmissions";
+import Notifications from "./pages/Notifications";
+import OnboardingGate from "./components/OnboardingGate";
+import FilmmakerOnboarding from "./pages/FilmmakerOnboarding";
+import PlatformStatusGate from "./components/PlatformStatusGate";
+import PermissionRoute from "./components/PermissionRoute";
+import SubscriptionsAndRolesPage from "./pages/SubscriptionsAndRolesPage";
+import SubscriptionSettingsPage from "./pages/SubscriptionSettings";
+import FilmmakerApplicationPage from "./pages/FilmmakerApplication";
+import SubmissionDetail from "./pages/SubmissionDetail";
+import NotificationSettings from "./pages/NotificationSettings";
+import BillingReturn from "./pages/BillingReturn";
+import Donations from "./pages/Donations";
+import PartnerApply from "./pages/PartnerApply";
+
+// Admin Pages
+import AdminLayout from "./pages/admin/Layout";
+import AdminDashboard from "./pages/admin/Dashboard";
+import UserManagement from "./pages/admin/Users";
+import SubmissionManagement from "./pages/admin/Submissions";
+import ApplicationsManagement from "./pages/admin/Applications";
+import ForumManagement from "./pages/admin/ForumManagement";
+import ContentManagement from "./pages/admin/ContentManagement";
+import FilmmakerProfileManagement from "./pages/admin/FilmmakerProfiles";
+import AvailabilityManagement from "./pages/admin/Availability";
+import SiteSettings from "./pages/admin/SiteSettings";
+
+// Partner Pages
+import PartnerLayout from "./pages/partner/Layout";
+import PartnerDashboard from "./pages/partner/Dashboard";
+import AdPlacements from "./pages/partner/AdPlacements";
+import Analytics from "./pages/partner/Analytics";
+import PartnerPromotions from "./pages/partner/Promotions";
+
+
+const queryClient = new QueryClient();
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <SettingsProvider>
+      <AuthProvider>
+        <PlatformStatusGate>
+          <TooltipProvider>
+            <Toaster />
+            <Sonner />
+            <BrowserRouter>
+              <ScrollToTop />
+              <Routes>
+                <Route path="/" element={<Index />} />
+
+                {/* Public Routes with LandingHeader */}
+                <Route element={<PublicLayout />}>
+                  <Route path="/landing" element={<LandingPage />} />
+                  <Route path="/shop" element={<Shop />} />
+                  <Route path="/donations" element={<Donations />} />
+                  <Route path="/originals" element={<Originals />} />
+                  <Route path="/submit" element={<SubmitContent />} />
+                  <Route path="/partners/apply" element={<PartnerApply />} />
+                  <Route path="/subscriptions" element={<SubscriptionsAndRolesPage />} />
+                  <Route path="/account/membership" element={<SubscriptionsAndRolesPage />} />
+                  <Route path="/watch-now" element={<WatchNow />} />
+                  <Route path="/dashboard/free" element={<DashboardFree />} />
+                  <Route path="/serve-it-up" element={<ServeItUp />} />
+                  <Route path="/coastal-torque" element={<CoastalTorque />} />
+                  <Route path="/serving-for-greece" element={<ServingForGreece />} />
+                  <Route path="/failure-to-thrive" element={<FailureToThrive />} />
+                  <Route path="/cued-up" element={<CuedUp />} />
+                  <Route path="/terms" element={<Terms />} />
+                  <Route path="/profile/:username" element={<FilmmakerProfile />} />
+                  <Route path="/login" element={<Login />} />
+                  <Route path="/signin" element={<Login />} />
+                  <Route path="/signup" element={<Signup />} />
+                  <Route path="/reset-password" element={<ResetPassword />} />
+                </Route>
+
+                {/* Auth pages without any layout */}
+                <Route path="/confirm-email" element={<ConfirmEmail />} />
+                <Route path="/filmmaker-onboarding" element={<FilmmakerOnboarding />} />
+                <Route path="/apply/filmmaker" element={<FilmmakerApplicationPage />} />
+                <Route path="/auth/callback" element={<AuthCallback />} />
+                <Route path="/billing/return" element={<BillingReturn />} />
+                
+                {/* Authenticated Routes with AppHeader */}
+                <Route element={<OnboardingGate />}>
+                  <Route element={<AuthenticatedLayout />}>
+                    <Route path="/dashboard" element={<Dashboard />} />
+                    <Route path="/account" element={<Account />} />
+                    <Route path="/account/notification-settings" element={<NotificationSettings />} />
+                    <Route path="/account/billing" element={<SubscriptionSettingsPage />} />
+                    {/* keep legacy path working */}
+                    <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
+                    <Route path="/notifications" element={<Notifications />} />
+                    <Route path="/messages" element={<Messages />} />
+                    <Route path="/filmmakers" element={<Filmmakers />} />
+                    <Route path="/the-backlot" element={<TheBacklot />} />
+                    <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
+                    
+                    {/* Filmmaker-only Routes (also accessible by admin) */}
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin']} />}>
+                      <Route path="/submit-project" element={<FilmmakerSubmissions />} />
+                      <Route path="/my-submissions" element={<MySubmissions />} />
+                      <Route path="/submissions/:submissionId" element={<SubmissionDetail />} />
+                    </Route>
+
+                    {/* Partner Routes (also accessible by admin) */}
+                    <Route path="/partner" element={<PermissionRoute requiredRoles={['partner', 'admin']} redirectTo="/dashboard" />}>
+                      <Route element={<PartnerLayout />}>
+                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route path="dashboard" element={<PartnerDashboard />} />
+                        <Route path="ad-placements" element={<AdPlacements />} />
+                        <Route path="analytics" element={<Analytics />} />
+                        <Route path="promotions" element={<PartnerPromotions />} />
+                      </Route>
+                    </Route>
+                    
+                    {/* Admin Routes */}
+                    <Route path="/admin" element={<PermissionRoute requiredRoles={['admin']} />}>
+                      <Route element={<AdminLayout />}>
+                        <Route index element={<Navigate to="dashboard" replace />} />
+                        <Route path="dashboard" element={<AdminDashboard />} />
+                        <Route path="users" element={<UserManagement />} />
+                        <Route path="submissions" element={<SubmissionManagement />} />
+                        <Route path="applications" element={<ApplicationsManagement />} />
+                        <Route path="forum" element={<ForumManagement />} />
+                        <Route path="content" element={<ContentManagement />} />
+                        <Route path="profiles" element={<FilmmakerProfileManagement />} />
+                        <Route path="availability" element={<AvailabilityManagement />} />
+                        <Route path="settings" element={<SiteSettings />} />
+                      </Route>
+                    </Route>
+                  </Route>
+                </Route>
+
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </BrowserRouter>
+          </TooltipProvider>
+        </PlatformStatusGate>
+      </AuthProvider>
+    </SettingsProvider>
+  </QueryClientProvider>
+);
+
+export default App;

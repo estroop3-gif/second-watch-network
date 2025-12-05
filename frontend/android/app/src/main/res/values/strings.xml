@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">serene-binturong-slide</string>
+    <string name="title_activity_main">serene-binturong-slide</string>
+    <string name="package_name">com.example.serenebinturongslide</string>
+    <string name="custom_url_scheme">com.example.serenebinturongslide</string>
+</resources>

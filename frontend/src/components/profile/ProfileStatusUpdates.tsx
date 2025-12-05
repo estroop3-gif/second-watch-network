@@ -1,0 +1,180 @@
+import React, { useState } from 'react';
+import { useAuth } from '@/context/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import * as z from 'zod';
+import { formatDistanceToNow } from 'date-fns';
+import { toast } from 'sonner';
+
+import { FilmmakerProfileData, StatusUpdate } from '@/types';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Form, FormControl, FormField, FormItem, FormMessage } from '@/components/ui/form';
+import { Card, CardContent } from '@/components/ui/card';
+import { Loader2, User } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+const statusUpdateSchema = z.object({
+  content: z.string().min(1, "Update can't be empty.").max(1000, "Update must be 1000 characters or less."),
+});
+
+type StatusUpdateFormValues = z.infer<typeof statusUpdateSchema>;
+
+const linkify = (text: string) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  return text.split(urlRegex).map((part, i) => {
+    if (part.match(urlRegex)) {
+      return <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-accent-yellow hover:underline">{part}</a>;
+    }
+    return part;
+  });
+};
+
+const StatusUpdatePost = ({ update }: { update: StatusUpdate }) => {
+  const author = update.profiles;
+  const nameToDisplay = author?.display_name ? `${author.display_name} (${author.full_name})` : author?.full_name || author?.username || 'Anonymous';
+
+  return (
+    <div className="flex gap-4 py-4">
+      <Link to={`/profile/${author?.username}`}>
+        <Avatar>
+          <AvatarImage src={author?.avatar_url || undefined} />
+          <AvatarFallback><User /></AvatarFallback>
+        </Avatar>
+      </Link>
+      <div className="flex-grow">
+        <div className="flex items-baseline gap-2">
+          <Link to={`/profile/${author?.username}`} className="font-bold hover:underline">{nameToDisplay}</Link>
+          <span className="text-xs text-muted-gray">
+            {formatDistanceToNow(new Date(update.created_at), { addSuffix: true })}
+          </span>
+        </div>
+        <p className="text-bone-white whitespace-pre-wrap">{linkify(update.content)}</p>
+      </div>
+    </div>
+  );
+};
+
+const ProfileStatusUpdates = ({ profile }: { profile: FilmmakerProfileData | any }) => {
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  
+  // The profile object can come from two different sources with different shapes.
+  // This line reliably gets the user UUID from either `profile.user_id` or `profile.id`.
+  const targetUserId = profile?.user_id || profile?.id;
+  
+  const isOwner = user?.id === targetUserId;
+
+  const fetchStatusUpdates = async () => {
+    if (!targetUserId) return [];
+
+    const { data, error } = await supabase
+      .from('status_updates')
+      .select(`
+        *,
+        profiles (
+          username,
+          avatar_url,
+          full_name,
+          display_name
+        )
+      `)
+      .eq('user_id', targetUserId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw new Error(error.message);
+    return data as StatusUpdate[];
+  };
+
+  const { data: updates, isLoading } = useQuery({
+    queryKey: ['status_updates', targetUserId],
+    queryFn: fetchStatusUpdates,
+    enabled: !!targetUserId,
+  });
+
+  const mutation = useMutation({
+    mutationFn: async (newUpdate: { content: string }) => {
+      if (!user) throw new Error("Not authenticated");
+      const { data, error } = await supabase.from('status_updates').insert({
+        user_id: user.id,
+        content: newUpdate.content,
+        type: 'manual',
+      }).select(`
+        *,
+        profiles (
+          username,
+          avatar_url,
+          full_name,
+          display_name
+        )
+      `).single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (newlyCreatedUpdate) => {
+      queryClient.setQueryData(['status_updates', targetUserId], (oldData: StatusUpdate[] | undefined) => {
+        return newlyCreatedUpdate ? [newlyCreatedUpdate, ...(oldData || [])] : oldData;
+      });
+      toast.success("Status posted to your profile!");
+      form.reset();
+    },
+    onError: (error) => {
+      toast.error(`Failed to post update: ${error.message}`);
+    },
+  });
+
+  const form = useForm<StatusUpdateFormValues>({
+    resolver: zodResolver(statusUpdateSchema),
+    defaultValues: { content: "" },
+  });
+
+  const onSubmit = (data: StatusUpdateFormValues) => {
+    mutation.mutate(data);
+  };
+
+  return (
+    <div className="space-y-6">
+      {isOwner && (
+        <Card className="bg-charcoal-black/50 border-muted-gray/20">
+          <CardContent className="p-4">
+            <Form {...form}>
+              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                <FormField
+                  control={form.control}
+                  name="content"
+                  render={({ field }) => (
+                    <FormItem>
+                      <Textarea {...field} placeholder="Post an update..." className="bg-charcoal-black border-muted-gray/50 min-h-[80px]" />
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className="flex justify-end">
+                  <Button type="submit" disabled={mutation.isPending}>
+                    {mutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Post Update
+                  </Button>
+                </div>
+              </form>
+            </Form>
+          </CardContent>
+        </Card>
+      )}
+      
+      {isLoading ? (
+        <div className="flex justify-center py-8"><Loader2 className="h-8 w-8 animate-spin" /></div>
+      ) : updates && updates.length > 0 ? (
+        <div className="divide-y divide-muted-gray/20">
+          {updates.map(update => <StatusUpdatePost key={update.id} update={update} />)}
+        </div>
+      ) : (
+        <p className="text-center text-muted-gray py-8">No updates yet.</p>
+      )}
+    </div>
+  );
+};
+
+export default ProfileStatusUpdates;
