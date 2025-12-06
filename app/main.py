@@ -3,6 +3,7 @@ Second Watch Network - Main Application Entry Point
 """
 import flet as ft
 from src.utils.design_system import *
+from src.pages.order_admin import create_order_admin_view
 
 def main(page: ft.Page):
     # Page Configuration
@@ -50,6 +51,10 @@ def main(page: ft.Page):
         # Dashboard
         elif page.route == "/dashboard":
             page.views.append(dashboard_view())
+
+        # Order Admin (Control Room)
+        elif page.route == "/order-admin":
+            page.views.append(create_order_admin_view(page, lambda: page.go("/dashboard")))
 
         # 404 Not Found
         else:
@@ -390,6 +395,26 @@ def main(page: ft.Page):
                                 "Welcome to Second Watch Network",
                                 size=FONT_LG,
                                 color=TEXT_SECONDARY,
+                            ),
+                            ft.Container(height=SPACING_XL),
+                            ft.Text(
+                                "Admin Controls",
+                                size=FONT_XL,
+                                weight=FONT_SEMIBOLD,
+                                color=BONE_WHITE,
+                            ),
+                            ft.Container(height=SPACING_MD),
+                            ft.Row(
+                                controls=[
+                                    ft.ElevatedButton(
+                                        "Order Admin",
+                                        icon=ft.icons.SHIELD,
+                                        bgcolor=PRIMARY_RED,
+                                        color=BONE_WHITE,
+                                        on_click=lambda _: page.go("/order-admin"),
+                                    ),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
                             ),
                             ft.Container(height=SPACING_XL),
                             ft.ElevatedButton(

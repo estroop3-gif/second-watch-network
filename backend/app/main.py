@@ -2,20 +2,32 @@
 Second Watch Network - FastAPI Backend
 Main Application Entry Point
 """
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
+from app.core.startup import on_startup
 from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
-    admin, availability, credits, community, greenroom
+    admin, availability, credits, community, greenroom, order
 )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler for startup/shutdown events."""
+    # Startup
+    await on_startup()
+    yield
+    # Shutdown (add cleanup tasks here if needed)
 
 # Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -60,6 +72,7 @@ app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availa
 app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", tags=["Credits"])
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
+app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
 
 
 if __name__ == "__main__":

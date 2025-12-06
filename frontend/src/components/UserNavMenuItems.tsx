@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -26,14 +26,19 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
 
   const username = profile?.username || user.user_metadata?.username || user.email?.split('@')[0];
   const isAdmin = hasRole('admin');
-  const isFilmmaker = hasRole('filmmaker');
+  const isFilmmakerRole = hasRole('filmmaker');
   const isPartner = hasRole('partner');
-  const hasOnboarded = profile?.has_completed_filmmaker_onboarding;
+  const isOrderMember = hasRole('order_member');
 
-  const showFilmmakerLinks = (isFilmmaker && hasOnboarded) || isAdmin;
+  // Check both user_metadata roles AND profile is_filmmaker flag for redundancy
+  const isFilmmakerProfile = profile?.is_filmmaker === true;
+  const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
+  const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
+
   const showPartnerLink = isPartner || isAdmin;
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
-  const canSubmitAndManageSubmissions = isFilmmaker || isAdmin;
+  const canSubmitAndManageSubmissions = isFilmmakerRole || isAdmin;
+  const showOrderLink = isOrderMember || isAdmin;
 
   return (
     <div className="flex flex-col gap-1">
@@ -65,7 +70,25 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
           </MenuItem>
         </>
       )}
-      
+
+      {showOrderLink && (
+        <>
+          <div className="text-sm font-semibold text-muted-gray mt-4 mb-2 px-2">The Order</div>
+          <MenuItem to="/order/dashboard" onClick={onLinkClick}>
+            <Crown className="mr-3 h-5 w-5" />
+            <span>Order Dashboard</span>
+          </MenuItem>
+          <MenuItem to="/order/directory" onClick={onLinkClick}>
+            <Users className="mr-3 h-5 w-5" />
+            <span>Member Directory</span>
+          </MenuItem>
+          <MenuItem to="/order/jobs" onClick={onLinkClick}>
+            <Film className="mr-3 h-5 w-5" />
+            <span>Order Jobs</span>
+          </MenuItem>
+        </>
+      )}
+
       <div className="h-[1px] bg-muted-gray my-2" />
 
       <MenuItem to="/dashboard" onClick={onLinkClick}>
@@ -93,16 +116,16 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
 
       <div className="h-[1px] bg-muted-gray my-2" />
 
-      {showFilmmakerLinks && (
-        <MenuItem to={`/profile/${username}`} onClick={onLinkClick}>
-          <User className="mr-3 h-5 w-5" />
-          <span>My Profile</span>
-        </MenuItem>
-      )}
+      {/* My Profile link - always show, but link destination depends on filmmaker status */}
+      <MenuItem to={hasOnboarded ? `/profile/${username}` : '/account'} onClick={onLinkClick}>
+        <User className="mr-3 h-5 w-5" />
+        <span>My Profile</span>
+      </MenuItem>
+      {/* Show Complete Profile link for filmmakers who haven't onboarded */}
       {showOnboardingLink && (
          <MenuItem to="/filmmaker-onboarding" onClick={onLinkClick}>
             <User className="mr-3 h-5 w-5" />
-            <span>Complete Profile</span>
+            <span>Complete Filmmaker Profile</span>
           </MenuItem>
       )}
       {canSubmitAndManageSubmissions && (

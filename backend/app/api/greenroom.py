@@ -3,11 +3,25 @@ Green Room API Routes - Project Development & Voting Arena
 """
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from sqlmodel import Session, select, func, and_, or_
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 from app.core.supabase import get_supabase_client
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, get_current_user_optional
+from app.core.deps import (
+    get_user_profile,
+    get_user_profile_optional,
+    require_admin,
+    require_staff,
+    require_filmmaker,
+    require_greenroom_voter,
+)
+from app.core.roles import (
+    is_staff,
+    is_admin_or_higher,
+    can_submit_to_greenroom,
+    can_vote_in_greenroom,
+)
 from app.models.greenroom import (
     Cycle, Project, VotingTicket, Vote,
     CycleStatus, ProjectStatus, PaymentStatus
@@ -29,26 +43,27 @@ def get_session():
     raise HTTPException(status_code=501, detail="Database session not configured")
 
 
-# ============ Helper Functions ============
+# ============ Legacy Helper Functions (for backwards compatibility) ============
+# These are deprecated - use the new role system from app.core.roles instead
 
 def check_user_role(user, allowed_roles: List[str]) -> bool:
-    """Check if user has required role"""
+    """DEPRECATED: Check if user has required role. Use app.core.roles instead."""
     user_role = user.get("user_metadata", {}).get("role", "free")
     return user_role in allowed_roles
 
 
 def can_vote(user) -> bool:
-    """Check if user can vote (premium, filmmaker, or partner)"""
+    """DEPRECATED: Check if user can vote. Use can_vote_in_greenroom() instead."""
     return check_user_role(user, ["premium", "filmmaker", "partner", "admin"])
 
 
 def is_filmmaker(user) -> bool:
-    """Check if user is filmmaker"""
+    """DEPRECATED: Check if user is filmmaker. Use can_submit_to_greenroom() instead."""
     return check_user_role(user, ["filmmaker", "admin"])
 
 
 def is_admin(user) -> bool:
-    """Check if user is admin or moderator"""
+    """DEPRECATED: Check if user is admin. Use is_admin_or_higher() or is_staff() instead."""
     user_metadata = user.get("user_metadata", {})
     return user_metadata.get("role") == "admin" or user_metadata.get("is_moderator", False)
 

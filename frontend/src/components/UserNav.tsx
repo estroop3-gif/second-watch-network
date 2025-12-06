@@ -15,8 +15,10 @@ import {
   DropdownMenuTrigger,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark } from 'lucide-react';
 import { Badge } from './ui/badge';
+import { UserBadge } from './UserBadge';
+import { type ProfileWithRoles, canAccessOrder, canAccessPartnerTools, canSubmitToGreenroom, isAdminOrHigher, isStaff } from '@/lib/badges';
 
 export const UserNav = () => {
   const { session, user } = useAuth();
@@ -43,17 +45,23 @@ export const UserNav = () => {
   const username = profile?.username || user.user_metadata?.username || user.email?.split('@')[0];
   const displayName = profile?.full_name || username;
   const avatarUrl = user.user_metadata?.avatar_url;
-  
-  const isAdmin = hasRole('admin');
-  const isFilmmaker = hasRole('filmmaker');
-  const isPartner = hasRole('partner');
-  const isFree = hasRole('free');
-  const hasOnboarded = profile?.has_completed_filmmaker_onboarding;
 
-  const showFilmmakerLinks = (isFilmmaker && hasOnboarded) || isAdmin;
-  const showPartnerLink = isPartner || isAdmin;
+  // Cast profile to ProfileWithRoles for the new badge system
+  const profileWithRoles = profile as ProfileWithRoles | null;
+
+  // Use new badge system for role checks
+  const showAdminLink = isAdminOrHigher(profileWithRoles);
+  const showPartnerLink = canAccessPartnerTools(profileWithRoles);
+  const showOrderLink = canAccessOrder(profileWithRoles);
+  const canSubmitAndManageSubmissions = canSubmitToGreenroom(profileWithRoles);
+
+  // Keep legacy checks for backward compatibility during migration
+  // Check both user_metadata roles AND profile is_filmmaker flag for redundancy
+  const isFilmmakerRole = hasRole('filmmaker');
+  const isFilmmakerProfile = profile?.is_filmmaker === true;
+  const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
+  const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
-  const canSubmitAndManageSubmissions = isFilmmaker || isAdmin;
 
   return (
     <DropdownMenu>
@@ -67,15 +75,7 @@ export const UserNav = () => {
           </Avatar>
           <div className="hidden sm:flex items-center gap-2">
             <span className="font-heading uppercase text-sm text-bone-white">{displayName}</span>
-            {isAdmin && (
-              <span className="bg-accent-yellow text-charcoal-black text-xs font-bold uppercase px-2 py-0.5 rounded-[4px] transform -rotate-3">Admin</span>
-            )}
-            {isPartner && !isAdmin && (
-              <span className="bg-blue-400 text-charcoal-black text-xs font-bold uppercase px-2 py-0.5 rounded-[4px] transform -rotate-3">Partner</span>
-            )}
-            {isFree && !isAdmin && !isPartner && !isFilmmaker && (
-              <Badge variant="free" className="transform -rotate-3 uppercase">Free</Badge>
-            )}
+            <UserBadge profile={profileWithRoles} size="sm" />
           </div>
         </Button>
       </DropdownMenuTrigger>
@@ -89,12 +89,21 @@ export const UserNav = () => {
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator className="bg-muted-gray" />
-        
-        {isAdmin && (
+
+        {showAdminLink && (
           <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
             <Link to="/admin/dashboard">
               <Shield className="mr-2 h-4 w-4" />
               <span>Admin Panel</span>
+            </Link>
+          </DropdownMenuItem>
+        )}
+
+        {showOrderLink && (
+          <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+            <Link to="/order/dashboard">
+              <Landmark className="mr-2 h-4 w-4" />
+              <span>Order Dashboard</span>
             </Link>
           </DropdownMenuItem>
         )}
@@ -159,20 +168,20 @@ export const UserNav = () => {
         )}
 
         <DropdownMenuSeparator className="bg-muted-gray" />
-        
-        {showFilmmakerLinks && (
-          <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
-            <Link to={`/profile/${username}`}>
-              <User className="mr-2 h-4 w-4" />
-              <span>My Profile</span>
-            </Link>
-          </DropdownMenuItem>
-        )}
+
+        {/* My Profile link - always show, but link destination depends on filmmaker status */}
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to={hasOnboarded ? `/profile/${username}` : '/account'}>
+            <User className="mr-2 h-4 w-4" />
+            <span>My Profile</span>
+          </Link>
+        </DropdownMenuItem>
+        {/* Show Complete Profile link for filmmakers who haven't onboarded */}
         {showOnboardingLink && (
            <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
               <Link to="/filmmaker-onboarding">
                 <User className="mr-2 h-4 w-4" />
-                <span>Complete Profile</span>
+                <span>Complete Filmmaker Profile</span>
               </Link>
             </DropdownMenuItem>
         )}

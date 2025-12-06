@@ -39,6 +39,7 @@ import MySubmissions from "./pages/MySubmissions";
 import Notifications from "./pages/Notifications";
 import OnboardingGate from "./components/OnboardingGate";
 import FilmmakerOnboarding from "./pages/FilmmakerOnboarding";
+import FilmmakerOnboardingSuccess from "./pages/FilmmakerOnboardingSuccess";
 import PlatformStatusGate from "./components/PlatformStatusGate";
 import PermissionRoute from "./components/PermissionRoute";
 import SubscriptionsAndRolesPage from "./pages/SubscriptionsAndRolesPage";
@@ -54,6 +55,19 @@ import PartnerApply from "./pages/PartnerApply";
 import GreenRoom from "./pages/GreenRoom";
 import GreenRoomCycle from "./pages/GreenRoomCycle";
 import GreenRoomSubmit from "./pages/GreenRoomSubmit";
+
+// Order Pages
+import {
+  OrderLanding,
+  OrderApply,
+  OrderDashboard,
+  OrderDirectory,
+  OrderMemberProfile,
+  OrderJobs,
+  OrderJobDetail,
+  OrderLodges,
+  OrderLodgeDetail,
+} from "./pages/order";
 
 // Admin Pages
 import AdminLayout from "./pages/admin/Layout";
@@ -118,6 +132,7 @@ const App = () => (
                 {/* Auth pages without any layout */}
                 <Route path="/confirm-email" element={<ConfirmEmail />} />
                 <Route path="/filmmaker-onboarding" element={<FilmmakerOnboarding />} />
+                <Route path="/filmmaker-onboarding/success" element={<FilmmakerOnboardingSuccess />} />
                 <Route path="/apply/filmmaker" element={<FilmmakerApplicationPage />} />
                 <Route path="/auth/callback" element={<AuthCallback />} />
                 <Route path="/billing/return" element={<BillingReturn />} />
@@ -141,6 +156,17 @@ const App = () => (
                     <Route path="/greenroom" element={<GreenRoom />} />
                     <Route path="/greenroom/cycles/:id" element={<GreenRoomCycle />} />
                     <Route path="/greenroom/submit" element={<GreenRoomSubmit />} />
+
+                    {/* Order Routes */}
+                    <Route path="/order" element={<OrderLanding />} />
+                    <Route path="/order/apply" element={<OrderApply />} />
+                    <Route path="/order/dashboard" element={<OrderDashboard />} />
+                    <Route path="/order/directory" element={<OrderDirectory />} />
+                    <Route path="/order/members/:userId" element={<OrderMemberProfile />} />
+                    <Route path="/order/jobs" element={<OrderJobs />} />
+                    <Route path="/order/jobs/:jobId" element={<OrderJobDetail />} />
+                    <Route path="/order/lodges" element={<OrderLodges />} />
+                    <Route path="/order/lodges/:lodgeId" element={<OrderLodgeDetail />} />
 
                     {/* Filmmaker-only Routes (also accessible by admin) */}
                     <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin']} />}>

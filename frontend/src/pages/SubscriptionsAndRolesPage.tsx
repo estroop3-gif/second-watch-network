@@ -35,8 +35,12 @@ const SubscriptionsAndRolesPage = () => {
       navigate('/signup?redirect=/subscriptions');
       return;
     }
-    if (hasRole('filmmaker')) {
+    // Only navigate to profile if user has completed filmmaker onboarding
+    if (hasRole('filmmaker') && profile?.has_completed_filmmaker_onboarding) {
       navigate(`/profile/${profile?.username}`);
+    } else if (hasRole('filmmaker')) {
+      // User is filmmaker but hasn't completed onboarding
+      navigate('/filmmaker-onboarding');
     } else {
       setIsFilmmakerModalOpen(true);
     }
@@ -207,7 +211,11 @@ const SubscriptionsAndRolesPage = () => {
                   action={
                     <DialogTrigger asChild>
                       <Button onClick={handleBecomeFilmmakerClick} className="w-full">
-                        {hasRole('filmmaker') ? 'View My Profile' : 'Become a Filmmaker'}
+                        {hasRole('filmmaker') && profile?.has_completed_filmmaker_onboarding
+                          ? 'View My Profile'
+                          : hasRole('filmmaker')
+                          ? 'Complete Profile'
+                          : 'Become a Filmmaker'}
                       </Button>
                     </DialogTrigger>
                   }

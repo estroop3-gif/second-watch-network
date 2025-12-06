@@ -166,11 +166,15 @@ const FilmmakerOnboardingForm = () => {
     setIsSubmitting(false);
 
     if (error) {
+      console.error("Onboarding error:", error);
       toast.error("Failed to save profile: " + error.message);
     } else {
       toast.success("Profile created successfully!");
+      // Invalidate profile queries to refresh data
       await queryClient.invalidateQueries({ queryKey: ['filmmaker_profile', user.id] });
-      navigate("/dashboard");
+      await queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
+      // Navigate to success page
+      navigate("/filmmaker-onboarding/success");
     }
   }
 

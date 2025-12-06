@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "")
 
+    # Superadmin Configuration
+    # The email address of the main superadmin user
+    # This user will be automatically granted superadmin privileges on startup
+    SUPERADMIN_EMAIL: str = os.getenv("SUPERADMIN_EMAIL", "")
+
     class Config:
         env_file = ".env"
         case_sensitive = True

@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/context/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, User, Mail, Link as LinkIcon, MapPin, Briefcase, Star, Film, Building } from 'lucide-react';
+import { Loader2, User, Mail, Link as LinkIcon, MapPin, Briefcase, Star, Film, Building, UserPlus } from 'lucide-react';
 import { FilmmakerProfileData } from '@/types';
 import ProfileProjects from '@/components/profile/ProfileProjects';
 import ProfileStatus from '@/components/profile/ProfileStatus';
@@ -16,15 +17,21 @@ import ProfileHeaderConnect from '@/components/profile/ProfileHeaderConnect';
 
 const FilmmakerProfile = () => {
   const { username } = useParams<{ username: string }>();
+  const { user } = useAuth();
   const [profile, setProfile] = useState<FilmmakerProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [profileNotFound, setProfileNotFound] = useState(false);
+
+  // Check if this is the current user's own profile
+  const isOwnProfile = user?.user_metadata?.username === username || user?.email?.split('@')[0] === username;
 
   useEffect(() => {
     const fetchProfile = async () => {
       if (!username) return;
       setLoading(true);
       setError(null);
+      setProfileNotFound(false);
 
       try {
         const { data, error: functionError } = await supabase.functions.invoke('get-filmmaker-profile', {
@@ -33,9 +40,14 @@ const FilmmakerProfile = () => {
 
         if (functionError) throw new Error(functionError.message);
         if (data.error) throw new Error(data.error);
-        if (!data.profile) throw new Error("Filmmaker profile not found.");
 
-        setProfile(data.profile);
+        if (!data.profile) {
+          // Profile not found - this is not an error, just means profile doesn't exist
+          setProfileNotFound(true);
+          setProfile(null);
+        } else {
+          setProfile(data.profile);
+        }
       } catch (e: any) {
         setError(e.message || "An unexpected error occurred.");
         console.error(e);
@@ -95,11 +107,31 @@ const FilmmakerProfile = () => {
     );
   }
 
-  if (!profile) {
+  // Handle profile not found - show friendly message with option to create profile
+  if (profileNotFound || !profile) {
     return (
-      <div className="container mx-auto px-4 max-w-4xl py-12 text-center">
-        <h2 className="text-2xl font-heading">Profile Not Found</h2>
-        <p className="text-muted-gray">We couldn't find a filmmaker profile for this user.</p>
+      <div className="container mx-auto px-4 max-w-lg py-12 text-center">
+        <div className="mb-6">
+          <User className="h-16 w-16 mx-auto text-muted-gray" />
+        </div>
+        <h2 className="text-2xl font-heading mb-2">Filmmaker Profile Not Found</h2>
+        {isOwnProfile ? (
+          <>
+            <p className="text-muted-gray mb-6">
+              You haven't set up your filmmaker profile yet. Complete your profile to showcase your work and connect with the community.
+            </p>
+            <Button asChild>
+              <Link to="/filmmaker-onboarding">
+                <UserPlus className="mr-2 h-4 w-4" />
+                Complete Your Profile
+              </Link>
+            </Button>
+          </>
+        ) : (
+          <p className="text-muted-gray">
+            This user hasn't set up a public filmmaker profile yet.
+          </p>
+        )}
       </div>
     );
   }
