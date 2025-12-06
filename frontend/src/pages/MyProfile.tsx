@@ -6,6 +6,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { useMyProfileData, type CreditDB } from '@/hooks/useMyProfileData';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -872,6 +873,11 @@ const RolesUpgradesPanel: React.FC<{
 // Main MyProfile Page Component
 const MyProfile: React.FC = () => {
   const { user } = useAuth();
+
+  // Use enriched profile for badges (consistent with nav bar)
+  const enrichedProfile = useEnrichedProfile();
+
+  // Use profile data hook for detailed profile content
   const profileData = useMyProfileData();
 
   const {
@@ -882,6 +888,15 @@ const MyProfile: React.FC = () => {
     lodgeMemberships,
     credits,
     primaryRoleMode,
+    hasFilmmakerProfile,
+    hasPartnerProfile,
+    hasOrderProfile,
+    isLoading: profileDataLoading,
+    isError,
+  } = profileData;
+
+  // Get badge info from enriched profile (same source as nav bar)
+  const {
     primaryBadge,
     allBadges,
     isSuperadmin,
@@ -891,12 +906,10 @@ const MyProfile: React.FC = () => {
     isPremium,
     isOrderMember,
     isLodgeOfficer,
-    hasFilmmakerProfile,
-    hasPartnerProfile,
-    hasOrderProfile,
-    isLoading,
-    isError,
-  } = profileData;
+    isLoading: enrichedLoading,
+  } = enrichedProfile;
+
+  const isLoading = profileDataLoading || enrichedLoading;
 
   if (isLoading) {
     return (
