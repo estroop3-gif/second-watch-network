@@ -227,6 +227,46 @@ export interface OrderAdminStats {
   members_by_city: Record<string, number>;
 }
 
+export type OrderProfileVisibility = 'public' | 'members-only' | 'private';
+
+export interface OrderProfileSettings {
+  id: string;
+  user_id: string;
+  show_membership_status: boolean;
+  show_order_badge: boolean;
+  show_joined_date: boolean;
+  show_city_region: boolean;
+  show_lodge_info: boolean;
+  show_order_track: boolean;
+  show_order_activity: boolean;
+  public_visibility: OrderProfileVisibility;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderProfileSettingsUpdate {
+  show_membership_status?: boolean;
+  show_order_badge?: boolean;
+  show_joined_date?: boolean;
+  show_city_region?: boolean;
+  show_lodge_info?: boolean;
+  show_order_track?: boolean;
+  show_order_activity?: boolean;
+  public_visibility?: OrderProfileVisibility;
+}
+
+// Default settings for new users
+export const DEFAULT_ORDER_PROFILE_SETTINGS: Omit<OrderProfileSettings, 'id' | 'user_id' | 'created_at' | 'updated_at'> = {
+  show_membership_status: true,
+  show_order_badge: true,
+  show_joined_date: true,
+  show_city_region: true,
+  show_lodge_info: true,
+  show_order_track: true,
+  show_order_activity: true,
+  public_visibility: 'members-only',
+};
+
 // ============ Request Types ============
 
 export interface OrderApplicationCreateRequest {

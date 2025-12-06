@@ -20,14 +20,12 @@ import {
   Globe,
   ExternalLink,
   Crown,
-  Landmark,
   ArrowRight,
   Sparkles,
   Film,
   Briefcase,
   Users,
   Mail,
-  Phone,
   CheckCircle,
   XCircle,
   Video,
@@ -37,7 +35,8 @@ import {
   MessageSquare,
   Bell,
 } from 'lucide-react';
-import { type BadgeConfig } from '@/lib/badges';
+import { type BadgeConfig, getBadgeConfig } from '@/lib/badges';
+import { OrderSection, OrderJoinCTA } from '@/components/profile/OrderSection';
 
 // Profile Header Component
 interface ProfileHeaderProps {
@@ -540,78 +539,6 @@ const NoPartnerProfileCTA: React.FC<{ isPartner: boolean }> = ({ isPartner }) =>
   );
 };
 
-// Order & Lodge Overlay Section
-interface OrderOverlayProps {
-  orderMemberProfile: NonNullable<ReturnType<typeof useMyProfileData>['orderMemberProfile']>;
-  lodgeMemberships: ReturnType<typeof useMyProfileData>['lodgeMemberships'];
-  isLodgeOfficer: boolean;
-}
-
-const OrderOverlay: React.FC<OrderOverlayProps> = ({ orderMemberProfile, lodgeMemberships, isLodgeOfficer }) => {
-  const activeLodge = lodgeMemberships.find(m => m.status === 'active');
-
-  return (
-    <Card className="bg-emerald-950/30 border-emerald-700">
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-600/20 rounded-lg">
-              <Landmark className="h-6 w-6 text-emerald-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-emerald-200">Order Member</h3>
-                <span className="px-2 py-0.5 bg-emerald-600/30 text-emerald-300 text-xs rounded capitalize">
-                  {orderMemberProfile.status || 'active'}
-                </span>
-              </div>
-              <p className="text-sm text-emerald-300/70">
-                {orderMemberProfile.primary_track && `${orderMemberProfile.primary_track} Track`}
-                {orderMemberProfile.primary_track && orderMemberProfile.city && ' • '}
-                {orderMemberProfile.city}
-                {orderMemberProfile.region && `, ${orderMemberProfile.region}`}
-              </p>
-            </div>
-          </div>
-          <Button asChild variant="outline" size="sm" className="border-emerald-600 text-emerald-300 hover:bg-emerald-600/20">
-            <Link to="/order/dashboard">
-              Order Dashboard
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Link>
-          </Button>
-        </div>
-
-        {/* Lodge Info */}
-        {activeLodge && (
-          <div className="mt-4 pt-4 border-t border-emerald-700/50">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <Crown className="h-4 w-4 text-amber-400" />
-                <span className="text-amber-200">
-                  Lodge: {activeLodge.lodge?.name || 'Unknown'}
-                  {activeLodge.lodge?.city && `, ${activeLodge.lodge.city}`}
-                </span>
-                {isLodgeOfficer && (
-                  <span className="px-1.5 py-0.5 bg-amber-600/30 text-amber-300 text-xs rounded">
-                    Officer
-                  </span>
-                )}
-              </div>
-              {isLodgeOfficer && activeLodge.lodge?.id && (
-                <Button asChild variant="ghost" size="sm" className="text-amber-300 hover:bg-amber-600/20">
-                  <Link to={`/order/lodges/${activeLodge.lodge.id}`}>
-                    Manage Lodge
-                  </Link>
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-};
-
 // Premium/Free Profile Section
 const BasicProfileSection: React.FC<{
   isPremium: boolean;
@@ -886,6 +813,7 @@ const MyProfile: React.FC = () => {
     partnerProfile,
     orderMemberProfile,
     lodgeMemberships,
+    orderProfileSettings,
     credits,
     primaryRoleMode,
     hasFilmmakerProfile,
@@ -982,13 +910,20 @@ const MyProfile: React.FC = () => {
             editRoute={editRoute}
           />
 
-          {/* Order Overlay (if member) */}
-          {hasOrderProfile && orderMemberProfile && (
-            <OrderOverlay
-              orderMemberProfile={orderMemberProfile}
-              lodgeMemberships={lodgeMemberships}
+          {/* Order Section */}
+          {hasOrderProfile ? (
+            <OrderSection
+              orderProfile={orderMemberProfile}
+              lodgeMembership={lodgeMemberships.find(m => m.status === 'active') || null}
+              settings={orderProfileSettings}
+              orderBadge={getBadgeConfig('order_member')}
+              lodgeOfficerBadge={isLodgeOfficer ? getBadgeConfig('lodge_officer') : undefined}
+              isOwner={true}
+              viewerIsOrderMember={true}
               isLodgeOfficer={isLodgeOfficer}
             />
+          ) : (
+            <OrderJoinCTA />
           )}
 
           {/* Primary Role-Specific Section */}

@@ -11,7 +11,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { supabase } from '@/integrations/supabase/client';
 import { useQuery } from '@tanstack/react-query';
-import { orderAPI, OrderMemberProfile, LodgeMembership } from '@/lib/api/order';
+import { orderAPI, OrderMemberProfile, LodgeMembership, OrderProfileSettings } from '@/lib/api/order';
+import { getOrderProfileSettings } from '@/lib/api/orderSettings';
 import {
   type ProfileWithRoles,
   type RoleType,
@@ -85,6 +86,7 @@ export interface MyProfileData {
   partnerProfile: PartnerProfileDB | null;
   orderMemberProfile: OrderMemberProfile | null;
   lodgeMemberships: LodgeMembership[];
+  orderProfileSettings: OrderProfileSettings | null;
 
   // Credits
   credits: CreditDB[];
@@ -202,6 +204,20 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
+  // Fetch Order profile settings
+  const { data: orderProfileSettings, isLoading: orderSettingsLoading } = useQuery({
+    queryKey: ['order-profile-settings', user?.id],
+    queryFn: async () => {
+      if (!user) return null;
+      try {
+        return await getOrderProfileSettings();
+      } catch (error) {
+        return null;
+      }
+    },
+    enabled: !!user,
+  });
+
   // Fetch credits with production titles
   const { data: credits, isLoading: creditsLoading } = useQuery({
     queryKey: ['credits', user?.id],
@@ -284,7 +300,7 @@ export function useMyProfileData(): MyProfileData {
     primaryRoleMode = 'premium';
   }
 
-  const isLoading = profileLoading || filmmakerLoading || partnerLoading || orderLoading || lodgeLoading || creditsLoading;
+  const isLoading = profileLoading || filmmakerLoading || partnerLoading || orderLoading || lodgeLoading || orderSettingsLoading || creditsLoading;
   const isError = profileError;
 
   const refetch = () => {
@@ -297,6 +313,7 @@ export function useMyProfileData(): MyProfileData {
     partnerProfile: partnerProfile || null,
     orderMemberProfile: orderMemberProfile || null,
     lodgeMemberships: lodgeMemberships || [],
+    orderProfileSettings: orderProfileSettings || null,
     credits: credits || [],
     primaryRoleMode,
     primaryBadge,

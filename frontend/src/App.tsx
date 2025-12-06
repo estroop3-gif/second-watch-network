@@ -52,6 +52,7 @@ import NotificationSettings from "./pages/NotificationSettings";
 import BillingReturn from "./pages/BillingReturn";
 import Donations from "./pages/Donations";
 import PartnerApply from "./pages/PartnerApply";
+import OrderSettings from "./pages/OrderSettings";
 
 // Green Room Pages
 import GreenRoom from "./pages/GreenRoom";
@@ -146,6 +147,7 @@ const App = () => (
                     <Route path="/dashboard" element={<Dashboard />} />
                     <Route path="/account" element={<Account />} />
                     <Route path="/account/notification-settings" element={<NotificationSettings />} />
+                    <Route path="/account/order-settings" element={<OrderSettings />} />
                     <Route path="/account/billing" element={<SubscriptionSettingsPage />} />
                     {/* keep legacy path working */}
                     <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
