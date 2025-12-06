@@ -60,7 +60,7 @@ export interface PartnerProfileDB {
   updated_at?: string;
 }
 
-export type PrimaryRoleMode = 'filmmaker' | 'partner' | 'premium' | 'free';
+export type PrimaryRoleMode = 'superadmin' | 'admin' | 'filmmaker' | 'partner' | 'premium' | 'free';
 
 // Credit type
 export interface CreditDB {
@@ -96,6 +96,8 @@ export interface MyProfileData {
   activeRoles: Set<RoleType>;
 
   // Role checks
+  isSuperadmin: boolean;
+  isAdmin: boolean;
   isFilmmaker: boolean;
   isPartner: boolean;
   isPremium: boolean;
@@ -250,6 +252,8 @@ export function useMyProfileData(): MyProfileData {
   const allBadges = getAllBadges(enrichedProfile);
 
   // Role checks (using enriched profile)
+  const isSuperadmin = hasRole(enrichedProfile, 'superadmin');
+  const isAdmin = hasRole(enrichedProfile, 'admin');
   const isFilmmaker = hasRole(enrichedProfile, 'filmmaker');
   const isPartner = hasRole(enrichedProfile, 'partner');
   const isPremium = hasRole(enrichedProfile, 'premium');
@@ -257,9 +261,13 @@ export function useMyProfileData(): MyProfileData {
   const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
 
   // Determine primary role mode for the profile view
-  // Priority: filmmaker > partner > premium > free
+  // Priority matches badge hierarchy: superadmin > admin > filmmaker > partner > premium > free
   let primaryRoleMode: PrimaryRoleMode = 'free';
-  if (isFilmmaker) {
+  if (isSuperadmin) {
+    primaryRoleMode = 'superadmin';
+  } else if (isAdmin) {
+    primaryRoleMode = 'admin';
+  } else if (isFilmmaker) {
     primaryRoleMode = 'filmmaker';
   } else if (isPartner) {
     primaryRoleMode = 'partner';
@@ -285,6 +293,8 @@ export function useMyProfileData(): MyProfileData {
     primaryBadge,
     allBadges,
     activeRoles,
+    isSuperadmin,
+    isAdmin,
     isFilmmaker,
     isPartner,
     isPremium,

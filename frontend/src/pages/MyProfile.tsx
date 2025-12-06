@@ -676,6 +676,106 @@ const BasicProfileSection: React.FC<{
   );
 };
 
+// Admin Profile Section
+const AdminSection: React.FC<{
+  isSuperadmin: boolean;
+  isAdmin: boolean;
+  profile: ReturnType<typeof useMyProfileData>['profile'];
+}> = ({ isSuperadmin, isAdmin, profile }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {isSuperadmin ? (
+              <Crown className="h-5 w-5 text-red-500" />
+            ) : (
+              <Crown className="h-5 w-5 text-accent-yellow" />
+            )}
+            <CardTitle className="text-xl text-bone-white">
+              {isSuperadmin ? 'Superadmin Profile' : 'Admin Profile'}
+            </CardTitle>
+          </div>
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/account">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit
+            </Link>
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {profile?.full_name && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Name</h4>
+            <p className="text-bone-white">{profile.full_name}</p>
+          </div>
+        )}
+
+        {(profile as any)?.display_name && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Display Name</h4>
+            <p className="text-bone-white">{(profile as any).display_name}</p>
+          </div>
+        )}
+
+        {/* Admin Quick Access Panel */}
+        <div className="pt-4 border-t border-muted-gray">
+          <h4 className={`text-sm font-semibold uppercase mb-3 ${isSuperadmin ? 'text-red-400' : 'text-accent-yellow'}`}>
+            Admin Tools
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <Button asChild variant="outline" size="sm" className="w-full justify-start border-muted-gray text-bone-white hover:bg-muted-gray/50">
+              <Link to="/admin">
+                <Crown className="h-4 w-4 mr-2" />
+                Admin Dashboard
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm" className="w-full justify-start border-muted-gray text-bone-white hover:bg-muted-gray/50">
+              <Link to="/admin/users">
+                <Users className="h-4 w-4 mr-2" />
+                Manage Users
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm" className="w-full justify-start border-muted-gray text-bone-white hover:bg-muted-gray/50">
+              <Link to="/admin/content">
+                <Film className="h-4 w-4 mr-2" />
+                Content Moderation
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm" className="w-full justify-start border-muted-gray text-bone-white hover:bg-muted-gray/50">
+              <Link to="/admin/reports">
+                <MessageSquare className="h-4 w-4 mr-2" />
+                Reports
+              </Link>
+            </Button>
+          </div>
+        </div>
+
+        {isSuperadmin && (
+          <div className="pt-4 border-t border-muted-gray">
+            <h4 className="text-sm font-semibold text-red-400 uppercase mb-3">Superadmin Tools</h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Button asChild variant="outline" size="sm" className="w-full justify-start border-red-600/50 text-red-300 hover:bg-red-600/20">
+                <Link to="/admin/system">
+                  <Wrench className="h-4 w-4 mr-2" />
+                  System Settings
+                </Link>
+              </Button>
+              <Button asChild variant="outline" size="sm" className="w-full justify-start border-red-600/50 text-red-300 hover:bg-red-600/20">
+                <Link to="/admin/roles">
+                  <Award className="h-4 w-4 mr-2" />
+                  Role Management
+                </Link>
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
 // Roles & Upgrades Panel
 const RolesUpgradesPanel: React.FC<{
   isFilmmaker: boolean;
@@ -784,6 +884,8 @@ const MyProfile: React.FC = () => {
     primaryRoleMode,
     primaryBadge,
     allBadges,
+    isSuperadmin,
+    isAdmin,
     isFilmmaker,
     isPartner,
     isPremium,
@@ -828,6 +930,8 @@ const MyProfile: React.FC = () => {
 
   // Role summary text
   const roleSummaryParts: string[] = [];
+  if (isSuperadmin) roleSummaryParts.push('Superadmin');
+  else if (isAdmin) roleSummaryParts.push('Admin');
   if (isFilmmaker) roleSummaryParts.push('Filmmaker');
   if (isPartner) roleSummaryParts.push('Partner');
   if (isOrderMember) roleSummaryParts.push('Order Member');
@@ -875,6 +979,10 @@ const MyProfile: React.FC = () => {
           )}
 
           {/* Primary Role-Specific Section */}
+          {(primaryRoleMode === 'superadmin' || primaryRoleMode === 'admin') && (
+            <AdminSection isSuperadmin={isSuperadmin} isAdmin={isAdmin} profile={profile} />
+          )}
+
           {primaryRoleMode === 'filmmaker' && (
             hasFilmmakerProfile && filmmakerProfile ? (
               <FilmmakerSection filmmakerProfile={filmmakerProfile} credits={credits} />
