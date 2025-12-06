@@ -121,13 +121,6 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <User className="mr-3 h-5 w-5" />
         <span>My Profile</span>
       </MenuItem>
-      {/* Show Complete Profile link for filmmakers who haven't onboarded */}
-      {showOnboardingLink && (
-         <MenuItem to="/filmmaker-onboarding" onClick={onLinkClick}>
-            <User className="mr-3 h-5 w-5" />
-            <span>Complete Filmmaker Profile</span>
-          </MenuItem>
-      )}
       {canSubmitAndManageSubmissions && (
         <MenuItem to="/my-submissions" onClick={onLinkClick}>
           <Film className="mr-3 h-5 w-5" />

@@ -174,15 +174,6 @@ export const UserNav = () => {
             <span>My Profile</span>
           </Link>
         </DropdownMenuItem>
-        {/* Show Complete Profile link for filmmakers who haven't onboarded */}
-        {showOnboardingLink && (
-           <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
-              <Link to="/filmmaker-onboarding">
-                <User className="mr-2 h-4 w-4" />
-                <span>Complete Filmmaker Profile</span>
-              </Link>
-            </DropdownMenuItem>
-        )}
         {canSubmitAndManageSubmissions && (
           <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
             <Link to="/my-submissions">
