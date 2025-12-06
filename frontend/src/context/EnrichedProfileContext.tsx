@@ -86,31 +86,10 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     staleTime: 60000, // Cache for 1 minute
   });
 
-  // Check for partner profile existence (handle missing table gracefully)
-  // Note: partner_profiles table may not exist yet - check error code
-  const { data: hasPartnerProfile, isLoading: partnerLoading } = useQuery({
-    queryKey: ['partner-profile-exists', user?.id],
-    queryFn: async () => {
-      if (!user) return false;
-      try {
-        const { data, error } = await supabase
-          .from('partner_profiles')
-          .select('id')
-          .eq('user_id', user.id)
-          .maybeSingle();
-        // 42P01 = table doesn't exist, PGRST204 = no rows, both are fine
-        if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
-          return false;
-        }
-        return !error && !!data;
-      } catch {
-        return false;
-      }
-    },
-    enabled: !!user,
-    staleTime: 300000, // Cache for 5 minutes since table likely won't suddenly appear
-    retry: false, // Don't retry if table doesn't exist
-  });
+  // Partner profile check - disabled until partner_profiles table is created
+  // To enable: create partner_profiles table in Supabase with user_id column
+  const hasPartnerProfile = false;
+  const partnerLoading = false;
 
   // Check for order member profile existence
   const { data: orderData, isLoading: orderLoading } = useQuery({
