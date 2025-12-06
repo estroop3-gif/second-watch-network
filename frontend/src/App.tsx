@@ -24,6 +24,7 @@ import AuthCallback from "./pages/AuthCallback";
 import ResetPassword from "./pages/ResetPassword";
 import { AuthProvider } from "./context/AuthContext";
 import { SettingsProvider } from "./context/SettingsContext";
+import { EnrichedProfileProvider } from "./context/EnrichedProfileContext";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
 import ConfirmEmail from "./pages/ConfirmEmail";
@@ -96,8 +97,9 @@ const App = () => (
   <QueryClientProvider client={queryClient}>
     <SettingsProvider>
       <AuthProvider>
-        <PlatformStatusGate>
-          <TooltipProvider>
+        <EnrichedProfileProvider>
+          <PlatformStatusGate>
+            <TooltipProvider>
             <Toaster />
             <Sonner />
             <BrowserRouter>
@@ -210,7 +212,8 @@ const App = () => (
               </Routes>
             </BrowserRouter>
           </TooltipProvider>
-        </PlatformStatusGate>
+          </PlatformStatusGate>
+        </EnrichedProfileProvider>
       </AuthProvider>
     </SettingsProvider>
   </QueryClientProvider>

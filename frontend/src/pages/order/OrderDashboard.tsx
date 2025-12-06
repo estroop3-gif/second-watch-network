@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-import { useProfile } from '@/hooks/useProfile';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import {
   orderAPI,
   OrderDashboardStats,
@@ -16,13 +16,7 @@ import {
   OrderApplication,
   PRIMARY_TRACKS,
 } from '@/lib/api/order';
-import {
-  isAdminOrHigher,
-  hasRole,
-  getPrimaryBadge,
-  getAllBadges,
-} from '@/lib/badges';
-import { UserBadge } from '@/components/UserBadge';
+import { BadgeDisplay } from '@/components/UserBadge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -56,7 +50,14 @@ import { toast } from 'sonner';
 export default function OrderDashboard() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { profile: userProfile, isLoading: profileLoading } = useProfile();
+  const {
+    profile: userProfile,
+    isLoading: profileLoading,
+    isAdmin,
+    isLodgeOfficer,
+    primaryBadge,
+    allBadges,
+  } = useEnrichedProfile();
 
   const [loading, setLoading] = useState(true);
   const [dashboard, setDashboard] = useState<OrderDashboardStats | null>(null);
@@ -156,9 +157,7 @@ export default function OrderDashboard() {
     );
   }
 
-  // Check for admin/moderator/lodge officer roles
-  const isAdmin = isAdminOrHigher(userProfile);
-  const isLodgeOfficer = hasRole(userProfile, 'lodge_officer');
+  // isAdmin and isLodgeOfficer now come from useEnrichedProfile
 
   // Non-member view
   if (!dashboard?.is_order_member) {
@@ -315,7 +314,7 @@ export default function OrderDashboard() {
           </div>
           <div className="flex items-center gap-2">
             <span className="text-muted-foreground">Welcome back,</span>
-            {userProfile && <UserBadge profile={userProfile} size="sm" />}
+            <BadgeDisplay badge={primaryBadge} size="sm" />
           </div>
         </div>
 
@@ -482,19 +481,11 @@ export default function OrderDashboard() {
                 </Button>
               </CardHeader>
               <CardContent className="space-y-4">
-                {userProfile && (
-                  <div className="flex flex-wrap gap-1">
-                    {getAllBadges(userProfile).map((badge) => (
-                      <span
-                        key={badge.role}
-                        className={`text-xs px-2 py-0.5 rounded-[4px] transform -rotate-1 uppercase whitespace-nowrap ${badge.cssClass}`}
-                        title={badge.description}
-                      >
-                        {badge.shortLabel}
-                      </span>
-                    ))}
-                  </div>
-                )}
+                <div className="flex flex-wrap gap-1">
+                  {allBadges.map((badge) => (
+                    <BadgeDisplay key={badge.role} badge={badge} size="sm" />
+                  ))}
+                </div>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Track</span>

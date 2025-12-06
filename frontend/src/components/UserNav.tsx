@@ -1,6 +1,5 @@
 import { useAuth } from '@/context/AuthContext';
-import { useProfile } from '@/hooks/useProfile';
-import { usePermissions } from '@/hooks/usePermissions';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Link } from 'react-router-dom';
@@ -16,14 +15,20 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark } from 'lucide-react';
-import { Badge } from './ui/badge';
-import { UserBadge } from './UserBadge';
-import { type ProfileWithRoles, canAccessOrder, canAccessPartnerTools, canSubmitToGreenroom, isAdminOrHigher, isStaff } from '@/lib/badges';
+import { BadgeDisplay } from './UserBadge';
 
 export const UserNav = () => {
   const { session, user } = useAuth();
-  const { profile } = useProfile();
-  const { hasRole } = usePermissions();
+  const {
+    profile,
+    primaryBadge,
+    isAdmin,
+    isSuperadmin,
+    isFilmmaker,
+    isPartner,
+    isOrderMember,
+    isLodgeOfficer,
+  } = useEnrichedProfile();
 
   const handleLogout = async () => {
     const { error } = await supabase.auth.signOut();
@@ -41,25 +46,18 @@ export const UserNav = () => {
       </Button>
     );
   }
-  
+
   const username = profile?.username || user.user_metadata?.username || user.email?.split('@')[0];
   const displayName = profile?.full_name || username;
   const avatarUrl = user.user_metadata?.avatar_url;
 
-  // Cast profile to ProfileWithRoles for the new badge system
-  const profileWithRoles = profile as ProfileWithRoles | null;
+  // Use enriched profile for role checks
+  const showAdminLink = isAdmin || isSuperadmin;
+  const showPartnerLink = isPartner || isAdmin || isSuperadmin;
+  const showOrderLink = isOrderMember || isLodgeOfficer || isAdmin || isSuperadmin;
+  const canSubmitAndManageSubmissions = isFilmmaker || isAdmin || isSuperadmin;
 
-  // Use new badge system for role checks
-  const showAdminLink = isAdminOrHigher(profileWithRoles);
-  const showPartnerLink = canAccessPartnerTools(profileWithRoles);
-  const showOrderLink = canAccessOrder(profileWithRoles);
-  const canSubmitAndManageSubmissions = canSubmitToGreenroom(profileWithRoles);
-
-  // Keep legacy checks for backward compatibility during migration
-  // Check both user_metadata roles AND profile is_filmmaker flag for redundancy
-  const isFilmmakerRole = hasRole('filmmaker');
-  const isFilmmakerProfile = profile?.is_filmmaker === true;
-  const isFilmmaker = isFilmmakerRole || isFilmmakerProfile;
+  // Check for filmmaker onboarding
   const hasOnboarded = profile?.has_completed_filmmaker_onboarding === true;
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
 
@@ -75,7 +73,7 @@ export const UserNav = () => {
           </Avatar>
           <div className="hidden sm:flex items-center gap-2">
             <span className="font-heading uppercase text-sm text-bone-white">{displayName}</span>
-            <UserBadge profile={profileWithRoles} size="sm" />
+            <BadgeDisplay badge={primaryBadge} size="sm" />
           </div>
         </Button>
       </DropdownMenuTrigger>
