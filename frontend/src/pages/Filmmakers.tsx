@@ -1,74 +1,144 @@
+/**
+ * Filmmakers / Community Hub
+ * Main community page with tabbed navigation for Home, People, Collabs, and Topics
+ */
 import React, { useState } from 'react';
-import { useCommunity } from '@/hooks/useCommunity';
-import CommunityGrid from '@/components/community/CommunityGrid';
-import { useCommunityRealtime } from '@/hooks/useCommunityRealtime';
-import CommunitySkeleton from '@/components/community/CommunitySkeleton';
-import EmptyState from '@/components/community/EmptyState';
+import { useSearchParams } from 'react-router-dom';
+import CommunityTabs, { CommunityTabType } from '@/components/community/CommunityTabs';
+import CommunityHome from '@/components/community/CommunityHome';
+import PeopleDirectory from '@/components/community/PeopleDirectory';
+import CollabBoard from '@/components/community/CollabBoard';
+import CollabForm from '@/components/community/CollabForm';
+import TopicsBoard from '@/components/community/TopicsBoard';
+import ThreadForm from '@/components/community/ThreadForm';
+import ThreadView from '@/components/community/ThreadView';
+import { CommunityCollab, CommunityThread } from '@/types/community';
 
 const Filmmakers = () => {
-  const [q, setQ] = useState('');
-  const { flatItems, isLoading, isFetchingNextPage, fetchNextPage, hasNextPage, upsertProfile, removeProfile, queryKey, error } = useCommunity({
-    q,
-    pageSize: 24,
-    sortBy: 'updated_at',
-    sortDir: 'desc',
-  });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTab = (searchParams.get('tab') as CommunityTabType) || 'home';
+  const initialFilter = searchParams.get('filter') || undefined;
 
-  useCommunityRealtime({
-    onUpsert: upsertProfile,
-    onRemove: removeProfile,
-    queryKey,
-  });
+  const [activeTab, setActiveTab] = useState<CommunityTabType>(initialTab);
+  const [peopleFilter, setPeopleFilter] = useState<string | undefined>(initialFilter);
+  const [showCollabForm, setShowCollabForm] = useState(false);
+  const [editingCollab, setEditingCollab] = useState<CommunityCollab | undefined>();
+  const [viewingCollab, setViewingCollab] = useState<CommunityCollab | undefined>();
+  const [showThreadForm, setShowThreadForm] = useState(false);
+  const [threadFormTopicId, setThreadFormTopicId] = useState<string | undefined>();
+  const [viewingThread, setViewingThread] = useState<CommunityThread | undefined>();
+
+  const handleTabChange = (tab: CommunityTabType) => {
+    setActiveTab(tab);
+    // Update URL without full navigation
+    const newParams = new URLSearchParams(searchParams);
+    if (tab === 'home') {
+      newParams.delete('tab');
+    } else {
+      newParams.set('tab', tab);
+    }
+    newParams.delete('filter');
+    setSearchParams(newParams, { replace: true });
+  };
+
+  const handleNavigate = (tab: CommunityTabType, filters?: Record<string, any>) => {
+    setActiveTab(tab);
+    if (filters?.filter) {
+      setPeopleFilter(filters.filter);
+    }
+    const newParams = new URLSearchParams();
+    if (tab !== 'home') {
+      newParams.set('tab', tab);
+    }
+    if (filters?.filter) {
+      newParams.set('filter', filters.filter);
+    }
+    setSearchParams(newParams, { replace: true });
+  };
+
+  // Collab form handlers
+  const handleCreateCollab = () => {
+    setEditingCollab(undefined);
+    setShowCollabForm(true);
+  };
+
+  const handleViewCollab = (collab: CommunityCollab) => {
+    setViewingCollab(collab);
+  };
+
+  const handleCloseCollabForm = () => {
+    setShowCollabForm(false);
+    setEditingCollab(undefined);
+  };
+
+  // Thread form handlers
+  const handleCreateThread = (topicId?: string) => {
+    setThreadFormTopicId(topicId);
+    setShowThreadForm(true);
+  };
+
+  const handleViewThread = (thread: CommunityThread) => {
+    setViewingThread(thread);
+  };
+
+  const handleCloseThreadForm = () => {
+    setShowThreadForm(false);
+    setThreadFormTopicId(undefined);
+  };
+
+  const handleCloseThreadView = () => {
+    setViewingThread(undefined);
+  };
+
+  // If viewing a thread, show the thread view instead of tabs
+  if (viewingThread) {
+    return (
+      <div className="container mx-auto px-4 max-w-4xl py-8">
+        <ThreadView
+          threadId={viewingThread.id}
+          onBack={handleCloseThreadView}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div className="container mx-auto px-4 max-w-4xl py-12">
-      <div className="text-center mb-12">
-        <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-4 -rotate-1">
-          Connect with <span className="font-spray text-accent-yellow">Filmmakers</span>
-        </h1>
-        <p className="text-muted-gray max-w-2xl mx-auto">
-          Discover and connect with the talented filmmakers in the Second Watch Network community.
-        </p>
-        <div className="mt-6 max-w-md mx-auto">
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by name or username..."
-            className="w-full p-3 rounded-md bg-charcoal-black/50 border border-muted-gray/30 text-bone-white focus:outline-none focus:ring-2 focus:ring-accent-yellow"
-          />
-        </div>
-      </div>
+    <div className="container mx-auto px-4 max-w-6xl py-8">
+      {/* Tabs Navigation */}
+      <CommunityTabs activeTab={activeTab} onTabChange={handleTabChange} />
 
-      {error && (
-        <p className="text-center text-primary-red mb-6">
-          Failed to load community: {error.message}
-        </p>
+      {/* Tab Content */}
+      {activeTab === 'home' && (
+        <CommunityHome onNavigate={handleNavigate} />
       )}
 
-      {isLoading && <CommunitySkeleton count={9} />}
-
-      {!isLoading && flatItems && flatItems.length > 0 && (
-        <CommunityGrid items={flatItems} />
+      {activeTab === 'people' && (
+        <PeopleDirectory initialFilter={peopleFilter} />
       )}
 
-      {!isLoading && (!flatItems || flatItems.length === 0) && !error && (
-        <EmptyState
-          title={q ? `No results for “${q}”` : 'No filmmakers found'}
-          description={q ? 'Try adjusting your search terms.' : 'When filmmakers join the community, they will appear here.'}
+      {activeTab === 'collabs' && (
+        <CollabBoard onCreateCollab={handleCreateCollab} onViewCollab={handleViewCollab} />
+      )}
+
+      {/* Collab Form Modal */}
+      {showCollabForm && (
+        <CollabForm
+          onClose={handleCloseCollabForm}
+          editCollab={editingCollab}
         />
       )}
 
-      <div className="flex justify-center mt-10">
-        {hasNextPage && (
-          <button
-            className="px-6 py-2 rounded-md bg-bone-white text-charcoal-black hover:bg-accent-yellow transition"
-            disabled={isFetchingNextPage}
-            onClick={() => fetchNextPage()}
-          >
-            {isFetchingNextPage ? 'Loading...' : 'Load More'}
-          </button>
-        )}
-      </div>
+      {activeTab === 'topics' && (
+        <TopicsBoard onCreateThread={handleCreateThread} onViewThread={handleViewThread} />
+      )}
+
+      {/* Thread Form Modal */}
+      {showThreadForm && (
+        <ThreadForm
+          onClose={handleCloseThreadForm}
+          initialTopicId={threadFormTopicId}
+        />
+      )}
     </div>
   );
 };

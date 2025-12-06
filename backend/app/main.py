@@ -3,15 +3,36 @@ Second Watch Network - FastAPI Backend
 Main Application Entry Point
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.startup import on_startup
 from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
-    admin, availability, credits, community, greenroom, order
+    admin, availability, credits, community, greenroom, order, backlot
 )
+
+
+class CORSPreflightMiddleware(BaseHTTPMiddleware):
+    """Handle CORS preflight requests before they hit route handlers"""
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "OPTIONS":
+            origin = request.headers.get("origin", "")
+            if origin in settings.BACKEND_CORS_ORIGINS or "*" in settings.BACKEND_CORS_ORIGINS:
+                return Response(
+                    status_code=200,
+                    headers={
+                        "Access-Control-Allow-Origin": origin,
+                        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                        "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Origin, X-Requested-With",
+                        "Access-Control-Allow-Credentials": "true",
+                        "Access-Control-Max-Age": "600",
+                    }
+                )
+        return await call_next(request)
 
 
 @asynccontextmanager
@@ -30,11 +51,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS
+# Configure CORS preflight handler (must be added first to handle OPTIONS before auth)
+app.add_middleware(CORSPreflightMiddleware)
+
+# Configure CORS - Allow all origins in development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,  # Must be False when using allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -73,6 +97,7 @@ app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", t
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
 app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
+app.include_router(backlot.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot"])
 
 
 if __name__ == "__main__":

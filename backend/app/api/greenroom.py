@@ -1,8 +1,8 @@
 """
 Green Room API Routes - Project Development & Voting Arena
+Uses Supabase for database operations.
 """
 from fastapi import APIRouter, HTTPException, Depends, Query, status
-from sqlmodel import Session, select, func, and_, or_
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -13,17 +13,12 @@ from app.core.deps import (
     get_user_profile_optional,
     require_admin,
     require_staff,
-    require_filmmaker,
-    require_greenroom_voter,
 )
 from app.core.roles import (
     is_staff,
     is_admin_or_higher,
-    can_submit_to_greenroom,
-    can_vote_in_greenroom,
 )
 from app.models.greenroom import (
-    Cycle, Project, VotingTicket, Vote,
     CycleStatus, ProjectStatus, PaymentStatus
 )
 from app.schemas.greenroom import (
@@ -35,36 +30,41 @@ from app.schemas.greenroom import (
 
 router = APIRouter()
 
-# TODO: Add database session dependency
-# For now, using placeholder - replace with actual DB session
-def get_session():
-    """Get database session - PLACEHOLDER"""
-    # This should be replaced with actual database session
-    raise HTTPException(status_code=501, detail="Database session not configured")
 
+# ============ Helper Functions ============
 
-# ============ Legacy Helper Functions (for backwards compatibility) ============
-# These are deprecated - use the new role system from app.core.roles instead
+def get_user_id(user) -> str:
+    """Extract user ID from user object"""
+    if isinstance(user, dict):
+        return user.get("id", user.get("sub"))
+    return getattr(user, "id", getattr(user, "sub", None))
+
 
 def check_user_role(user, allowed_roles: List[str]) -> bool:
-    """DEPRECATED: Check if user has required role. Use app.core.roles instead."""
-    user_role = user.get("user_metadata", {}).get("role", "free")
+    """Check if user has required role"""
+    if isinstance(user, dict):
+        user_role = user.get("user_metadata", {}).get("role", "free")
+    else:
+        user_role = getattr(user, "user_metadata", {}).get("role", "free")
     return user_role in allowed_roles
 
 
 def can_vote(user) -> bool:
-    """DEPRECATED: Check if user can vote. Use can_vote_in_greenroom() instead."""
+    """Check if user can vote"""
     return check_user_role(user, ["premium", "filmmaker", "partner", "admin"])
 
 
 def is_filmmaker(user) -> bool:
-    """DEPRECATED: Check if user is filmmaker. Use can_submit_to_greenroom() instead."""
+    """Check if user is filmmaker"""
     return check_user_role(user, ["filmmaker", "admin"])
 
 
 def is_admin(user) -> bool:
-    """DEPRECATED: Check if user is admin. Use is_admin_or_higher() or is_staff() instead."""
-    user_metadata = user.get("user_metadata", {})
+    """Check if user is admin"""
+    if isinstance(user, dict):
+        user_metadata = user.get("user_metadata", {})
+    else:
+        user_metadata = getattr(user, "user_metadata", {})
     return user_metadata.get("role") == "admin" or user_metadata.get("is_moderator", False)
 
 
@@ -72,212 +72,246 @@ def is_admin(user) -> bool:
 
 @router.get("/cycles", response_model=List[CycleResponse])
 async def list_cycles(
-    status: Optional[CycleStatus] = None,
+    status: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    session: Session = Depends(get_session)
 ):
     """List all cycles (public)"""
-    query = select(Cycle).offset(skip).limit(limit).order_by(Cycle.start_date.desc())
+    supabase = get_supabase_client()
+
+    query = supabase.table("greenroom_cycles").select("*")
 
     if status:
-        query = query.where(Cycle.status == status)
+        query = query.eq("status", status)
 
-    cycles = session.exec(query).all()
+    query = query.order("start_date", desc=True).range(skip, skip + limit - 1)
 
-    # Add project counts
-    result = []
-    for cycle in cycles:
-        cycle_dict = cycle.dict()
-        cycle_dict["project_count"] = len(cycle.projects)
-        cycle_dict["total_votes"] = sum(p.vote_count for p in cycle.projects)
-        result.append(CycleResponse(**cycle_dict))
+    result = query.execute()
 
-    return result
+    if not result.data:
+        return []
+
+    # Add project counts for each cycle
+    cycles = []
+    for cycle_data in result.data:
+        # Get project count
+        project_result = supabase.table("greenroom_projects").select("id, vote_count", count="exact").eq("cycle_id", cycle_data["id"]).execute()
+
+        cycle_data["project_count"] = project_result.count or 0
+        cycle_data["total_votes"] = sum(p.get("vote_count", 0) for p in (project_result.data or []))
+
+        cycles.append(CycleResponse(**cycle_data))
+
+    return cycles
 
 
 @router.get("/cycles/{cycle_id}", response_model=CycleResponse)
-async def get_cycle(cycle_id: int, session: Session = Depends(get_session)):
+async def get_cycle(cycle_id: int):
     """Get cycle details (public)"""
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    supabase = get_supabase_client()
+
+    result = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+
+    if not result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
-    cycle_dict = cycle.dict()
-    cycle_dict["project_count"] = len(cycle.projects)
-    cycle_dict["total_votes"] = sum(p.vote_count for p in cycle.projects)
+    cycle_data = result.data
 
-    return CycleResponse(**cycle_dict)
+    # Get project count
+    project_result = supabase.table("greenroom_projects").select("id, vote_count", count="exact").eq("cycle_id", cycle_id).execute()
+
+    cycle_data["project_count"] = project_result.count or 0
+    cycle_data["total_votes"] = sum(p.get("vote_count", 0) for p in (project_result.data or []))
+
+    return CycleResponse(**cycle_data)
 
 
 @router.get("/cycles/{cycle_id}/projects", response_model=List[ProjectResponse])
 async def list_cycle_projects(
     cycle_id: int,
-    status: Optional[ProjectStatus] = Query(None),
+    status: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     sort_by: str = Query("votes", regex="^(votes|recent|title)$"),
-    session: Session = Depends(get_session),
-    user = Depends(get_current_user)
+    user = Depends(get_current_user_optional)
 ):
     """List projects in a cycle"""
+    supabase = get_supabase_client()
+
     # Verify cycle exists
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    cycle_result = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+    if not cycle_result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
     # Build query
-    query = select(Project).where(Project.cycle_id == cycle_id)
+    query = supabase.table("greenroom_projects").select("*").eq("cycle_id", cycle_id)
 
     # Only show approved projects to non-admins
     if not (user and is_admin(user)):
-        query = query.where(Project.status == ProjectStatus.APPROVED)
+        query = query.eq("status", "approved")
     elif status:
-        query = query.where(Project.status == status)
+        query = query.eq("status", status)
 
     # Sorting
     if sort_by == "votes":
-        query = query.order_by(Project.vote_count.desc())
+        query = query.order("vote_count", desc=True)
     elif sort_by == "recent":
-        query = query.order_by(Project.created_at.desc())
+        query = query.order("created_at", desc=True)
     elif sort_by == "title":
-        query = query.order_by(Project.title)
+        query = query.order("title")
 
-    query = query.offset(skip).limit(limit)
+    query = query.range(skip, skip + limit - 1)
 
-    projects = session.exec(query).all()
+    result = query.execute()
+
+    if not result.data:
+        return []
 
     # Get user's votes if authenticated
     user_votes = {}
     if user:
-        user_id = user.get("id")
-        votes_query = select(Vote).where(
-            and_(Vote.user_id == user_id, Vote.cycle_id == cycle_id)
-        )
-        votes = session.exec(votes_query).all()
-        user_votes = {v.project_id: v.tickets_allocated for v in votes}
+        user_id = get_user_id(user)
+        votes_result = supabase.table("greenroom_votes").select("project_id, tickets_allocated").eq("user_id", user_id).eq("cycle_id", cycle_id).execute()
+        user_votes = {v["project_id"]: v["tickets_allocated"] for v in (votes_result.data or [])}
 
     # Build response
-    result = []
-    for project in projects:
-        project_dict = project.dict()
-        project_dict["user_vote_count"] = user_votes.get(project.id, 0)
-        # TODO: Add filmmaker name from User table
-        result.append(ProjectResponse(**project_dict))
+    projects = []
+    for project_data in result.data:
+        project_data["user_vote_count"] = user_votes.get(project_data["id"], 0)
+        projects.append(ProjectResponse(**project_data))
 
-    return result
+    return projects
+
+
+# Note: This must come BEFORE /projects/{project_id} to avoid route conflicts
+@router.get("/projects/my-projects", response_model=List[ProjectResponse])
+async def get_my_projects(
+    user = Depends(get_current_user)
+):
+    """Get filmmaker's submitted projects"""
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
+
+    result = supabase.table("greenroom_projects").select("*").eq("filmmaker_id", user_id).order("created_at", desc=True).execute()
+
+    return [ProjectResponse(**p) for p in (result.data or [])]
 
 
 @router.get("/projects/{project_id}", response_model=ProjectResponse)
 async def get_project(
     project_id: int,
-    session: Session = Depends(get_session),
-    user = Depends(get_current_user)
+    user = Depends(get_current_user_optional)
 ):
     """Get project details"""
-    project = session.get(Project, project_id)
-    if not project:
+    supabase = get_supabase_client()
+
+    result = supabase.table("greenroom_projects").select("*").eq("id", project_id).single().execute()
+
+    if not result.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    project_data = result.data
+
     # Check permissions
-    if project.status != ProjectStatus.APPROVED:
+    if project_data.get("status") != "approved":
         if not user:
             raise HTTPException(status_code=404, detail="Project not found")
-        user_id = user.get("id")
-        if project.filmmaker_id != user_id and not is_admin(user):
+        user_id = get_user_id(user)
+        if project_data.get("filmmaker_id") != user_id and not is_admin(user):
             raise HTTPException(status_code=404, detail="Project not found")
-
-    project_dict = project.dict()
 
     # Get user's vote if authenticated
     if user:
-        user_id = user.get("id")
-        vote = session.exec(
-            select(Vote).where(
-                and_(Vote.user_id == user_id, Vote.project_id == project_id)
-            )
-        ).first()
-        project_dict["user_vote_count"] = vote.tickets_allocated if vote else 0
+        user_id = get_user_id(user)
+        vote_result = supabase.table("greenroom_votes").select("tickets_allocated").eq("user_id", user_id).eq("project_id", project_id).single().execute()
+        project_data["user_vote_count"] = vote_result.data.get("tickets_allocated", 0) if vote_result.data else 0
+    else:
+        project_data["user_vote_count"] = 0
 
-    return ProjectResponse(**project_dict)
+    return ProjectResponse(**project_data)
 
 
 # ============ Authenticated User Endpoints ============
 
-@router.get("/tickets/my-tickets", response_model=List[VotingTicketResponse])
+@router.get("/tickets/my-tickets", response_model=VotingTicketResponse)
 async def get_my_tickets(
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
-    """Get user's voting tickets for all cycles"""
-    user_id = user.get("id")
+    """Get user's voting tickets summary"""
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
-    tickets = session.exec(
-        select(VotingTicket).where(VotingTicket.user_id == user_id).order_by(VotingTicket.created_at.desc())
-    ).all()
+    result = supabase.table("greenroom_voting_tickets").select("*").eq("user_id", user_id).eq("payment_status", "completed").execute()
 
-    return [VotingTicketResponse(**t.dict(), tickets_available=t.tickets_available) for t in tickets]
+    if not result.data:
+        return VotingTicketResponse(
+            tickets_purchased=0,
+            tickets_used=0,
+            tickets_available=0
+        )
+
+    total_purchased = sum(t.get("tickets_purchased", 0) for t in result.data)
+    total_used = sum(t.get("tickets_used", 0) for t in result.data)
+
+    return VotingTicketResponse(
+        tickets_purchased=total_purchased,
+        tickets_used=total_used,
+        tickets_available=total_purchased - total_used
+    )
 
 
 @router.post("/tickets/purchase", response_model=TicketPurchaseResponse)
 async def purchase_tickets(
     request: TicketPurchaseRequest,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Purchase voting tickets via Stripe"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
     # Verify cycle exists and is active
-    cycle = session.get(Cycle, request.cycle_id)
-    if not cycle:
+    cycle_result = supabase.table("greenroom_cycles").select("*").eq("id", request.cycle_id).single().execute()
+    if not cycle_result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
-    if cycle.status != CycleStatus.ACTIVE:
+
+    cycle = cycle_result.data
+    if cycle.get("status") != "active":
         raise HTTPException(status_code=400, detail="Cycle is not active")
 
     # Check ticket limit
-    existing_tickets = session.exec(
-        select(VotingTicket).where(
-            and_(
-                VotingTicket.user_id == user_id,
-                VotingTicket.cycle_id == request.cycle_id,
-                VotingTicket.payment_status == PaymentStatus.COMPLETED
-            )
-        )
-    ).all()
+    existing_result = supabase.table("greenroom_voting_tickets").select("tickets_purchased").eq("user_id", user_id).eq("cycle_id", request.cycle_id).eq("payment_status", "completed").execute()
 
-    total_purchased = sum(t.tickets_purchased for t in existing_tickets)
-    if total_purchased + request.ticket_count > cycle.max_tickets_per_user:
+    total_purchased = sum(t.get("tickets_purchased", 0) for t in (existing_result.data or []))
+    max_tickets = cycle.get("max_tickets_per_user", 100)
+
+    if total_purchased + request.ticket_count > max_tickets:
         raise HTTPException(
             status_code=400,
-            detail=f"Exceeds maximum {cycle.max_tickets_per_user} tickets per user"
+            detail=f"Exceeds maximum {max_tickets} tickets per user"
         )
 
     # Calculate amount
-    amount = request.ticket_count * cycle.ticket_price
+    ticket_price = cycle.get("ticket_price", 1.0)
+    amount = request.ticket_count * ticket_price
 
     # TODO: Create Stripe checkout session
     # For now, return placeholder
-    # In production, this would create a Stripe session and return the session ID and URL
 
     # Create pending ticket record
-    ticket = VotingTicket(
-        user_id=user_id,
-        cycle_id=request.cycle_id,
-        tickets_purchased=request.ticket_count,
-        tickets_used=0,
-        payment_status=PaymentStatus.PENDING,
-        amount_paid=amount,
-        # stripe_session_id=stripe_session.id  # From Stripe
-    )
-    session.add(ticket)
-    session.commit()
-    session.refresh(ticket)
+    ticket_data = {
+        "user_id": user_id,
+        "cycle_id": request.cycle_id,
+        "tickets_purchased": request.ticket_count,
+        "tickets_used": 0,
+        "payment_status": "pending",
+        "amount_paid": amount,
+    }
 
-    # Return Stripe checkout URL (placeholder for now)
+    supabase.table("greenroom_voting_tickets").insert(ticket_data).execute()
+
     return TicketPurchaseResponse(
         checkout_session_id="cs_test_placeholder",
-        checkout_url="https://checkout.stripe.com/placeholder",  # Real Stripe URL in production
+        checkout_url="https://checkout.stripe.com/placeholder",
         amount=amount,
         ticket_count=request.ticket_count
     )
@@ -286,11 +320,11 @@ async def purchase_tickets(
 @router.post("/votes/cast", response_model=VoteResponse)
 async def cast_vote(
     vote: VoteCast,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Cast vote on a project (final, cannot be changed)"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
     # Check if user can vote
     if not can_vote(user):
@@ -300,43 +334,35 @@ async def cast_vote(
         )
 
     # Get project and verify it exists and is approved
-    project = session.get(Project, vote.project_id)
-    if not project:
+    project_result = supabase.table("greenroom_projects").select("*").eq("id", vote.project_id).single().execute()
+    if not project_result.data:
         raise HTTPException(status_code=404, detail="Project not found")
-    if project.status != ProjectStatus.APPROVED:
+
+    project = project_result.data
+    if project.get("status") != "approved":
         raise HTTPException(status_code=400, detail="Project is not approved for voting")
 
+    cycle_id = project.get("cycle_id")
+
     # Get cycle and verify it's active
-    cycle = session.get(Cycle, project.cycle_id)
-    if cycle.status != CycleStatus.ACTIVE:
+    cycle_result = supabase.table("greenroom_cycles").select("status").eq("id", cycle_id).single().execute()
+    if not cycle_result.data or cycle_result.data.get("status") != "active":
         raise HTTPException(status_code=400, detail="Voting cycle is not active")
 
     # Check if user already voted for this project
-    existing_vote = session.exec(
-        select(Vote).where(
-            and_(
-                Vote.user_id == user_id,
-                Vote.project_id == vote.project_id,
-                Vote.cycle_id == project.cycle_id
-            )
-        )
-    ).first()
+    existing_vote = supabase.table("greenroom_votes").select("id").eq("user_id", user_id).eq("project_id", vote.project_id).execute()
 
-    if existing_vote:
+    if existing_vote.data:
         raise HTTPException(status_code=400, detail="You have already voted for this project. Votes are final.")
 
     # Check if user has enough tickets
-    tickets = session.exec(
-        select(VotingTicket).where(
-            and_(
-                VotingTicket.user_id == user_id,
-                VotingTicket.cycle_id == project.cycle_id,
-                VotingTicket.payment_status == PaymentStatus.COMPLETED
-            )
-        )
-    ).all()
+    tickets_result = supabase.table("greenroom_voting_tickets").select("*").eq("user_id", user_id).eq("cycle_id", cycle_id).eq("payment_status", "completed").execute()
 
-    total_available = sum(t.tickets_available for t in tickets)
+    total_available = sum(
+        t.get("tickets_purchased", 0) - t.get("tickets_used", 0)
+        for t in (tickets_result.data or [])
+    )
+
     if total_available < vote.tickets_allocated:
         raise HTTPException(
             status_code=400,
@@ -344,92 +370,88 @@ async def cast_vote(
         )
 
     # Create vote
-    new_vote = Vote(
-        user_id=user_id,
-        project_id=vote.project_id,
-        cycle_id=project.cycle_id,
-        tickets_allocated=vote.tickets_allocated
-    )
-    session.add(new_vote)
+    vote_data = {
+        "user_id": user_id,
+        "project_id": vote.project_id,
+        "cycle_id": cycle_id,
+        "tickets_allocated": vote.tickets_allocated
+    }
 
-    # Update project vote count (denormalized for efficiency)
-    project.vote_count += vote.tickets_allocated
+    vote_result = supabase.table("greenroom_votes").insert(vote_data).execute()
+
+    # Update project vote count
+    new_vote_count = project.get("vote_count", 0) + vote.tickets_allocated
+    supabase.table("greenroom_projects").update({"vote_count": new_vote_count}).eq("id", vote.project_id).execute()
 
     # Update ticket usage
     remaining = vote.tickets_allocated
-    for ticket in sorted(tickets, key=lambda t: t.created_at):
+    for ticket in sorted(tickets_result.data or [], key=lambda t: t.get("created_at", "")):
         if remaining <= 0:
             break
-        available = ticket.tickets_available
+        available = ticket.get("tickets_purchased", 0) - ticket.get("tickets_used", 0)
         to_use = min(available, remaining)
-        ticket.tickets_used += to_use
+        new_used = ticket.get("tickets_used", 0) + to_use
+        supabase.table("greenroom_voting_tickets").update({"tickets_used": new_used}).eq("id", ticket["id"]).execute()
         remaining -= to_use
 
-    session.commit()
-    session.refresh(new_vote)
+    new_vote = vote_result.data[0] if vote_result.data else vote_data
+    new_vote["project_title"] = project.get("title")
 
-    return VoteResponse(**new_vote.dict(), project_title=project.title)
+    return VoteResponse(**new_vote)
 
 
 @router.get("/votes/my-votes", response_model=List[VoteResponse])
 async def get_my_votes(
     cycle_id: Optional[int] = None,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Get user's votes"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
-    query = select(Vote).where(Vote.user_id == user_id)
+    query = supabase.table("greenroom_votes").select("*").eq("user_id", user_id)
+
     if cycle_id:
-        query = query.where(Vote.cycle_id == cycle_id)
+        query = query.eq("cycle_id", cycle_id)
 
-    votes = session.exec(query.order_by(Vote.created_at.desc())).all()
+    result = query.order("created_at", desc=True).execute()
+
+    if not result.data:
+        return []
 
     # Get project titles
-    result = []
-    for vote in votes:
-        project = session.get(Project, vote.project_id)
-        vote_dict = vote.dict()
-        vote_dict["project_title"] = project.title if project else None
-        result.append(VoteResponse(**vote_dict))
+    votes = []
+    for vote_data in result.data:
+        project_result = supabase.table("greenroom_projects").select("title").eq("id", vote_data["project_id"]).single().execute()
+        vote_data["project_title"] = project_result.data.get("title") if project_result.data else None
+        votes.append(VoteResponse(**vote_data))
 
-    return result
+    return votes
 
 
 @router.get("/stats/my-stats", response_model=UserGreenRoomStats)
 async def get_my_stats(
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Get user's Green Room statistics"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
     # Get ticket stats
-    tickets = session.exec(
-        select(VotingTicket).where(
-            and_(
-                VotingTicket.user_id == user_id,
-                VotingTicket.payment_status == PaymentStatus.COMPLETED
-            )
-        )
-    ).all()
+    tickets_result = supabase.table("greenroom_voting_tickets").select("tickets_purchased, tickets_used").eq("user_id", user_id).eq("payment_status", "completed").execute()
 
-    total_purchased = sum(t.tickets_purchased for t in tickets)
-    total_used = sum(t.tickets_used for t in tickets)
+    total_purchased = sum(t.get("tickets_purchased", 0) for t in (tickets_result.data or []))
+    total_used = sum(t.get("tickets_used", 0) for t in (tickets_result.data or []))
 
     # Get vote count
-    vote_count = session.exec(
-        select(func.count(Vote.id)).where(Vote.user_id == user_id)
-    ).one()
+    votes_result = supabase.table("greenroom_votes").select("id", count="exact").eq("user_id", user_id).execute()
+    vote_count = votes_result.count or 0
 
     # Get project stats
-    projects = session.exec(
-        select(Project).where(Project.filmmaker_id == user_id)
-    ).all()
+    projects_result = supabase.table("greenroom_projects").select("status").eq("filmmaker_id", user_id).execute()
 
-    projects_submitted = len(projects)
-    projects_approved = sum(1 for p in projects if p.status == ProjectStatus.APPROVED)
+    projects_submitted = len(projects_result.data or [])
+    projects_approved = sum(1 for p in (projects_result.data or []) if p.get("status") == "approved")
 
     return UserGreenRoomStats(
         total_tickets_purchased=total_purchased,
@@ -445,116 +467,105 @@ async def get_my_stats(
 @router.post("/projects/submit", response_model=ProjectResponse)
 async def submit_project(
     project: ProjectSubmit,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Submit a project to Green Room"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
     # Check if user is filmmaker
     if not is_filmmaker(user):
         raise HTTPException(status_code=403, detail="Only filmmakers can submit projects")
 
     # Verify cycle exists
-    cycle = session.get(Cycle, project.cycle_id)
-    if not cycle:
+    cycle_result = supabase.table("greenroom_cycles").select("status").eq("id", project.cycle_id).single().execute()
+    if not cycle_result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
     # Check if cycle is active or upcoming
-    if cycle.status == CycleStatus.CLOSED:
+    if cycle_result.data.get("status") == "closed":
         raise HTTPException(status_code=400, detail="Cannot submit to closed cycle")
 
     # Create project
-    new_project = Project(
-        cycle_id=project.cycle_id,
-        filmmaker_id=user_id,
-        title=project.title,
-        description=project.description,
-        category=project.category,
-        video_url=str(project.video_url) if project.video_url else None,
-        image_url=str(project.image_url) if project.image_url else None,
-        status=ProjectStatus.PENDING
-    )
+    project_data = {
+        "cycle_id": project.cycle_id,
+        "filmmaker_id": user_id,
+        "title": project.title,
+        "description": project.description,
+        "category": project.category,
+        "video_url": str(project.video_url) if project.video_url else None,
+        "image_url": str(project.image_url) if project.image_url else None,
+        "status": "pending",
+        "vote_count": 0
+    }
 
-    session.add(new_project)
-    session.commit()
-    session.refresh(new_project)
+    result = supabase.table("greenroom_projects").insert(project_data).execute()
 
-    return ProjectResponse(**new_project.dict())
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create project")
 
-
-@router.get("/projects/my-projects", response_model=List[ProjectResponse])
-async def get_my_projects(
-    session: Session = Depends(get_session),
-    user = Depends(get_current_user)
-):
-    """Get filmmaker's submitted projects"""
-    user_id = user.get("id")
-
-    projects = session.exec(
-        select(Project).where(Project.filmmaker_id == user_id).order_by(Project.created_at.desc())
-    ).all()
-
-    return [ProjectResponse(**p.dict()) for p in projects]
+    return ProjectResponse(**result.data[0])
 
 
 @router.put("/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: int,
     update: ProjectUpdate,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Update project (only if pending)"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
-    project = session.get(Project, project_id)
-    if not project:
+    # Get project
+    result = supabase.table("greenroom_projects").select("*").eq("id", project_id).single().execute()
+    if not result.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    project = result.data
+
     # Check ownership
-    if project.filmmaker_id != user_id:
+    if project.get("filmmaker_id") != user_id:
         raise HTTPException(status_code=403, detail="Not your project")
 
     # Can only update pending projects
-    if project.status != ProjectStatus.PENDING:
+    if project.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only update pending projects")
 
     # Update fields
     update_data = update.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(project, field, value)
+    update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    project.updated_at = datetime.utcnow()
-    session.commit()
-    session.refresh(project)
+    update_result = supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
 
-    return ProjectResponse(**project.dict())
+    return ProjectResponse(**update_result.data[0])
 
 
 @router.delete("/projects/{project_id}")
 async def delete_project(
     project_id: int,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Delete project (only if pending)"""
-    user_id = user.get("id")
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
 
-    project = session.get(Project, project_id)
-    if not project:
+    # Get project
+    result = supabase.table("greenroom_projects").select("*").eq("id", project_id).single().execute()
+    if not result.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    project = result.data
+
     # Check ownership
-    if project.filmmaker_id != user_id and not is_admin(user):
+    if project.get("filmmaker_id") != user_id and not is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     # Can only delete pending projects
-    if project.status != ProjectStatus.PENDING:
+    if project.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only delete pending projects")
 
-    session.delete(project)
-    session.commit()
+    supabase.table("greenroom_projects").delete().eq("id", project_id).execute()
 
     return {"message": "Project deleted successfully"}
 
@@ -564,12 +575,13 @@ async def delete_project(
 @router.post("/cycles", response_model=CycleResponse)
 async def create_cycle(
     cycle: CycleCreate,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Create new cycle (admin only)"""
     if not is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
 
     # Validate dates
     if cycle.end_date <= cycle.start_date:
@@ -578,75 +590,89 @@ async def create_cycle(
     # Determine status based on dates
     now = datetime.utcnow()
     if cycle.start_date > now:
-        status = CycleStatus.UPCOMING
+        status = "upcoming"
     elif cycle.end_date < now:
-        status = CycleStatus.CLOSED
+        status = "closed"
     else:
-        status = CycleStatus.ACTIVE
+        status = "active"
 
-    new_cycle = Cycle(
-        **cycle.dict(),
-        status=status
-    )
+    cycle_data = cycle.dict()
+    cycle_data["status"] = status
+    cycle_data["start_date"] = cycle.start_date.isoformat()
+    cycle_data["end_date"] = cycle.end_date.isoformat()
 
-    session.add(new_cycle)
-    session.commit()
-    session.refresh(new_cycle)
+    result = supabase.table("greenroom_cycles").insert(cycle_data).execute()
 
-    return CycleResponse(**new_cycle.dict(), project_count=0, total_votes=0)
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create cycle")
+
+    new_cycle = result.data[0]
+    new_cycle["project_count"] = 0
+    new_cycle["total_votes"] = 0
+
+    return CycleResponse(**new_cycle)
 
 
 @router.put("/cycles/{cycle_id}", response_model=CycleResponse)
 async def update_cycle(
     cycle_id: int,
     update: CycleUpdate,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Update cycle (admin only)"""
     if not is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    supabase = get_supabase_client()
+
+    # Verify cycle exists
+    existing = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
     # Update fields
     update_data = update.dict(exclude_unset=True)
-    for field, value in update_data.items():
-        setattr(cycle, field, value)
+    update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    cycle.updated_at = datetime.utcnow()
-    session.commit()
-    session.refresh(cycle)
+    if "start_date" in update_data:
+        update_data["start_date"] = update_data["start_date"].isoformat()
+    if "end_date" in update_data:
+        update_data["end_date"] = update_data["end_date"].isoformat()
 
-    cycle_dict = cycle.dict()
-    cycle_dict["project_count"] = len(cycle.projects)
-    cycle_dict["total_votes"] = sum(p.vote_count for p in cycle.projects)
+    result = supabase.table("greenroom_cycles").update(update_data).eq("id", cycle_id).execute()
 
-    return CycleResponse(**cycle_dict)
+    cycle_data = result.data[0]
+
+    # Get project count
+    project_result = supabase.table("greenroom_projects").select("id, vote_count", count="exact").eq("cycle_id", cycle_id).execute()
+    cycle_data["project_count"] = project_result.count or 0
+    cycle_data["total_votes"] = sum(p.get("vote_count", 0) for p in (project_result.data or []))
+
+    return CycleResponse(**cycle_data)
 
 
 @router.delete("/cycles/{cycle_id}")
 async def delete_cycle(
     cycle_id: int,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Delete cycle (admin only)"""
     if not is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    supabase = get_supabase_client()
+
+    # Verify cycle exists
+    existing = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
     # Check if cycle has votes
-    if cycle.votes:
+    votes_result = supabase.table("greenroom_votes").select("id", count="exact").eq("cycle_id", cycle_id).execute()
+    if votes_result.count and votes_result.count > 0:
         raise HTTPException(status_code=400, detail="Cannot delete cycle with existing votes")
 
-    session.delete(cycle)
-    session.commit()
+    supabase.table("greenroom_cycles").delete().eq("id", cycle_id).execute()
 
     return {"message": "Cycle deleted successfully"}
 
@@ -655,74 +681,74 @@ async def delete_cycle(
 async def approve_project(
     project_id: int,
     approval: ProjectApproval,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Approve or reject project (admin only)"""
     if not is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    project = session.get(Project, project_id)
-    if not project:
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
+
+    # Verify project exists
+    existing = supabase.table("greenroom_projects").select("*").eq("id", project_id).single().execute()
+    if not existing.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if approval.status not in [ProjectStatus.APPROVED, ProjectStatus.REJECTED]:
+    if approval.status not in ["approved", "rejected"]:
         raise HTTPException(status_code=400, detail="Status must be 'approved' or 'rejected'")
 
-    project.status = approval.status
-    project.approved_at = datetime.utcnow()
-    project.approved_by = user.get("id")
-    project.updated_at = datetime.utcnow()
+    update_data = {
+        "status": approval.status,
+        "approved_at": datetime.utcnow().isoformat(),
+        "approved_by": user_id,
+        "updated_at": datetime.utcnow().isoformat()
+    }
 
-    session.commit()
-    session.refresh(project)
+    result = supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
 
-    return ProjectResponse(**project.dict())
+    return ProjectResponse(**result.data[0])
 
 
 @router.get("/cycles/{cycle_id}/results", response_model=CycleResults)
 async def get_cycle_results(
-    cycle_id: int,
-    session: Session = Depends(get_session)
+    cycle_id: int
 ):
     """Get cycle voting results (public after cycle ends)"""
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    supabase = get_supabase_client()
+
+    # Verify cycle exists
+    cycle_result = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+    if not cycle_result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
-    # Get all approved projects with votes
-    projects = session.exec(
-        select(Project).where(
-            and_(
-                Project.cycle_id == cycle_id,
-                Project.status == ProjectStatus.APPROVED
-            )
-        ).order_by(Project.vote_count.desc())
-    ).all()
+    cycle = cycle_result.data
 
-    # Get total voters
-    unique_voters = session.exec(
-        select(func.count(func.distinct(Vote.user_id))).where(Vote.cycle_id == cycle_id)
-    ).one()
+    # Get all approved projects with votes, ordered by vote count
+    projects_result = supabase.table("greenroom_projects").select("*").eq("cycle_id", cycle_id).eq("status", "approved").order("vote_count", desc=True).execute()
+
+    # Get unique voters count
+    votes_result = supabase.table("greenroom_votes").select("user_id").eq("cycle_id", cycle_id).execute()
+    unique_voters = len(set(v.get("user_id") for v in (votes_result.data or [])))
 
     # Build project results
     project_results = []
-    for rank, project in enumerate(projects, 1):
+    for rank, project in enumerate((projects_result.data or []), 1):
         project_results.append(ProjectResult(
-            project_id=project.id,
-            title=project.title,
-            filmmaker_id=project.filmmaker_id,
-            vote_count=project.vote_count,
+            project_id=project["id"],
+            title=project["title"],
+            filmmaker_id=project["filmmaker_id"],
+            vote_count=project.get("vote_count", 0),
             rank=rank
         ))
 
-    total_votes = sum(p.vote_count for p in projects)
+    total_votes = sum(p.get("vote_count", 0) for p in (projects_result.data or []))
 
     return CycleResults(
-        cycle_id=cycle.id,
-        cycle_name=cycle.name,
-        status=cycle.status,
-        total_projects=len(projects),
+        cycle_id=cycle["id"],
+        cycle_name=cycle["name"],
+        status=cycle["status"],
+        total_projects=len(projects_result.data or []),
         total_votes=total_votes,
         total_voters=unique_voters,
         projects=project_results
@@ -732,41 +758,41 @@ async def get_cycle_results(
 @router.get("/cycles/{cycle_id}/stats", response_model=CycleStats)
 async def get_cycle_stats(
     cycle_id: int,
-    session: Session = Depends(get_session),
     user = Depends(get_current_user)
 ):
     """Get cycle statistics (admin only)"""
     if not is_admin(user):
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    cycle = session.get(Cycle, cycle_id)
-    if not cycle:
+    supabase = get_supabase_client()
+
+    # Verify cycle exists
+    cycle_result = supabase.table("greenroom_cycles").select("*").eq("id", cycle_id).single().execute()
+    if not cycle_result.data:
         raise HTTPException(status_code=404, detail="Cycle not found")
 
-    # Get project counts
-    projects = cycle.projects
-    approved = sum(1 for p in projects if p.status == ProjectStatus.APPROVED)
-    pending = sum(1 for p in projects if p.status == ProjectStatus.PENDING)
-    rejected = sum(1 for p in projects if p.status == ProjectStatus.REJECTED)
+    # Get project counts by status
+    projects_result = supabase.table("greenroom_projects").select("status").eq("cycle_id", cycle_id).execute()
+    projects = projects_result.data or []
+
+    approved = sum(1 for p in projects if p.get("status") == "approved")
+    pending = sum(1 for p in projects if p.get("status") == "pending")
+    rejected = sum(1 for p in projects if p.get("status") == "rejected")
 
     # Get ticket and vote stats
-    tickets = session.exec(
-        select(VotingTicket).where(
-            and_(
-                VotingTicket.cycle_id == cycle_id,
-                VotingTicket.payment_status == PaymentStatus.COMPLETED
-            )
-        )
-    ).all()
+    tickets_result = supabase.table("greenroom_voting_tickets").select("tickets_purchased, amount_paid").eq("cycle_id", cycle_id).eq("payment_status", "completed").execute()
+    tickets = tickets_result.data or []
 
-    total_tickets_sold = sum(t.tickets_purchased for t in tickets)
-    revenue = sum(t.amount_paid for t in tickets)
+    total_tickets_sold = sum(t.get("tickets_purchased", 0) for t in tickets)
+    revenue = sum(t.get("amount_paid", 0) for t in tickets)
 
-    votes = session.exec(select(Vote).where(Vote.cycle_id == cycle_id)).all()
-    unique_voters = len(set(v.user_id for v in votes))
+    # Get vote stats
+    votes_result = supabase.table("greenroom_votes").select("user_id").eq("cycle_id", cycle_id).execute()
+    votes = votes_result.data or []
+    unique_voters = len(set(v.get("user_id") for v in votes))
 
     return CycleStats(
-        cycle_id=cycle.id,
+        cycle_id=cycle_id,
         total_projects=len(projects),
         approved_projects=approved,
         pending_projects=pending,
@@ -776,3 +802,222 @@ async def get_cycle_stats(
         unique_voters=unique_voters,
         revenue=revenue
     )
+
+
+# ============ Additional Admin Endpoints ============
+
+@router.put("/admin/projects/{project_id}/status")
+async def admin_update_project_status(
+    project_id: int,
+    status: str = Query(..., regex="^(pending|approved|shortlisted|rejected|flagged)$"),
+    user = Depends(get_current_user)
+):
+    """Update project status (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+    user_id = get_user_id(user)
+
+    # Verify project exists
+    existing = supabase.table("greenroom_projects").select("id").eq("id", project_id).single().execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    update_data = {
+        "status": status,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    if status == "approved":
+        update_data["approved_at"] = datetime.utcnow().isoformat()
+        update_data["approved_by"] = user_id
+
+    supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
+
+    return {"message": f"Project status updated to {status}"}
+
+
+@router.put("/admin/projects/{project_id}/featured")
+async def admin_toggle_featured(
+    project_id: int,
+    is_featured: bool = Query(False),
+    is_staff_pick: bool = Query(False),
+    user = Depends(get_current_user)
+):
+    """Toggle project featured status (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    update_data = {
+        "is_featured": is_featured,
+        "is_staff_pick": is_staff_pick,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
+
+    return {"message": "Featured status updated"}
+
+
+@router.put("/admin/projects/{project_id}/suspend")
+async def admin_suspend_project(
+    project_id: int,
+    suspended: bool = Query(True),
+    reason: Optional[str] = Query(None),
+    user = Depends(get_current_user)
+):
+    """Suspend or unsuspend a project (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    update_data = {
+        "is_suspended": suspended,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    if reason:
+        update_data["admin_notes"] = reason
+
+    if not suspended:
+        update_data["status"] = "approved"
+
+    supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
+
+    return {"message": f"Project {'suspended' if suspended else 'restored'}"}
+
+
+@router.put("/admin/projects/{project_id}/notes")
+async def admin_update_notes(
+    project_id: int,
+    notes: str = Query(""),
+    user = Depends(get_current_user)
+):
+    """Update admin notes on a project (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    update_data = {
+        "admin_notes": notes,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    supabase.table("greenroom_projects").update(update_data).eq("id", project_id).execute()
+
+    return {"message": "Notes updated"}
+
+
+@router.post("/admin/tickets/adjust")
+async def admin_adjust_tickets(
+    user_id: str,
+    cycle_id: int,
+    tickets_to_add: int,
+    reason: Optional[str] = None,
+    admin = Depends(get_current_user)
+):
+    """Adjust user tickets (admin only)"""
+    if not is_admin(admin):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    # Check if user already has tickets for this cycle
+    existing = supabase.table("greenroom_voting_tickets").select("*").eq("user_id", user_id).eq("cycle_id", cycle_id).single().execute()
+
+    if existing.data:
+        # Update existing
+        current_remaining = existing.data.get("tickets_remaining", 0)
+        new_remaining = max(0, current_remaining + tickets_to_add)
+
+        supabase.table("greenroom_voting_tickets").update({
+            "tickets_remaining": new_remaining,
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", existing.data["id"]).execute()
+
+        return {"message": f"Tickets adjusted. New balance: {new_remaining}"}
+    else:
+        # Create new ticket record
+        if tickets_to_add <= 0:
+            raise HTTPException(status_code=400, detail="Cannot create negative ticket balance")
+
+        supabase.table("greenroom_voting_tickets").insert({
+            "user_id": user_id,
+            "cycle_id": cycle_id,
+            "tickets_remaining": tickets_to_add,
+            "tickets_used": 0,
+            "payment_status": "completed",
+            "amount_paid": 0,  # Admin-granted tickets are free
+        }).execute()
+
+        return {"message": f"Created {tickets_to_add} tickets for user"}
+
+
+@router.put("/admin/cycles/{cycle_id}/phase")
+async def admin_update_cycle_phase(
+    cycle_id: int,
+    phase: str = Query(..., regex="^(submission|shortlisting|voting|winner|development)$"),
+    user = Depends(get_current_user)
+):
+    """Update cycle phase (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    # Also update status based on phase
+    status = "active"
+    if phase == "voting":
+        status = "voting"
+    elif phase in ["winner", "development"]:
+        status = "completed"
+
+    update_data = {
+        "current_phase": phase,
+        "status": status,
+        "updated_at": datetime.utcnow().isoformat()
+    }
+
+    supabase.table("greenroom_cycles").update(update_data).eq("id", cycle_id).execute()
+
+    return {"message": f"Cycle phase updated to {phase}"}
+
+
+@router.get("/admin/export/{data_type}")
+async def admin_export_data(
+    data_type: str,
+    cycle_id: Optional[int] = None,
+    user = Depends(get_current_user)
+):
+    """Export Green Room data (admin only)"""
+    if not is_admin(user):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supabase = get_supabase_client()
+
+    if data_type == "cycles":
+        result = supabase.table("greenroom_cycles").select("*").order("created_at", desc=True).execute()
+    elif data_type == "projects":
+        query = supabase.table("greenroom_projects").select("*")
+        if cycle_id:
+            query = query.eq("cycle_id", cycle_id)
+        result = query.order("created_at", desc=True).execute()
+    elif data_type == "votes":
+        query = supabase.table("greenroom_votes").select("*")
+        if cycle_id:
+            query = query.eq("cycle_id", cycle_id)
+        result = query.order("created_at", desc=True).execute()
+    elif data_type == "tickets":
+        query = supabase.table("greenroom_voting_tickets").select("*")
+        if cycle_id:
+            query = query.eq("cycle_id", cycle_id)
+        result = query.order("created_at", desc=True).execute()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid data type. Use: cycles, projects, votes, or tickets")
+
+    return {"data": result.data or [], "count": len(result.data or [])}

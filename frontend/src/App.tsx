@@ -83,6 +83,7 @@ import ContentManagement from "./pages/admin/ContentManagement";
 import FilmmakerProfileManagement from "./pages/admin/FilmmakerProfiles";
 import AvailabilityManagement from "./pages/admin/Availability";
 import SiteSettings from "./pages/admin/SiteSettings";
+import GreenRoomManagement from "./pages/admin/GreenRoomManagement";
 
 // Partner Pages
 import PartnerLayout from "./pages/partner/Layout";
@@ -90,6 +91,9 @@ import PartnerDashboard from "./pages/partner/Dashboard";
 import AdPlacements from "./pages/partner/AdPlacements";
 import Analytics from "./pages/partner/Analytics";
 import PartnerPromotions from "./pages/partner/Promotions";
+
+// Backlot Production Hub Pages
+import { BacklotHome, ProjectWorkspace, PublicProjectPage } from "./pages/backlot";
 
 
 const queryClient = new QueryClient();
@@ -127,6 +131,7 @@ const App = () => (
                   <Route path="/cued-up" element={<CuedUp />} />
                   <Route path="/terms" element={<Terms />} />
                   <Route path="/profile/:username" element={<FilmmakerProfile />} />
+                  <Route path="/projects/:slug" element={<PublicProjectPage />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/signin" element={<Login />} />
                   <Route path="/signup" element={<Signup />} />
@@ -157,6 +162,10 @@ const App = () => (
                     <Route path="/filmmakers" element={<Filmmakers />} />
                     <Route path="/the-backlot" element={<TheBacklot />} />
                     <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
+
+                    {/* Backlot Production Hub Routes */}
+                    <Route path="/backlot" element={<BacklotHome />} />
+                    <Route path="/backlot/projects/:projectId" element={<ProjectWorkspace />} />
 
                     {/* Green Room Routes */}
                     <Route path="/greenroom" element={<GreenRoom />} />
@@ -202,6 +211,7 @@ const App = () => (
                         <Route path="applications" element={<ApplicationsManagement />} />
                         <Route path="forum" element={<ForumManagement />} />
                         <Route path="content" element={<ContentManagement />} />
+                        <Route path="greenroom" element={<GreenRoomManagement />} />
                         <Route path="profiles" element={<FilmmakerProfileManagement />} />
                         <Route path="availability" element={<AvailabilityManagement />} />
                         <Route path="settings" element={<SiteSettings />} />

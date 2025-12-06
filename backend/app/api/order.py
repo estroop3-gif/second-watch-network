@@ -29,7 +29,7 @@ from app.models.order import (
     OrderJob, OrderJobApplication, OrderBookingRequest,
     OrderMemberStatus, OrderApplicationStatus, LodgeStatus,
     LodgeMembershipStatus, OrderJobVisibility, OrderJobApplicationStatus,
-    PrimaryTrack
+    PrimaryTrack, OrderJobType
 )
 from app.schemas.order import (
     # Application schemas
@@ -112,8 +112,9 @@ def is_partner(user) -> bool:
 async def get_order_member_profile(user_id: str) -> Optional[dict]:
     """Get Order member profile from database"""
     supabase = get_supabase_client()
-    result = supabase.table("order_member_profiles").select("*").eq("user_id", user_id).single().execute()
-    return result.data if result.data else None
+    result = supabase.table("order_member_profiles").select("*").eq("user_id", user_id).execute()
+    # Return first result or None (don't use .single() which throws on 0 rows)
+    return result.data[0] if result.data and len(result.data) > 0 else None
 
 
 async def is_order_member(user_id: str) -> bool:

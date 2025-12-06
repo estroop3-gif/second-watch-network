@@ -30,6 +30,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
         "http://127.0.0.1:8080",
+        "*",  # Allow all origins in development
     ]
 
     # Supabase
@@ -47,6 +48,25 @@ class Settings(BaseSettings):
     # The email address of the main superadmin user
     # This user will be automatically granted superadmin privileges on startup
     SUPERADMIN_EMAIL: str = os.getenv("SUPERADMIN_EMAIL", "")
+
+    # AI Configuration (for Backlot Co-pilot)
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    AI_MODEL: str = os.getenv("AI_MODEL", "claude-sonnet-4-20250514")  # Default to Claude
+
+    # Email Configuration (Resend, SendGrid, or SMTP)
+    EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "resend")  # resend, sendgrid, smtp
+    RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")
+    SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USER: str = os.getenv("SMTP_USER", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    EMAIL_FROM_ADDRESS: str = os.getenv("EMAIL_FROM_ADDRESS", "noreply@secondwatch.network")
+    EMAIL_FROM_NAME: str = os.getenv("EMAIL_FROM_NAME", "Second Watch Network")
+
+    # Frontend URL (for email links)
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:8080")
 
     class Config:
         env_file = ".env"

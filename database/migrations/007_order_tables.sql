@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS order_applications (
     portfolio_links TEXT, -- JSON array as string
     statement TEXT,
     years_experience INTEGER,
-    current_role VARCHAR(200),
+    applicant_current_role VARCHAR(200),
 
     -- Application status
     status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),

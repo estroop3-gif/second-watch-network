@@ -1,28 +1,54 @@
 /**
- * Green Room Main Page
- * Voting arena for project development
+ * Green Room Hub Page
+ * Main hub for the Green Room voting arena
  */
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { greenroomAPI, Cycle } from '@/lib/api/greenroom';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, Trophy, Users, Ticket, ArrowRight, Lightbulb, Vote, DollarSign } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { greenroomAPI, Cycle, Project } from '@/lib/api/greenroom';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
+import { useAuth } from '@/context/AuthContext';
+import { Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
+// Hub Components
+import { GreenRoomHero } from '@/components/greenroom/GreenRoomHero';
+import { GreenRoomTimeline } from '@/components/greenroom/GreenRoomTimeline';
+import { ProjectDiscoverSection } from '@/components/greenroom/ProjectDiscoverSection';
+import { YourGreenRoomPanel } from '@/components/greenroom/YourGreenRoomPanel';
+import { CommunityActivityStrip } from '@/components/greenroom/CommunityActivityStrip';
+import { CycleStatsRow } from '@/components/greenroom/CycleStatsRow';
+
+// How It Works Dialog
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import { DollarSign, Vote, Trophy, Send, CheckCircle2 } from 'lucide-react';
+
 export default function GreenRoom() {
+  const { user } = useAuth();
+  const { isFilmmaker } = useEnrichedProfile();
+
   const [loading, setLoading] = useState(true);
-  const [activeCycles, setActiveCycles] = useState<Cycle[]>([]);
-  const [upcomingCycles, setUpcomingCycles] = useState<Cycle[]>([]);
-  const [closedCycles, setClosedCycles] = useState<Cycle[]>([]);
+  const [currentCycle, setCurrentCycle] = useState<Cycle | null>(null);
+  const [allCycles, setAllCycles] = useState<Cycle[]>([]);
+  const [availableTickets, setAvailableTickets] = useState(0);
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
 
   useEffect(() => {
-    loadCycles();
+    loadCycleData();
   }, []);
 
-  const loadCycles = async () => {
+  // Load user tickets when authenticated and cycle is available
+  useEffect(() => {
+    if (user && currentCycle) {
+      loadUserTickets();
+    }
+  }, [user, currentCycle]);
+
+  const loadCycleData = async () => {
     try {
       setLoading(true);
       const [active, upcoming, closed] = await Promise.all([
@@ -30,215 +56,203 @@ export default function GreenRoom() {
         greenroomAPI.listCycles('upcoming'),
         greenroomAPI.listCycles('closed'),
       ]);
-      setActiveCycles(active);
-      setUpcomingCycles(upcoming);
-      setClosedCycles(closed);
+
+      // Combine all cycles for the dropdown
+      const cycles = [...active, ...upcoming, ...closed];
+      setAllCycles(cycles);
+
+      // Set current cycle (active takes priority, then upcoming, then most recent closed)
+      if (active.length > 0) {
+        setCurrentCycle(active[0]);
+      } else if (upcoming.length > 0) {
+        setCurrentCycle(upcoming[0]);
+      } else if (closed.length > 0) {
+        setCurrentCycle(closed[0]);
+      }
     } catch (error) {
       console.error('Failed to load cycles:', error);
-      toast.error('Failed to load voting cycles');
+      toast.error('Failed to load Green Room data');
     } finally {
       setLoading(false);
     }
   };
 
-  const CycleCard = ({ cycle }: { cycle: Cycle }) => (
-    <Card className="hover:shadow-lg transition-shadow">
-      <CardHeader>
-        <div className="flex items-start justify-between">
-          <div>
-            <CardTitle className="text-xl">{cycle.name}</CardTitle>
-            {cycle.description && (
-              <CardDescription className="mt-2">{cycle.description}</CardDescription>
-            )}
-          </div>
-          <Badge variant={cycle.status === 'active' ? 'default' : 'secondary'}>
-            {cycle.status}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {/* Cycle Info */}
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <p className="text-muted-foreground">Ticket Price</p>
-              <p className="font-semibold">${cycle.ticket_price.toFixed(2)}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Max Tickets/User</p>
-              <p className="font-semibold">{cycle.max_tickets_per_user}</p>
-            </div>
-          </div>
+  const loadUserTickets = async () => {
+    try {
+      const tickets = await greenroomAPI.getMyTickets();
+      setAvailableTickets(tickets?.tickets_available || 0);
+    } catch (error) {
+      console.error('Failed to load user tickets:', error);
+    }
+  };
 
-          {/* Action Button */}
-          <Link to={`/greenroom/cycles/${cycle.id}`}>
-            <Button className="w-full">
-              {cycle.status === 'active' ? 'Vote Now' : 'View Details'}
-              <ArrowRight className="h-4 w-4 ml-2" />
-            </Button>
-          </Link>
+  const handleVoteClick = useCallback((project: Project) => {
+    // Navigate to the cycle page with the project highlighted for voting
+    window.location.href = `/greenroom/cycles/${project.cycle_id}?vote=${project.id}`;
+  }, []);
+
+  const handleHowItWorksClick = useCallback(() => {
+    setShowHowItWorks(true);
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-charcoal-black flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-12 w-12 animate-spin text-emerald-400" />
+          <p className="text-bone-white/70">Loading Green Room...</p>
         </div>
-      </CardContent>
-    </Card>
-  );
+      </div>
+    );
+  }
 
   return (
-    <div className="container mx-auto py-8 px-4">
-      {/* Header */}
-      <div className="mb-8 text-center">
-        <div className="flex items-center justify-center gap-3 mb-4">
-          <Trophy className="h-10 w-10 text-accent-yellow" />
-          <h1 className="text-5xl font-bold">The Green Room</h1>
+    <div className="min-h-screen bg-charcoal-black">
+      <div className="container mx-auto py-8 px-4 space-y-8">
+        {/* Hero Section */}
+        <GreenRoomHero
+          currentCycle={currentCycle}
+          isFilmmaker={isFilmmaker}
+          onHowItWorksClick={handleHowItWorksClick}
+        />
+
+        {/* Timeline Strip */}
+        <GreenRoomTimeline cycleStatus={currentCycle?.status} />
+
+        {/* Main Content Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Left Column - Project Discovery (2/3 width on large screens) */}
+          <div className="lg:col-span-2 space-y-8">
+            <ProjectDiscoverSection
+              currentCycle={currentCycle}
+              cycles={allCycles}
+              onVoteClick={handleVoteClick}
+              availableTickets={availableTickets}
+            />
+          </div>
+
+          {/* Right Column - User Panel & Activity (1/3 width on large screens) */}
+          <div className="space-y-6">
+            <YourGreenRoomPanel
+              currentCycle={currentCycle}
+              isFilmmaker={isFilmmaker}
+              isAuthenticated={!!user}
+            />
+            <CommunityActivityStrip currentCycle={currentCycle} />
+          </div>
         </div>
-        <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
-          Vote for the next great projects to be developed on Second Watch Network
-        </p>
+
+        {/* Stats Row */}
+        <CycleStatsRow currentCycle={currentCycle} />
       </div>
 
-      {/* How It Works */}
-      <Card className="mb-8 bg-muted/50">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Lightbulb className="h-5 w-5" />
-            How It Works
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid md:grid-cols-3 gap-6">
-            <div className="flex gap-3">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-bold">
+      {/* How It Works Dialog */}
+      <Dialog open={showHowItWorks} onOpenChange={setShowHowItWorks}>
+        <DialogContent className="bg-charcoal-black border-muted-gray max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-2xl text-bone-white flex items-center gap-2">
+              <Vote className="h-6 w-6 text-emerald-400" />
+              How The Green Room Works
+            </DialogTitle>
+            <DialogDescription className="text-bone-white/70">
+              Your guide to participating in the Green Room voting process
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-6 py-4">
+            {/* Step 1 */}
+            <div className="flex gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold">
                 1
               </div>
               <div>
-                <h3 className="font-semibold mb-1 flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
-                  Purchase Tickets
+                <h3 className="font-semibold text-bone-white flex items-center gap-2 mb-1">
+                  <Send className="h-4 w-4 text-blue-400" />
+                  Submit Your Project (Filmmakers)
                 </h3>
-                <p className="text-sm text-muted-foreground">
-                  Buy voting tickets ($10 each) for the active cycle. Max 100 tickets per user.
+                <p className="text-sm text-bone-white/70">
+                  Verified filmmakers can submit their project pitches during the submission window.
+                  Include a compelling description, trailer, and budget breakdown.
                 </p>
               </div>
             </div>
-            <div className="flex gap-3">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-bold">
+
+            {/* Step 2 */}
+            <div className="flex gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold">
                 2
               </div>
               <div>
-                <h3 className="font-semibold mb-1 flex items-center gap-2">
-                  <Vote className="h-4 w-4" />
-                  Allocate Votes
+                <h3 className="font-semibold text-bone-white flex items-center gap-2 mb-1">
+                  <DollarSign className="h-4 w-4 text-accent-yellow" />
+                  Purchase Voting Tickets
                 </h3>
-                <p className="text-sm text-muted-foreground">
-                  Review projects and allocate your tickets to your favorites. All votes are final!
+                <p className="text-sm text-bone-white/70">
+                  Buy voting tickets (${currentCycle?.ticket_price || 1} each) to vote for your favorite projects.
+                  Maximum {currentCycle?.max_tickets_per_user || 100} tickets per user per cycle.
                 </p>
               </div>
             </div>
-            <div className="flex gap-3">
-              <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-bold">
+
+            {/* Step 3 */}
+            <div className="flex gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold">
                 3
               </div>
               <div>
-                <h3 className="font-semibold mb-1 flex items-center gap-2">
-                  <Trophy className="h-4 w-4" />
-                  Win & Develop
+                <h3 className="font-semibold text-bone-white flex items-center gap-2 mb-1">
+                  <Vote className="h-4 w-4 text-emerald-400" />
+                  Allocate Your Votes
                 </h3>
-                <p className="text-sm text-muted-foreground">
-                  Top projects get developed into Second Watch Network content!
+                <p className="text-sm text-bone-white/70">
+                  Browse approved projects and allocate your tickets strategically.
+                  You can split your tickets across multiple projects or go all-in on one!
                 </p>
               </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
 
-      {/* Submit Project CTA */}
-      <Card className="mb-8 bg-gradient-to-r from-primary/10 to-accent-yellow/10 border-2">
-        <CardContent className="py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-xl font-bold mb-2">Got a project idea?</h3>
-              <p className="text-muted-foreground">
-                Submit your project to the Green Room and let the community vote!
-              </p>
+            {/* Step 4 */}
+            <div className="flex gap-4">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold">
+                4
+              </div>
+              <div>
+                <h3 className="font-semibold text-bone-white flex items-center gap-2 mb-1">
+                  <Trophy className="h-4 w-4 text-amber-400" />
+                  Winners Get Greenlit
+                </h3>
+                <p className="text-sm text-bone-white/70">
+                  When the cycle ends, top-voted projects earn a spot on the Second Watch slate.
+                  They receive development support and production resources.
+                </p>
+              </div>
             </div>
-            <Link to="/greenroom/submit">
-              <Button size="lg">
-                <Users className="h-5 w-5 mr-2" />
-                Submit Project
-              </Button>
-            </Link>
+
+            {/* Benefits */}
+            <div className="mt-6 p-4 bg-emerald-600/10 border border-emerald-600/30 rounded-lg">
+              <h4 className="font-semibold text-emerald-400 mb-2">Why Participate?</h4>
+              <ul className="space-y-2">
+                <li className="flex items-start gap-2 text-sm text-bone-white/70">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  Direct influence on what content gets made
+                </li>
+                <li className="flex items-start gap-2 text-sm text-bone-white/70">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  Support independent filmmakers you believe in
+                </li>
+                <li className="flex items-start gap-2 text-sm text-bone-white/70">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  Ticket funds go directly toward production
+                </li>
+                <li className="flex items-start gap-2 text-sm text-bone-white/70">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 mt-0.5 flex-shrink-0" />
+                  Early access to behind-the-scenes content
+                </li>
+              </ul>
+            </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Cycles Tabs */}
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
-      ) : (
-        <Tabs defaultValue="active" className="w-full">
-          <TabsList className="grid w-full grid-cols-3 mb-6">
-            <TabsTrigger value="active">
-              Active ({activeCycles.length})
-            </TabsTrigger>
-            <TabsTrigger value="upcoming">
-              Upcoming ({upcomingCycles.length})
-            </TabsTrigger>
-            <TabsTrigger value="closed">
-              Closed ({closedCycles.length})
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="active">
-            {activeCycles.length > 0 ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {activeCycles.map((cycle) => (
-                  <CycleCard key={cycle.id} cycle={cycle} />
-                ))}
-              </div>
-            ) : (
-              <Card>
-                <CardContent className="py-12 text-center text-muted-foreground">
-                  No active voting cycles at the moment. Check back soon!
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-
-          <TabsContent value="upcoming">
-            {upcomingCycles.length > 0 ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {upcomingCycles.map((cycle) => (
-                  <CycleCard key={cycle.id} cycle={cycle} />
-                ))}
-              </div>
-            ) : (
-              <Card>
-                <CardContent className="py-12 text-center text-muted-foreground">
-                  No upcoming cycles scheduled yet.
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-
-          <TabsContent value="closed">
-            {closedCycles.length > 0 ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {closedCycles.map((cycle) => (
-                  <CycleCard key={cycle.id} cycle={cycle} />
-                ))}
-              </div>
-            ) : (
-              <Card>
-                <CardContent className="py-12 text-center text-muted-foreground">
-                  No closed cycles yet.
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-        </Tabs>
-      )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

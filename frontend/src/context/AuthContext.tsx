@@ -29,11 +29,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         api.setToken(token);
         try {
           const userData = await api.getCurrentUser();
+          const refreshToken = localStorage.getItem('refresh_token') || '';
+
+          // Set the session on the Supabase client so supabase.auth.getUser() works
+          try {
+            await supabase.auth.setSession({
+              access_token: token,
+              refresh_token: refreshToken,
+            });
+          } catch (e) {
+            // Token might not be a valid Supabase JWT - that's OK for backend-only auth
+            console.warn('Could not set Supabase session:', e);
+          }
 
           // Create a session-like object for compatibility
           const mockSession: Session = {
             access_token: token,
-            refresh_token: localStorage.getItem('refresh_token') || '',
+            refresh_token: refreshToken,
             expires_in: 3600,
             token_type: 'bearer',
             user: userData as User,
@@ -89,6 +101,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       api.setToken(data.access_token);
 
+      // Set the session on the Supabase client so supabase.auth.getUser() works
+      try {
+        await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token || '',
+        });
+      } catch (e) {
+        // Token might not be a valid Supabase JWT - that's OK for backend-only auth
+        console.warn('Could not set Supabase session:', e);
+      }
+
       // Create mock session for compatibility
       const mockSession: Session = {
         access_token: data.access_token,
@@ -118,6 +141,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       api.setToken(data.access_token);
 
+      // Set the session on the Supabase client so supabase.auth.getUser() works
+      try {
+        await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token || '',
+        });
+      } catch (e) {
+        // Token might not be a valid Supabase JWT - that's OK for backend-only auth
+        console.warn('Could not set Supabase session:', e);
+      }
+
       // Create mock session for compatibility
       const mockSession: Session = {
         access_token: data.access_token,
@@ -136,20 +170,25 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   const signOut = async () => {
+    // Clear local state first to ensure UI updates immediately
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    api.setToken(null);
+    setSession(null);
+    setUser(null);
+
+    // Try to sign out from backend API
     try {
       await api.signOut();
     } catch (error) {
-      console.error('Sign out error:', error);
-    } finally {
-      // Clear local state regardless of API call success
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      api.setToken(null);
-      setSession(null);
-      setUser(null);
+      console.warn('Backend sign out error (non-blocking):', error);
+    }
 
-      // Also sign out from Supabase for OAuth sessions
+    // Also sign out from Supabase for OAuth sessions
+    try {
       await supabase.auth.signOut();
+    } catch (error) {
+      console.warn('Supabase sign out error (non-blocking):', error);
     }
   };
 

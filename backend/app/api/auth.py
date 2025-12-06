@@ -22,6 +22,7 @@ class SignInRequest(BaseModel):
 
 class AuthResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: dict
 
@@ -44,9 +45,11 @@ async def sign_up(request: SignUpRequest):
 
         # Check if session exists, otherwise create a temporary token
         access_token = response.session.access_token if response.session else "temp_token_pending_confirmation"
+        refresh_token = response.session.refresh_token if response.session else None
 
         return {
             "access_token": access_token,
+            "refresh_token": refresh_token,
             "user": response.user.model_dump() if hasattr(response.user, 'model_dump') else response.user.__dict__
         }
     except HTTPException:
@@ -73,6 +76,7 @@ async def sign_in(request: SignInRequest):
 
         return {
             "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token,
             "user": response.user.model_dump() if hasattr(response.user, 'model_dump') else response.user.__dict__
         }
     except HTTPException:

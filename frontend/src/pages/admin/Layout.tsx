@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router-dom';
-import { Users, FileText, MessageSquare, Film, Users2, BarChart, Settings, LayoutDashboard, ClipboardList } from 'lucide-react';
+import { Users, FileText, MessageSquare, Film, Users2, BarChart, Settings, LayoutDashboard, ClipboardList, Clapperboard } from 'lucide-react';
 
 const AdminLayout = () => {
   const navItems = [
@@ -9,6 +9,7 @@ const AdminLayout = () => {
     { name: 'Applications', href: '/admin/applications', icon: ClipboardList },
     { name: 'Forum', href: '/admin/forum', icon: MessageSquare },
     { name: 'Content', href: '/admin/content', icon: Film },
+    { name: 'Green Room', href: '/admin/greenroom', icon: Clapperboard },
     { name: 'Filmmaker Profiles', href: '/admin/profiles', icon: Users2 },
     { name: 'Availability', href: '/admin/availability', icon: BarChart },
     { name: 'Site Settings', href: '/admin/settings', icon: Settings },

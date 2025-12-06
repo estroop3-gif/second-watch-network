@@ -99,8 +99,8 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <Users className="mr-3 h-5 w-5" />
         <span>Community</span>
       </MenuItem>
-      <MenuItem to="/the-backlot" onClick={onLinkClick}>
-        <MessagesSquare className="mr-3 h-5 w-5" />
+      <MenuItem to="/backlot" onClick={onLinkClick}>
+        <Film className="mr-3 h-5 w-5" />
         <span>The Backlot</span>
       </MenuItem>
       <MenuItem to="/greenroom" onClick={onLinkClick}>

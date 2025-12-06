@@ -3,7 +3,6 @@ import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Link } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import {
   DropdownMenu,
@@ -30,12 +29,14 @@ export const UserNav = () => {
     isLodgeOfficer,
   } = useEnrichedProfile();
 
+  const { signOut } = useAuth();
+
   const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error && error.message !== 'Auth session missing!') {
-      toast.error("Failed to log out: " + error.message);
-    } else {
+    try {
+      await signOut();
       window.location.href = '/';
+    } catch (error: any) {
+      toast.error("Failed to log out: " + (error?.message || 'Unknown error'));
     }
   };
 
@@ -151,8 +152,8 @@ export const UserNav = () => {
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
-          <Link to="/the-backlot">
-            <MessagesSquare className="mr-2 h-4 w-4" />
+          <Link to="/backlot">
+            <Film className="mr-2 h-4 w-4" />
             <span>The Backlot</span>
           </Link>
         </DropdownMenuItem>
