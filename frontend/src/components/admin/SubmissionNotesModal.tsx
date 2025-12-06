@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -47,6 +47,7 @@ export const SubmissionNotesModal = ({ submission, isOpen, onClose }: { submissi
       <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white">
         <DialogHeader>
           <DialogTitle className="font-heading text-2xl text-accent-yellow">Notes for: {submission.project_title}</DialogTitle>
+          <DialogDescription>Add internal notes for the admin team about this submission.</DialogDescription>
         </DialogHeader>
         <div className="py-4 space-y-2">
           <Label htmlFor="admin-notes" className="font-bold text-lg">Internal Notes</Label>

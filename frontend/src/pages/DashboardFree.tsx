@@ -45,7 +45,8 @@ const DashboardFree = () => {
             <iframe
               src={videoSrc}
               allowFullScreen
-              allowTransparency
+              // @ts-expect-error allowtransparency is a valid HTML attribute
+              allowtransparency="true"
               allow="autoplay"
             ></iframe>
           </div>
