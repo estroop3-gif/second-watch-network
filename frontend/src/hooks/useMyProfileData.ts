@@ -202,7 +202,7 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
-  // Fetch credits (order by created_at since year column may not exist)
+  // Fetch credits with production titles
   const { data: credits, isLoading: creditsLoading } = useQuery({
     queryKey: ['credits', user?.id],
     queryFn: async () => {
@@ -210,17 +210,26 @@ export function useMyProfileData(): MyProfileData {
       try {
         const { data, error } = await supabase
           .from('credits')
-          .select('*')
+          .select('*, productions(id, title)')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false });
 
         if (error) {
-          // Table might not exist or have different schema
           if (error.code === '42P01' || error.code === '42703') return [];
           console.error('Error fetching credits:', error);
           return [];
         }
-        return (data || []) as CreditDB[];
+        // Map to expected format
+        return (data || []).map((c: any) => ({
+          id: c.id,
+          user_id: c.user_id,
+          title: c.productions?.title || 'Unknown Production',
+          role: c.position,
+          year: c.production_date ? new Date(c.production_date).getFullYear() : undefined,
+          description: c.description,
+          created_at: c.created_at,
+          updated_at: c.updated_at,
+        })) as CreditDB[];
       } catch {
         return [];
       }
