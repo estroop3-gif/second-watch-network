@@ -1,12 +1,12 @@
 import { useAuth } from "@/context/AuthContext";
-import { useProfile } from "@/hooks/useProfile";
+import { useEnrichedProfile } from "@/context/EnrichedProfileContext";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { Skeleton } from "./ui/skeleton";
 import { useSettings } from "@/context/SettingsContext";
 
 const OnboardingGate = () => {
   const { session, loading: authLoading } = useAuth();
-  const { profile, isLoading: profileLoading } = useProfile();
+  const { isFilmmaker, hasFilmmakerProfile, profile, isLoading: profileLoading } = useEnrichedProfile();
   const { settings, isLoading: settingsLoading } = useSettings();
   const location = useLocation();
 
@@ -28,8 +28,11 @@ const OnboardingGate = () => {
     return <Navigate to="/landing" state={{ from: location }} replace />;
   }
 
-  const isFilmmaker = session.user.user_metadata?.roles?.includes('filmmaker');
-  const hasCompletedOnboarding = profile?.has_completed_filmmaker_onboarding;
+  // Check if filmmaker onboarding is needed:
+  // - User has filmmaker role (is_filmmaker flag set in profiles table, or has filmmaker_profile, or auth metadata)
+  // - User has NOT completed onboarding (no filmmaker_profiles entry exists)
+  // - Onboarding feature is enabled in settings
+  const hasCompletedOnboarding = profile?.has_completed_filmmaker_onboarding || hasFilmmakerProfile;
 
   if (settings?.filmmaker_onboarding_enabled && isFilmmaker && !hasCompletedOnboarding) {
     if (location.pathname !== '/filmmaker-onboarding') {
