@@ -62,6 +62,20 @@ export interface PartnerProfileDB {
 
 export type PrimaryRoleMode = 'filmmaker' | 'partner' | 'premium' | 'free';
 
+// Credit type
+export interface CreditDB {
+  id: string;
+  user_id: string;
+  title: string;
+  role?: string;
+  year?: number;
+  project_type?: string;
+  description?: string;
+  link?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface MyProfileData {
   // Base profile
   profile: ProfileWithRoles | null;
@@ -71,6 +85,9 @@ export interface MyProfileData {
   partnerProfile: PartnerProfileDB | null;
   orderMemberProfile: OrderMemberProfile | null;
   lodgeMemberships: LodgeMembership[];
+
+  // Credits
+  credits: CreditDB[];
 
   // Computed values
   primaryRoleMode: PrimaryRoleMode;
@@ -122,23 +139,32 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
-  // Fetch partner profile
+  // Fetch partner profile (table may not exist yet - handle gracefully)
   const { data: partnerProfile, isLoading: partnerLoading } = useQuery({
     queryKey: ['partner-profile', user?.id],
     queryFn: async () => {
       if (!user) return null;
-      const { data, error } = await supabase
-        .from('partner_profiles')
-        .select('*')
-        .eq('user_id', user.id)
-        .single();
+      try {
+        const { data, error } = await supabase
+          .from('partner_profiles')
+          .select('*')
+          .eq('user_id', user.id)
+          .single();
 
-      if (error) {
-        if (error.code === 'PGRST116') return null;
-        console.error('Error fetching partner profile:', error);
+        if (error) {
+          // PGRST116 = no row found, 42P01 = table doesn't exist
+          if (error.code === 'PGRST116' || error.code === '42P01') return null;
+          // Don't log errors for missing table - it's expected until schema is created
+          if (!error.message?.includes('partner_profiles')) {
+            console.error('Error fetching partner profile:', error);
+          }
+          return null;
+        }
+        return data as PartnerProfileDB;
+      } catch {
+        // Silently handle if table doesn't exist
         return null;
       }
-      return data as PartnerProfileDB;
     },
     enabled: !!user,
   });
@@ -168,6 +194,32 @@ export function useMyProfileData(): MyProfileData {
         const memberships = await orderAPI.getMyLodgeMemberships();
         return memberships || [];
       } catch (error) {
+        return [];
+      }
+    },
+    enabled: !!user,
+  });
+
+  // Fetch credits (order by created_at since year column may not exist)
+  const { data: credits, isLoading: creditsLoading } = useQuery({
+    queryKey: ['credits', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      try {
+        const { data, error } = await supabase
+          .from('credits')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          // Table might not exist or have different schema
+          if (error.code === '42P01' || error.code === '42703') return [];
+          console.error('Error fetching credits:', error);
+          return [];
+        }
+        return (data || []) as CreditDB[];
+      } catch {
         return [];
       }
     },
@@ -206,7 +258,7 @@ export function useMyProfileData(): MyProfileData {
     primaryRoleMode = 'premium';
   }
 
-  const isLoading = profileLoading || filmmakerLoading || partnerLoading || orderLoading || lodgeLoading;
+  const isLoading = profileLoading || filmmakerLoading || partnerLoading || orderLoading || lodgeLoading || creditsLoading;
   const isError = profileError;
 
   const refetch = () => {
@@ -219,6 +271,7 @@ export function useMyProfileData(): MyProfileData {
     partnerProfile: partnerProfile || null,
     orderMemberProfile: orderMemberProfile || null,
     lodgeMemberships: lodgeMemberships || [],
+    credits: credits || [],
     primaryRoleMode,
     primaryBadge,
     allBadges,

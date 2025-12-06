@@ -77,12 +77,18 @@ export const useAccountProfile = () => {
       // Don't throw - filmmaker profile is optional
     }
 
-    // Fetch credits if they exist
-    const { data: creditsData } = await supabase
-      .from('credits')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('year', { ascending: false });
+    // Fetch credits if they exist (order by created_at since year column may not exist)
+    let creditsData = null;
+    try {
+      const { data } = await supabase
+        .from('credits')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      creditsData = data;
+    } catch {
+      // Credits table might not exist
+    }
 
     // Combine the data
     const combined: CombinedProfileData = {

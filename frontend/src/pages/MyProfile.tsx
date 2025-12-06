@@ -6,13 +6,37 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-import { useMyProfileData } from '@/hooks/useMyProfileData';
+import { useMyProfileData, type CreditDB } from '@/hooks/useMyProfileData';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { UserBadge, BadgeDisplay } from '@/components/UserBadge';
-import { Loader2, User, Edit, MapPin, Globe, ExternalLink, Crown, Landmark, ArrowRight, Sparkles, Film, Briefcase, Users } from 'lucide-react';
-import { getAllBadges, getPrimaryBadge, type BadgeConfig } from '@/lib/badges';
+import { BadgeDisplay } from '@/components/UserBadge';
+import {
+  Loader2,
+  User,
+  Edit,
+  MapPin,
+  Globe,
+  ExternalLink,
+  Crown,
+  Landmark,
+  ArrowRight,
+  Sparkles,
+  Film,
+  Briefcase,
+  Users,
+  Mail,
+  Phone,
+  CheckCircle,
+  XCircle,
+  Video,
+  Award,
+  Wrench,
+  Calendar,
+  MessageSquare,
+  Bell,
+} from 'lucide-react';
+import { type BadgeConfig } from '@/lib/badges';
 
 // Profile Header Component
 interface ProfileHeaderProps {
@@ -20,6 +44,8 @@ interface ProfileHeaderProps {
   email: string;
   avatarUrl?: string | null;
   bio?: string | null;
+  location?: string | null;
+  locationVisible?: boolean;
   primaryBadge: BadgeConfig;
   secondaryBadges: BadgeConfig[];
   roleSummary: string;
@@ -32,6 +58,8 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   email,
   avatarUrl,
   bio,
+  location,
+  locationVisible,
   primaryBadge,
   secondaryBadges,
   roleSummary,
@@ -76,6 +104,14 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
                 {/* Role Summary */}
                 <p className="text-muted-gray text-sm">{roleSummary}</p>
 
+                {/* Location */}
+                {location && locationVisible !== false && (
+                  <div className="flex items-center gap-2 text-bone-white/80">
+                    <MapPin className="h-4 w-4 text-muted-gray" />
+                    <span>{location}</span>
+                  </div>
+                )}
+
                 {/* Bio */}
                 {bio && (
                   <p className="text-bone-white/80 text-sm mt-2 max-w-xl">{bio}</p>
@@ -97,52 +133,97 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   );
 };
 
-// Filmmaker Profile Section
+// Filmmaker Profile Section - Enhanced with all fields
 interface FilmmakerSectionProps {
   filmmakerProfile: NonNullable<ReturnType<typeof useMyProfileData>['filmmakerProfile']>;
+  credits: CreditDB[];
 }
 
-const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile }) => {
+const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile, credits }) => {
   return (
     <Card className="bg-charcoal-black/50 border-muted-gray">
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Film className="h-5 w-5 text-accent-yellow" />
-          <CardTitle className="text-xl text-bone-white">Filmmaker Profile</CardTitle>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Film className="h-5 w-5 text-accent-yellow" />
+            <CardTitle className="text-xl text-bone-white">Filmmaker Profile</CardTitle>
+          </div>
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/account">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit
+            </Link>
+          </Button>
         </div>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Location */}
-        {filmmakerProfile.location && (
-          <div className="flex items-center gap-2 text-bone-white/80">
-            <MapPin className="h-4 w-4 text-muted-gray" />
-            <span>{filmmakerProfile.location}</span>
-          </div>
-        )}
+      <CardContent className="space-y-6">
+        {/* Top Grid: Location, Department, Experience */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Location */}
+          {filmmakerProfile.location && (
+            <div className="flex items-start gap-3 p-3 bg-muted-gray/10 rounded-lg">
+              <MapPin className="h-5 w-5 text-accent-yellow mt-0.5" />
+              <div>
+                <h4 className="text-xs font-semibold text-muted-gray uppercase">Location</h4>
+                <p className="text-bone-white">{filmmakerProfile.location}</p>
+              </div>
+            </div>
+          )}
 
-        {/* Department */}
-        {filmmakerProfile.department && (
-          <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Department</h4>
-            <p className="text-bone-white">{filmmakerProfile.department}</p>
-          </div>
-        )}
+          {/* Department */}
+          {filmmakerProfile.department && (
+            <div className="flex items-start gap-3 p-3 bg-muted-gray/10 rounded-lg">
+              <Wrench className="h-5 w-5 text-accent-yellow mt-0.5" />
+              <div>
+                <h4 className="text-xs font-semibold text-muted-gray uppercase">Department</h4>
+                <p className="text-bone-white">{filmmakerProfile.department}</p>
+              </div>
+            </div>
+          )}
 
-        {/* Experience Level */}
-        {filmmakerProfile.experience_level && (
-          <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Experience</h4>
-            <p className="text-bone-white capitalize">{filmmakerProfile.experience_level}</p>
-          </div>
-        )}
+          {/* Experience Level */}
+          {filmmakerProfile.experience_level && (
+            <div className="flex items-start gap-3 p-3 bg-muted-gray/10 rounded-lg">
+              <Award className="h-5 w-5 text-accent-yellow mt-0.5" />
+              <div>
+                <h4 className="text-xs font-semibold text-muted-gray uppercase">Experience</h4>
+                <p className="text-bone-white">{filmmakerProfile.experience_level}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Availability Status */}
+        <div className="flex items-center gap-4 p-4 bg-muted-gray/10 rounded-lg">
+          {filmmakerProfile.accepting_work ? (
+            <>
+              <CheckCircle className="h-6 w-6 text-green-500" />
+              <div>
+                <p className="text-green-400 font-semibold">Accepting New Work</p>
+                <p className="text-muted-gray text-sm">Open to new projects and collaborations</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <XCircle className="h-6 w-6 text-muted-gray" />
+              <div>
+                <p className="text-muted-gray font-semibold">Not Currently Accepting Work</p>
+                <p className="text-muted-gray/70 text-sm">Not available for new projects at this time</p>
+              </div>
+            </>
+          )}
+        </div>
 
         {/* Skills */}
         {filmmakerProfile.skills && filmmakerProfile.skills.length > 0 && (
           <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Skills</h4>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-3 flex items-center gap-2">
+              <Wrench className="h-4 w-4" />
+              Skills
+            </h4>
             <div className="flex flex-wrap gap-2">
               {filmmakerProfile.skills.map((skill, idx) => (
-                <span key={idx} className="px-2 py-1 bg-muted-gray/30 text-bone-white text-sm rounded">
+                <span key={idx} className="px-3 py-1.5 bg-muted-gray/30 text-bone-white text-sm rounded-lg">
                   {skill}
                 </span>
               ))}
@@ -153,10 +234,13 @@ const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile })
         {/* Available For */}
         {filmmakerProfile.available_for && filmmakerProfile.available_for.length > 0 && (
           <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Available For</h4>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-3 flex items-center gap-2">
+              <Calendar className="h-4 w-4" />
+              Available For
+            </h4>
             <div className="flex flex-wrap gap-2">
               {filmmakerProfile.available_for.map((item, idx) => (
-                <span key={idx} className="px-2 py-1 bg-accent-yellow/20 text-accent-yellow text-sm rounded">
+                <span key={idx} className="px-3 py-1.5 bg-accent-yellow/20 text-accent-yellow text-sm rounded-lg">
                   {item}
                 </span>
               ))}
@@ -164,53 +248,129 @@ const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile })
           </div>
         )}
 
-        {/* Portfolio Links */}
-        {filmmakerProfile.portfolio_website && (
+        {/* Preferred Locations */}
+        {filmmakerProfile.preferred_locations && filmmakerProfile.preferred_locations.length > 0 && (
           <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Portfolio</h4>
-            <a
-              href={filmmakerProfile.portfolio_website}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-accent-yellow hover:underline flex items-center gap-1"
-            >
-              <Globe className="h-4 w-4" />
-              {filmmakerProfile.portfolio_website}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </div>
-        )}
-
-        {/* Reel Links */}
-        {filmmakerProfile.reel_links && filmmakerProfile.reel_links.length > 0 && (
-          <div>
-            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Reels</h4>
-            <div className="space-y-1">
-              {filmmakerProfile.reel_links.map((link, idx) => (
-                <a
-                  key={idx}
-                  href={link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-accent-yellow hover:underline flex items-center gap-1 text-sm"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  {link}
-                </a>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-3 flex items-center gap-2">
+              <MapPin className="h-4 w-4" />
+              Preferred Work Locations
+            </h4>
+            <div className="flex flex-wrap gap-2">
+              {filmmakerProfile.preferred_locations.map((loc, idx) => (
+                <span key={idx} className="px-3 py-1.5 bg-blue-500/20 text-blue-300 text-sm rounded-lg">
+                  {loc}
+                </span>
               ))}
             </div>
           </div>
         )}
 
-        {/* Edit Button */}
-        <div className="pt-4 border-t border-muted-gray">
-          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
-            <Link to="/filmmaker-onboarding">
-              <Edit className="h-4 w-4 mr-2" />
-              Edit Filmmaker Profile
-            </Link>
-          </Button>
+        {/* Contact Preferences */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {filmmakerProfile.contact_method && (
+            <div className="flex items-start gap-3 p-3 bg-muted-gray/10 rounded-lg">
+              <MessageSquare className="h-5 w-5 text-accent-yellow mt-0.5" />
+              <div>
+                <h4 className="text-xs font-semibold text-muted-gray uppercase">Preferred Contact</h4>
+                <p className="text-bone-white">{filmmakerProfile.contact_method}</p>
+              </div>
+            </div>
+          )}
+          <div className="flex items-start gap-3 p-3 bg-muted-gray/10 rounded-lg">
+            <Mail className="h-5 w-5 text-accent-yellow mt-0.5" />
+            <div>
+              <h4 className="text-xs font-semibold text-muted-gray uppercase">Email on Profile</h4>
+              <p className="text-bone-white">{filmmakerProfile.show_email ? 'Visible' : 'Hidden'}</p>
+            </div>
+          </div>
         </div>
+
+        {/* Portfolio & Links */}
+        {(filmmakerProfile.portfolio_website || (filmmakerProfile.reel_links && filmmakerProfile.reel_links.length > 0)) && (
+          <div className="pt-4 border-t border-muted-gray/30">
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-3 flex items-center gap-2">
+              <Globe className="h-4 w-4" />
+              Portfolio & Links
+            </h4>
+            <div className="space-y-2">
+              {filmmakerProfile.portfolio_website && (
+                <a
+                  href={filmmakerProfile.portfolio_website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-accent-yellow hover:underline p-2 bg-muted-gray/10 rounded-lg"
+                >
+                  <Globe className="h-4 w-4" />
+                  <span className="truncate">{filmmakerProfile.portfolio_website}</span>
+                  <ExternalLink className="h-3 w-3 ml-auto flex-shrink-0" />
+                </a>
+              )}
+              {filmmakerProfile.reel_links && filmmakerProfile.reel_links.length > 0 && (
+                <div className="space-y-2">
+                  {filmmakerProfile.reel_links.map((link, idx) => (
+                    <a
+                      key={idx}
+                      href={link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-accent-yellow hover:underline p-2 bg-muted-gray/10 rounded-lg"
+                    >
+                      <Video className="h-4 w-4" />
+                      <span className="truncate">{link}</span>
+                      <ExternalLink className="h-3 w-3 ml-auto flex-shrink-0" />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Credits */}
+        {credits && credits.length > 0 && (
+          <div className="pt-4 border-t border-muted-gray/30">
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-3 flex items-center gap-2">
+              <Award className="h-4 w-4" />
+              Credits ({credits.length})
+            </h4>
+            <div className="space-y-3">
+              {credits.slice(0, 5).map((credit) => (
+                <div key={credit.id} className="p-3 bg-muted-gray/10 rounded-lg">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-semibold text-bone-white">{credit.title}</p>
+                      <div className="flex items-center gap-2 text-sm text-muted-gray">
+                        {credit.role && <span>{credit.role}</span>}
+                        {credit.role && credit.year && <span>•</span>}
+                        {credit.year && <span>{credit.year}</span>}
+                        {(credit.role || credit.year) && credit.project_type && <span>•</span>}
+                        {credit.project_type && <span className="capitalize">{credit.project_type}</span>}
+                      </div>
+                    </div>
+                    {credit.link && (
+                      <a
+                        href={credit.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-accent-yellow hover:underline flex-shrink-0"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    )}
+                  </div>
+                  {credit.description && (
+                    <p className="text-sm text-muted-gray mt-2">{credit.description}</p>
+                  )}
+                </div>
+              ))}
+              {credits.length > 5 && (
+                <p className="text-muted-gray text-sm text-center">
+                  And {credits.length - 5} more credits...
+                </p>
+              )}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -263,9 +423,17 @@ const PartnerSection: React.FC<PartnerSectionProps> = ({ partnerProfile }) => {
   return (
     <Card className="bg-charcoal-black/50 border-muted-gray">
       <CardHeader>
-        <div className="flex items-center gap-2">
-          <Briefcase className="h-5 w-5 text-blue-400" />
-          <CardTitle className="text-xl text-bone-white">Partner Profile</CardTitle>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Briefcase className="h-5 w-5 text-blue-400" />
+            <CardTitle className="text-xl text-bone-white">Partner Profile</CardTitle>
+          </div>
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/partner/profile/edit">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit
+            </Link>
+          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -328,16 +496,6 @@ const PartnerSection: React.FC<PartnerSectionProps> = ({ partnerProfile }) => {
             <p className="text-bone-white">{partnerProfile.contact_email}</p>
           </div>
         )}
-
-        {/* Edit Button */}
-        <div className="pt-4 border-t border-muted-gray">
-          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
-            <Link to="/partner/profile/edit">
-              <Edit className="h-4 w-4 mr-2" />
-              Edit Partner Profile
-            </Link>
-          </Button>
-        </div>
       </CardContent>
     </Card>
   );
@@ -461,15 +619,23 @@ const BasicProfileSection: React.FC<{
   return (
     <Card className="bg-charcoal-black/50 border-muted-gray">
       <CardHeader>
-        <div className="flex items-center gap-2">
-          {isPremium ? (
-            <Sparkles className="h-5 w-5 text-purple-400" />
-          ) : (
-            <User className="h-5 w-5 text-muted-gray" />
-          )}
-          <CardTitle className="text-xl text-bone-white">
-            {isPremium ? 'Premium Profile' : 'Profile'}
-          </CardTitle>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {isPremium ? (
+              <Sparkles className="h-5 w-5 text-purple-400" />
+            ) : (
+              <User className="h-5 w-5 text-muted-gray" />
+            )}
+            <CardTitle className="text-xl text-bone-white">
+              {isPremium ? 'Premium Profile' : 'Profile'}
+            </CardTitle>
+          </div>
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/account">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit
+            </Link>
+          </Button>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -480,10 +646,17 @@ const BasicProfileSection: React.FC<{
           </div>
         )}
 
-        {profile?.bio && (
+        {(profile as any)?.display_name && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Display Name</h4>
+            <p className="text-bone-white">{(profile as any).display_name}</p>
+          </div>
+        )}
+
+        {(profile as any)?.bio && (
           <div>
             <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Bio</h4>
-            <p className="text-bone-white/80">{profile.bio}</p>
+            <p className="text-bone-white/80">{(profile as any).bio}</p>
           </div>
         )}
 
@@ -498,15 +671,6 @@ const BasicProfileSection: React.FC<{
             </ul>
           </div>
         )}
-
-        <div className="pt-4 border-t border-muted-gray">
-          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
-            <Link to="/account">
-              <Edit className="h-4 w-4 mr-2" />
-              Edit Profile
-            </Link>
-          </Button>
-        </div>
       </CardContent>
     </Card>
   );
@@ -616,6 +780,7 @@ const MyProfile: React.FC = () => {
     partnerProfile,
     orderMemberProfile,
     lodgeMemberships,
+    credits,
     primaryRoleMode,
     primaryBadge,
     allBadges,
@@ -654,7 +819,9 @@ const MyProfile: React.FC = () => {
   const displayName = profile?.full_name || profile?.username || user.email?.split('@')[0] || 'User';
   const email = user.email || '';
   const avatarUrl = profile?.avatar_url as string | null | undefined;
-  const bio = profile?.bio as string | null | undefined;
+  const bio = filmmakerProfile?.bio || (profile as any)?.bio as string | null | undefined;
+  const location = filmmakerProfile?.location || (profile as any)?.location as string | null | undefined;
+  const locationVisible = (profile as any)?.location_visible;
 
   // Secondary badges (all except primary)
   const secondaryBadges = allBadges.filter(b => b.role !== primaryBadge.role);
@@ -672,13 +839,6 @@ const MyProfile: React.FC = () => {
   // Determine edit button and route
   let editButtonLabel = 'Edit Profile';
   let editRoute = '/account';
-  if (isFilmmaker && hasFilmmakerProfile) {
-    editButtonLabel = 'Edit Filmmaker Profile';
-    editRoute = '/filmmaker-onboarding';
-  } else if (isPartner && hasPartnerProfile) {
-    editButtonLabel = 'Edit Partner Profile';
-    editRoute = '/partner/profile/edit';
-  }
 
   return (
     <div className="container mx-auto px-4 max-w-6xl py-8 md:py-12">
@@ -696,6 +856,8 @@ const MyProfile: React.FC = () => {
             email={email}
             avatarUrl={avatarUrl}
             bio={bio}
+            location={location}
+            locationVisible={locationVisible}
             primaryBadge={primaryBadge}
             secondaryBadges={secondaryBadges}
             roleSummary={roleSummary}
@@ -715,7 +877,7 @@ const MyProfile: React.FC = () => {
           {/* Primary Role-Specific Section */}
           {primaryRoleMode === 'filmmaker' && (
             hasFilmmakerProfile && filmmakerProfile ? (
-              <FilmmakerSection filmmakerProfile={filmmakerProfile} />
+              <FilmmakerSection filmmakerProfile={filmmakerProfile} credits={credits} />
             ) : (
               <NoFilmmakerProfileCTA isFilmmaker={isFilmmaker} />
             )
@@ -736,7 +898,7 @@ const MyProfile: React.FC = () => {
           {/* Secondary Role Sections (non-primary) */}
           {primaryRoleMode !== 'filmmaker' && isFilmmaker && (
             hasFilmmakerProfile && filmmakerProfile ? (
-              <FilmmakerSection filmmakerProfile={filmmakerProfile} />
+              <FilmmakerSection filmmakerProfile={filmmakerProfile} credits={credits} />
             ) : (
               <NoFilmmakerProfileCTA isFilmmaker={isFilmmaker} />
             )
@@ -781,8 +943,14 @@ const MyProfile: React.FC = () => {
               </Button>
               <Button asChild variant="ghost" className="w-full justify-start text-bone-white hover:bg-muted-gray/50">
                 <Link to="/notifications">
-                  <Users className="h-4 w-4 mr-2" />
+                  <Bell className="h-4 w-4 mr-2" />
                   Notifications
+                </Link>
+              </Button>
+              <Button asChild variant="ghost" className="w-full justify-start text-bone-white hover:bg-muted-gray/50">
+                <Link to="/messages">
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  Messages
                 </Link>
               </Button>
             </CardContent>
