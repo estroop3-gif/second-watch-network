@@ -862,7 +862,8 @@ const MyProfile: React.FC = () => {
   // Compute header values
   const displayName = profile?.full_name || profile?.username || user.email?.split('@')[0] || 'User';
   const email = user.email || '';
-  const avatarUrl = profile?.avatar_url as string | null | undefined;
+  // Prefer auth metadata avatar (most up-to-date), fall back to profile table, then filmmaker profile
+  const avatarUrl = user.user_metadata?.avatar_url || profile?.avatar_url || filmmakerProfile?.profile_image_url as string | null | undefined;
   const bio = filmmakerProfile?.bio || (profile as any)?.bio as string | null | undefined;
   const location = filmmakerProfile?.location || (profile as any)?.location as string | null | undefined;
   const locationVisible = (profile as any)?.location_visible;
