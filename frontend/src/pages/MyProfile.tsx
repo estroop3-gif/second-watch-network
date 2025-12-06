@@ -34,6 +34,7 @@ import {
   Calendar,
   MessageSquare,
   Bell,
+  Landmark,
 } from 'lucide-react';
 import { type BadgeConfig, getBadgeConfig } from '@/lib/badges';
 import { OrderSection, OrderJoinCTA } from '@/components/profile/OrderSection';
