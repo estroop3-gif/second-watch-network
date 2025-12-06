@@ -4781,6 +4781,9 @@ async def create_budget_from_bundles(
 
             # Create line items for this category
             for idx, item in enumerate(cat.line_items):
+                # Note: estimated_total and variance are GENERATED columns in backlot_budget_line_items
+                # estimated_total = rate_amount * quantity (computed by DB)
+                # variance = actual_total - estimated_total (computed by DB)
                 item_data = {
                     "budget_id": budget_id,
                     "category_id": cat_id,
@@ -4790,9 +4793,9 @@ async def create_budget_from_bundles(
                     "rate_amount": 0,
                     "quantity": 1,
                     "units": item.default_units,
-                    "estimated_total": 0,
+                    # estimated_total is GENERATED AS (rate_amount * quantity)
                     "actual_total": 0,
-                    "variance": 0,
+                    # variance is GENERATED AS (actual_total - estimated_total)
                     "is_allocated_to_days": False,
                     "total_allocated": 0,
                     "is_locked": False,
@@ -4874,6 +4877,7 @@ async def add_bundle_to_budget(
                     # Check if line item already exists
                     existing_item = supabase.table("backlot_budget_line_items").select("id").eq("budget_id", budget_id).eq("account_code", item.account_code).execute()
                     if not existing_item.data:
+                        # Note: estimated_total and variance are GENERATED columns
                         item_data = {
                             "budget_id": budget_id,
                             "category_id": cat_id,
@@ -4883,9 +4887,9 @@ async def add_bundle_to_budget(
                             "rate_amount": 0,
                             "quantity": 1,
                             "units": item.default_units,
-                            "estimated_total": 0,
+                            # estimated_total is GENERATED AS (rate_amount * quantity)
                             "actual_total": 0,
-                            "variance": 0,
+                            # variance is GENERATED AS (actual_total - estimated_total)
                             "is_allocated_to_days": False,
                             "total_allocated": 0,
                             "is_locked": False,
@@ -4920,6 +4924,7 @@ async def add_bundle_to_budget(
 
                 # Create line items
                 for idx, item in enumerate(cat.line_items):
+                    # Note: estimated_total and variance are GENERATED columns
                     item_data = {
                         "budget_id": budget_id,
                         "category_id": cat_id,
@@ -4929,9 +4934,9 @@ async def add_bundle_to_budget(
                         "rate_amount": 0,
                         "quantity": 1,
                         "units": item.default_units,
-                        "estimated_total": 0,
+                        # estimated_total is GENERATED AS (rate_amount * quantity)
                         "actual_total": 0,
-                        "variance": 0,
+                        # variance is GENERATED AS (actual_total - estimated_total)
                         "is_allocated_to_days": False,
                         "total_allocated": 0,
                         "is_locked": False,
