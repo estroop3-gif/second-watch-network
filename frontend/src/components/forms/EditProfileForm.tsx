@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
@@ -56,6 +57,7 @@ interface EditProfileFormProps {
 const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpdate, isFilmmaker = false }) => {
   const { user, session } = useAuth();
   const qc = useQueryClient();
+  const navigate = useNavigate();
 
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -209,9 +211,10 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
       lastPersisted.current = nextPersisted;
       form.reset(nextPersisted);
 
+      // Navigate to My Profile after a brief delay to show success state
       setTimeout(() => {
-        setSaveState('idle');
-      }, 2000);
+        navigate('/my-profile');
+      }, 1000);
 
     } catch (err: any) {
       console.error('Profile save error:', err);
