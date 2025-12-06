@@ -87,6 +87,7 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   });
 
   // Check for partner profile existence (handle missing table gracefully)
+  // Note: partner_profiles table may not exist yet - check error code
   const { data: hasPartnerProfile, isLoading: partnerLoading } = useQuery({
     queryKey: ['partner-profile-exists', user?.id],
     queryFn: async () => {
@@ -97,13 +98,18 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
           .select('id')
           .eq('user_id', user.id)
           .maybeSingle();
+        // 42P01 = table doesn't exist, PGRST204 = no rows, both are fine
+        if (error && (error.code === '42P01' || error.message?.includes('does not exist'))) {
+          return false;
+        }
         return !error && !!data;
       } catch {
         return false;
       }
     },
     enabled: !!user,
-    staleTime: 60000,
+    staleTime: 300000, // Cache for 5 minutes since table likely won't suddenly appear
+    retry: false, // Don't retry if table doesn't exist
   });
 
   // Check for order member profile existence
