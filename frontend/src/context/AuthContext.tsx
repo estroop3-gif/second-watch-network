@@ -1,4 +1,4 @@
-import { createContext, useState, useEffect, useContext, ReactNode } from 'react';
+import { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
@@ -18,6 +18,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  // Track whether initial auth check is complete to prevent race conditions
+  const initialCheckComplete = useRef(false);
 
   // Check for existing session on mount
   useEffect(() => {
@@ -69,6 +71,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
 
       setLoading(false);
+      initialCheckComplete.current = true;
     };
 
     checkSession();
@@ -77,11 +80,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Only handle auth state changes after initial check is complete
+      // This prevents race conditions where this callback fires before checkSession() finishes
+      if (!initialCheckComplete.current) {
+        return;
+      }
       if (session && !localStorage.getItem('access_token')) {
         setSession(session);
         setUser(session?.user ?? null);
       }
-      setLoading(false);
     });
 
     return () => {
