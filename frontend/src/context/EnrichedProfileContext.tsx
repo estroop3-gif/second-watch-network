@@ -86,21 +86,9 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     staleTime: 60000, // Cache for 1 minute
   });
 
-  // Check for partner profile existence
-  const { data: hasPartnerProfile, isLoading: partnerLoading } = useQuery({
-    queryKey: ['partner-profile-exists', user?.id],
-    queryFn: async () => {
-      if (!user) return false;
-      const { data, error } = await supabase
-        .from('partner_profiles')
-        .select('id')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      return !error && !!data;
-    },
-    enabled: !!user,
-    staleTime: 60000,
-  });
+  // Partner profile check - disabled until partner_profiles table is created in Supabase
+  const hasPartnerProfile = false;
+  const partnerLoading = false;
 
   // Check for order member profile existence
   const { data: orderData, isLoading: orderLoading } = useQuery({
