@@ -116,8 +116,8 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
 
       <div className="h-[1px] bg-muted-gray my-2" />
 
-      {/* My Profile link - always show, but link destination depends on filmmaker status */}
-      <MenuItem to={hasOnboarded ? `/profile/${username}` : '/account'} onClick={onLinkClick}>
+      {/* My Profile link - always show */}
+      <MenuItem to="/my-profile" onClick={onLinkClick}>
         <User className="mr-3 h-5 w-5" />
         <span>My Profile</span>
       </MenuItem>

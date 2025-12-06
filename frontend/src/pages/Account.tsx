@@ -1,5 +1,5 @@
 import React from 'react';
-import { useProfile } from '@/hooks/useProfile';
+import { useAccountProfile } from '@/hooks/useAccountProfile';
 import { Loader2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import EditProfileForm from '@/components/forms/EditProfileForm';
@@ -11,7 +11,7 @@ import { usePermissions } from '@/hooks/usePermissions';
 
 const Account = () => {
   const { user } = useAuth();
-  const { profile, isLoading, isError, refetch } = useProfile();
+  const { profile, isLoading, isError, refetch } = useAccountProfile();
   const { hasAnyRole } = usePermissions();
 
   if (isLoading) {
@@ -48,8 +48,12 @@ const Account = () => {
           )}
         </TabsList>
         <TabsContent value="profile" className="mt-6">
-          {/* Pass an empty object if profile is missing so the form can create it */}
-          <EditProfileForm profile={safeProfile} onProfileUpdate={refetch} />
+          {/* Pass combined profile with filmmaker data, plus isFilmmaker flag */}
+          <EditProfileForm
+            profile={safeProfile}
+            onProfileUpdate={refetch}
+            isFilmmaker={isFilmmakerOrAdmin}
+          />
         </TabsContent>
         {isFilmmakerOrAdmin && (
           <>

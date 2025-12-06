@@ -169,9 +169,9 @@ export const UserNav = () => {
 
         <DropdownMenuSeparator className="bg-muted-gray" />
 
-        {/* My Profile link - always show, but link destination depends on filmmaker status */}
+        {/* My Profile link - always show */}
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
-          <Link to={hasOnboarded ? `/profile/${username}` : '/account'}>
+          <Link to="/my-profile">
             <User className="mr-2 h-4 w-4" />
             <span>My Profile</span>
           </Link>

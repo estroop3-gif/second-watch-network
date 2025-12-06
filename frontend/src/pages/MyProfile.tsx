@@ -1,0 +1,796 @@
+/**
+ * MyProfile Page
+ * Role-aware profile page for the currently logged-in user.
+ * Shows different experiences for free, premium, filmmaker, partner, and Order/Lodge users.
+ */
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
+import { useMyProfileData } from '@/hooks/useMyProfileData';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { UserBadge, BadgeDisplay } from '@/components/UserBadge';
+import { Loader2, User, Edit, MapPin, Globe, ExternalLink, Crown, Landmark, ArrowRight, Sparkles, Film, Briefcase, Users } from 'lucide-react';
+import { getAllBadges, getPrimaryBadge, type BadgeConfig } from '@/lib/badges';
+
+// Profile Header Component
+interface ProfileHeaderProps {
+  displayName: string;
+  email: string;
+  avatarUrl?: string | null;
+  bio?: string | null;
+  primaryBadge: BadgeConfig;
+  secondaryBadges: BadgeConfig[];
+  roleSummary: string;
+  editButtonLabel: string;
+  editRoute: string;
+}
+
+const ProfileHeader: React.FC<ProfileHeaderProps> = ({
+  displayName,
+  email,
+  avatarUrl,
+  bio,
+  primaryBadge,
+  secondaryBadges,
+  roleSummary,
+  editButtonLabel,
+  editRoute,
+}) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardContent className="p-6">
+        <div className="flex flex-col md:flex-row gap-6">
+          {/* Avatar */}
+          <div className="flex-shrink-0">
+            <Avatar className="h-24 w-24 md:h-32 md:w-32 border-2 border-accent-yellow">
+              <AvatarImage src={avatarUrl || undefined} alt={displayName} />
+              <AvatarFallback className="bg-muted-gray text-bone-white text-2xl">
+                <User className="h-12 w-12" />
+              </AvatarFallback>
+            </Avatar>
+          </div>
+
+          {/* Info */}
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+              <div className="space-y-2">
+                {/* Name and Primary Badge */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <h1 className="text-2xl md:text-3xl font-heading font-bold text-bone-white">
+                    {displayName}
+                  </h1>
+                  <BadgeDisplay badge={primaryBadge} size="md" />
+                </div>
+
+                {/* Secondary Badges */}
+                {secondaryBadges.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {secondaryBadges.map((badge) => (
+                      <BadgeDisplay key={badge.role} badge={badge} size="sm" rotate={false} />
+                    ))}
+                  </div>
+                )}
+
+                {/* Role Summary */}
+                <p className="text-muted-gray text-sm">{roleSummary}</p>
+
+                {/* Bio */}
+                {bio && (
+                  <p className="text-bone-white/80 text-sm mt-2 max-w-xl">{bio}</p>
+                )}
+              </div>
+
+              {/* Edit Button */}
+              <Button asChild variant="outline" className="border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black flex-shrink-0">
+                <Link to={editRoute}>
+                  <Edit className="h-4 w-4 mr-2" />
+                  {editButtonLabel}
+                </Link>
+              </Button>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// Filmmaker Profile Section
+interface FilmmakerSectionProps {
+  filmmakerProfile: NonNullable<ReturnType<typeof useMyProfileData>['filmmakerProfile']>;
+}
+
+const FilmmakerSection: React.FC<FilmmakerSectionProps> = ({ filmmakerProfile }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Film className="h-5 w-5 text-accent-yellow" />
+          <CardTitle className="text-xl text-bone-white">Filmmaker Profile</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Location */}
+        {filmmakerProfile.location && (
+          <div className="flex items-center gap-2 text-bone-white/80">
+            <MapPin className="h-4 w-4 text-muted-gray" />
+            <span>{filmmakerProfile.location}</span>
+          </div>
+        )}
+
+        {/* Department */}
+        {filmmakerProfile.department && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Department</h4>
+            <p className="text-bone-white">{filmmakerProfile.department}</p>
+          </div>
+        )}
+
+        {/* Experience Level */}
+        {filmmakerProfile.experience_level && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Experience</h4>
+            <p className="text-bone-white capitalize">{filmmakerProfile.experience_level}</p>
+          </div>
+        )}
+
+        {/* Skills */}
+        {filmmakerProfile.skills && filmmakerProfile.skills.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Skills</h4>
+            <div className="flex flex-wrap gap-2">
+              {filmmakerProfile.skills.map((skill, idx) => (
+                <span key={idx} className="px-2 py-1 bg-muted-gray/30 text-bone-white text-sm rounded">
+                  {skill}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Available For */}
+        {filmmakerProfile.available_for && filmmakerProfile.available_for.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Available For</h4>
+            <div className="flex flex-wrap gap-2">
+              {filmmakerProfile.available_for.map((item, idx) => (
+                <span key={idx} className="px-2 py-1 bg-accent-yellow/20 text-accent-yellow text-sm rounded">
+                  {item}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Portfolio Links */}
+        {filmmakerProfile.portfolio_website && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Portfolio</h4>
+            <a
+              href={filmmakerProfile.portfolio_website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent-yellow hover:underline flex items-center gap-1"
+            >
+              <Globe className="h-4 w-4" />
+              {filmmakerProfile.portfolio_website}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        )}
+
+        {/* Reel Links */}
+        {filmmakerProfile.reel_links && filmmakerProfile.reel_links.length > 0 && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-2">Reels</h4>
+            <div className="space-y-1">
+              {filmmakerProfile.reel_links.map((link, idx) => (
+                <a
+                  key={idx}
+                  href={link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent-yellow hover:underline flex items-center gap-1 text-sm"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  {link}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Edit Button */}
+        <div className="pt-4 border-t border-muted-gray">
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/filmmaker-onboarding">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit Filmmaker Profile
+            </Link>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// No Filmmaker Profile CTA
+const NoFilmmakerProfileCTA: React.FC<{ isFilmmaker: boolean }> = ({ isFilmmaker }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray border-dashed">
+      <CardContent className="p-6 text-center">
+        <Film className="h-12 w-12 text-muted-gray mx-auto mb-4" />
+        {isFilmmaker ? (
+          <>
+            <h3 className="text-lg font-semibold text-bone-white mb-2">Complete Your Filmmaker Profile</h3>
+            <p className="text-muted-gray mb-4">
+              You have filmmaker access but haven't set up your public profile yet.
+            </p>
+            <Button asChild className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90">
+              <Link to="/filmmaker-onboarding">
+                Create Filmmaker Profile
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Link>
+            </Button>
+          </>
+        ) : (
+          <>
+            <h3 className="text-lg font-semibold text-bone-white mb-2">Become a Filmmaker</h3>
+            <p className="text-muted-gray mb-4">
+              Are you a filmmaker? Apply to unlock full profile features and community access.
+            </p>
+            <Button asChild variant="outline" className="border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black">
+              <Link to="/apply/filmmaker">
+                Apply as Filmmaker
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Link>
+            </Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// Partner Profile Section
+interface PartnerSectionProps {
+  partnerProfile: NonNullable<ReturnType<typeof useMyProfileData>['partnerProfile']>;
+}
+
+const PartnerSection: React.FC<PartnerSectionProps> = ({ partnerProfile }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Briefcase className="h-5 w-5 text-blue-400" />
+          <CardTitle className="text-xl text-bone-white">Partner Profile</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {/* Organization Logo & Name */}
+        <div className="flex items-center gap-4">
+          {partnerProfile.logo_url && (
+            <img
+              src={partnerProfile.logo_url}
+              alt={partnerProfile.organization_name || 'Organization'}
+              className="h-16 w-16 object-contain rounded"
+            />
+          )}
+          <div>
+            {partnerProfile.organization_name && (
+              <h3 className="text-lg font-semibold text-bone-white">{partnerProfile.organization_name}</h3>
+            )}
+            {partnerProfile.organization_type && (
+              <p className="text-muted-gray text-sm capitalize">{partnerProfile.organization_type}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Location */}
+        {(partnerProfile.city || partnerProfile.region) && (
+          <div className="flex items-center gap-2 text-bone-white/80">
+            <MapPin className="h-4 w-4 text-muted-gray" />
+            <span>{[partnerProfile.city, partnerProfile.region].filter(Boolean).join(', ')}</span>
+          </div>
+        )}
+
+        {/* Description */}
+        {partnerProfile.description && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">About</h4>
+            <p className="text-bone-white/80">{partnerProfile.description}</p>
+          </div>
+        )}
+
+        {/* Website */}
+        {partnerProfile.website_url && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Website</h4>
+            <a
+              href={partnerProfile.website_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent-yellow hover:underline flex items-center gap-1"
+            >
+              <Globe className="h-4 w-4" />
+              {partnerProfile.website_url}
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        )}
+
+        {/* Contact Email */}
+        {partnerProfile.contact_email && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Contact</h4>
+            <p className="text-bone-white">{partnerProfile.contact_email}</p>
+          </div>
+        )}
+
+        {/* Edit Button */}
+        <div className="pt-4 border-t border-muted-gray">
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/partner/profile/edit">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit Partner Profile
+            </Link>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// No Partner Profile CTA
+const NoPartnerProfileCTA: React.FC<{ isPartner: boolean }> = ({ isPartner }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray border-dashed">
+      <CardContent className="p-6 text-center">
+        <Briefcase className="h-12 w-12 text-muted-gray mx-auto mb-4" />
+        {isPartner ? (
+          <>
+            <h3 className="text-lg font-semibold text-bone-white mb-2">Complete Your Partner Profile</h3>
+            <p className="text-muted-gray mb-4">
+              Set up your organization's profile to connect with filmmakers.
+            </p>
+            <Button asChild className="bg-blue-500 text-white hover:bg-blue-600">
+              <Link to="/partner/profile/edit">
+                Create Partner Profile
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Link>
+            </Button>
+          </>
+        ) : (
+          <>
+            <h3 className="text-lg font-semibold text-bone-white mb-2">Partner with Us</h3>
+            <p className="text-muted-gray mb-4">
+              Have a church, brand, or organization? Apply to become a partner.
+            </p>
+            <Button asChild variant="outline" className="border-blue-500 text-blue-400 hover:bg-blue-500 hover:text-white">
+              <Link to="/partners/apply">
+                Apply as Partner
+                <ArrowRight className="h-4 w-4 ml-2" />
+              </Link>
+            </Button>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// Order & Lodge Overlay Section
+interface OrderOverlayProps {
+  orderMemberProfile: NonNullable<ReturnType<typeof useMyProfileData>['orderMemberProfile']>;
+  lodgeMemberships: ReturnType<typeof useMyProfileData>['lodgeMemberships'];
+  isLodgeOfficer: boolean;
+}
+
+const OrderOverlay: React.FC<OrderOverlayProps> = ({ orderMemberProfile, lodgeMemberships, isLodgeOfficer }) => {
+  const activeLodge = lodgeMemberships.find(m => m.status === 'active');
+
+  return (
+    <Card className="bg-emerald-950/30 border-emerald-700">
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-600/20 rounded-lg">
+              <Landmark className="h-6 w-6 text-emerald-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-emerald-200">Order Member</h3>
+                <span className="px-2 py-0.5 bg-emerald-600/30 text-emerald-300 text-xs rounded capitalize">
+                  {orderMemberProfile.status || 'active'}
+                </span>
+              </div>
+              <p className="text-sm text-emerald-300/70">
+                {orderMemberProfile.primary_track && `${orderMemberProfile.primary_track} Track`}
+                {orderMemberProfile.primary_track && orderMemberProfile.city && ' • '}
+                {orderMemberProfile.city}
+                {orderMemberProfile.region && `, ${orderMemberProfile.region}`}
+              </p>
+            </div>
+          </div>
+          <Button asChild variant="outline" size="sm" className="border-emerald-600 text-emerald-300 hover:bg-emerald-600/20">
+            <Link to="/order/dashboard">
+              Order Dashboard
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Link>
+          </Button>
+        </div>
+
+        {/* Lodge Info */}
+        {activeLodge && (
+          <div className="mt-4 pt-4 border-t border-emerald-700/50">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <Crown className="h-4 w-4 text-amber-400" />
+                <span className="text-amber-200">
+                  Lodge: {activeLodge.lodge?.name || 'Unknown'}
+                  {activeLodge.lodge?.city && `, ${activeLodge.lodge.city}`}
+                </span>
+                {isLodgeOfficer && (
+                  <span className="px-1.5 py-0.5 bg-amber-600/30 text-amber-300 text-xs rounded">
+                    Officer
+                  </span>
+                )}
+              </div>
+              {isLodgeOfficer && activeLodge.lodge?.id && (
+                <Button asChild variant="ghost" size="sm" className="text-amber-300 hover:bg-amber-600/20">
+                  <Link to={`/order/lodges/${activeLodge.lodge.id}`}>
+                    Manage Lodge
+                  </Link>
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// Premium/Free Profile Section
+const BasicProfileSection: React.FC<{
+  isPremium: boolean;
+  profile: ReturnType<typeof useMyProfileData>['profile'];
+}> = ({ isPremium, profile }) => {
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          {isPremium ? (
+            <Sparkles className="h-5 w-5 text-purple-400" />
+          ) : (
+            <User className="h-5 w-5 text-muted-gray" />
+          )}
+          <CardTitle className="text-xl text-bone-white">
+            {isPremium ? 'Premium Profile' : 'Profile'}
+          </CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {profile?.full_name && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Name</h4>
+            <p className="text-bone-white">{profile.full_name}</p>
+          </div>
+        )}
+
+        {profile?.bio && (
+          <div>
+            <h4 className="text-sm font-semibold text-muted-gray uppercase mb-1">Bio</h4>
+            <p className="text-bone-white/80">{profile.bio}</p>
+          </div>
+        )}
+
+        {isPremium && (
+          <div className="pt-4 border-t border-muted-gray">
+            <h4 className="text-sm font-semibold text-purple-400 uppercase mb-2">Premium Benefits</h4>
+            <ul className="text-sm text-bone-white/70 space-y-1">
+              <li>• Enhanced profile visibility</li>
+              <li>• Green Room voting access</li>
+              <li>• Priority community features</li>
+              <li>• Exclusive content access</li>
+            </ul>
+          </div>
+        )}
+
+        <div className="pt-4 border-t border-muted-gray">
+          <Button asChild variant="outline" size="sm" className="border-muted-gray text-bone-white hover:bg-muted-gray/50">
+            <Link to="/account">
+              <Edit className="h-4 w-4 mr-2" />
+              Edit Profile
+            </Link>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// Roles & Upgrades Panel
+const RolesUpgradesPanel: React.FC<{
+  isFilmmaker: boolean;
+  isPartner: boolean;
+  isPremium: boolean;
+  isOrderMember: boolean;
+}> = ({ isFilmmaker, isPartner, isPremium, isOrderMember }) => {
+  const upgrades = [];
+
+  if (!isFilmmaker) {
+    upgrades.push({
+      title: 'Filmmaker',
+      description: 'Submit projects, build your portfolio, and connect with the community.',
+      cta: 'Apply',
+      route: '/apply/filmmaker',
+      icon: Film,
+      color: 'accent-yellow',
+    });
+  }
+
+  if (!isPartner) {
+    upgrades.push({
+      title: 'Partner',
+      description: 'Churches, brands, and organizations can sponsor and hire filmmakers.',
+      cta: 'Apply',
+      route: '/partners/apply',
+      icon: Briefcase,
+      color: 'blue-400',
+    });
+  }
+
+  if (!isPremium && !isFilmmaker) {
+    upgrades.push({
+      title: 'Premium',
+      description: 'Unlock enhanced features, Green Room voting, and exclusive content.',
+      cta: 'Upgrade',
+      route: '/subscriptions',
+      icon: Sparkles,
+      color: 'purple-400',
+    });
+  }
+
+  if (!isOrderMember) {
+    upgrades.push({
+      title: 'The Order',
+      description: 'Join an elite network of Christian filmmakers. By invitation or application.',
+      cta: 'Learn More',
+      route: '/order',
+      icon: Landmark,
+      color: 'emerald-400',
+    });
+  }
+
+  if (upgrades.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-lg text-bone-white flex items-center gap-2">
+          <Users className="h-5 w-5 text-accent-yellow" />
+          Roles & Upgrades
+        </CardTitle>
+        <CardDescription className="text-muted-gray">
+          Unlock more features and community access
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {upgrades.map((upgrade) => (
+          <div
+            key={upgrade.title}
+            className="flex items-center justify-between gap-3 p-3 bg-muted-gray/10 rounded-lg"
+          >
+            <div className="flex items-center gap-3">
+              <upgrade.icon className={`h-5 w-5 text-${upgrade.color}`} />
+              <div>
+                <p className="font-medium text-bone-white text-sm">{upgrade.title}</p>
+                <p className="text-xs text-muted-gray line-clamp-1">{upgrade.description}</p>
+              </div>
+            </div>
+            <Button asChild variant="ghost" size="sm" className="text-accent-yellow hover:bg-accent-yellow/10 flex-shrink-0">
+              <Link to={upgrade.route}>
+                {upgrade.cta}
+              </Link>
+            </Button>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+};
+
+// Main MyProfile Page Component
+const MyProfile: React.FC = () => {
+  const { user } = useAuth();
+  const profileData = useMyProfileData();
+
+  const {
+    profile,
+    filmmakerProfile,
+    partnerProfile,
+    orderMemberProfile,
+    lodgeMemberships,
+    primaryRoleMode,
+    primaryBadge,
+    allBadges,
+    isFilmmaker,
+    isPartner,
+    isPremium,
+    isOrderMember,
+    isLodgeOfficer,
+    hasFilmmakerProfile,
+    hasPartnerProfile,
+    hasOrderProfile,
+    isLoading,
+    isError,
+  } = profileData;
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center items-center min-h-[60vh]">
+        <Loader2 className="h-12 w-12 animate-spin text-accent-yellow" />
+      </div>
+    );
+  }
+
+  if (isError || !user) {
+    return (
+      <div className="container mx-auto px-4 py-12 text-center">
+        <p className="text-bone-white">Could not load profile data. Please try again.</p>
+        <Button asChild className="mt-4">
+          <Link to="/login">Log In</Link>
+        </Button>
+      </div>
+    );
+  }
+
+  // Compute header values
+  const displayName = profile?.full_name || profile?.username || user.email?.split('@')[0] || 'User';
+  const email = user.email || '';
+  const avatarUrl = profile?.avatar_url as string | null | undefined;
+  const bio = profile?.bio as string | null | undefined;
+
+  // Secondary badges (all except primary)
+  const secondaryBadges = allBadges.filter(b => b.role !== primaryBadge.role);
+
+  // Role summary text
+  const roleSummaryParts: string[] = [];
+  if (isFilmmaker) roleSummaryParts.push('Filmmaker');
+  if (isPartner) roleSummaryParts.push('Partner');
+  if (isOrderMember) roleSummaryParts.push('Order Member');
+  if (isLodgeOfficer) roleSummaryParts.push('Lodge Officer');
+  if (isPremium && !isFilmmaker && !isPartner) roleSummaryParts.push('Premium');
+  if (roleSummaryParts.length === 0) roleSummaryParts.push('Free Member');
+  const roleSummary = roleSummaryParts.join(' • ');
+
+  // Determine edit button and route
+  let editButtonLabel = 'Edit Profile';
+  let editRoute = '/account';
+  if (isFilmmaker && hasFilmmakerProfile) {
+    editButtonLabel = 'Edit Filmmaker Profile';
+    editRoute = '/filmmaker-onboarding';
+  } else if (isPartner && hasPartnerProfile) {
+    editButtonLabel = 'Edit Partner Profile';
+    editRoute = '/partner/profile/edit';
+  }
+
+  return (
+    <div className="container mx-auto px-4 max-w-6xl py-8 md:py-12">
+      {/* Page Title */}
+      <h1 className="text-3xl md:text-5xl font-heading tracking-tighter mb-8 -rotate-1">
+        My <span className="font-spray text-accent-yellow">Profile</span>
+      </h1>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Main Content - 2 columns on desktop */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Profile Header */}
+          <ProfileHeader
+            displayName={displayName}
+            email={email}
+            avatarUrl={avatarUrl}
+            bio={bio}
+            primaryBadge={primaryBadge}
+            secondaryBadges={secondaryBadges}
+            roleSummary={roleSummary}
+            editButtonLabel={editButtonLabel}
+            editRoute={editRoute}
+          />
+
+          {/* Order Overlay (if member) */}
+          {hasOrderProfile && orderMemberProfile && (
+            <OrderOverlay
+              orderMemberProfile={orderMemberProfile}
+              lodgeMemberships={lodgeMemberships}
+              isLodgeOfficer={isLodgeOfficer}
+            />
+          )}
+
+          {/* Primary Role-Specific Section */}
+          {primaryRoleMode === 'filmmaker' && (
+            hasFilmmakerProfile && filmmakerProfile ? (
+              <FilmmakerSection filmmakerProfile={filmmakerProfile} />
+            ) : (
+              <NoFilmmakerProfileCTA isFilmmaker={isFilmmaker} />
+            )
+          )}
+
+          {primaryRoleMode === 'partner' && (
+            hasPartnerProfile && partnerProfile ? (
+              <PartnerSection partnerProfile={partnerProfile} />
+            ) : (
+              <NoPartnerProfileCTA isPartner={isPartner} />
+            )
+          )}
+
+          {(primaryRoleMode === 'premium' || primaryRoleMode === 'free') && (
+            <BasicProfileSection isPremium={isPremium} profile={profile} />
+          )}
+
+          {/* Secondary Role Sections (non-primary) */}
+          {primaryRoleMode !== 'filmmaker' && isFilmmaker && (
+            hasFilmmakerProfile && filmmakerProfile ? (
+              <FilmmakerSection filmmakerProfile={filmmakerProfile} />
+            ) : (
+              <NoFilmmakerProfileCTA isFilmmaker={isFilmmaker} />
+            )
+          )}
+
+          {primaryRoleMode !== 'partner' && isPartner && (
+            hasPartnerProfile && partnerProfile ? (
+              <PartnerSection partnerProfile={partnerProfile} />
+            ) : (
+              <NoPartnerProfileCTA isPartner={isPartner} />
+            )
+          )}
+        </div>
+
+        {/* Sidebar - 1 column on desktop */}
+        <div className="space-y-6">
+          {/* Roles & Upgrades Panel */}
+          <RolesUpgradesPanel
+            isFilmmaker={isFilmmaker}
+            isPartner={isPartner}
+            isPremium={isPremium}
+            isOrderMember={isOrderMember}
+          />
+
+          {/* Quick Links */}
+          <Card className="bg-charcoal-black/50 border-muted-gray">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg text-bone-white">Quick Links</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <Button asChild variant="ghost" className="w-full justify-start text-bone-white hover:bg-muted-gray/50">
+                <Link to="/account">
+                  <Edit className="h-4 w-4 mr-2" />
+                  Account Settings
+                </Link>
+              </Button>
+              <Button asChild variant="ghost" className="w-full justify-start text-bone-white hover:bg-muted-gray/50">
+                <Link to="/account/subscription-settings">
+                  <Sparkles className="h-4 w-4 mr-2" />
+                  Subscription & Billing
+                </Link>
+              </Button>
+              <Button asChild variant="ghost" className="w-full justify-start text-bone-white hover:bg-muted-gray/50">
+                <Link to="/notifications">
+                  <Users className="h-4 w-4 mr-2" />
+                  Notifications
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MyProfile;

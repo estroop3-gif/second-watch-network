@@ -35,6 +35,7 @@ import FilmmakerSubmissions from "./pages/FilmmakerSubmissions";
 import Messages from "./pages/Messages";
 import Filmmakers from "./pages/Filmmakers";
 import FilmmakerProfile from "./pages/FilmmakerProfile";
+import MyProfile from "./pages/MyProfile";
 import MySubmissions from "./pages/MySubmissions";
 import Notifications from "./pages/Notifications";
 import OnboardingGate from "./components/OnboardingGate";
@@ -148,6 +149,7 @@ const App = () => (
                     <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/messages" element={<Messages />} />
+                    <Route path="/my-profile" element={<MyProfile />} />
                     <Route path="/filmmakers" element={<Filmmakers />} />
                     <Route path="/the-backlot" element={<TheBacklot />} />
                     <Route path="/the-backlot/threads/:threadId" element={<ThreadPage />} />
