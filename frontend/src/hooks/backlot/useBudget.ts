@@ -34,6 +34,13 @@ import {
   BudgetSyncSummary,
   DailyBudgetSyncResult,
   BudgetPdfExportOptions,
+  // Bundle types for intentional budget creation
+  DepartmentBundle,
+  BundleListResponse,
+  RecommendedBundlesResponse,
+  CreateBudgetFromBundlesInput,
+  BudgetCreationResult,
+  AddBundleResult,
 } from '@/types/backlot';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -254,6 +261,73 @@ export function useLockBudget() {
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
+    },
+  });
+}
+
+/**
+ * Get ALL budgets for a project (supports multiple budgets per project)
+ */
+export function useProjectBudgets(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-project-budgets', projectId],
+    queryFn: async (): Promise<BacklotBudget[]> => {
+      if (!projectId) return [];
+
+      const token = await getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budgets`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budgets');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Delete a budget (destructive - removes all associated data)
+ */
+export function useDeleteBudget() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      budgetId,
+      projectId,
+    }: {
+      budgetId: string;
+      projectId: string;
+    }): Promise<{ success: boolean; message: string }> => {
+      const token = await getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete budget' }));
+        throw new Error(error.detail || 'Failed to delete budget');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      // Invalidate all budget-related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-budgets', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', variables.projectId] });
     },
   });
 }
@@ -1612,13 +1686,172 @@ export function useExportBudgetPdf() {
         }
       }
 
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      const downloadLink = document.createElement('a');
+      downloadLink.href = downloadUrl;
+      downloadLink.download = filename;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
       window.URL.revokeObjectURL(downloadUrl);
+    },
+  });
+}
+
+// =====================================================
+// BUDGET BUNDLES - Intentional Budget Creation
+// =====================================================
+
+/**
+ * Get all available department bundles
+ */
+export function useBudgetBundles() {
+  return useQuery({
+    queryKey: ['budget-bundles'],
+    queryFn: async (): Promise<BundleListResponse> => {
+      const response = await fetch(`${API_BASE}/backlot/budget-bundles`);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budget bundles');
+      }
+
+      return response.json();
+    },
+    staleTime: 1000 * 60 * 60, // Cache for 1 hour - bundles are static
+  });
+}
+
+/**
+ * Get recommended bundles for a project type
+ */
+export function useRecommendedBundles(projectType: BacklotBudgetProjectType | null) {
+  return useQuery({
+    queryKey: ['budget-bundles-recommended', projectType],
+    queryFn: async (): Promise<RecommendedBundlesResponse> => {
+      if (!projectType) throw new Error('Project type required');
+
+      const response = await fetch(`${API_BASE}/backlot/budget-bundles/recommended/${projectType}`);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch recommended bundles');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectType,
+    staleTime: 1000 * 60 * 60, // Cache for 1 hour
+  });
+}
+
+/**
+ * Get a single bundle by ID
+ */
+export function useBundleById(bundleId: string | null) {
+  return useQuery({
+    queryKey: ['budget-bundle', bundleId],
+    queryFn: async (): Promise<DepartmentBundle> => {
+      if (!bundleId) throw new Error('Bundle ID required');
+
+      const response = await fetch(`${API_BASE}/backlot/budget-bundles/${bundleId}`);
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch bundle');
+      }
+
+      return response.json();
+    },
+    enabled: !!bundleId,
+    staleTime: 1000 * 60 * 60,
+  });
+}
+
+/**
+ * Create a budget from selected bundles
+ * This is the PRIMARY budget creation method that respects intentional seeding
+ */
+export function useCreateBudgetFromBundles() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      options,
+    }: {
+      projectId: string;
+      options: CreateBudgetFromBundlesInput;
+    }): Promise<BudgetCreationResult> => {
+      const token = await getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/from-bundles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(options),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create budget' }));
+        throw new Error(error.detail || 'Failed to create budget');
+      }
+
+      return response.json();
+    },
+    onSuccess: (data, variables) => {
+      // Invalidate all budget queries for this project
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items'] });
+    },
+  });
+}
+
+/**
+ * Add a bundle to an existing budget
+ * Use this to incrementally add departments after initial creation
+ */
+export function useAddBundleToBudget() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      budgetId,
+      bundleId,
+      essentialsOnly = false,
+    }: {
+      budgetId: string;
+      bundleId: string;
+      essentialsOnly?: boolean;
+    }): Promise<AddBundleResult> => {
+      const token = await getAuthToken();
+
+      const params = new URLSearchParams({
+        bundle_id: bundleId,
+        essentials_only: String(essentialsOnly),
+      });
+
+      const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/add-bundle?${params}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to add bundle' }));
+        throw new Error(error.detail || 'Failed to add bundle');
+      }
+
+      return response.json();
+    },
+    onSuccess: (data, variables) => {
+      // Invalidate budget queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', variables.budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', variables.budgetId] });
     },
   });
 }

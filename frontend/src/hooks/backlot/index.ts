@@ -84,6 +84,8 @@ export {
   useCreateBudget,
   useUpdateBudget,
   useLockBudget,
+  useProjectBudgets,
+  useDeleteBudget,
   // Categories
   useBudgetCategories,
   useBudgetCategoryMutations,
@@ -122,4 +124,10 @@ export {
   useSyncBudgetToDay,
   // PDF Export
   useExportBudgetPdf,
+  // Department Bundles (intentional budget creation flow)
+  useBudgetBundles,
+  useRecommendedBundles,
+  useBundleById,
+  useCreateBudgetFromBundles,
+  useAddBundleToBudget,
 } from './useBudget';

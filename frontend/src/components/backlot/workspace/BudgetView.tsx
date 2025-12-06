@@ -67,6 +67,8 @@ import {
   useCreateBudget,
   useUpdateBudget,
   useLockBudget,
+  useProjectBudgets,
+  useDeleteBudget,
   useBudgetCategories,
   useBudgetCategoryMutations,
   useBudgetLineItems,
@@ -79,6 +81,8 @@ import {
   useSyncBudgetToDaily,
   useExportBudgetPdf,
 } from '@/hooks/backlot';
+import { BudgetCreationModal } from './BudgetCreationModal';
+import { BudgetDeleteConfirmDialog } from './BudgetDeleteConfirmDialog';
 import {
   BacklotBudget,
   BacklotBudgetCategory,
@@ -542,19 +546,29 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const { data: topSheet, isLoading: topSheetLoading } = useTopSheet(projectId);
   const { data: templateTypes } = useBudgetTemplateTypes();
 
+  // Multiple budgets support
+  const { data: allBudgets } = useProjectBudgets(projectId);
+  const [selectedBudgetId, setSelectedBudgetId] = useState<string | null>(null);
+
+  // Use selected budget or first available
+  const activeBudget = selectedBudgetId
+    ? allBudgets?.find((b) => b.id === selectedBudgetId) || budget
+    : budget;
+
   const createBudget = useCreateBudget();
   const updateBudget = useUpdateBudget();
   const lockBudget = useLockBudget();
+  const deleteBudget = useDeleteBudget();
   const createFromTemplate = useCreateBudgetFromTemplate();
   const computeTopSheet = useComputeTopSheet();
   const syncToDaily = useSyncBudgetToDaily();
   const exportPdf = useExportBudgetPdf();
   const { createCategory, updateCategory, deleteCategory } = useBudgetCategoryMutations(
-    budget?.id || null,
+    activeBudget?.id || null,
     projectId
   );
   const { createLineItem, updateLineItem, deleteLineItem } = useLineItemMutations(
-    budget?.id || null,
+    activeBudget?.id || null,
     projectId
   );
 
@@ -565,10 +579,13 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showLineItemModal, setShowLineItemModal] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showCreationModal, setShowCreationModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [editingCategory, setEditingCategory] = useState<BacklotBudgetCategory | null>(null);
   const [editingLineItem, setEditingLineItem] = useState<BacklotBudgetLineItem | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Form states
@@ -669,6 +686,24 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       await lockBudget.mutateAsync({ projectId });
     } catch (err) {
       console.error('Failed to lock budget:', err);
+    }
+  };
+
+  // Delete budget handler (called from triple-confirmation dialog)
+  const handleDeleteBudget = async () => {
+    if (!budget) return;
+    setIsDeleting(true);
+    try {
+      await deleteBudget.mutateAsync({ budgetId: budget.id, projectId });
+      // Reset selected budget if we deleted it
+      if (selectedBudgetId === budget.id) {
+        setSelectedBudgetId(null);
+      }
+    } catch (err) {
+      console.error('Failed to delete budget:', err);
+      throw err; // Re-throw so dialog can handle error state
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -868,40 +903,26 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           <DollarSign className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-bone-white mb-2">No budget yet</h3>
           <p className="text-muted-gray mb-6 max-w-md mx-auto">
-            Create a budget to track your production costs. Choose from industry-standard templates
-            or start from scratch.
+            Create a budget to track your production costs. Start from scratch, use department bundles,
+            or select core essentials to get started quickly.
           </p>
           {canEdit && (
-            <div className="flex justify-center gap-3">
-              <Button
-                variant="outline"
-                onClick={() => {
-                  setBudgetForm({
-                    name: 'Production Budget',
-                    description: '',
-                    currency: 'USD',
-                    contingency_percent: 10,
-                    notes: '',
-                  });
-                  setShowBudgetModal(true);
-                }}
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Start from Scratch
-              </Button>
-              <Button
-                onClick={() => {
-                  setTemplateForm({ projectType: '', shootDays: 10, prepDays: 5, wrapDays: 2 });
-                  setShowTemplateModal(true);
-                }}
-                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-              >
-                <FileSpreadsheet className="w-4 h-4 mr-2" />
-                Use Template
-              </Button>
-            </div>
+            <Button
+              onClick={() => setShowCreationModal(true)}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Budget
+            </Button>
           )}
         </div>
+
+        {/* Budget Creation Modal - intentional flow with department bundles */}
+        <BudgetCreationModal
+          projectId={projectId}
+          isOpen={showCreationModal}
+          onClose={() => setShowCreationModal(false)}
+        />
 
         {/* Template Selection Modal */}
         <Dialog open={showTemplateModal} onOpenChange={setShowTemplateModal}>
@@ -1081,7 +1102,26 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-heading text-bone-white">{budget.name}</h2>
+            {/* Budget selector when multiple budgets exist */}
+            {allBudgets && allBudgets.length > 1 ? (
+              <Select
+                value={budget.id}
+                onValueChange={(id) => setSelectedBudgetId(id)}
+              >
+                <SelectTrigger className="w-auto min-w-[200px] h-auto py-1 text-2xl font-heading text-bone-white border-none bg-transparent hover:bg-muted-gray/10">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {allBudgets.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>
+                      {b.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <h2 className="text-2xl font-heading text-bone-white">{budget.name}</h2>
+            )}
             <Badge className={statusBadge.style}>{statusBadge.label}</Badge>
             {budget.project_type_template && budget.project_type_template !== 'custom' && (
               <Badge variant="outline" className="text-xs">
@@ -1089,6 +1129,11 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
               </Badge>
             )}
             {isLocked && <Lock className="w-4 h-4 text-blue-400" />}
+            {allBudgets && allBudgets.length > 1 && (
+              <Badge variant="outline" className="text-xs text-muted-gray">
+                {allBudgets.length} budgets
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-muted-gray">
             {budget.description || 'Track and manage your production budget'}
@@ -1145,11 +1190,25 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
+                    onClick={() => setShowCreationModal(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    New Budget
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
                     onClick={handleLockBudget}
                     className="text-blue-400"
                   >
                     <Lock className="w-4 h-4 mr-2" />
                     Lock Budget
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => setShowDeleteModal(true)}
+                    className="text-red-400 focus:text-red-400"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Budget
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -1722,6 +1781,22 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Budget Creation Modal - always rendered so it works from dropdown menu */}
+      <BudgetCreationModal
+        projectId={projectId}
+        isOpen={showCreationModal}
+        onClose={() => setShowCreationModal(false)}
+      />
+
+      {/* Delete Budget Confirmation Dialog - Triple confirmation */}
+      <BudgetDeleteConfirmDialog
+        budget={budget}
+        isOpen={showDeleteModal}
+        onClose={() => setShowDeleteModal(false)}
+        onConfirmDelete={handleDeleteBudget}
+        isDeleting={isDeleting}
+      />
     </div>
   );
 };

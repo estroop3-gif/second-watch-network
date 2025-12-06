@@ -1597,6 +1597,90 @@ class BudgetTemplatePreview(BaseModel):
     categories: List[dict]
 
 
+# =============================================================================
+# BUDGET BUNDLE MODELS (for intentional budget creation)
+# =============================================================================
+
+class BundleLineItemResponse(BaseModel):
+    """A line item within a bundle category"""
+    account_code: str
+    description: str
+    calc_mode: str = "flat"
+    default_units: str = ""
+    department: Optional[str] = None
+    phase: Optional[str] = None
+    is_essential: bool = False
+
+
+class BundleCategoryResponse(BaseModel):
+    """A category within a bundle"""
+    name: str
+    code: str
+    account_code_prefix: str
+    category_type: str  # above_the_line, production, post, other
+    sort_order: int
+    color: str = "#6b7280"
+    line_items: List[BundleLineItemResponse] = []
+
+
+class DepartmentBundleResponse(BaseModel):
+    """A department bundle - a small set of common line items"""
+    id: str
+    name: str
+    description: str
+    category_type: str
+    icon: str = ""
+    categories: List[BundleCategoryResponse]
+    total_line_items: int = 0
+    is_recommended: bool = False
+
+
+class BundleListResponse(BaseModel):
+    """Response containing all available bundles"""
+    bundles: List[DepartmentBundleResponse]
+    project_types: List[str]
+    category_types: List[str]
+
+
+class RecommendedBundlesResponse(BaseModel):
+    """Response with recommended bundles for a project type"""
+    project_type: str
+    recommended: List[DepartmentBundleResponse]
+    core_essentials: List[DepartmentBundleResponse]
+    all_available: List[DepartmentBundleResponse]
+
+
+class CreateBudgetFromBundlesInput(BaseModel):
+    """Input for creating a budget from selected bundles"""
+    name: str = "Main Budget"
+    project_type: str = "feature"
+    currency: str = "USD"
+    contingency_percent: float = 10.0
+    shoot_days: int = 0
+    prep_days: int = 0
+    wrap_days: int = 0
+    post_days: int = 0
+    episode_count: int = 1
+    union_type: str = "non_union"
+    # Seeding options
+    seed_mode: str = "bundles"  # "blank" | "categories_only" | "bundles" | "essentials"
+    selected_bundle_ids: List[str] = []  # Bundle IDs to include
+    # High-level category toggles (for "categories_only" mode)
+    include_above_the_line: bool = True
+    include_production: bool = True
+    include_post: bool = True
+    include_other: bool = True
+
+
+class BudgetCreationResult(BaseModel):
+    """Result of creating a budget from bundles"""
+    budget: Budget
+    categories_created: int
+    line_items_created: int
+    bundles_used: List[str]
+    seed_mode: str
+
+
 class BudgetSummary(BaseModel):
     """Budget summary response"""
     budget: Budget
@@ -1832,6 +1916,75 @@ async def lock_budget(
     }).eq("id", existing.data[0]["id"]).execute()
 
     return {"success": True, "message": "Budget locked successfully"}
+
+
+@router.get("/projects/{project_id}/budgets", response_model=List[Budget])
+async def get_project_budgets(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get ALL budgets for a project (supports multiple budgets per project)"""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    supabase = get_supabase_admin_client()
+    await verify_budget_access(supabase, project_id, user_id)
+
+    # Get all budgets for project
+    response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+
+    return response.data or []
+
+
+@router.delete("/budgets/{budget_id}")
+async def delete_budget(
+    budget_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a budget and ALL associated data (categories, line items, daily budgets, receipts).
+    This is a destructive operation that cannot be undone.
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    supabase = get_supabase_admin_client()
+
+    # Get budget to verify access
+    budget_response = supabase.table("backlot_budgets").select("id, project_id, name, status").eq("id", budget_id).execute()
+    if not budget_response.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    budget = budget_response.data[0]
+
+    # Verify user has access to the project
+    await verify_budget_access(supabase, budget["project_id"], user_id)
+
+    # Don't allow deletion of locked budgets
+    if budget["status"] == "locked":
+        raise HTTPException(status_code=400, detail="Cannot delete a locked budget. Unlock it first.")
+
+    # Delete in correct order to respect foreign key constraints:
+    # 1. Daily budget items
+    daily_budgets = supabase.table("backlot_daily_budgets").select("id").eq("budget_id", budget_id).execute()
+    for db in (daily_budgets.data or []):
+        supabase.table("backlot_daily_budget_items").delete().eq("daily_budget_id", db["id"]).execute()
+
+    # 2. Daily budgets
+    supabase.table("backlot_daily_budgets").delete().eq("budget_id", budget_id).execute()
+
+    # 3. Receipts
+    supabase.table("backlot_receipts").delete().eq("budget_id", budget_id).execute()
+
+    # 4. Line items
+    supabase.table("backlot_budget_line_items").delete().eq("budget_id", budget_id).execute()
+
+    # 5. Categories
+    supabase.table("backlot_budget_categories").delete().eq("budget_id", budget_id).execute()
+
+    # 6. Finally, the budget itself
+    supabase.table("backlot_budgets").delete().eq("id", budget_id).execute()
+
+    return {"success": True, "message": f"Budget '{budget['name']}' and all associated data has been permanently deleted"}
 
 
 @router.get("/projects/{project_id}/budget/stats", response_model=BudgetStats)
@@ -4289,8 +4442,10 @@ async def export_budget_pdf(
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_client(token)
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    supabase = get_supabase_admin_client()
 
     # Get budget
     budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
@@ -4356,3 +4511,444 @@ async def export_budget_pdf(
             "Content-Disposition": f'attachment; filename="{filename}"'
         }
     )
+
+
+# =============================================================================
+# BUDGET BUNDLE ENDPOINTS - Intentional Budget Creation
+# =============================================================================
+
+def _convert_bundle_to_response(bundle, is_recommended: bool = False) -> DepartmentBundleResponse:
+    """Convert internal bundle to API response format"""
+    total_items = sum(
+        len(cat.line_items)
+        for cat in bundle.categories
+    )
+    return DepartmentBundleResponse(
+        id=bundle.id,
+        name=bundle.name,
+        description=bundle.description,
+        category_type=bundle.category_type.value,
+        icon=bundle.icon,
+        categories=[
+            BundleCategoryResponse(
+                name=cat.name,
+                code=cat.code,
+                account_code_prefix=cat.account_code_prefix,
+                category_type=cat.category_type.value,
+                sort_order=cat.sort_order,
+                color=cat.color,
+                line_items=[
+                    BundleLineItemResponse(
+                        account_code=item.account_code,
+                        description=item.description,
+                        calc_mode=item.calc_mode.value,
+                        default_units=item.default_units,
+                        department=item.department,
+                        phase=item.phase.value if item.phase else None,
+                        is_essential=item.is_essential
+                    )
+                    for item in cat.line_items
+                ]
+            )
+            for cat in bundle.categories
+        ],
+        total_line_items=total_items,
+        is_recommended=is_recommended
+    )
+
+
+@router.get("/budget-bundles", response_model=BundleListResponse)
+async def get_budget_bundles():
+    """
+    Get all available department bundles for budget creation.
+
+    These bundles are building blocks for intentional budget creation.
+    Users can select which bundles to include when creating a budget.
+    """
+    from app.services.budget_templates import (
+        get_all_bundles,
+        BudgetProjectType,
+        CategoryType
+    )
+
+    all_bundles = get_all_bundles()
+
+    return BundleListResponse(
+        bundles=[_convert_bundle_to_response(b) for b in all_bundles],
+        project_types=[pt.value for pt in BudgetProjectType],
+        category_types=[ct.value for ct in CategoryType]
+    )
+
+
+@router.get("/budget-bundles/recommended/{project_type}", response_model=RecommendedBundlesResponse)
+async def get_recommended_bundles_for_project_type(project_type: str):
+    """
+    Get recommended bundles for a specific project type.
+
+    Returns three lists:
+    - recommended: Bundles commonly used for this project type
+    - core_essentials: Minimal bundles with essential items only
+    - all_available: All bundles (for "add more" UI)
+    """
+    from app.services.budget_templates import (
+        get_all_bundles,
+        get_recommended_bundles,
+        get_core_essentials_bundles,
+        BudgetProjectType
+    )
+
+    try:
+        pt = BudgetProjectType(project_type)
+    except ValueError:
+        pt = BudgetProjectType.FEATURE
+
+    recommended = get_recommended_bundles(pt)
+    recommended_ids = {b.id for b in recommended}
+
+    core = get_core_essentials_bundles()
+    core_ids = {b.id for b in core}
+
+    all_bundles = get_all_bundles()
+
+    return RecommendedBundlesResponse(
+        project_type=pt.value,
+        recommended=[_convert_bundle_to_response(b, is_recommended=True) for b in recommended],
+        core_essentials=[_convert_bundle_to_response(b) for b in core],
+        all_available=[_convert_bundle_to_response(b, is_recommended=(b.id in recommended_ids)) for b in all_bundles]
+    )
+
+
+@router.get("/budget-bundles/{bundle_id}", response_model=DepartmentBundleResponse)
+async def get_bundle_by_id(bundle_id: str):
+    """Get a specific bundle by ID"""
+    from app.services.budget_templates import get_bundle_by_id as get_bundle
+
+    bundle = get_bundle(bundle_id)
+    if not bundle:
+        raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' not found")
+
+    return _convert_bundle_to_response(bundle)
+
+
+@router.post("/projects/{project_id}/budget/from-bundles", response_model=BudgetCreationResult)
+async def create_budget_from_bundles(
+    project_id: str,
+    options: CreateBudgetFromBundlesInput,
+    authorization: str = Header(None)
+):
+    """
+    Create a budget with intentional seeding from selected bundles.
+
+    This is the PRIMARY budget creation endpoint. It respects the
+    "no auto-populate giant templates" rule by only including what
+    the user explicitly selects.
+
+    Seed modes:
+    - "blank": Creates budget with no categories or line items
+    - "categories_only": Creates high-level categories only (no line items)
+    - "bundles": Creates categories and line items from selected bundles
+    - "essentials": Creates from core essential items only
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    supabase = get_supabase_admin_client()
+    await verify_budget_access(supabase, project_id, user_id)
+
+    # Check if budget already exists
+    existing = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", options.name).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="A budget with this name already exists for this project")
+
+    # Import template service
+    from app.services.budget_templates import (
+        get_bundle_by_id as get_bundle,
+        get_core_essentials_bundles,
+        get_high_level_categories,
+        get_categories_from_bundles,
+        filter_essential_items,
+        BudgetProjectType
+    )
+
+    try:
+        pt = BudgetProjectType(options.project_type)
+    except ValueError:
+        pt = BudgetProjectType.FEATURE
+
+    # Create the budget record
+    # Note: variance and contingency_amount are GENERATED columns in the database
+    # They are computed automatically and cannot be inserted directly
+    budget_data = {
+        "project_id": project_id,
+        "name": options.name,
+        "currency": options.currency,
+        "contingency_percent": options.contingency_percent,
+        "status": "draft",
+        "estimated_total": 0,
+        "actual_total": 0,
+        # variance is GENERATED AS (actual_total - estimated_total)
+        # contingency_amount is GENERATED AS (estimated_total * contingency_percent / 100)
+        "version": 1,
+        "created_by": user_id,
+        "project_type_template": options.project_type,
+        "has_top_sheet": True,
+        "shoot_days": options.shoot_days,
+        "prep_days": options.prep_days,
+        "wrap_days": options.wrap_days,
+        "post_days": options.post_days,
+        "episode_count": options.episode_count,
+        "union_type": options.union_type
+    }
+
+    result = supabase.table("backlot_budgets").insert(budget_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create budget")
+
+    budget = result.data[0]
+    budget_id = budget["id"]
+
+    categories_created = 0
+    line_items_created = 0
+    bundles_used = []
+
+    # Get categories to create based on seed_mode
+    categories_to_create = []
+
+    if options.seed_mode == "blank":
+        # No seeding - budget starts completely empty
+        pass
+
+    elif options.seed_mode == "categories_only":
+        # Create high-level category shells without line items
+        categories_to_create = get_high_level_categories(pt)
+        # Filter based on user preferences
+        if not options.include_above_the_line:
+            categories_to_create = [c for c in categories_to_create if c.category_type.value != "above_the_line"]
+        if not options.include_production:
+            categories_to_create = [c for c in categories_to_create if c.category_type.value != "production"]
+        if not options.include_post:
+            categories_to_create = [c for c in categories_to_create if c.category_type.value != "post"]
+        if not options.include_other:
+            categories_to_create = [c for c in categories_to_create if c.category_type.value != "other"]
+        # Clear line items for categories_only mode
+        for cat in categories_to_create:
+            cat.line_items = []
+
+    elif options.seed_mode == "essentials":
+        # Get core essential bundles
+        essential_bundles = get_core_essentials_bundles()
+        for bundle in essential_bundles:
+            filtered = filter_essential_items(bundle)
+            bundles_used.append(bundle.id)
+            for cat in filtered.categories:
+                categories_to_create.append(cat)
+
+    elif options.seed_mode == "bundles":
+        # Use selected bundles
+        if options.selected_bundle_ids:
+            categories_to_create = get_categories_from_bundles(
+                options.selected_bundle_ids,
+                essentials_only=False
+            )
+            bundles_used = options.selected_bundle_ids
+
+    # Create categories and line items
+    category_id_map = {}  # Track created category IDs by code
+
+    for cat in categories_to_create:
+        # Check if we already created this category (avoid duplicates)
+        if cat.code in category_id_map:
+            continue
+
+        cat_data = {
+            "budget_id": budget_id,
+            "name": cat.name,
+            "code": cat.code,
+            "account_code_prefix": cat.account_code_prefix,
+            "category_type": cat.category_type.value,
+            "sort_order": cat.sort_order,
+            "color": cat.color,
+            "estimated_subtotal": 0,
+            "actual_subtotal": 0,
+            "is_above_the_line": cat.category_type.value == "above_the_line"
+        }
+
+        cat_result = supabase.table("backlot_budget_categories").insert(cat_data).execute()
+        if cat_result.data:
+            categories_created += 1
+            cat_id = cat_result.data[0]["id"]
+            category_id_map[cat.code] = cat_id
+
+            # Create line items for this category
+            for idx, item in enumerate(cat.line_items):
+                item_data = {
+                    "budget_id": budget_id,
+                    "category_id": cat_id,
+                    "account_code": item.account_code,
+                    "description": item.description,
+                    "rate_type": "flat" if item.calc_mode.value == "flat" else "daily",
+                    "rate_amount": 0,
+                    "quantity": 1,
+                    "units": item.default_units,
+                    "estimated_total": 0,
+                    "actual_total": 0,
+                    "variance": 0,
+                    "is_allocated_to_days": False,
+                    "total_allocated": 0,
+                    "is_locked": False,
+                    "sort_order": idx,
+                    "calc_mode": item.calc_mode.value,
+                    "department": item.department,
+                    "phase": item.phase.value if item.phase else None
+                }
+
+                item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                if item_result.data:
+                    line_items_created += 1
+
+    return BudgetCreationResult(
+        budget=Budget(**budget),
+        categories_created=categories_created,
+        line_items_created=line_items_created,
+        bundles_used=bundles_used,
+        seed_mode=options.seed_mode
+    )
+
+
+@router.post("/budgets/{budget_id}/add-bundle", response_model=Dict[str, Any])
+async def add_bundle_to_budget(
+    budget_id: str,
+    bundle_id: str,
+    essentials_only: bool = False,
+    authorization: str = Header(None)
+):
+    """
+    Add a department bundle to an existing budget.
+
+    This allows users to incrementally add bundles after budget creation.
+    Categories and line items from the bundle will be added.
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    supabase = get_supabase_admin_client()
+
+    # Get budget
+    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    if not budget_response.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    budget = budget_response.data[0]
+    if budget["status"] == "locked":
+        raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
+
+    await verify_budget_access(supabase, budget["project_id"], user_id)
+
+    # Get the bundle
+    from app.services.budget_templates import get_bundle_by_id as get_bundle, filter_essential_items
+
+    bundle = get_bundle(bundle_id)
+    if not bundle:
+        raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' not found")
+
+    # Filter to essentials if requested
+    if essentials_only:
+        bundle = filter_essential_items(bundle)
+
+    # Get existing categories for this budget
+    existing_cats = supabase.table("backlot_budget_categories").select("code").eq("budget_id", budget_id).execute()
+    existing_codes = {c["code"] for c in (existing_cats.data or [])}
+
+    categories_created = 0
+    line_items_created = 0
+
+    for cat in bundle.categories:
+        # Check if category already exists
+        if cat.code in existing_codes:
+            # Get existing category ID
+            cat_lookup = supabase.table("backlot_budget_categories").select("id").eq("budget_id", budget_id).eq("code", cat.code).execute()
+            if cat_lookup.data:
+                cat_id = cat_lookup.data[0]["id"]
+                # Add line items to existing category
+                for idx, item in enumerate(cat.line_items):
+                    # Check if line item already exists
+                    existing_item = supabase.table("backlot_budget_line_items").select("id").eq("budget_id", budget_id).eq("account_code", item.account_code).execute()
+                    if not existing_item.data:
+                        item_data = {
+                            "budget_id": budget_id,
+                            "category_id": cat_id,
+                            "account_code": item.account_code,
+                            "description": item.description,
+                            "rate_type": "flat" if item.calc_mode.value == "flat" else "daily",
+                            "rate_amount": 0,
+                            "quantity": 1,
+                            "units": item.default_units,
+                            "estimated_total": 0,
+                            "actual_total": 0,
+                            "variance": 0,
+                            "is_allocated_to_days": False,
+                            "total_allocated": 0,
+                            "is_locked": False,
+                            "sort_order": 999 + idx,
+                            "calc_mode": item.calc_mode.value,
+                            "department": item.department,
+                            "phase": item.phase.value if item.phase else None
+                        }
+                        item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                        if item_result.data:
+                            line_items_created += 1
+        else:
+            # Create new category
+            cat_data = {
+                "budget_id": budget_id,
+                "name": cat.name,
+                "code": cat.code,
+                "account_code_prefix": cat.account_code_prefix,
+                "category_type": cat.category_type.value,
+                "sort_order": cat.sort_order,
+                "color": cat.color,
+                "estimated_subtotal": 0,
+                "actual_subtotal": 0,
+                "is_above_the_line": cat.category_type.value == "above_the_line"
+            }
+
+            cat_result = supabase.table("backlot_budget_categories").insert(cat_data).execute()
+            if cat_result.data:
+                categories_created += 1
+                cat_id = cat_result.data[0]["id"]
+                existing_codes.add(cat.code)
+
+                # Create line items
+                for idx, item in enumerate(cat.line_items):
+                    item_data = {
+                        "budget_id": budget_id,
+                        "category_id": cat_id,
+                        "account_code": item.account_code,
+                        "description": item.description,
+                        "rate_type": "flat" if item.calc_mode.value == "flat" else "daily",
+                        "rate_amount": 0,
+                        "quantity": 1,
+                        "units": item.default_units,
+                        "estimated_total": 0,
+                        "actual_total": 0,
+                        "variance": 0,
+                        "is_allocated_to_days": False,
+                        "total_allocated": 0,
+                        "is_locked": False,
+                        "sort_order": idx,
+                        "calc_mode": item.calc_mode.value,
+                        "department": item.department,
+                        "phase": item.phase.value if item.phase else None
+                    }
+
+                    item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                    if item_result.data:
+                        line_items_created += 1
+
+    return {
+        "success": True,
+        "bundle_id": bundle_id,
+        "categories_created": categories_created,
+        "line_items_created": line_items_created,
+        "message": f"Added bundle '{bundle.name}' to budget"
+    }

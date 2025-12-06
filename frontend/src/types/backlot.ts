@@ -1471,6 +1471,106 @@ export interface BudgetSyncSummary {
   day_results: DailyBudgetSyncResult[];
 }
 
+// =============================================================================
+// DEPARTMENT BUNDLE TYPES (for intentional budget creation)
+// =============================================================================
+
+export type BudgetSeedMode = 'blank' | 'categories_only' | 'bundles' | 'essentials';
+
+export interface BundleLineItem {
+  account_code: string;
+  description: string;
+  calc_mode: string;
+  default_units: string;
+  department: string | null;
+  phase: string | null;
+  is_essential: boolean;
+}
+
+export interface BundleCategory {
+  name: string;
+  code: string;
+  account_code_prefix: string;
+  category_type: BacklotCategoryType;
+  sort_order: number;
+  color: string;
+  line_items: BundleLineItem[];
+}
+
+export interface DepartmentBundle {
+  id: string;
+  name: string;
+  description: string;
+  category_type: BacklotCategoryType;
+  icon: string;
+  categories: BundleCategory[];
+  total_line_items: number;
+  is_recommended: boolean;
+}
+
+export interface BundleListResponse {
+  bundles: DepartmentBundle[];
+  project_types: string[];
+  category_types: string[];
+}
+
+export interface RecommendedBundlesResponse {
+  project_type: string;
+  recommended: DepartmentBundle[];
+  core_essentials: DepartmentBundle[];
+  all_available: DepartmentBundle[];
+}
+
+export interface CreateBudgetFromBundlesInput {
+  name?: string;
+  project_type?: BacklotBudgetProjectType;
+  currency?: string;
+  contingency_percent?: number;
+  shoot_days?: number;
+  prep_days?: number;
+  wrap_days?: number;
+  post_days?: number;
+  episode_count?: number;
+  union_type?: string;
+  seed_mode: BudgetSeedMode;
+  selected_bundle_ids?: string[];
+  include_above_the_line?: boolean;
+  include_production?: boolean;
+  include_post?: boolean;
+  include_other?: boolean;
+}
+
+export interface BudgetCreationResult {
+  budget: BacklotBudget;
+  categories_created: number;
+  line_items_created: number;
+  bundles_used: string[];
+  seed_mode: BudgetSeedMode;
+}
+
+export interface AddBundleResult {
+  success: boolean;
+  bundle_id: string;
+  categories_created: number;
+  line_items_created: number;
+  message: string;
+}
+
+// Labels for seed modes
+export const SEED_MODE_LABELS: Record<BudgetSeedMode, string> = {
+  blank: 'Start from Blank',
+  categories_only: 'Categories Only',
+  bundles: 'From Department Bundles',
+  essentials: 'Core Essentials Only',
+};
+
+export const SEED_MODE_DESCRIPTIONS: Record<BudgetSeedMode, string> = {
+  blank: 'Create an empty budget with no categories or line items',
+  categories_only: 'Create high-level categories without line items',
+  bundles: 'Select specific department bundles to include',
+  essentials: 'Start with core essential items for your project type',
+};
+
 // Labels for display
 export const BUDGET_PROJECT_TYPE_LABELS: Record<BacklotBudgetProjectType, string> = {
   feature: 'Feature Film',
