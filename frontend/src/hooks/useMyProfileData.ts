@@ -226,26 +226,35 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
-  // Cast profile for badge system
-  const profileWithRoles = baseProfile as ProfileWithRoles | null;
-
-  // Compute role information
-  const activeRoles = getActiveRolesFromProfile(profileWithRoles);
-  const primaryBadge = getPrimaryBadge(profileWithRoles);
-  const allBadges = getAllBadges(profileWithRoles);
-
-  // Role checks
-  const isFilmmaker = hasRole(profileWithRoles, 'filmmaker');
-  const isPartner = hasRole(profileWithRoles, 'partner');
-  const isPremium = hasRole(profileWithRoles, 'premium');
-  const isOrderMember = hasRole(profileWithRoles, 'order_member');
-  const isLodgeOfficer = hasRole(profileWithRoles, 'lodge_officer');
-
-  // Profile existence checks
+  // Profile existence checks (need these before enriching profile)
   const hasFilmmakerProfile = !!filmmakerProfile;
   const hasPartnerProfile = !!partnerProfile;
   const hasOrderProfile = !!orderMemberProfile;
   const hasActiveLodge = (lodgeMemberships || []).some(m => m.status === 'active');
+  const hasOfficerLodge = (lodgeMemberships || []).some(m => m.status === 'active' && m.role && ['master', 'warden', 'officer', 'secretary', 'treasurer'].includes(m.role.toLowerCase()));
+
+  // Create an enriched profile that reflects actual role-specific profile existence
+  // This ensures badges are correct even if the boolean flags in profiles table are out of sync
+  const enrichedProfile: ProfileWithRoles | null = baseProfile ? {
+    ...(baseProfile as ProfileWithRoles),
+    // Merge existing flags with actual profile existence
+    is_filmmaker: (baseProfile as any).is_filmmaker || hasFilmmakerProfile,
+    is_partner: (baseProfile as any).is_partner || hasPartnerProfile,
+    is_order_member: (baseProfile as any).is_order_member || hasOrderProfile,
+    is_lodge_officer: (baseProfile as any).is_lodge_officer || hasOfficerLodge,
+  } : null;
+
+  // Compute role information using enriched profile
+  const activeRoles = getActiveRolesFromProfile(enrichedProfile);
+  const primaryBadge = getPrimaryBadge(enrichedProfile);
+  const allBadges = getAllBadges(enrichedProfile);
+
+  // Role checks (using enriched profile)
+  const isFilmmaker = hasRole(enrichedProfile, 'filmmaker');
+  const isPartner = hasRole(enrichedProfile, 'partner');
+  const isPremium = hasRole(enrichedProfile, 'premium');
+  const isOrderMember = hasRole(enrichedProfile, 'order_member');
+  const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
 
   // Determine primary role mode for the profile view
   // Priority: filmmaker > partner > premium > free
@@ -266,7 +275,7 @@ export function useMyProfileData(): MyProfileData {
   };
 
   return {
-    profile: profileWithRoles,
+    profile: enrichedProfile,
     filmmakerProfile: filmmakerProfile || null,
     partnerProfile: partnerProfile || null,
     orderMemberProfile: orderMemberProfile || null,
