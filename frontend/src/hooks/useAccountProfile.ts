@@ -78,11 +78,12 @@ export const useAccountProfile = () => {
     }
 
     // Fetch credits if they exist (order by created_at since year column may not exist)
+    // Join with productions table to get production title
     let creditsData = null;
     try {
       const { data } = await supabase
         .from('credits')
-        .select('*')
+        .select('*, productions(id, title)')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
       creditsData = data;
