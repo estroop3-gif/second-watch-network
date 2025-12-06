@@ -29,10 +29,14 @@ const CreditForm = ({ onSave, existingCredit, closeModal }: { onSave: (data: Cre
   const form = useForm<CreditFormValues>({
     resolver: zodResolver(creditSchema),
     defaultValues: {
-      position: existingCredit?.position || "",
-      productionTitle: existingCredit?.productions?.title || "",
+      position: existingCredit?.position || existingCredit?.role || "",
+      productionTitle: existingCredit?.productions?.title || existingCredit?.title || "",
       description: existingCredit?.description || "",
-      productionDate: existingCredit?.production_date ? new Date(existingCredit.production_date).toISOString().split('T')[0] : "",
+      productionDate: existingCredit?.production_date
+        ? new Date(existingCredit.production_date).toISOString().split('T')[0]
+        : existingCredit?.year
+          ? `${existingCredit.year}-01-01`
+          : "",
     },
   });
 
@@ -163,8 +167,11 @@ const ManageCredits = ({ initialCredits, onCreditsUpdate }: { initialCredits: an
           initialCredits.map((credit) => (
             <div key={credit.id} className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-md border border-muted-gray/20">
               <div>
-                <p className="font-semibold">{credit.position}</p>
-                <p className="text-sm text-muted-gray">{credit.productions.title} {credit.production_date && `(${new Date(credit.production_date).getFullYear()})`}</p>
+                <p className="font-semibold">{credit.position || credit.role || 'Credit'}</p>
+                <p className="text-sm text-muted-gray">
+                  {credit.productions?.title || credit.title || 'Unknown Production'}
+                  {(credit.production_date || credit.year) && ` (${credit.year || new Date(credit.production_date).getFullYear()})`}
+                </p>
               </div>
               <div className="flex items-center gap-2">
                 <Button type="button" variant="ghost" size="icon" onClick={() => { setEditingCredit(credit); setIsModalOpen(true); }}>
