@@ -60,12 +60,14 @@ import {
   ChevronRight,
   RefreshCw,
 } from 'lucide-react';
-import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf } from '@/hooks/backlot';
+import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf, useCallSheetSceneLinks } from '@/hooks/backlot';
 import { useToast } from '@/hooks/use-toast';
 import { BacklotCallSheet, BacklotCallSheetPerson, CallSheetSendHistory, BacklotCallSheetTemplate } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import CallSheetSyncModal from './CallSheetSyncModal';
+import CallSheetSceneLinkModal from './CallSheetSceneLinkModal';
+import { ScoutPreviewWidget } from '@/components/backlot/scout-photos';
 
 interface CallSheetDetailViewProps {
   isOpen: boolean;
@@ -116,9 +118,11 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
   const { people, isLoading: peopleLoading } = useCallSheetPeople(callSheet.id);
   const { sendHistory, isLoading: historyLoading } = useCallSheetSendHistory(callSheet.id);
   const { locations } = useCallSheetLocations(callSheet.id);
+  const { data: linkedScenes } = useCallSheetSceneLinks(callSheet.id);
   const downloadPdf = useDownloadCallSheetPdf();
   const [activeTab, setActiveTab] = useState('details');
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showSceneLinkModal, setShowSceneLinkModal] = useState(false);
 
   // Group people by department
   const peopleByDepartment = people.reduce((acc, person) => {
@@ -227,6 +231,9 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
             <TabsTrigger value="contacts">Contacts</TabsTrigger>
             <TabsTrigger value="people">
               People {people.length > 0 && `(${people.length})`}
+            </TabsTrigger>
+            <TabsTrigger value="scenes">
+              Scenes {linkedScenes && linkedScenes.length > 0 && `(${linkedScenes.length})`}
             </TabsTrigger>
             <TabsTrigger value="history">
               History {sendHistory.length > 0 && `(${sendHistory.length})`}
@@ -375,6 +382,14 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
                             <Building className="w-4 h-4 text-muted-gray mt-0.5" />
                             <span className="text-muted-gray">Basecamp: {loc.basecamp_location}</span>
                           </div>
+                        )}
+                        {/* Scout Photos Preview */}
+                        {loc.location_id && (
+                          <ScoutPreviewWidget
+                            locationId={loc.location_id}
+                            locationName={loc.name}
+                            className="mt-3 pt-3 border-t border-muted-gray/20"
+                          />
                         )}
                       </div>
                     ))
@@ -795,6 +810,90 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
               )}
             </TabsContent>
 
+            {/* Scenes Tab */}
+            <TabsContent value="scenes" className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-bone-white flex items-center gap-2">
+                  <Film className="w-4 h-4 text-accent-yellow" />
+                  Linked Scenes
+                </h4>
+                {canEdit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowSceneLinkModal(true)}
+                    className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                  >
+                    <Film className="w-4 h-4 mr-2" />
+                    Manage Scenes
+                  </Button>
+                )}
+              </div>
+
+              {linkedScenes && linkedScenes.length > 0 ? (
+                <div className="space-y-2">
+                  {linkedScenes
+                    .sort((a, b) => a.sort_order - b.sort_order)
+                    .map((link, i) => (
+                      <div
+                        key={link.id}
+                        className={cn(
+                          'flex items-center gap-4 p-3 rounded-lg',
+                          i % 2 === 0 ? 'bg-muted-gray/10' : 'bg-muted-gray/5'
+                        )}
+                      >
+                        <div className="w-8 h-8 rounded bg-accent-yellow/20 flex items-center justify-center text-accent-yellow font-bold text-sm">
+                          {link.sort_order}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="font-mono text-xs shrink-0">
+                              {link.scene?.scene_number || 'Scene'}
+                            </Badge>
+                            {link.scene?.int_ext && (
+                              <span className="text-xs text-muted-gray uppercase">
+                                {link.scene.int_ext}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-bone-white font-medium truncate mt-1">
+                            {link.scene?.scene_heading || link.scene?.location_name || 'Untitled Scene'}
+                          </p>
+                          <div className="flex items-center gap-3 mt-1 text-xs text-muted-gray">
+                            {link.scene?.estimated_duration && (
+                              <span className="flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                {link.scene.estimated_duration}m
+                              </span>
+                            )}
+                            {link.scene?.page_count && (
+                              <span>{link.scene.page_count} pg</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Film className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-bone-white mb-2">No scenes linked</h3>
+                  <p className="text-muted-gray mb-4">
+                    Link scenes from the script breakdown to this call sheet.
+                  </p>
+                  {canEdit && (
+                    <Button
+                      onClick={() => setShowSceneLinkModal(true)}
+                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                    >
+                      <Film className="w-4 h-4 mr-2" />
+                      Link Scenes
+                    </Button>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+
             {/* Send History Tab */}
             <TabsContent value="history" className="space-y-4">
               {historyLoading ? (
@@ -1031,6 +1130,15 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
           isOpen={showSyncModal}
           onClose={() => setShowSyncModal(false)}
           callSheet={callSheet}
+        />
+
+        {/* Scene Link Modal */}
+        <CallSheetSceneLinkModal
+          isOpen={showSceneLinkModal}
+          onClose={() => setShowSceneLinkModal(false)}
+          callSheetId={callSheet.id}
+          projectId={projectId}
+          canEdit={canEdit}
         />
       </DialogContent>
     </Dialog>

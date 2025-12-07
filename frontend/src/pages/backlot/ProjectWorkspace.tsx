@@ -28,6 +28,7 @@ import {
   DollarSign,
   CalendarDays,
   Receipt,
+  Clapperboard,
 } from 'lucide-react';
 import { useProject, useProjectPermission } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -48,6 +49,9 @@ import ContactsView from '@/components/backlot/workspace/ContactsView';
 import ProjectSettings from '@/components/backlot/workspace/ProjectSettings';
 import CreditsView from '@/components/backlot/workspace/CreditsView';
 import AICopilotPanel from '@/components/backlot/workspace/AICopilotPanel';
+import ScriptView from '@/components/backlot/workspace/ScriptView';
+import SceneDetailModal from '@/components/backlot/workspace/SceneDetailModal';
+import ScriptImportModal from '@/components/backlot/workspace/ScriptImportModal';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -87,6 +91,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'script', label: 'Script', icon: Clapperboard },
   { id: 'schedule', label: 'Schedule', icon: Calendar },
   { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
   { id: 'tasks', label: 'Tasks', icon: CheckSquare },
@@ -107,6 +112,8 @@ const ProjectWorkspace: React.FC = () => {
   const [activeView, setActiveView] = useState<BacklotWorkspaceView>('overview');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [copilotOpen, setCopilotOpen] = useState(false);
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const [showScriptImportModal, setShowScriptImportModal] = useState(false);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
@@ -265,6 +272,14 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'overview' && (
             <ProjectOverview project={project} permission={permission} />
           )}
+          {activeView === 'script' && (
+            <ScriptView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              onSceneClick={(scene) => setSelectedSceneId(scene.id)}
+              onImportClick={() => setShowScriptImportModal(true)}
+            />
+          )}
           {activeView === 'schedule' && (
             <ScheduleView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
@@ -318,6 +333,21 @@ const ProjectWorkspace: React.FC = () => {
           onClick={() => setSidebarOpen(false)}
         />
       )}
+
+      {/* Script Modals */}
+      <SceneDetailModal
+        projectId={project.id}
+        sceneId={selectedSceneId}
+        isOpen={!!selectedSceneId}
+        onClose={() => setSelectedSceneId(null)}
+        canEdit={permission?.canEdit || false}
+      />
+      <ScriptImportModal
+        projectId={project.id}
+        isOpen={showScriptImportModal}
+        onClose={() => setShowScriptImportModal(false)}
+        onSuccess={() => setShowScriptImportModal(false)}
+      />
     </div>
   );
 };

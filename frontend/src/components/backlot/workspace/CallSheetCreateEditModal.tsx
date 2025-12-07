@@ -66,7 +66,7 @@ import {
   Sun,
   Moon,
 } from 'lucide-react';
-import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes } from '@/hooks/backlot';
+import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations } from '@/hooks/backlot';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -81,6 +81,7 @@ import {
   BacklotCallSheetLocation,
   CallSheetCustomContact,
   CallSheetSceneInput,
+  BacklotLocation,
 } from '@/types/backlot';
 import {
   getTemplateDefinition,
@@ -156,6 +157,11 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const isEditMode = !!callSheet;
   const { createCallSheet, updateCallSheet } = useCallSheets(projectId);
   const { days } = useProductionDays(projectId);
+  const { locations: projectLocations, isLoading: projectLocationsLoading } = useProjectLocations(projectId);
+
+  // Location picker state
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [locationPickerIndex, setLocationPickerIndex] = useState<number | null>(null);
 
   // Template selection
   const [templateType, setTemplateType] = useState<BacklotCallSheetTemplate>('feature');
@@ -509,6 +515,41 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     const updated = [...locations];
     updated[index] = { ...updated[index], [field]: value };
     setLocations(updated);
+  };
+
+  // Open location picker for a specific location slot
+  const handleOpenLocationPicker = (index: number) => {
+    setLocationPickerIndex(index);
+    setShowLocationPicker(true);
+  };
+
+  // Select a location from the project library and populate the form
+  const handleSelectProjectLocation = (projectLocation: BacklotLocation) => {
+    if (locationPickerIndex === null) return;
+
+    const updated = [...locations];
+    const fullAddress = [
+      projectLocation.address,
+      projectLocation.city,
+      projectLocation.state,
+      projectLocation.zip,
+    ].filter(Boolean).join(', ');
+
+    updated[locationPickerIndex] = {
+      ...updated[locationPickerIndex],
+      name: projectLocation.name,
+      address: fullAddress || '',
+      parking_instructions: projectLocation.parking_notes || '',
+      notes: projectLocation.load_in_notes || '',
+    };
+    setLocations(updated);
+    setShowLocationPicker(false);
+    setLocationPickerIndex(null);
+
+    toast({
+      title: 'Location Selected',
+      description: `"${projectLocation.name}" has been added to this call sheet.`,
+    });
   };
 
   // Scene / Segment management
@@ -1248,10 +1289,17 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
             {/* Locations Tab */}
             <TabsContent value="locations" className="space-y-6 mt-4">
               <div className="flex items-center justify-between">
-                <Label className="text-bone-white flex items-center gap-1">
-                  <MapPin className="w-4 h-4 text-accent-yellow" />
-                  Shoot Locations
-                </Label>
+                <div>
+                  <Label className="text-bone-white flex items-center gap-1">
+                    <MapPin className="w-4 h-4 text-accent-yellow" />
+                    Shoot Locations
+                  </Label>
+                  {projectLocations.length > 0 && (
+                    <p className="text-xs text-muted-gray mt-1">
+                      {projectLocations.length} location{projectLocations.length !== 1 ? 's' : ''} in project library
+                    </p>
+                  )}
+                </div>
                 <Button
                   variant="outline"
                   size="sm"
@@ -1267,9 +1315,22 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                 {locations.map((location, index) => (
                   <div key={index} className="border border-muted-gray/30 rounded-lg p-4 space-y-4">
                     <div className="flex items-center justify-between">
-                      <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
-                        Location {location.location_number}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
+                          Location {location.location_number}
+                        </Badge>
+                        {projectLocations.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenLocationPicker(index)}
+                            className="text-accent-yellow hover:text-bone-white text-xs h-6 px-2"
+                          >
+                            <Building className="w-3 h-3 mr-1" />
+                            Select from Library
+                          </Button>
+                        )}
+                      </div>
                       {locations.length > 1 && (
                         <Button
                           variant="ghost"
@@ -1336,6 +1397,65 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                   </div>
                 ))}
               </div>
+
+              {/* Location Picker Modal */}
+              {showLocationPicker && (
+                <Dialog open={showLocationPicker} onOpenChange={setShowLocationPicker}>
+                  <DialogContent className="max-w-lg bg-charcoal-black border-muted-gray/30">
+                    <DialogHeader>
+                      <DialogTitle className="text-bone-white flex items-center gap-2">
+                        <Building className="w-5 h-5 text-accent-yellow" />
+                        Select Location from Library
+                      </DialogTitle>
+                      <DialogDescription className="text-muted-gray">
+                        Choose a location from your project's location library
+                      </DialogDescription>
+                    </DialogHeader>
+                    <ScrollArea className="max-h-[400px]">
+                      {projectLocationsLoading ? (
+                        <div className="flex items-center justify-center py-8">
+                          <Loader2 className="w-6 h-6 animate-spin text-accent-yellow" />
+                        </div>
+                      ) : projectLocations.length === 0 ? (
+                        <div className="text-center py-8">
+                          <MapPin className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
+                          <p className="text-muted-gray text-sm">No locations in project library</p>
+                          <p className="text-muted-gray/60 text-xs mt-1">
+                            Add locations in the Locations tab first
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 p-1">
+                          {projectLocations.map((loc) => (
+                            <button
+                              key={loc.id}
+                              onClick={() => handleSelectProjectLocation(loc)}
+                              className="w-full text-left p-3 rounded-lg border border-muted-gray/20 hover:border-accent-yellow/50 hover:bg-accent-yellow/5 transition-colors"
+                            >
+                              <div className="flex items-start justify-between">
+                                <div className="flex-1">
+                                  <div className="font-medium text-bone-white">{loc.name}</div>
+                                  {loc.address && (
+                                    <div className="text-sm text-muted-gray mt-1">
+                                      {[loc.address, loc.city, loc.state].filter(Boolean).join(', ')}
+                                    </div>
+                                  )}
+                                  {loc.region_tag && (
+                                    <Badge variant="outline" className="mt-2 text-xs border-muted-gray/30">
+                                      {loc.region_tag}
+                                    </Badge>
+                                  )}
+                                </div>
+                                <ChevronRight className="w-4 h-4 text-muted-gray mt-1" />
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </ScrollArea>
+                  </DialogContent>
+                </Dialog>
+              )}
             </TabsContent>
 
             {/* Scenes / Segments Tab */}

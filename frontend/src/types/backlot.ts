@@ -309,9 +309,23 @@ export interface BacklotTask {
 }
 
 // Location
+// Location Types for Global Location Library
+export type BacklotLocationType =
+  | 'studio'
+  | 'residential'
+  | 'commercial'
+  | 'exterior'
+  | 'industrial'
+  | 'nature'
+  | 'urban'
+  | 'rural'
+  | 'institutional'
+  | 'other';
+
+// Location (now supports both project-specific and global library)
 export interface BacklotLocation {
   id: string;
-  project_id: string;
+  project_id: string | null; // Nullable for global locations
   name: string;
   description: string | null;
   scene_description: string | null;
@@ -335,8 +349,217 @@ export interface BacklotLocation {
   location_fee: number | null;
   fee_notes: string | null;
   images: string[];
+  // Global library fields
+  is_public: boolean;
+  created_by_user_id: string | null;
+  created_by_project_id: string | null;
+  region_tag: string | null;
+  location_type: BacklotLocationType | string | null;
+  amenities: string[];
   created_at: string;
   updated_at: string;
+  // Project attachment metadata (when fetched via project)
+  attachment_id?: string;
+  project_notes?: string | null;
+  scene_description_override?: string | null;
+  attached_at?: string;
+  attached_by_user_id?: string | null;
+  // Scout photo data (from global search)
+  primary_photo_url?: string | null;
+  primary_photo_thumbnail?: string | null;
+  scout_photo_count?: number;
+  scout_tags?: string[];
+}
+
+// Project Location Attachment (junction table)
+export interface BacklotProjectLocation {
+  id: string;
+  project_id: string;
+  location_id: string;
+  project_notes: string | null;
+  scene_description: string | null;
+  attached_by_user_id: string | null;
+  attached_at: string;
+  updated_at: string;
+  // Joined location data
+  location?: BacklotLocation;
+}
+
+// Location Input for creating/updating
+export interface BacklotLocationInput {
+  name: string;
+  description?: string | null;
+  scene_description?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  country?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  contact_email?: string | null;
+  parking_notes?: string | null;
+  load_in_notes?: string | null;
+  power_available?: boolean;
+  restrooms_available?: boolean;
+  permit_required?: boolean;
+  permit_notes?: string | null;
+  permit_obtained?: boolean;
+  location_fee?: number | null;
+  fee_notes?: string | null;
+  images?: string[];
+  is_public?: boolean;
+  region_tag?: string | null;
+  location_type?: BacklotLocationType | string | null;
+  amenities?: string[];
+}
+
+// Attachment input for linking locations to projects
+export interface BacklotLocationAttachmentInput {
+  location_id: string;
+  project_notes?: string | null;
+  scene_description?: string | null;
+}
+
+// Search parameters for global location library
+export interface BacklotLocationSearchParams {
+  query?: string;
+  region?: string;
+  city?: string;
+  state?: string;
+  location_type?: string;
+  limit?: number;
+  offset?: number;
+}
+
+// Search response
+export interface BacklotLocationSearchResponse {
+  locations: BacklotLocation[];
+  count: number;
+  offset: number;
+  limit: number;
+}
+
+// =====================================================
+// SCOUT PHOTOS
+// =====================================================
+
+// Scout photo vantage types
+export type ScoutPhotoVantageType = 'wide' | 'medium' | 'close-up' | 'detail' | 'overhead' | 'drone';
+
+// Scout photo time of day
+export type ScoutPhotoTimeOfDay = 'morning' | 'midday' | 'afternoon' | 'golden_hour' | 'blue_hour' | 'night';
+
+// Scout photo interior/exterior
+export type ScoutPhotoInteriorExterior = 'interior' | 'exterior' | 'both';
+
+// Scout photo weather conditions
+export type ScoutPhotoWeather = 'clear' | 'overcast' | 'cloudy' | 'rainy' | 'foggy' | 'snowy';
+
+// Full scout photo interface
+export interface BacklotScoutPhoto {
+  id: string;
+  location_id: string;
+
+  // Core media info
+  image_url: string;
+  thumbnail_url: string | null;
+  original_filename: string | null;
+
+  // Composition & vantage
+  angle_label: string | null;
+  vantage_type: ScoutPhotoVantageType | string | null;
+  camera_facing: string | null;
+
+  // Time & conditions
+  time_of_day: ScoutPhotoTimeOfDay | string | null;
+  shoot_date: string | null;
+  weather: ScoutPhotoWeather | string | null;
+
+  // Practical notes
+  light_notes: string | null;
+  sound_notes: string | null;
+  access_notes: string | null;
+  power_notes: string | null;
+  parking_notes: string | null;
+  restrictions_notes: string | null;
+  general_notes: string | null;
+
+  // Classification
+  is_primary: boolean;
+  interior_exterior: ScoutPhotoInteriorExterior | string | null;
+
+  // Meta
+  uploaded_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Input for creating/updating scout photos
+export interface BacklotScoutPhotoInput {
+  image_url: string;
+  thumbnail_url?: string | null;
+  original_filename?: string | null;
+  angle_label?: string | null;
+  vantage_type?: ScoutPhotoVantageType | string | null;
+  camera_facing?: string | null;
+  time_of_day?: ScoutPhotoTimeOfDay | string | null;
+  shoot_date?: string | null;
+  weather?: ScoutPhotoWeather | string | null;
+  light_notes?: string | null;
+  sound_notes?: string | null;
+  access_notes?: string | null;
+  power_notes?: string | null;
+  parking_notes?: string | null;
+  restrictions_notes?: string | null;
+  general_notes?: string | null;
+  is_primary?: boolean;
+  interior_exterior?: ScoutPhotoInteriorExterior | string | null;
+}
+
+// Scout photo filters for queries
+export interface ScoutPhotoFilters {
+  vantage_type?: ScoutPhotoVantageType | string;
+  time_of_day?: ScoutPhotoTimeOfDay | string;
+  interior_exterior?: ScoutPhotoInteriorExterior | string;
+}
+
+// Scout summary response (for call sheet preview)
+export interface BacklotScoutSummary {
+  success: boolean;
+  has_scout_photos: boolean;
+  primary_photo: {
+    id: string;
+    image_url: string;
+    thumbnail_url: string;
+    angle_label: string | null;
+    vantage_type: string | null;
+    time_of_day: string | null;
+  } | null;
+  photo_count: number;
+  practical_summary: {
+    access: string | null;
+    parking: string | null;
+    power: string | null;
+    sound: string | null;
+    light: string | null;
+    restrictions: string | null;
+  } | null;
+  tags: string[];
+}
+
+// API response types
+export interface ScoutPhotosResponse {
+  success: boolean;
+  photos: BacklotScoutPhoto[];
+  count: number;
+}
+
+export interface ScoutPhotoResponse {
+  success: boolean;
+  photo: BacklotScoutPhoto;
 }
 
 // Gear Item
@@ -716,6 +939,7 @@ export interface ContactFilters {
 // View/Tab types for workspace navigation
 export type BacklotWorkspaceView =
   | 'overview'
+  | 'script'
   | 'schedule'
   | 'call-sheets'
   | 'tasks'
@@ -1607,4 +1831,377 @@ export const BUDGET_PHASE_LABELS: Record<BacklotBudgetPhase, string> = {
   wrap: 'Wrap',
   post: 'Post-Production',
   delivery: 'Delivery',
+};
+
+// =============================================================================
+// SCRIPT BREAKDOWN SYSTEM TYPES
+// =============================================================================
+
+// Script status
+export type BacklotScriptStatus = 'draft' | 'locked' | 'archived';
+
+// Scene coverage status
+export type BacklotSceneCoverageStatus = 'not_scheduled' | 'scheduled' | 'shot' | 'needs_pickup';
+
+// Breakdown item types
+export type BacklotBreakdownItemType =
+  | 'cast'
+  | 'background'
+  | 'stunt'
+  | 'location'
+  | 'prop'
+  | 'set_dressing'
+  | 'wardrobe'
+  | 'makeup'
+  | 'sfx'
+  | 'vfx'
+  | 'vehicle'
+  | 'animal'
+  | 'greenery'
+  | 'special_equipment'
+  | 'sound'
+  | 'music';
+
+// Budget suggestion status
+export type BacklotBudgetSuggestionStatus = 'pending' | 'accepted' | 'rejected' | 'modified';
+
+// Script
+export interface BacklotScript {
+  id: string;
+  project_id: string;
+  title: string;
+  version: string | null;
+  draft_date: string | null;
+  author: string | null;
+  file_url: string | null;
+  file_type: 'fdx' | 'pdf' | 'manual' | null;
+  total_pages: number | null;
+  status: BacklotScriptStatus;
+  notes: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  scenes?: BacklotScene[];
+  scene_count?: number;
+}
+
+// Scene
+export interface BacklotScene {
+  id: string;
+  script_id: string;
+  project_id: string;
+  scene_number: string;
+  int_ext: BacklotIntExt | null;
+  time_of_day: BacklotTimeOfDay | string | null;
+  set_name: string | null;
+  location_id: string | null;
+  page_start: number | null;
+  page_count: string | null;
+  synopsis: string | null;
+  notes: string | null;
+  coverage_status: BacklotSceneCoverageStatus;
+  is_omitted: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  location?: BacklotLocation;
+  breakdown_items?: BacklotBreakdownItem[];
+  call_sheet_links?: BacklotCallSheetSceneLink[];
+  breakdown_count?: number;
+}
+
+// Breakdown Item
+export interface BacklotBreakdownItem {
+  id: string;
+  scene_id: string;
+  item_type: BacklotBreakdownItemType;
+  name: string;
+  description: string | null;
+  quantity: number;
+  notes: string | null;
+  linked_cast_member_id: string | null;
+  linked_prop_id: string | null;
+  linked_vehicle_id: string | null;
+  budget_estimate: number | null;
+  budget_category_id: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  cast_member?: BacklotProjectMember;
+  budget_category?: BacklotBudgetCategory;
+}
+
+// Budget Suggestion (from script breakdown)
+export interface BacklotBudgetSuggestion {
+  id: string;
+  project_id: string;
+  script_id: string | null;
+  suggested_category: string;
+  suggested_description: string;
+  suggested_amount: number;
+  source_type: string;
+  source_id: string | null;
+  source_name: string | null;
+  scene_count: number;
+  status: BacklotBudgetSuggestionStatus;
+  applied_line_item_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  applied_line_item?: BacklotBudgetLineItem;
+}
+
+// Call Sheet Scene Link (junction table)
+export interface BacklotCallSheetSceneLink {
+  id: string;
+  call_sheet_id: string;
+  scene_id: string;
+  shoot_order: number;
+  notes: string | null;
+  created_at: string;
+  // Joined data
+  scene?: BacklotScene;
+  call_sheet?: BacklotCallSheet;
+}
+
+// =============================================================================
+// SCRIPT BREAKDOWN INPUT TYPES
+// =============================================================================
+
+export interface ScriptInput {
+  title: string;
+  version?: string | null;
+  draft_date?: string | null;
+  author?: string | null;
+  file_url?: string | null;
+  file_type?: 'fdx' | 'pdf' | 'manual' | null;
+  total_pages?: number | null;
+  status?: BacklotScriptStatus;
+  notes?: string | null;
+}
+
+export interface SceneInput {
+  script_id?: string;
+  scene_number: string;
+  int_ext?: BacklotIntExt | null;
+  time_of_day?: BacklotTimeOfDay | string | null;
+  set_name?: string | null;
+  location_id?: string | null;
+  page_start?: number | null;
+  page_count?: string | null;
+  synopsis?: string | null;
+  notes?: string | null;
+  coverage_status?: BacklotSceneCoverageStatus;
+  is_omitted?: boolean;
+  sort_order?: number;
+}
+
+export interface BreakdownItemInput {
+  item_type: BacklotBreakdownItemType;
+  name: string;
+  description?: string | null;
+  quantity?: number;
+  notes?: string | null;
+  linked_cast_member_id?: string | null;
+  linked_prop_id?: string | null;
+  linked_vehicle_id?: string | null;
+  budget_estimate?: number | null;
+  budget_category_id?: string | null;
+  sort_order?: number;
+}
+
+export interface CallSheetSceneLinkInput {
+  scene_id: string;
+  shoot_order?: number;
+  notes?: string | null;
+}
+
+// =============================================================================
+// SCRIPT BREAKDOWN API RESPONSE TYPES
+// =============================================================================
+
+// Script import response
+export interface ScriptImportResponse {
+  success: boolean;
+  script: BacklotScript;
+  scenes_created: number;
+  message: string;
+}
+
+// Coverage statistics
+export interface SceneCoverageStats {
+  total_scenes: number;
+  not_scheduled: number;
+  scheduled: number;
+  shot: number;
+  needs_pickup: number;
+  omitted: number;
+  total_pages: number;
+  pages_shot: number;
+  percent_complete: number;
+  scenes_by_location: Array<{
+    location_id: string | null;
+    location_name: string | null;
+    scene_count: number;
+    page_count: number;
+  }>;
+  scenes_by_int_ext: Array<{
+    int_ext: string | null;
+    scene_count: number;
+  }>;
+}
+
+// Location needs analysis
+export interface LocationNeedsItem {
+  location_name: string;
+  location_id: string | null;
+  scene_count: number;
+  scenes: Array<{
+    scene_id: string;
+    scene_number: string;
+    int_ext: string | null;
+    time_of_day: string | null;
+    page_count: string | null;
+    coverage_status: BacklotSceneCoverageStatus;
+  }>;
+  day_night_breakdown: {
+    day: number;
+    night: number;
+    other: number;
+  };
+  int_ext_breakdown: {
+    interior: number;
+    exterior: number;
+    both: number;
+  };
+  total_pages: number;
+  has_location_assigned: boolean;
+}
+
+export interface LocationNeedsResponse {
+  success: boolean;
+  project_id: string;
+  total_unique_locations: number;
+  locations_assigned: number;
+  locations_unassigned: number;
+  needs: LocationNeedsItem[];
+}
+
+// Task generation response
+export interface TaskGenerationResponse {
+  success: boolean;
+  tasks_created: number;
+  breakdown_items_processed: number;
+  message: string;
+  tasks: BacklotTask[];
+}
+
+// Budget suggestion generation response
+export interface BudgetSuggestionGenerationResponse {
+  success: boolean;
+  suggestions_created: number;
+  total_suggested_amount: number;
+  message: string;
+  suggestions: BacklotBudgetSuggestion[];
+}
+
+// Scene breakdown summary (for quick view)
+export interface SceneBreakdownSummary {
+  scene_id: string;
+  scene_number: string;
+  total_items: number;
+  items_by_type: Array<{
+    item_type: BacklotBreakdownItemType;
+    count: number;
+    estimated_cost: number;
+  }>;
+  total_estimated_cost: number;
+  has_cast: boolean;
+  has_stunts: boolean;
+  has_vfx: boolean;
+  has_sfx: boolean;
+}
+
+// =============================================================================
+// SCRIPT BREAKDOWN FILTER TYPES
+// =============================================================================
+
+export interface SceneFilters {
+  coverage_status?: BacklotSceneCoverageStatus | 'all';
+  int_ext?: BacklotIntExt | 'all';
+  location_id?: string | 'all';
+  has_breakdown?: boolean;
+  search?: string;
+}
+
+export interface BreakdownItemFilters {
+  item_type?: BacklotBreakdownItemType | 'all';
+  has_budget_estimate?: boolean;
+  search?: string;
+}
+
+// =============================================================================
+// SCRIPT BREAKDOWN LABELS
+// =============================================================================
+
+export const SCENE_COVERAGE_STATUS_LABELS: Record<BacklotSceneCoverageStatus, string> = {
+  not_scheduled: 'Not Scheduled',
+  scheduled: 'Scheduled',
+  shot: 'Shot',
+  needs_pickup: 'Needs Pickup',
+};
+
+export const SCENE_COVERAGE_STATUS_COLORS: Record<BacklotSceneCoverageStatus, string> = {
+  not_scheduled: 'gray',
+  scheduled: 'blue',
+  shot: 'green',
+  needs_pickup: 'orange',
+};
+
+export const BREAKDOWN_ITEM_TYPE_LABELS: Record<BacklotBreakdownItemType, string> = {
+  cast: 'Cast',
+  background: 'Background/Extras',
+  stunt: 'Stunts',
+  location: 'Location',
+  prop: 'Props',
+  set_dressing: 'Set Dressing',
+  wardrobe: 'Wardrobe',
+  makeup: 'Makeup/Hair',
+  sfx: 'Special Effects',
+  vfx: 'Visual Effects',
+  vehicle: 'Vehicles',
+  animal: 'Animals',
+  greenery: 'Greenery',
+  special_equipment: 'Special Equipment',
+  sound: 'Sound',
+  music: 'Music',
+};
+
+export const BREAKDOWN_ITEM_TYPE_COLORS: Record<BacklotBreakdownItemType, string> = {
+  cast: 'red',
+  background: 'orange',
+  stunt: 'purple',
+  location: 'brown',
+  prop: 'violet',
+  set_dressing: 'amber',
+  wardrobe: 'blue',
+  makeup: 'pink',
+  sfx: 'yellow',
+  vfx: 'cyan',
+  vehicle: 'slate',
+  animal: 'lime',
+  greenery: 'emerald',
+  special_equipment: 'indigo',
+  sound: 'sky',
+  music: 'fuchsia',
+};
+
+export const SCRIPT_STATUS_LABELS: Record<BacklotScriptStatus, string> = {
+  draft: 'Draft',
+  locked: 'Locked',
+  archived: 'Archived',
 };

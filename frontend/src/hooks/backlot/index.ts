@@ -38,10 +38,21 @@ export {
   useTaskStats,
 } from './useTasks';
 
-// Locations
+// Locations (legacy project-specific)
 export {
   useLocations,
   useLocation,
+} from './useLocations';
+
+// Global Location Library
+export {
+  useGlobalLocationSearch,
+  useLocationRegions,
+  useLocationTypes,
+  useProjectLocations,
+  useLocationById,
+  useUpdateGlobalLocation,
+  useDeleteGlobalLocation,
 } from './useLocations';
 
 // Gear
@@ -131,3 +142,44 @@ export {
   useCreateBudgetFromBundles,
   useAddBundleToBudget,
 } from './useBudget';
+
+// Scout Photos
+export {
+  useScoutPhotos,
+  useScoutPhoto,
+  useScoutSummary,
+  useScoutPhotoMutations,
+  VANTAGE_TYPES,
+  TIME_OF_DAY_OPTIONS,
+  WEATHER_OPTIONS,
+  INTERIOR_EXTERIOR_OPTIONS,
+  CAMERA_FACING_OPTIONS,
+  ANGLE_LABEL_SUGGESTIONS,
+} from './useScoutPhotos';
+
+// Script Breakdown System
+export {
+  // Scripts
+  useScripts,
+  useScript,
+  useScriptMutations,
+  useImportScript,
+  // Scenes
+  useScenes,
+  useScene,
+  useSceneMutations,
+  // Breakdown Items
+  useBreakdownItems,
+  useBreakdownItemMutations,
+  // Coverage & Analytics
+  useCoverageStats,
+  useLocationNeeds,
+  // Task & Budget Generation
+  useGenerateTasks,
+  useGenerateBudgetSuggestions,
+  useBudgetSuggestions,
+  useBudgetSuggestionMutations,
+  // Call Sheet Scene Links
+  useCallSheetSceneLinks,
+  useCallSheetSceneLinkMutations,
+} from './useScripts';
