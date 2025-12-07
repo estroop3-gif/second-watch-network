@@ -45,7 +45,7 @@ export function useScripts(options: UseScriptsOptions) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/scripts`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/scripts`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -70,7 +70,7 @@ export function useScripts(options: UseScriptsOptions) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${input.projectId}/scripts`,
+        `${API_BASE}/api/v1/backlot/projects/${input.projectId}/scripts`,
         {
           method: 'POST',
           headers: {
@@ -112,7 +112,7 @@ export function useScript(scriptId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scripts/${scriptId}`,
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -140,7 +140,7 @@ export function useScriptMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scripts/${id}`,
+        `${API_BASE}/api/v1/backlot/scripts/${id}`,
         {
           method: 'PUT',
           headers: {
@@ -170,7 +170,7 @@ export function useScriptMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scripts/${id}`,
+        `${API_BASE}/api/v1/backlot/scripts/${id}`,
         {
           method: 'DELETE',
           headers: {
@@ -220,7 +220,7 @@ export function useImportScript() {
       if (version) formData.append('version', version);
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/scripts/import`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/scripts/import`,
         {
           method: 'POST',
           headers: {
@@ -283,7 +283,7 @@ export function useScenes(options: UseScenesOptions) {
       if (search) params.append('search', search);
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/scenes?${params}`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes?${params}`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -308,7 +308,7 @@ export function useScenes(options: UseScenesOptions) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${input.projectId}/scenes`,
+        `${API_BASE}/api/v1/backlot/projects/${input.projectId}/scenes`,
         {
           method: 'POST',
           headers: {
@@ -351,7 +351,7 @@ export function useScene(sceneId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${sceneId}`,
+        `${API_BASE}/api/v1/backlot/scenes/${sceneId}`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -379,7 +379,7 @@ export function useSceneMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${id}`,
+        `${API_BASE}/api/v1/backlot/scenes/${id}`,
         {
           method: 'PUT',
           headers: {
@@ -418,7 +418,7 @@ export function useSceneMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${id}/coverage`,
+        `${API_BASE}/api/v1/backlot/scenes/${id}/coverage`,
         {
           method: 'PATCH',
           headers: {
@@ -449,7 +449,7 @@ export function useSceneMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${id}`,
+        `${API_BASE}/api/v1/backlot/scenes/${id}`,
         {
           method: 'DELETE',
           headers: {
@@ -481,7 +481,7 @@ export function useSceneMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/scenes/reorder`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes/reorder`,
         {
           method: 'POST',
           headers: {
@@ -528,7 +528,7 @@ export function useBreakdownItems(sceneId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${sceneId}/breakdown`,
+        `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -566,7 +566,7 @@ export function useBreakdownItemMutations() {
       const { sceneId, ...itemInput } = input;
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/scenes/${sceneId}/breakdown`,
+        `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown`,
         {
           method: 'POST',
           headers: {
@@ -596,7 +596,7 @@ export function useBreakdownItemMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/breakdown-items/${id}`,
+        `${API_BASE}/api/v1/backlot/breakdown-items/${id}`,
         {
           method: 'PUT',
           headers: {
@@ -625,7 +625,7 @@ export function useBreakdownItemMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/breakdown-items/${id}`,
+        `${API_BASE}/api/v1/backlot/breakdown-items/${id}`,
         {
           method: 'DELETE',
           headers: {
@@ -666,7 +666,7 @@ export function useCoverageStats(projectId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/script/coverage`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/coverage`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -695,7 +695,7 @@ export function useLocationNeeds(projectId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/script/location-needs`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/location-needs`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -735,7 +735,7 @@ export function useGenerateTasks() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/script/generate-tasks`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/generate-tasks`,
         {
           method: 'POST',
           headers: {
@@ -777,7 +777,7 @@ export function useGenerateBudgetSuggestions() {
       if (scriptId) body.script_id = scriptId;
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/script/generate-budget-suggestions`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/generate-budget-suggestions`,
         {
           method: 'POST',
           headers: {
@@ -811,7 +811,7 @@ export function useBudgetSuggestions(projectId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/projects/${projectId}/budget-suggestions`,
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/budget-suggestions`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -855,7 +855,7 @@ export function useBudgetSuggestionMutations() {
       if (notes !== undefined) body.notes = notes;
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/budget-suggestions/${id}`,
+        `${API_BASE}/api/v1/backlot/budget-suggestions/${id}`,
         {
           method: 'PATCH',
           headers: {
@@ -897,7 +897,7 @@ export function useCallSheetSceneLinks(callSheetId: string | null) {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/call-sheets/${callSheetId}/linked-scenes`,
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes`,
         {
           headers: {
             Authorization: `Bearer ${session.session.access_token}`,
@@ -929,7 +929,7 @@ export function useCallSheetSceneLinkMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/call-sheets/${callSheetId}/linked-scenes`,
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes`,
         {
           method: 'POST',
           headers: {
@@ -966,7 +966,7 @@ export function useCallSheetSceneLinkMutations() {
       if (!session.session) throw new Error('Not authenticated');
 
       const response = await fetch(
-        `${API_BASE}/api/backlot/call-sheets/${callSheetId}/linked-scenes/${sceneId}`,
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes/${sceneId}`,
         {
           method: 'DELETE',
           headers: {

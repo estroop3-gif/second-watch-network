@@ -665,6 +665,27 @@ async def list_lodges(
     return LodgeListResponse(lodges=lodges, total=result.count or 0)
 
 
+@router.get("/lodges/my", response_model=List[LodgeMembershipResponse])
+async def get_my_lodge_memberships(user = Depends(require_order_member)):
+    """Get current user's lodge memberships"""
+    user_id = get_user_id(user)
+    supabase = get_supabase_client()
+
+    result = supabase.table("order_lodge_memberships").select("*, order_lodges(name, city)").eq("user_id", user_id).execute()
+
+    memberships = []
+    for m in result.data or []:
+        lodge_info = m.pop("order_lodges", {}) or {}
+        m["lodge_name"] = lodge_info.get("name")
+        m["lodge_city"] = lodge_info.get("city")
+        # Handle potential null is_officer
+        if m.get("is_officer") is None:
+            m["is_officer"] = False
+        memberships.append(LodgeMembershipResponse(**m))
+
+    return memberships
+
+
 @router.get("/lodges/{lodge_id}", response_model=LodgeResponse)
 async def get_lodge(
     lodge_id: int,
@@ -750,24 +771,6 @@ async def join_lodge(
     # TODO: Initiate Stripe subscription for lodge dues
 
     return LodgeMembershipResponse(**response_data)
-
-
-@router.get("/lodges/my", response_model=List[LodgeMembershipResponse])
-async def get_my_lodge_memberships(user = Depends(require_order_member)):
-    """Get current user's lodge memberships"""
-    user_id = get_user_id(user)
-    supabase = get_supabase_client()
-
-    result = supabase.table("order_lodge_memberships").select("*, order_lodges(name, city)").eq("user_id", user_id).execute()
-
-    memberships = []
-    for m in result.data or []:
-        lodge_info = m.pop("order_lodges", {}) or {}
-        m["lodge_name"] = lodge_info.get("name")
-        m["lodge_city"] = lodge_info.get("city")
-        memberships.append(LodgeMembershipResponse(**m))
-
-    return memberships
 
 
 @router.post("/lodges", response_model=LodgeResponse)
