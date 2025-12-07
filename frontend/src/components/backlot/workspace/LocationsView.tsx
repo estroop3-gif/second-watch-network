@@ -59,8 +59,15 @@ import {
   useGlobalLocationSearch,
   useLocationRegions,
   useLocationTypes,
+  useClearances,
+  locationHasSignedRelease,
 } from '@/hooks/backlot';
-import { BacklotLocation, BacklotLocationInput } from '@/types/backlot';
+import {
+  BacklotLocation,
+  BacklotLocationInput,
+  BacklotClearanceStatus,
+  CLEARANCE_STATUS_LABELS,
+} from '@/types/backlot';
 import { LocationDetailModal } from './LocationDetailModal';
 
 interface LocationsViewProps {
@@ -75,7 +82,8 @@ const LocationCard: React.FC<{
   onDetach: (id: string) => void;
   onView: (location: BacklotLocation) => void;
   isAttached?: boolean;
-}> = ({ location, canEdit, onEdit, onDetach, onView, isAttached = true }) => {
+  releaseStatus?: BacklotClearanceStatus | 'missing' | null;
+}> = ({ location, canEdit, onEdit, onDetach, onView, isAttached = true, releaseStatus }) => {
   const fullAddress = [location.address, location.city, location.state, location.zip]
     .filter(Boolean)
     .join(', ');
@@ -233,6 +241,28 @@ const LocationCard: React.FC<{
             <Badge variant="outline" className="text-xs border-muted-gray/30">
               <DollarSign className="w-3 h-3 mr-1" />
               ${location.location_fee}
+            </Badge>
+          )}
+          {/* Release Status Badge */}
+          {releaseStatus && (
+            <Badge
+              variant="outline"
+              className={`text-xs ${
+                releaseStatus === 'signed'
+                  ? 'border-green-500/30 text-green-400 bg-green-500/10'
+                  : releaseStatus === 'requested'
+                  ? 'border-yellow-500/30 text-yellow-400 bg-yellow-500/10'
+                  : releaseStatus === 'not_started'
+                  ? 'border-gray-500/30 text-gray-400'
+                  : releaseStatus === 'expired'
+                  ? 'border-orange-500/30 text-orange-400 bg-orange-500/10'
+                  : releaseStatus === 'rejected'
+                  ? 'border-red-500/30 text-red-400 bg-red-500/10'
+                  : 'border-gray-500/30 text-gray-400'
+              }`}
+            >
+              <FileCheck className="w-3 h-3 mr-1" />
+              Release: {releaseStatus === 'missing' ? 'Missing' : CLEARANCE_STATUS_LABELS[releaseStatus as BacklotClearanceStatus]}
             </Badge>
           )}
         </div>
@@ -819,6 +849,41 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
     detachLocation,
   } = useProjectLocations(projectId);
 
+  // Fetch clearances to show location release status
+  const { clearances: locationClearances } = useClearances({
+    projectId,
+    type: 'location_release',
+  });
+
+  // Build a map of location ID -> release status
+  const locationReleaseStatusMap = React.useMemo(() => {
+    const map = new Map<string, BacklotClearanceStatus | 'missing'>();
+    locations.forEach((loc) => {
+      const locId = loc.location?.id || loc.id;
+      // Find matching clearance for this location
+      const matchingClearances = locationClearances.filter(
+        (c) => c.related_location_id === locId || c.related_project_location_id === locId
+      );
+      if (matchingClearances.length === 0) {
+        map.set(loc.id, 'missing');
+      } else {
+        // Pick the best status (signed > requested > not_started > expired)
+        const statusPriority: Record<string, number> = {
+          signed: 1,
+          requested: 2,
+          not_started: 3,
+          expired: 4,
+          rejected: 5,
+        };
+        const sorted = matchingClearances.sort(
+          (a, b) => (statusPriority[a.status] || 99) - (statusPriority[b.status] || 99)
+        );
+        map.set(loc.id, sorted[0].status as BacklotClearanceStatus);
+      }
+    });
+    return map;
+  }, [locations, locationClearances]);
+
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [editingLocation, setEditingLocation] = useState<BacklotLocation | null>(null);
@@ -918,6 +983,7 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
               onEdit={handleEdit}
               onDetach={handleDetach}
               onView={handleView}
+              releaseStatus={locationReleaseStatusMap.get(location.id)}
             />
           ))}
         </div>

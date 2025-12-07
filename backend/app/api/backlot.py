@@ -9176,3 +9176,6016 @@ async def delete_script_highlight(
     except Exception as e:
         print(f"Error deleting script highlight: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CASTING & CREW HIRING PIPELINE
+# =====================================================
+
+# =====================================================
+# Pydantic Models for Casting & Crew
+# =====================================================
+
+class ProjectRoleInput(BaseModel):
+    """Input for creating/updating a project role"""
+    type: Literal["cast", "crew"]
+    title: str
+    description: Optional[str] = None
+    department: Optional[str] = None
+    character_name: Optional[str] = None
+    character_description: Optional[str] = None
+    age_range: Optional[str] = None
+    gender_requirement: Optional[str] = None
+    location: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    days_estimated: Optional[float] = None
+    paid: bool = False
+    rate_description: Optional[str] = None
+    rate_amount_cents: Optional[int] = None
+    rate_type: Optional[Literal["flat", "daily", "weekly", "hourly"]] = None
+    is_order_only: bool = False
+    is_featured: bool = False
+    status: Optional[Literal["draft", "open", "closed", "booked", "cancelled"]] = "open"
+    requires_reel: bool = False
+    requires_headshot: bool = False
+    application_deadline: Optional[str] = None
+    max_applications: Optional[int] = None
+
+
+class RoleApplicationInput(BaseModel):
+    """Input for creating a role application"""
+    cover_note: Optional[str] = None
+    availability_notes: Optional[str] = None
+    rate_expectation: Optional[str] = None
+    reel_url: Optional[str] = None
+    headshot_url: Optional[str] = None
+    resume_url: Optional[str] = None
+
+
+class ApplicationStatusUpdate(BaseModel):
+    """Input for updating application status"""
+    status: Literal["applied", "viewed", "shortlisted", "interview", "offered", "booked", "rejected", "withdrawn"]
+    internal_notes: Optional[str] = None
+    rating: Optional[int] = Field(None, ge=1, le=5)
+
+
+class UserAvailabilityInput(BaseModel):
+    """Input for setting user availability"""
+    date: str
+    status: Literal["available", "unavailable", "hold", "booked", "tentative"]
+    notes: Optional[str] = None
+    project_id: Optional[str] = None
+
+
+class BulkAvailabilityInput(BaseModel):
+    """Input for setting availability for a date range"""
+    start_date: str
+    end_date: str
+    status: Literal["available", "unavailable", "hold", "tentative"]
+    notes: Optional[str] = None
+
+
+# =====================================================
+# Helper: Check Order Membership
+# =====================================================
+
+async def check_is_order_member(supabase, user_id: str) -> bool:
+    """Check if a user is an active Order member"""
+    try:
+        result = supabase.table("order_member_profiles").select("status").eq("user_id", user_id).execute()
+        if result.data:
+            return result.data[0]["status"] in ("active", "probationary")
+        return False
+    except:
+        return False
+
+
+async def get_user_profile_snapshot(supabase, user_id: str) -> Dict[str, Any]:
+    """Get a snapshot of user profile for application"""
+    try:
+        # Get base profile
+        profile_result = supabase.table("profiles").select("full_name, username, avatar_url").eq("id", user_id).execute()
+        profile = profile_result.data[0] if profile_result.data else {}
+
+        # Get filmmaker profile if exists
+        filmmaker_result = supabase.table("filmmaker_profiles").select(
+            "department, location, portfolio_url, reel_url"
+        ).eq("user_id", user_id).execute()
+        filmmaker = filmmaker_result.data[0] if filmmaker_result.data else {}
+
+        # Get order profile if exists
+        order_result = supabase.table("order_member_profiles").select(
+            "primary_track, city, portfolio_url, years_experience, status"
+        ).eq("user_id", user_id).execute()
+        order_profile = order_result.data[0] if order_result.data else {}
+
+        # Get recent credits count
+        credits_result = supabase.table("backlot_project_credits").select("id").eq("user_id", user_id).limit(10).execute()
+        credits_count = len(credits_result.data) if credits_result.data else 0
+
+        return {
+            "name": profile.get("full_name") or profile.get("username") or "Unknown",
+            "avatar_url": profile.get("avatar_url"),
+            "primary_role": filmmaker.get("department") or order_profile.get("primary_track") or "Unknown",
+            "department": filmmaker.get("department") or order_profile.get("primary_track"),
+            "city": filmmaker.get("location") or order_profile.get("city"),
+            "portfolio_url": filmmaker.get("portfolio_url") or order_profile.get("portfolio_url"),
+            "reel_url": filmmaker.get("reel_url"),
+            "years_experience": order_profile.get("years_experience"),
+            "is_order_member": order_profile.get("status") in ("active", "probationary") if order_profile else False,
+            "credits_count": credits_count
+        }
+    except Exception as e:
+        print(f"Error getting profile snapshot: {e}")
+        return {"name": "Unknown", "is_order_member": False}
+
+
+# =====================================================
+# Project Roles Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/roles")
+async def get_project_roles(
+    project_id: str,
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+    include_applications: bool = False,
+    authorization: str = Header(None)
+):
+    """Get all roles for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        query = supabase.table("backlot_project_roles").select("*").eq("project_id", project_id).order("created_at", desc=True)
+
+        if type:
+            query = query.eq("type", type)
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        roles = result.data or []
+
+        # Optionally include application counts
+        if include_applications and roles:
+            for role in roles:
+                app_result = supabase.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).execute()
+                apps = app_result.data or []
+                role["application_count"] = len(apps)
+                role["shortlisted_count"] = len([a for a in apps if a["status"] == "shortlisted"])
+                role["booked_count"] = len([a for a in apps if a["status"] == "booked"])
+
+        # Get booked user info if any
+        for role in roles:
+            if role.get("booked_user_id"):
+                user_result = supabase.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
+                role["booked_user"] = user_result.data[0] if user_result.data else None
+
+        return {"success": True, "roles": roles, "count": len(roles)}
+
+    except Exception as e:
+        print(f"Error fetching project roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/roles")
+async def create_project_role(
+    project_id: str,
+    role_input: ProjectRoleInput,
+    authorization: str = Header(None)
+):
+    """Create a new role posting for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project edit access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to create roles")
+
+    try:
+        role_data = {
+            "project_id": project_id,
+            "created_by_user_id": user_id,
+            "type": role_input.type,
+            "title": role_input.title,
+            "description": role_input.description,
+            "department": role_input.department,
+            "character_name": role_input.character_name,
+            "character_description": role_input.character_description,
+            "age_range": role_input.age_range,
+            "gender_requirement": role_input.gender_requirement,
+            "location": role_input.location,
+            "start_date": role_input.start_date,
+            "end_date": role_input.end_date,
+            "days_estimated": role_input.days_estimated,
+            "paid": role_input.paid,
+            "rate_description": role_input.rate_description,
+            "rate_amount_cents": role_input.rate_amount_cents,
+            "rate_type": role_input.rate_type,
+            "is_order_only": role_input.is_order_only,
+            "is_featured": role_input.is_featured,
+            "status": role_input.status or "open",
+            "requires_reel": role_input.requires_reel,
+            "requires_headshot": role_input.requires_headshot,
+            "application_deadline": role_input.application_deadline,
+            "max_applications": role_input.max_applications,
+        }
+
+        result = supabase.table("backlot_project_roles").insert(role_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create role")
+
+        return {"success": True, "role": result.data[0], "message": "Role created successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating project role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/roles/{role_id}")
+async def get_role(
+    role_id: str,
+    include_applications: bool = False,
+    authorization: str = Header(None)
+):
+    """Get a single role with optional applications"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role = result.data
+
+        # Check access
+        project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", role["project_id"]).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project = project_response.data[0]
+        is_owner = project["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", user_id).execute()
+            is_member = bool(member_response.data)
+
+            # Check if role is Order-only and user is not an Order member
+            if role["is_order_only"] and not is_member:
+                is_order_member = await check_is_order_member(supabase, user_id)
+                if not is_order_member:
+                    raise HTTPException(status_code=403, detail="This role is only visible to Order members")
+            elif role["status"] != "open" and not is_member:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        role["project_title"] = project["title"]
+
+        # Get booked user info
+        if role.get("booked_user_id"):
+            user_result = supabase.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
+            role["booked_user"] = user_result.data[0] if user_result.data else None
+
+        # Include applications for project admins
+        if include_applications and (is_owner or (member_response.data and member_response.data[0]["role"] in ["owner", "admin", "editor"])):
+            app_result = supabase.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True).execute()
+            role["applications"] = app_result.data or []
+
+        return {"success": True, "role": role}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/roles/{role_id}")
+async def update_role(
+    role_id: str,
+    role_input: ProjectRoleInput,
+    authorization: str = Header(None)
+):
+    """Update a role"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get existing role
+        existing = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to edit roles")
+
+        update_data = {
+            "type": role_input.type,
+            "title": role_input.title,
+            "description": role_input.description,
+            "department": role_input.department,
+            "character_name": role_input.character_name,
+            "character_description": role_input.character_description,
+            "age_range": role_input.age_range,
+            "gender_requirement": role_input.gender_requirement,
+            "location": role_input.location,
+            "start_date": role_input.start_date,
+            "end_date": role_input.end_date,
+            "days_estimated": role_input.days_estimated,
+            "paid": role_input.paid,
+            "rate_description": role_input.rate_description,
+            "rate_amount_cents": role_input.rate_amount_cents,
+            "rate_type": role_input.rate_type,
+            "is_order_only": role_input.is_order_only,
+            "is_featured": role_input.is_featured,
+            "status": role_input.status,
+            "requires_reel": role_input.requires_reel,
+            "requires_headshot": role_input.requires_headshot,
+            "application_deadline": role_input.application_deadline,
+            "max_applications": role_input.max_applications,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        result = supabase.table("backlot_project_roles").update(update_data).eq("id", role_id).execute()
+
+        return {"success": True, "role": result.data[0] if result.data else None, "message": "Role updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/roles/{role_id}")
+async def delete_role(
+    role_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a role"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get existing role
+        existing = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify delete access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to delete roles")
+
+        supabase.table("backlot_project_roles").delete().eq("id", role_id).execute()
+
+        return {"success": True, "message": "Role deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/roles/{role_id}/book")
+async def book_role(
+    role_id: str,
+    user_id_to_book: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Book a user for a role (from shortlist or directly)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get role
+        role_result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role = role_result.data
+
+        # Verify admin access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", role["project_id"]).execute()
+        is_owner = project_response.data[0]["owner_id"] == current_user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to book roles")
+
+        # Update role
+        supabase.table("backlot_project_roles").update({
+            "status": "booked",
+            "booked_user_id": user_id_to_book,
+            "booked_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", role_id).execute()
+
+        # Update application status if exists
+        supabase.table("backlot_project_role_applications").update({
+            "status": "booked",
+            "status_changed_at": datetime.utcnow().isoformat(),
+            "status_changed_by_user_id": current_user_id,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("role_id", role_id).eq("applicant_user_id", user_id_to_book).execute()
+
+        # Optionally add as project member if not already
+        existing_member = supabase.table("backlot_project_members").select("id").eq("project_id", role["project_id"]).eq("user_id", user_id_to_book).execute()
+
+        if not existing_member.data:
+            # Get user profile for name/email
+            profile = supabase.table("profiles").select("full_name, email").eq("id", user_id_to_book).execute()
+            profile_data = profile.data[0] if profile.data else {}
+
+            supabase.table("backlot_project_members").insert({
+                "project_id": role["project_id"],
+                "user_id": user_id_to_book,
+                "role": "viewer",  # Basic access
+                "production_role": role["title"],
+                "department": role.get("department"),
+                "invited_by": current_user_id,
+            }).execute()
+
+        return {"success": True, "message": f"User booked for {role['title']}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error booking role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Open/Public Roles Listing (for Community/Order)
+# =====================================================
+
+@router.get("/open-roles")
+async def get_open_roles(
+    type: Optional[str] = None,
+    location: Optional[str] = None,
+    paid_only: bool = False,
+    order_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+    authorization: str = Header(None)
+):
+    """Get all open roles (public listing for job board)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Check if user is Order member
+        is_order_member = await check_is_order_member(supabase, user_id)
+
+        # Base query for open roles
+        query = supabase.table("backlot_project_roles").select(
+            "*, backlot_projects(id, title, slug, cover_image_url, owner_id)"
+        ).eq("status", "open")
+
+        # Filter Order-only roles if user is not an Order member
+        if not is_order_member:
+            query = query.eq("is_order_only", False)
+        elif order_only:
+            query = query.eq("is_order_only", True)
+
+        if type:
+            query = query.eq("type", type)
+        if location:
+            query = query.ilike("location", f"%{location}%")
+        if paid_only:
+            query = query.eq("paid", True)
+
+        query = query.order("created_at", desc=True).range(offset, offset + limit - 1)
+
+        result = query.execute()
+        roles = result.data or []
+
+        # Get application counts
+        for role in roles:
+            app_count = supabase.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role["id"]).execute()
+            role["application_count"] = app_count.count if app_count.count else 0
+
+            # Check if current user has applied
+            user_app = supabase.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).eq("applicant_user_id", user_id).execute()
+            role["user_has_applied"] = bool(user_app.data)
+            role["user_application_status"] = user_app.data[0]["status"] if user_app.data else None
+
+        return {"success": True, "roles": roles, "count": len(roles), "is_order_member": is_order_member}
+
+    except Exception as e:
+        print(f"Error fetching open roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Role Applications Endpoints
+# =====================================================
+
+@router.get("/roles/{role_id}/applications")
+async def get_role_applications(
+    role_id: str,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all applications for a role (project admin only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get role and verify admin access
+        role_result = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        project_id = role_result.data["project_id"]
+
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        query = supabase.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        # Group by status for board view
+        applications_by_status = {
+            "applied": [],
+            "viewed": [],
+            "shortlisted": [],
+            "interview": [],
+            "offered": [],
+            "booked": [],
+            "rejected": [],
+            "withdrawn": [],
+        }
+
+        for app in applications:
+            if app["status"] in applications_by_status:
+                applications_by_status[app["status"]].append(app)
+
+        return {
+            "success": True,
+            "applications": applications,
+            "applications_by_status": applications_by_status,
+            "count": len(applications)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/roles/{role_id}/apply")
+async def apply_to_role(
+    role_id: str,
+    application: RoleApplicationInput,
+    authorization: str = Header(None)
+):
+    """Apply to a role"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get role
+        role_result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role = role_result.data
+
+        # Check if role is open
+        if role["status"] != "open":
+            raise HTTPException(status_code=400, detail="This role is no longer accepting applications")
+
+        # Check if Order-only
+        if role["is_order_only"]:
+            is_order_member = await check_is_order_member(supabase, user_id)
+            if not is_order_member:
+                raise HTTPException(status_code=403, detail="This role is only open to Order members")
+
+        # Check application deadline
+        if role.get("application_deadline"):
+            deadline = datetime.fromisoformat(role["application_deadline"])
+            if datetime.utcnow() > deadline:
+                raise HTTPException(status_code=400, detail="Application deadline has passed")
+
+        # Check max applications
+        if role.get("max_applications"):
+            current_count = supabase.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role_id).execute()
+            if current_count.count and current_count.count >= role["max_applications"]:
+                raise HTTPException(status_code=400, detail="Maximum applications reached for this role")
+
+        # Check for existing application
+        existing = supabase.table("backlot_project_role_applications").select("id").eq("role_id", role_id).eq("applicant_user_id", user_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="You have already applied to this role")
+
+        # Get profile snapshot
+        profile_snapshot = await get_user_profile_snapshot(supabase, user_id)
+
+        application_data = {
+            "role_id": role_id,
+            "applicant_user_id": user_id,
+            "applicant_profile_snapshot": profile_snapshot,
+            "cover_note": application.cover_note,
+            "availability_notes": application.availability_notes,
+            "rate_expectation": application.rate_expectation,
+            "reel_url": application.reel_url,
+            "headshot_url": application.headshot_url,
+            "resume_url": application.resume_url,
+            "status": "applied",
+        }
+
+        result = supabase.table("backlot_project_role_applications").insert(application_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to submit application")
+
+        return {"success": True, "application": result.data[0], "message": "Application submitted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error submitting application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/applications/{application_id}/status")
+async def update_application_status(
+    application_id: str,
+    status_update: ApplicationStatusUpdate,
+    authorization: str = Header(None)
+):
+    """Update application status (project admin) or withdraw (applicant)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get application
+        app_result = supabase.table("backlot_project_role_applications").select(
+            "*, backlot_project_roles(project_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        application = app_result.data
+        project_id = application["backlot_project_roles"]["project_id"]
+
+        # Check permissions
+        is_applicant = application["applicant_user_id"] == user_id
+
+        if is_applicant:
+            # Applicant can only withdraw
+            if status_update.status != "withdrawn":
+                raise HTTPException(status_code=403, detail="You can only withdraw your application")
+        else:
+            # Must be project admin
+            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            is_owner = project_response.data[0]["owner_id"] == user_id
+
+            if not is_owner:
+                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                    raise HTTPException(status_code=403, detail="Access denied")
+
+        update_data = {
+            "status": status_update.status,
+            "status_changed_at": datetime.utcnow().isoformat(),
+            "status_changed_by_user_id": user_id,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        if status_update.internal_notes is not None:
+            update_data["internal_notes"] = status_update.internal_notes
+        if status_update.rating is not None:
+            update_data["rating"] = status_update.rating
+
+        result = supabase.table("backlot_project_role_applications").update(update_data).eq("id", application_id).execute()
+
+        # If booking, also update the role
+        if status_update.status == "booked":
+            supabase.table("backlot_project_roles").update({
+                "status": "booked",
+                "booked_user_id": application["applicant_user_id"],
+                "booked_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", application["role_id"]).execute()
+
+        return {"success": True, "application": result.data[0] if result.data else None, "message": f"Application {status_update.status}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-applications")
+async def get_my_applications(
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get current user's applications"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_project_role_applications").select(
+            "*, backlot_project_roles(*, backlot_projects(id, title, slug, cover_image_url))"
+        ).eq("applicant_user_id", user_id).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        return {"success": True, "applications": applications, "count": len(applications)}
+
+    except Exception as e:
+        print(f"Error fetching my applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# User Availability Endpoints
+# =====================================================
+
+@router.get("/users/{target_user_id}/availability")
+async def get_user_availability(
+    target_user_id: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get user's availability (own or project members)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Users can view their own availability or project members' availability
+        is_self = target_user_id == user_id
+
+        if not is_self:
+            # Check if they share any project
+            shared_projects = supabase.rpc("shared_projects", {"user_a": user_id, "user_b": target_user_id}).execute()
+            # For now, allow viewing if they're authenticated (simplified)
+            pass
+
+        query = supabase.table("backlot_user_availability").select(
+            "*, backlot_projects(id, title)"
+        ).eq("user_id", target_user_id).order("date")
+
+        if start_date:
+            query = query.gte("date", start_date)
+        if end_date:
+            query = query.lte("date", end_date)
+
+        result = query.execute()
+        availability = result.data or []
+
+        return {"success": True, "availability": availability, "count": len(availability)}
+
+    except Exception as e:
+        print(f"Error fetching availability: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-availability")
+async def get_my_availability(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get current user's availability"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_user_availability").select(
+            "*, backlot_projects(id, title), backlot_project_roles(id, title, type)"
+        ).eq("user_id", user_id).order("date")
+
+        if start_date:
+            query = query.gte("date", start_date)
+        if end_date:
+            query = query.lte("date", end_date)
+
+        result = query.execute()
+        availability = result.data or []
+
+        return {"success": True, "availability": availability, "count": len(availability)}
+
+    except Exception as e:
+        print(f"Error fetching my availability: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/my-availability")
+async def set_my_availability(
+    availability_input: UserAvailabilityInput,
+    authorization: str = Header(None)
+):
+    """Set availability for a single date"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        data = {
+            "user_id": user_id,
+            "date": availability_input.date,
+            "status": availability_input.status,
+            "notes": availability_input.notes,
+            "project_id": availability_input.project_id,
+        }
+
+        # Upsert (insert or update)
+        result = supabase.table("backlot_user_availability").upsert(
+            data,
+            on_conflict="user_id,date"
+        ).execute()
+
+        return {"success": True, "availability": result.data[0] if result.data else None}
+
+    except Exception as e:
+        print(f"Error setting availability: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/my-availability/bulk")
+async def set_bulk_availability(
+    bulk_input: BulkAvailabilityInput,
+    authorization: str = Header(None)
+):
+    """Set availability for a date range"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        from datetime import datetime, timedelta
+
+        start = datetime.fromisoformat(bulk_input.start_date)
+        end = datetime.fromisoformat(bulk_input.end_date)
+
+        if end < start:
+            raise HTTPException(status_code=400, detail="End date must be after start date")
+
+        if (end - start).days > 365:
+            raise HTTPException(status_code=400, detail="Date range cannot exceed 1 year")
+
+        entries = []
+        current = start
+        while current <= end:
+            entries.append({
+                "user_id": user_id,
+                "date": current.strftime("%Y-%m-%d"),
+                "status": bulk_input.status,
+                "notes": bulk_input.notes,
+            })
+            current += timedelta(days=1)
+
+        # Upsert all entries
+        result = supabase.table("backlot_user_availability").upsert(
+            entries,
+            on_conflict="user_id,date"
+        ).execute()
+
+        return {"success": True, "entries_set": len(entries), "message": f"Availability set for {len(entries)} days"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting bulk availability: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/my-availability/{date}")
+async def delete_my_availability(
+    date: str,
+    authorization: str = Header(None)
+):
+    """Remove availability entry for a date"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        supabase.table("backlot_user_availability").delete().eq("user_id", user_id).eq("date", date).execute()
+
+        return {"success": True, "message": "Availability entry removed"}
+
+    except Exception as e:
+        print(f"Error deleting availability: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Booked Cast/Crew for Call Sheets
+# =====================================================
+
+@router.get("/projects/{project_id}/booked-people")
+async def get_booked_people(
+    project_id: str,
+    type: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all booked cast/crew for a project (for call sheet integration)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        query = supabase.table("backlot_project_roles").select(
+            "*, profiles!booked_user_id(id, full_name, username, avatar_url, email)"
+        ).eq("project_id", project_id).eq("status", "booked").not_.is_("booked_user_id", "null")
+
+        if type:
+            query = query.eq("type", type)
+
+        result = query.execute()
+        booked_roles = result.data or []
+
+        # Format for call sheet use
+        booked_people = []
+        for role in booked_roles:
+            profile = role.get("profiles") or {}
+            booked_people.append({
+                "role_id": role["id"],
+                "role_title": role["title"],
+                "role_type": role["type"],
+                "department": role.get("department"),
+                "character_name": role.get("character_name"),
+                "user_id": role["booked_user_id"],
+                "name": profile.get("full_name") or profile.get("username") or "Unknown",
+                "avatar_url": profile.get("avatar_url"),
+                "email": profile.get("email"),
+                "start_date": role.get("start_date"),
+                "end_date": role.get("end_date"),
+            })
+
+        return {"success": True, "booked_people": booked_people, "count": len(booked_people)}
+
+    except Exception as e:
+        print(f"Error fetching booked people: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Availability Conflicts Check
+# =====================================================
+
+@router.post("/check-availability-conflicts")
+async def check_availability_conflicts(
+    user_ids: List[str] = Body(...),
+    start_date: str = Body(...),
+    end_date: str = Body(...),
+    authorization: str = Header(None)
+):
+    """Check for availability conflicts for multiple users"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        conflicts = {}
+
+        for uid in user_ids:
+            result = supabase.table("backlot_user_availability").select(
+                "date, status, notes, backlot_projects(title)"
+            ).eq("user_id", uid).gte("date", start_date).lte("date", end_date).in_("status", ["unavailable", "booked"]).execute()
+
+            if result.data:
+                conflicts[uid] = result.data
+
+        return {
+            "success": True,
+            "conflicts": conflicts,
+            "has_conflicts": len(conflicts) > 0
+        }
+
+    except Exception as e:
+        print(f"Error checking conflicts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCES, RELEASES, AND CONTRACTS
+# =============================================================================
+
+class ClearanceItemInput(BaseModel):
+    type: str  # talent_release, location_release, appearance_release, nda, music_license, stock_license, other_contract
+    title: str
+    description: Optional[str] = None
+    related_person_id: Optional[str] = None
+    related_person_name: Optional[str] = None
+    related_location_id: Optional[str] = None
+    related_project_location_id: Optional[str] = None
+    related_asset_label: Optional[str] = None
+    file_url: Optional[str] = None
+    file_name: Optional[str] = None
+    file_is_sensitive: Optional[bool] = False
+    status: Optional[str] = "not_started"
+    requested_date: Optional[str] = None
+    signed_date: Optional[str] = None
+    expiration_date: Optional[str] = None
+    notes: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+CLEARANCE_TYPES = [
+    "talent_release",
+    "location_release",
+    "appearance_release",
+    "nda",
+    "music_license",
+    "stock_license",
+    "other_contract"
+]
+
+CLEARANCE_STATUSES = [
+    "not_started",
+    "requested",
+    "signed",
+    "expired",
+    "rejected"
+]
+
+
+@router.get("/projects/{project_id}/clearances")
+async def get_project_clearances(
+    project_id: str,
+    type: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all clearance items for a project with optional filtering"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        query = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id)
+
+        if type:
+            query = query.eq("type", type)
+        if status:
+            query = query.eq("status", status)
+
+        result = query.order("created_at", desc=True).execute()
+
+        # Get summary statistics
+        summary_result = supabase.rpc("get_project_clearance_summary", {"p_project_id": project_id}).execute()
+        summary = summary_result.data if summary_result.data else {}
+
+        return {
+            "success": True,
+            "clearances": result.data or [],
+            "count": len(result.data or []),
+            "summary": summary
+        }
+
+    except Exception as e:
+        print(f"Error fetching clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/clearances")
+async def create_clearance_item(
+    project_id: str,
+    item: ClearanceItemInput,
+    authorization: str = Header(None)
+):
+    """Create a new clearance item"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project edit access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to create clearances")
+
+    # Validate type
+    if item.type not in CLEARANCE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid clearance type. Must be one of: {CLEARANCE_TYPES}")
+
+    # Validate status
+    if item.status and item.status not in CLEARANCE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {CLEARANCE_STATUSES}")
+
+    try:
+        clearance_data = {
+            "project_id": project_id,
+            "type": item.type,
+            "title": item.title,
+            "description": item.description,
+            "related_person_id": item.related_person_id,
+            "related_person_name": item.related_person_name,
+            "related_location_id": item.related_location_id,
+            "related_project_location_id": item.related_project_location_id,
+            "related_asset_label": item.related_asset_label,
+            "file_url": item.file_url,
+            "file_name": item.file_name,
+            "file_is_sensitive": item.file_is_sensitive or False,
+            "status": item.status or "not_started",
+            "requested_date": item.requested_date,
+            "signed_date": item.signed_date,
+            "expiration_date": item.expiration_date,
+            "notes": item.notes,
+            "contact_email": item.contact_email,
+            "contact_phone": item.contact_phone,
+            "created_by_user_id": user_id,
+        }
+
+        result = supabase.table("backlot_clearance_items").insert(clearance_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create clearance item")
+
+        return {"success": True, "clearance": result.data[0], "message": "Clearance item created"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/clearances/{clearance_id}")
+async def get_clearance_item(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single clearance item"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_clearance_items").select("*").eq("id", clearance_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Clearance item not found")
+
+        # Verify access
+        project_id = result.data["project_id"]
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        return {"success": True, "clearance": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/clearances/{clearance_id}")
+async def update_clearance_item(
+    clearance_id: str,
+    item: ClearanceItemInput,
+    authorization: str = Header(None)
+):
+    """Update a clearance item"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get existing clearance
+        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance item not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to update clearances")
+
+        # Validate type and status
+        if item.type and item.type not in CLEARANCE_TYPES:
+            raise HTTPException(status_code=400, detail=f"Invalid clearance type")
+        if item.status and item.status not in CLEARANCE_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status")
+
+        update_data = {
+            "type": item.type,
+            "title": item.title,
+            "description": item.description,
+            "related_person_id": item.related_person_id,
+            "related_person_name": item.related_person_name,
+            "related_location_id": item.related_location_id,
+            "related_project_location_id": item.related_project_location_id,
+            "related_asset_label": item.related_asset_label,
+            "file_url": item.file_url,
+            "file_name": item.file_name,
+            "file_is_sensitive": item.file_is_sensitive,
+            "status": item.status,
+            "requested_date": item.requested_date,
+            "signed_date": item.signed_date,
+            "expiration_date": item.expiration_date,
+            "notes": item.notes,
+            "contact_email": item.contact_email,
+            "contact_phone": item.contact_phone,
+        }
+
+        result = supabase.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+
+        return {"success": True, "clearance": result.data[0] if result.data else None, "message": "Clearance updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clearances/{clearance_id}")
+async def delete_clearance_item(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a clearance item"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get existing clearance
+        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance item not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify delete access (admin only)
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] != "admin":
+                raise HTTPException(status_code=403, detail="Only admins can delete clearances")
+
+        supabase.table("backlot_clearance_items").delete().eq("id", clearance_id).execute()
+
+        return {"success": True, "message": "Clearance deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/clearances/{clearance_id}/status")
+async def update_clearance_status(
+    clearance_id: str,
+    status: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Quick update of clearance status"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    if status not in CLEARANCE_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {CLEARANCE_STATUSES}")
+
+    try:
+        # Get existing clearance
+        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance item not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to update clearances")
+
+        update_data = {"status": status}
+
+        # Auto-set signed_date when marking as signed
+        if status == "signed":
+            update_data["signed_date"] = datetime.utcnow().strftime("%Y-%m-%d")
+
+        result = supabase.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+
+        return {"success": True, "clearance": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clearance status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE STATUS LOOKUPS (for Call Sheets and Locations)
+# =============================================================================
+
+@router.get("/projects/{project_id}/clearances/location/{location_id}")
+async def get_location_clearances(
+    project_id: str,
+    location_id: str,
+    authorization: str = Header(None)
+):
+    """Get all clearances for a specific location"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{location_id},related_project_location_id.eq.{location_id}").execute()
+
+        # Get the best status
+        status = "missing"
+        if result.data:
+            for item in result.data:
+                if item["status"] == "signed":
+                    # Check if not expired
+                    exp_date = item.get("expiration_date")
+                    if not exp_date or exp_date >= datetime.utcnow().strftime("%Y-%m-%d"):
+                        status = "signed"
+                        break
+                elif item["status"] == "requested" and status != "signed":
+                    status = "requested"
+                elif item["status"] == "not_started" and status not in ["signed", "requested"]:
+                    status = "not_started"
+
+        return {
+            "success": True,
+            "clearances": result.data or [],
+            "release_status": status,
+            "has_signed_release": status == "signed"
+        }
+
+    except Exception as e:
+        print(f"Error fetching location clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/clearances/person/{person_id}")
+async def get_person_clearances(
+    project_id: str,
+    person_id: str,
+    release_type: Optional[str] = "talent_release",
+    authorization: str = Header(None)
+):
+    """Get all clearances for a specific person"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("related_person_id", person_id)
+
+        if release_type:
+            query = query.eq("type", release_type)
+
+        result = query.execute()
+
+        # Get the best status
+        status = "missing"
+        if result.data:
+            for item in result.data:
+                if item["status"] == "signed":
+                    exp_date = item.get("expiration_date")
+                    if not exp_date or exp_date >= datetime.utcnow().strftime("%Y-%m-%d"):
+                        status = "signed"
+                        break
+                elif item["status"] == "requested" and status != "signed":
+                    status = "requested"
+                elif item["status"] == "not_started" and status not in ["signed", "requested"]:
+                    status = "not_started"
+
+        return {
+            "success": True,
+            "clearances": result.data or [],
+            "release_status": status,
+            "has_signed_release": status == "signed"
+        }
+
+    except Exception as e:
+        print(f"Error fetching person clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/clearances/bulk-status")
+async def get_bulk_clearance_status(
+    project_id: str,
+    location_ids: Optional[List[str]] = Body(default=[]),
+    person_ids: Optional[List[str]] = Body(default=[]),
+    authorization: str = Header(None)
+):
+    """Get clearance status for multiple locations and people at once (for call sheets)"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = {
+            "locations": {},
+            "people": {}
+        }
+
+        # Get location clearances
+        if location_ids:
+            for loc_id in location_ids:
+                loc_result = supabase.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{loc_id},related_project_location_id.eq.{loc_id}").execute()
+
+                status = "missing"
+                if loc_result.data:
+                    for item in loc_result.data:
+                        if item["status"] == "signed":
+                            exp_date = item.get("expiration_date")
+                            if not exp_date or exp_date >= datetime.utcnow().strftime("%Y-%m-%d"):
+                                status = "signed"
+                                break
+                        elif item["status"] == "requested" and status != "signed":
+                            status = "requested"
+                        elif status == "missing":
+                            status = item["status"]
+
+                result["locations"][loc_id] = status
+
+        # Get person clearances (talent releases)
+        if person_ids:
+            for person_id in person_ids:
+                person_result = supabase.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("related_person_id", person_id).in_("type", ["talent_release", "appearance_release"]).execute()
+
+                status = "missing"
+                if person_result.data:
+                    for item in person_result.data:
+                        if item["status"] == "signed":
+                            exp_date = item.get("expiration_date")
+                            if not exp_date or exp_date >= datetime.utcnow().strftime("%Y-%m-%d"):
+                                status = "signed"
+                                break
+                        elif item["status"] == "requested" and status != "signed":
+                            status = "requested"
+                        elif status == "missing":
+                            status = item["status"]
+
+                result["people"][person_id] = status
+
+        return {"success": True, **result}
+
+    except Exception as e:
+        print(f"Error fetching bulk clearance status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE REPORT GENERATION
+# =============================================================================
+
+@router.get("/projects/{project_id}/clearances/report")
+async def generate_clearance_report(
+    project_id: str,
+    format: Optional[str] = "json",  # json or csv
+    authorization: str = Header(None)
+):
+    """Generate a comprehensive clearance report for delivery/sales"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify access
+    project_response = supabase.table("backlot_projects").select("*").eq("id", project_id).single().execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = project_response.data
+    is_owner = project["owner_id"] == user_id
+
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        # Get all clearances
+        clearances_result = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).order("type").order("status").execute()
+        clearances = clearances_result.data or []
+
+        # Organize by type
+        by_type = {}
+        for c in clearances:
+            t = c["type"]
+            if t not in by_type:
+                by_type[t] = []
+            by_type[t].append(c)
+
+        # Calculate statistics
+        stats = {
+            "total": len(clearances),
+            "signed": len([c for c in clearances if c["status"] == "signed"]),
+            "requested": len([c for c in clearances if c["status"] == "requested"]),
+            "not_started": len([c for c in clearances if c["status"] == "not_started"]),
+            "expired": len([c for c in clearances if c["status"] == "expired"]),
+            "rejected": len([c for c in clearances if c["status"] == "rejected"]),
+        }
+
+        # Type-specific stats
+        type_stats = {}
+        for t in CLEARANCE_TYPES:
+            items = by_type.get(t, [])
+            type_stats[t] = {
+                "total": len(items),
+                "signed": len([c for c in items if c["status"] == "signed"]),
+                "requested": len([c for c in items if c["status"] == "requested"]),
+                "not_started": len([c for c in items if c["status"] == "not_started"]),
+                "expired": len([c for c in items if c["status"] == "expired"]),
+                "completion_rate": round(len([c for c in items if c["status"] == "signed"]) / len(items) * 100, 1) if items else 0
+            }
+
+        # Expiring soon (within 30 days)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        thirty_days = (datetime.utcnow() + timedelta(days=30)).strftime("%Y-%m-%d")
+        expiring_soon = [
+            c for c in clearances
+            if c["status"] == "signed"
+            and c.get("expiration_date")
+            and c["expiration_date"] <= thirty_days
+            and c["expiration_date"] >= today
+        ]
+
+        report = {
+            "project": {
+                "id": project["id"],
+                "title": project["title"],
+                "status": project["status"],
+            },
+            "generated_at": datetime.utcnow().isoformat(),
+            "generated_by": user_id,
+            "summary": {
+                "overall_stats": stats,
+                "completion_rate": round(stats["signed"] / stats["total"] * 100, 1) if stats["total"] > 0 else 0,
+                "by_type": type_stats,
+                "expiring_soon_count": len(expiring_soon),
+            },
+            "clearances_by_type": by_type,
+            "expiring_soon": expiring_soon,
+            "issues": {
+                "missing_files": [c for c in clearances if c["status"] == "signed" and not c.get("file_url")],
+                "expired": [c for c in clearances if c["status"] == "expired"],
+                "rejected": [c for c in clearances if c["status"] == "rejected"]
+            }
+        }
+
+        if format == "csv":
+            # Generate CSV format
+            import csv
+            import io
+
+            output = io.StringIO()
+            writer = csv.writer(output)
+
+            # Header
+            writer.writerow([
+                "Type", "Title", "Status", "Related Person", "Related Location",
+                "Asset Label", "Requested Date", "Signed Date", "Expiration Date",
+                "Has File", "Notes"
+            ])
+
+            # Data rows
+            for c in clearances:
+                writer.writerow([
+                    c["type"],
+                    c["title"],
+                    c["status"],
+                    c.get("related_person_name", ""),
+                    c.get("related_location_id", ""),
+                    c.get("related_asset_label", ""),
+                    c.get("requested_date", ""),
+                    c.get("signed_date", ""),
+                    c.get("expiration_date", ""),
+                    "Yes" if c.get("file_url") else "No",
+                    c.get("notes", "")
+                ])
+
+            return Response(
+                content=output.getvalue(),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=clearance_report_{project_id}.csv"}
+            )
+
+        return {"success": True, "report": report}
+
+    except Exception as e:
+        print(f"Error generating clearance report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE TEMPLATES
+# =============================================================================
+
+@router.get("/clearance-templates")
+async def get_clearance_templates(
+    type: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get available clearance templates (system + user's own)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_clearance_templates").select("*").or_(f"owner_user_id.is.null,owner_user_id.eq.{user_id}").eq("is_active", True)
+
+        if type:
+            query = query.eq("type", type)
+
+        result = query.order("name").execute()
+
+        return {"success": True, "templates": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching clearance templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# SHOT LISTS & COVERAGE - MODELS
+# =============================================================================
+
+class SceneShotInput(BaseModel):
+    """Input model for creating/updating a scene shot"""
+    shot_number: str
+    shot_type: str  # ECU, CU, MCU, MS, MLS, LS, WS, EWS, POV, OTS, INSERT, 2SHOT, GROUP, OTHER
+    lens: Optional[str] = None
+    camera_movement: Optional[str] = None
+    description: Optional[str] = None
+    est_time_minutes: Optional[float] = None
+    priority: Optional[str] = None  # must_have, nice_to_have
+    coverage_status: Optional[str] = "not_shot"
+    notes: Optional[str] = None
+    sort_order: Optional[int] = 0
+
+
+class ShotImageInput(BaseModel):
+    """Input model for shot images/storyboards"""
+    image_url: str
+    thumbnail_url: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: Optional[int] = 0
+
+
+class CoverageUpdateInput(BaseModel):
+    """Input for updating coverage status"""
+    coverage_status: str  # not_shot, shot, alt_needed, dropped
+
+
+class BulkCoverageUpdateInput(BaseModel):
+    """Input for bulk updating coverage status"""
+    shot_ids: List[str]
+    coverage_status: str
+
+
+# =============================================================================
+# SHOT LIST CRUD ENDPOINTS
+# =============================================================================
+
+@router.get("/projects/{project_id}/scenes/{scene_id}/shots")
+async def get_scene_shots(
+    project_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Get all shots for a scene"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify scene belongs to project
+        scene_check = supabase.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
+        if not scene_check.data:
+            raise HTTPException(status_code=404, detail="Scene not found in project")
+
+        # Get shots with images
+        shots_result = supabase.table("backlot_scene_shots").select("*").eq("scene_id", scene_id).order("sort_order").order("shot_number").execute()
+
+        shots = shots_result.data or []
+
+        # Get images for all shots
+        if shots:
+            shot_ids = [s["id"] for s in shots]
+            images_result = supabase.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
+            images_by_shot = {}
+            for img in (images_result.data or []):
+                shot_id = img["scene_shot_id"]
+                if shot_id not in images_by_shot:
+                    images_by_shot[shot_id] = []
+                images_by_shot[shot_id].append(img)
+
+            for shot in shots:
+                shot["images"] = images_by_shot.get(shot["id"], [])
+
+        return {"success": True, "shots": shots}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching scene shots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/scenes/{scene_id}/shots")
+async def create_scene_shot(
+    project_id: str,
+    scene_id: str,
+    shot: SceneShotInput,
+    authorization: str = Header(None)
+):
+    """Create a new shot for a scene"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify scene belongs to project
+        scene_check = supabase.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
+        if not scene_check.data:
+            raise HTTPException(status_code=404, detail="Scene not found in project")
+
+        # Check for duplicate shot number
+        existing = supabase.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail=f"Shot number {shot.shot_number} already exists in this scene")
+
+        # Create shot
+        result = supabase.table("backlot_scene_shots").insert({
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "shot_number": shot.shot_number,
+            "shot_type": shot.shot_type,
+            "lens": shot.lens,
+            "camera_movement": shot.camera_movement,
+            "description": shot.description,
+            "est_time_minutes": shot.est_time_minutes,
+            "priority": shot.priority,
+            "coverage_status": shot.coverage_status or "not_shot",
+            "notes": shot.notes,
+            "sort_order": shot.sort_order or 0,
+            "created_by_user_id": user_id
+        }).select().execute()
+
+        return {"success": True, "shot": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating scene shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/shots/{shot_id}")
+async def get_shot(
+    shot_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single shot by ID"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_scene_shots").select("*").eq("id", shot_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        shot = result.data[0]
+
+        # Get images
+        images_result = supabase.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
+        shot["images"] = images_result.data or []
+
+        return {"success": True, "shot": shot}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/shots/{shot_id}")
+async def update_shot(
+    shot_id: str,
+    shot: SceneShotInput,
+    authorization: str = Header(None)
+):
+    """Update a shot"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Check shot exists
+        existing = supabase.table("backlot_scene_shots").select("id, scene_id").eq("id", shot_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        scene_id = existing.data[0]["scene_id"]
+
+        # Check for duplicate shot number (if changed)
+        dupe_check = supabase.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).neq("id", shot_id).execute()
+        if dupe_check.data:
+            raise HTTPException(status_code=400, detail=f"Shot number {shot.shot_number} already exists in this scene")
+
+        update_data = {
+            "shot_number": shot.shot_number,
+            "shot_type": shot.shot_type,
+            "lens": shot.lens,
+            "camera_movement": shot.camera_movement,
+            "description": shot.description,
+            "est_time_minutes": shot.est_time_minutes,
+            "priority": shot.priority,
+            "notes": shot.notes,
+            "sort_order": shot.sort_order or 0,
+        }
+
+        # Only update coverage_status if provided
+        if shot.coverage_status:
+            update_data["coverage_status"] = shot.coverage_status
+
+        result = supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
+
+        return {"success": True, "shot": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shots/{shot_id}")
+async def delete_shot(
+    shot_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a shot"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Check shot exists
+        existing = supabase.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        # Delete (images will cascade)
+        supabase.table("backlot_scene_shots").delete().eq("id", shot_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/shots/{shot_id}/reorder")
+async def reorder_shot(
+    shot_id: str,
+    new_sort_order: int = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Update shot sort order"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_scene_shots").update({"sort_order": new_sort_order}).eq("id", shot_id).select().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        return {"success": True, "shot": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# SHOT IMAGES (STORYBOARDS) ENDPOINTS
+# =============================================================================
+
+@router.get("/shots/{shot_id}/images")
+async def get_shot_images(
+    shot_id: str,
+    authorization: str = Header(None)
+):
+    """Get all images for a shot"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
+
+        return {"success": True, "images": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching shot images: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/shots/{shot_id}/images")
+async def add_shot_image(
+    shot_id: str,
+    image: ShotImageInput,
+    authorization: str = Header(None)
+):
+    """Add an image to a shot"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify shot exists
+        shot_check = supabase.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
+        if not shot_check.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        result = supabase.table("backlot_scene_shot_images").insert({
+            "scene_shot_id": shot_id,
+            "image_url": image.image_url,
+            "thumbnail_url": image.thumbnail_url,
+            "description": image.description,
+            "sort_order": image.sort_order or 0
+        }).select().execute()
+
+        return {"success": True, "image": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding shot image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/shot-images/{image_id}")
+async def update_shot_image(
+    image_id: str,
+    image: ShotImageInput,
+    authorization: str = Header(None)
+):
+    """Update a shot image"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_scene_shot_images").update({
+            "image_url": image.image_url,
+            "thumbnail_url": image.thumbnail_url,
+            "description": image.description,
+            "sort_order": image.sort_order or 0
+        }).eq("id", image_id).select().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        return {"success": True, "image": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating shot image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shot-images/{image_id}")
+async def delete_shot_image(
+    image_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a shot image"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        existing = supabase.table("backlot_scene_shot_images").select("id").eq("id", image_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        supabase.table("backlot_scene_shot_images").delete().eq("id", image_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting shot image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# COVERAGE TRACKING ENDPOINTS
+# =============================================================================
+
+@router.patch("/shots/{shot_id}/coverage")
+async def update_shot_coverage(
+    shot_id: str,
+    coverage: CoverageUpdateInput,
+    authorization: str = Header(None)
+):
+    """Update coverage status for a shot"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        update_data = {
+            "coverage_status": coverage.coverage_status,
+        }
+
+        # Set covered_at and covered_by when marking as shot
+        if coverage.coverage_status == "shot":
+            update_data["covered_at"] = datetime.utcnow().isoformat()
+            update_data["covered_by_user_id"] = user_id
+        elif coverage.coverage_status == "not_shot":
+            update_data["covered_at"] = None
+            update_data["covered_by_user_id"] = None
+
+        result = supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        return {"success": True, "shot": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating coverage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/shots/bulk-coverage")
+async def bulk_update_coverage(
+    project_id: str,
+    bulk_input: BulkCoverageUpdateInput,
+    authorization: str = Header(None)
+):
+    """Bulk update coverage status for multiple shots"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        update_data = {
+            "coverage_status": bulk_input.coverage_status,
+        }
+
+        if bulk_input.coverage_status == "shot":
+            update_data["covered_at"] = datetime.utcnow().isoformat()
+            update_data["covered_by_user_id"] = user_id
+        elif bulk_input.coverage_status == "not_shot":
+            update_data["covered_at"] = None
+            update_data["covered_by_user_id"] = None
+
+        # Update all shots
+        for shot_id in bulk_input.shot_ids:
+            supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).eq("project_id", project_id).execute()
+
+        return {"success": True, "updated_count": len(bulk_input.shot_ids)}
+
+    except Exception as e:
+        print(f"Error bulk updating coverage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/shots")
+async def get_project_shots(
+    project_id: str,
+    scene_id: Optional[str] = None,
+    coverage_status: Optional[str] = None,
+    priority: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all shots for a project, optionally filtered"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_scene_shots").select("*, scene:backlot_scenes(id, scene_number, setting, int_ext, time_of_day, description)").eq("project_id", project_id)
+
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if coverage_status:
+            query = query.eq("coverage_status", coverage_status)
+        if priority:
+            query = query.eq("priority", priority)
+
+        result = query.order("scene_id").order("sort_order").order("shot_number").execute()
+
+        shots = result.data or []
+
+        # Get images for all shots
+        if shots:
+            shot_ids = [s["id"] for s in shots]
+            images_result = supabase.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
+            images_by_shot = {}
+            for img in (images_result.data or []):
+                shot_id = img["scene_shot_id"]
+                if shot_id not in images_by_shot:
+                    images_by_shot[shot_id] = []
+                images_by_shot[shot_id].append(img)
+
+            for shot in shots:
+                shot["images"] = images_by_shot.get(shot["id"], [])
+
+        return {"success": True, "shots": shots}
+
+    except Exception as e:
+        print(f"Error fetching project shots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/coverage/summary")
+async def get_coverage_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get coverage summary for a project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get all shots
+        shots_result = supabase.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority, est_time_minutes").eq("project_id", project_id).execute()
+        shots = shots_result.data or []
+
+        # Calculate summary
+        total_shots = len(shots)
+        shot_count = len([s for s in shots if s["coverage_status"] == "shot"])
+        not_shot_count = len([s for s in shots if s["coverage_status"] == "not_shot"])
+        alt_needed_count = len([s for s in shots if s["coverage_status"] == "alt_needed"])
+        dropped_count = len([s for s in shots if s["coverage_status"] == "dropped"])
+
+        must_have_total = len([s for s in shots if s["priority"] == "must_have"])
+        must_have_shot = len([s for s in shots if s["priority"] == "must_have" and s["coverage_status"] == "shot"])
+
+        est_total = sum([s["est_time_minutes"] or 0 for s in shots])
+        est_remaining = sum([s["est_time_minutes"] or 0 for s in shots if s["coverage_status"] == "not_shot"])
+
+        # Get unique scenes
+        unique_scenes = set([s["scene_id"] for s in shots])
+
+        summary = {
+            "total_scenes": len(unique_scenes),
+            "total_shots": total_shots,
+            "shot": shot_count,
+            "not_shot": not_shot_count,
+            "alt_needed": alt_needed_count,
+            "dropped": dropped_count,
+            "coverage_percentage": round(100.0 * shot_count / total_shots, 1) if total_shots > 0 else 0,
+            "must_have_total": must_have_total,
+            "must_have_shot": must_have_shot,
+            "must_have_coverage": round(100.0 * must_have_shot / must_have_total, 1) if must_have_total > 0 else 100,
+            "est_total_minutes": est_total,
+            "est_remaining_minutes": est_remaining,
+        }
+
+        return {"success": True, "summary": summary}
+
+    except Exception as e:
+        print(f"Error fetching coverage summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/coverage/by-scene")
+async def get_coverage_by_scene(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get coverage breakdown by scene"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get scenes with shot counts
+        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes = scenes_result.data or []
+
+        # Get all shots grouped by scene
+        shots_result = supabase.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority").eq("project_id", project_id).execute()
+        shots = shots_result.data or []
+
+        # Group shots by scene
+        shots_by_scene = {}
+        for shot in shots:
+            scene_id = shot["scene_id"]
+            if scene_id not in shots_by_scene:
+                shots_by_scene[scene_id] = []
+            shots_by_scene[scene_id].append(shot)
+
+        # Build scene coverage data
+        scene_coverage = []
+        for scene in scenes:
+            scene_shots = shots_by_scene.get(scene["id"], [])
+            total = len(scene_shots)
+            shot_count = len([s for s in scene_shots if s["coverage_status"] == "shot"])
+            not_shot_count = len([s for s in scene_shots if s["coverage_status"] == "not_shot"])
+            alt_needed_count = len([s for s in scene_shots if s["coverage_status"] == "alt_needed"])
+
+            scene_coverage.append({
+                "scene": scene,
+                "total_shots": total,
+                "shot": shot_count,
+                "not_shot": not_shot_count,
+                "alt_needed": alt_needed_count,
+                "coverage_percentage": round(100.0 * shot_count / total, 1) if total > 0 else 0,
+            })
+
+        return {"success": True, "scenes": scene_coverage}
+
+    except Exception as e:
+        print(f"Error fetching coverage by scene: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/coverage/report")
+async def get_coverage_report(
+    project_id: str,
+    format: str = "json",
+    authorization: str = Header(None)
+):
+    """Generate a coverage report for the project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get scenes
+        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes = scenes_result.data or []
+        scenes_map = {s["id"]: s for s in scenes}
+
+        # Get all shots
+        shots_result = supabase.table("backlot_scene_shots").select("*").eq("project_id", project_id).order("scene_id").order("sort_order").execute()
+        shots = shots_result.data or []
+
+        # Build report
+        report = []
+        for shot in shots:
+            scene = scenes_map.get(shot["scene_id"], {})
+            report.append({
+                "scene_number": scene.get("scene_number", ""),
+                "scene_setting": scene.get("setting", ""),
+                "shot_number": shot["shot_number"],
+                "shot_type": shot["shot_type"],
+                "lens": shot.get("lens", ""),
+                "camera_movement": shot.get("camera_movement", ""),
+                "description": shot.get("description", ""),
+                "priority": shot.get("priority", ""),
+                "coverage_status": shot["coverage_status"],
+                "est_time_minutes": shot.get("est_time_minutes"),
+                "notes": shot.get("notes", ""),
+            })
+
+        if format == "csv":
+            import csv
+            import io
+            output = io.StringIO()
+            if report:
+                writer = csv.DictWriter(output, fieldnames=report[0].keys())
+                writer.writeheader()
+                writer.writerows(report)
+            csv_content = output.getvalue()
+            return Response(
+                content=csv_content,
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=coverage_report_{project_id}.csv"}
+            )
+
+        return {"success": True, "report": report}
+
+    except Exception as e:
+        print(f"Error generating coverage report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# AI CO-PILOT COVERAGE SUMMARY ENDPOINT
+# =============================================================================
+
+@router.post("/projects/{project_id}/coverage/summary-for-ai")
+async def get_coverage_summary_for_ai(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get structured coverage summary for AI Co-Pilot consumption.
+    Returns scenes, shot coverage status, and notes for editing strategy suggestions.
+    """
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get project info
+        project_result = supabase.table("backlot_projects").select("id, title, logline, status").eq("id", project_id).execute()
+        project = project_result.data[0] if project_result.data else None
+
+        # Get scenes with descriptions
+        scenes_result = supabase.table("backlot_scenes").select(
+            "id, scene_number, setting, int_ext, time_of_day, description, page_count"
+        ).eq("project_id", project_id).order("scene_number").execute()
+        scenes = scenes_result.data or []
+
+        # Get all shots
+        shots_result = supabase.table("backlot_scene_shots").select(
+            "id, scene_id, shot_number, shot_type, description, coverage_status, priority, notes"
+        ).eq("project_id", project_id).execute()
+        shots = shots_result.data or []
+
+        # Group shots by scene
+        shots_by_scene = {}
+        for shot in shots:
+            scene_id = shot["scene_id"]
+            if scene_id not in shots_by_scene:
+                shots_by_scene[scene_id] = []
+            shots_by_scene[scene_id].append(shot)
+
+        # Build AI-friendly summary
+        scenes_summary = []
+        for scene in scenes:
+            scene_shots = shots_by_scene.get(scene["id"], [])
+
+            shot_summary = {
+                "total": len(scene_shots),
+                "shot": len([s for s in scene_shots if s["coverage_status"] == "shot"]),
+                "not_shot": len([s for s in scene_shots if s["coverage_status"] == "not_shot"]),
+                "alt_needed": len([s for s in scene_shots if s["coverage_status"] == "alt_needed"]),
+                "dropped": len([s for s in scene_shots if s["coverage_status"] == "dropped"]),
+            }
+
+            # Get shots needing attention (not_shot or alt_needed)
+            attention_shots = [
+                {
+                    "shot_number": s["shot_number"],
+                    "shot_type": s["shot_type"],
+                    "status": s["coverage_status"],
+                    "priority": s.get("priority"),
+                    "notes": s.get("notes"),
+                }
+                for s in scene_shots
+                if s["coverage_status"] in ("not_shot", "alt_needed")
+            ]
+
+            scenes_summary.append({
+                "scene_number": scene["scene_number"],
+                "setting": scene.get("setting", ""),
+                "int_ext": scene.get("int_ext", ""),
+                "time_of_day": scene.get("time_of_day", ""),
+                "description": scene.get("description", ""),
+                "page_count": scene.get("page_count"),
+                "coverage": shot_summary,
+                "shots_needing_attention": attention_shots,
+            })
+
+        # Calculate overall stats
+        total_shots = len(shots)
+        shot_count = len([s for s in shots if s["coverage_status"] == "shot"])
+        coverage_pct = round(100.0 * shot_count / total_shots, 1) if total_shots > 0 else 0
+
+        ai_summary = {
+            "project": {
+                "id": project["id"] if project else project_id,
+                "title": project["title"] if project else "",
+                "logline": project.get("logline", "") if project else "",
+            },
+            "overall_coverage": {
+                "total_scenes_with_shots": len([s for s in scenes_summary if s["coverage"]["total"] > 0]),
+                "total_shots": total_shots,
+                "shots_completed": shot_count,
+                "shots_not_shot": len([s for s in shots if s["coverage_status"] == "not_shot"]),
+                "shots_alt_needed": len([s for s in shots if s["coverage_status"] == "alt_needed"]),
+                "coverage_percentage": coverage_pct,
+            },
+            "scenes": scenes_summary,
+            "notes_summary": {
+                "alt_needed_count": len([s for s in shots if s["coverage_status"] == "alt_needed"]),
+                "alt_needed_notes": [
+                    {"scene_id": s["scene_id"], "shot": s["shot_number"], "notes": s["notes"]}
+                    for s in shots
+                    if s["coverage_status"] == "alt_needed" and s.get("notes")
+                ],
+            },
+        }
+
+        return {"success": True, "ai_summary": ai_summary}
+
+    except Exception as e:
+        print(f"Error generating AI coverage summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CALL SHEET SCENE SHOTS - Get shots for scenes in a call sheet
+# =============================================================================
+
+@router.get("/call-sheets/{call_sheet_id}/shots")
+async def get_call_sheet_shots(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get all shots for scenes linked to a call sheet"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get call sheet
+        cs_result = supabase.table("backlot_call_sheets").select("id, project_id").eq("id", call_sheet_id).execute()
+        if not cs_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        project_id = cs_result.data[0]["project_id"]
+
+        # Get scene links for this call sheet
+        links_result = supabase.table("backlot_call_sheet_scene_links").select("scene_id").eq("call_sheet_id", call_sheet_id).execute()
+        scene_ids = [l["scene_id"] for l in (links_result.data or [])]
+
+        if not scene_ids:
+            return {"success": True, "scenes_with_shots": []}
+
+        # Get scenes
+        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").in_("id", scene_ids).order("scene_number").execute()
+        scenes = scenes_result.data or []
+
+        # Get shots for these scenes
+        shots_result = supabase.table("backlot_scene_shots").select("*").in_("scene_id", scene_ids).order("sort_order").order("shot_number").execute()
+        shots = shots_result.data or []
+
+        # Group shots by scene
+        shots_by_scene = {}
+        for shot in shots:
+            scene_id = shot["scene_id"]
+            if scene_id not in shots_by_scene:
+                shots_by_scene[scene_id] = []
+            shots_by_scene[scene_id].append(shot)
+
+        # Build response
+        scenes_with_shots = []
+        for scene in scenes:
+            scene_shots = shots_by_scene.get(scene["id"], [])
+            scenes_with_shots.append({
+                "scene": scene,
+                "shots": scene_shots,
+                "coverage": {
+                    "total": len(scene_shots),
+                    "shot": len([s for s in scene_shots if s["coverage_status"] == "shot"]),
+                    "not_shot": len([s for s in scene_shots if s["coverage_status"] == "not_shot"]),
+                    "alt_needed": len([s for s in scene_shots if s["coverage_status"] == "alt_needed"]),
+                }
+            })
+
+        return {"success": True, "scenes_with_shots": scenes_with_shots}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching call sheet shots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/scenes/{scene_id}/next-shot-number")
+async def get_next_shot_number(
+    project_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Get suggested next shot number for a scene"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get existing shot numbers
+        shots_result = supabase.table("backlot_scene_shots").select("shot_number").eq("scene_id", scene_id).execute()
+        shots = shots_result.data or []
+
+        if not shots:
+            return {"success": True, "next_shot_number": "1"}
+
+        # Try to find max numeric value
+        max_num = 0
+        for shot in shots:
+            num_str = shot["shot_number"]
+            # Extract leading number
+            import re
+            match = re.match(r'^(\d+)', num_str)
+            if match:
+                num = int(match.group(1))
+                if num > max_num:
+                    max_num = num
+
+        return {"success": True, "next_shot_number": str(max_num + 1)}
+
+    except Exception as e:
+        print(f"Error getting next shot number: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# ASSETS, MEDIA, AND DELIVERABLES
+# =============================================================================
+
+class AssetInput(BaseModel):
+    asset_type: str  # episode, feature, trailer, teaser, social, bts, other
+    title: str
+    description: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    version_label: Optional[str] = None
+    file_reference: Optional[str] = None
+    status: Optional[str] = "not_started"
+    sort_order: Optional[int] = None
+
+
+class DeliverableTemplateInput(BaseModel):
+    name: str
+    description: Optional[str] = None
+    target_platform: str
+    specs: Optional[Dict[str, Any]] = None
+
+
+class ProjectDeliverableInput(BaseModel):
+    asset_id: str
+    template_id: str
+    status: Optional[str] = "not_started"
+    due_date: Optional[str] = None
+    delivered_date: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    notes: Optional[str] = None
+    custom_specs: Optional[Dict[str, Any]] = None
+
+
+# -----------------------------------------------------------------------------
+# ASSETS ENDPOINTS
+# -----------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/assets")
+async def get_project_assets(
+    project_id: str,
+    asset_type: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all assets for a project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_assets").select("*").eq("project_id", project_id).order("sort_order", desc=False).order("created_at", desc=True)
+
+        if asset_type:
+            query = query.eq("asset_type", asset_type)
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+
+        return {"success": True, "assets": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/assets")
+async def create_asset(
+    project_id: str,
+    asset_input: AssetInput,
+    authorization: str = Header(None)
+):
+    """Create a new asset"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Validate asset_type
+        valid_types = ["episode", "feature", "trailer", "teaser", "social", "bts", "other"]
+        if asset_input.asset_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid asset_type. Must be one of: {valid_types}")
+
+        # Validate status
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if asset_input.status and asset_input.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        # Get next sort order
+        sort_order = asset_input.sort_order
+        if sort_order is None:
+            max_result = supabase.table("backlot_assets").select("sort_order").eq("project_id", project_id).order("sort_order", desc=True).limit(1).execute()
+            if max_result.data:
+                sort_order = (max_result.data[0].get("sort_order") or 0) + 1
+            else:
+                sort_order = 0
+
+        insert_data = {
+            "project_id": project_id,
+            "asset_type": asset_input.asset_type,
+            "title": asset_input.title,
+            "description": asset_input.description,
+            "duration_seconds": asset_input.duration_seconds,
+            "version_label": asset_input.version_label,
+            "file_reference": asset_input.file_reference,
+            "status": asset_input.status or "not_started",
+            "sort_order": sort_order,
+            "created_by_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_assets").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create asset")
+
+        return {"success": True, "asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/assets/{asset_id}")
+async def get_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single asset"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_assets").select("*").eq("id", asset_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        return {"success": True, "asset": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/assets/{asset_id}")
+async def update_asset(
+    asset_id: str,
+    asset_input: AssetInput,
+    authorization: str = Header(None)
+):
+    """Update an asset"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Validate asset_type
+        valid_types = ["episode", "feature", "trailer", "teaser", "social", "bts", "other"]
+        if asset_input.asset_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid asset_type. Must be one of: {valid_types}")
+
+        # Validate status
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if asset_input.status and asset_input.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        update_data = {
+            "asset_type": asset_input.asset_type,
+            "title": asset_input.title,
+            "description": asset_input.description,
+            "duration_seconds": asset_input.duration_seconds,
+            "version_label": asset_input.version_label,
+            "file_reference": asset_input.file_reference,
+            "status": asset_input.status,
+        }
+
+        if asset_input.sort_order is not None:
+            update_data["sort_order"] = asset_input.sort_order
+
+        result = supabase.table("backlot_assets").update(update_data).eq("id", asset_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        return {"success": True, "asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/assets/{asset_id}/status")
+async def update_asset_status(
+    asset_id: str,
+    status: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Update asset status only"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        result = supabase.table("backlot_assets").update({"status": status}).eq("id", asset_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        return {"success": True, "asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating asset status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """Delete an asset"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Delete associated deliverables first
+        supabase.table("backlot_project_deliverables").delete().eq("asset_id", asset_id).execute()
+
+        # Delete the asset
+        result = supabase.table("backlot_assets").delete().eq("id", asset_id).execute()
+
+        return {"success": True, "deleted": True}
+
+    except Exception as e:
+        print(f"Error deleting asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/assets/summary")
+async def get_assets_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get assets summary for a project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_assets").select("asset_type, status").eq("project_id", project_id).execute()
+        assets = result.data or []
+
+        summary = {
+            "total": len(assets),
+            "by_type": {
+                "episode": 0, "feature": 0, "trailer": 0, "teaser": 0,
+                "social": 0, "bts": 0, "other": 0
+            },
+            "by_status": {
+                "not_started": 0, "in_progress": 0, "in_review": 0,
+                "approved": 0, "delivered": 0
+            }
+        }
+
+        for asset in assets:
+            if asset.get("asset_type") in summary["by_type"]:
+                summary["by_type"][asset["asset_type"]] += 1
+            if asset.get("status") in summary["by_status"]:
+                summary["by_status"][asset["status"]] += 1
+
+        return {"success": True, "summary": summary}
+
+    except Exception as e:
+        print(f"Error fetching assets summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------------------------------------------------------------
+# DELIVERABLE TEMPLATES ENDPOINTS
+# -----------------------------------------------------------------------------
+
+@router.get("/deliverable-templates")
+async def get_deliverable_templates(
+    platform: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all deliverable templates (system + user's own)"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get system templates and user's own templates
+        query = supabase.table("backlot_deliverable_templates").select("*").eq("is_active", True).or_(f"is_system_template.eq.true,owner_user_id.eq.{user['id']},owner_user_id.is.null").order("target_platform", desc=False).order("name", desc=False)
+
+        if platform:
+            query = query.eq("target_platform", platform)
+
+        result = query.execute()
+
+        return {"success": True, "templates": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deliverable-templates")
+async def create_deliverable_template(
+    template_input: DeliverableTemplateInput,
+    authorization: str = Header(None)
+):
+    """Create a custom deliverable template"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        insert_data = {
+            "name": template_input.name,
+            "description": template_input.description,
+            "target_platform": template_input.target_platform,
+            "specs": template_input.specs or {},
+            "is_system_template": False,
+            "owner_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_deliverable_templates").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create template")
+
+        return {"success": True, "template": result.data[0]}
+
+    except Exception as e:
+        print(f"Error creating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deliverable-templates/{template_id}")
+async def get_deliverable_template(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single deliverable template"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_deliverable_templates").select("*").eq("id", template_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        return {"success": True, "template": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/deliverable-templates/{template_id}")
+async def update_deliverable_template(
+    template_id: str,
+    template_input: DeliverableTemplateInput,
+    authorization: str = Header(None)
+):
+    """Update a custom deliverable template"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Check ownership
+        existing = supabase.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        if existing.data.get("is_system_template"):
+            raise HTTPException(status_code=403, detail="Cannot modify system templates")
+
+        if existing.data.get("owner_user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this template")
+
+        update_data = {
+            "name": template_input.name,
+            "description": template_input.description,
+            "target_platform": template_input.target_platform,
+            "specs": template_input.specs or {},
+        }
+
+        result = supabase.table("backlot_deliverable_templates").update(update_data).eq("id", template_id).execute()
+
+        return {"success": True, "template": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/deliverable-templates/{template_id}")
+async def delete_deliverable_template(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a custom deliverable template"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Check ownership
+        existing = supabase.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        if existing.data.get("is_system_template"):
+            raise HTTPException(status_code=403, detail="Cannot delete system templates")
+
+        if existing.data.get("owner_user_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this template")
+
+        # Soft delete - just mark as inactive
+        result = supabase.table("backlot_deliverable_templates").update({"is_active": False}).eq("id", template_id).execute()
+
+        return {"success": True, "deleted": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deliverable-templates/platforms/list")
+async def get_platforms_list(
+    authorization: str = Header(None)
+):
+    """Get list of unique platforms from templates"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_deliverable_templates").select("target_platform").eq("is_active", True).execute()
+
+        platforms = list(set([t["target_platform"] for t in (result.data or [])]))
+        platforms.sort()
+
+        return {"success": True, "platforms": platforms}
+
+    except Exception as e:
+        print(f"Error fetching platforms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# -----------------------------------------------------------------------------
+# PROJECT DELIVERABLES ENDPOINTS
+# -----------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/deliverables")
+async def get_project_deliverables(
+    project_id: str,
+    asset_id: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all deliverables for a project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        query = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("project_id", project_id).order("due_date", desc=False, nullsfirst=False).order("created_at", desc=True)
+
+        if asset_id:
+            query = query.eq("asset_id", asset_id)
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+
+        return {"success": True, "deliverables": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching deliverables: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/deliverables")
+async def create_project_deliverable(
+    project_id: str,
+    deliverable_input: ProjectDeliverableInput,
+    authorization: str = Header(None)
+):
+    """Create a new deliverable for an asset"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Validate status
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if deliverable_input.status and deliverable_input.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        # Verify asset belongs to project
+        asset_check = supabase.table("backlot_assets").select("id").eq("id", deliverable_input.asset_id).eq("project_id", project_id).execute()
+        if not asset_check.data:
+            raise HTTPException(status_code=400, detail="Asset not found in project")
+
+        # Verify template exists
+        template_check = supabase.table("backlot_deliverable_templates").select("id").eq("id", deliverable_input.template_id).execute()
+        if not template_check.data:
+            raise HTTPException(status_code=400, detail="Template not found")
+
+        insert_data = {
+            "project_id": project_id,
+            "asset_id": deliverable_input.asset_id,
+            "template_id": deliverable_input.template_id,
+            "status": deliverable_input.status or "not_started",
+            "due_date": deliverable_input.due_date,
+            "delivered_date": deliverable_input.delivered_date,
+            "reviewer_name": deliverable_input.reviewer_name,
+            "notes": deliverable_input.notes,
+            "custom_specs": deliverable_input.custom_specs,
+            "created_by_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_project_deliverables").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create deliverable")
+
+        # Fetch with relations
+        full_result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", result.data[0]["id"]).single().execute()
+
+        return {"success": True, "deliverable": full_result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating deliverable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deliverables/{deliverable_id}")
+async def get_deliverable(
+    deliverable_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single deliverable"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Deliverable not found")
+
+        return {"success": True, "deliverable": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching deliverable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/deliverables/{deliverable_id}")
+async def update_deliverable(
+    deliverable_id: str,
+    deliverable_input: ProjectDeliverableInput,
+    authorization: str = Header(None)
+):
+    """Update a deliverable"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Validate status
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if deliverable_input.status and deliverable_input.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        update_data = {
+            "status": deliverable_input.status,
+            "due_date": deliverable_input.due_date,
+            "delivered_date": deliverable_input.delivered_date,
+            "reviewer_name": deliverable_input.reviewer_name,
+            "notes": deliverable_input.notes,
+            "custom_specs": deliverable_input.custom_specs,
+        }
+
+        result = supabase.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Deliverable not found")
+
+        # Fetch with relations
+        full_result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+
+        return {"success": True, "deliverable": full_result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating deliverable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/deliverables/{deliverable_id}/status")
+async def update_deliverable_status(
+    deliverable_id: str,
+    status: str = Body(..., embed=True),
+    delivered_date: Optional[str] = Body(None, embed=True),
+    authorization: str = Header(None)
+):
+    """Update deliverable status"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
+        if status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        update_data = {"status": status}
+
+        # Auto-set delivered_date if marking as delivered
+        if status == "delivered":
+            if delivered_date:
+                update_data["delivered_date"] = delivered_date
+            else:
+                from datetime import date
+                update_data["delivered_date"] = date.today().isoformat()
+
+        result = supabase.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Deliverable not found")
+
+        return {"success": True, "deliverable": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating deliverable status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/deliverables/{deliverable_id}")
+async def delete_deliverable(
+    deliverable_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a deliverable"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        result = supabase.table("backlot_project_deliverables").delete().eq("id", deliverable_id).execute()
+
+        return {"success": True, "deleted": True}
+
+    except Exception as e:
+        print(f"Error deleting deliverable: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/deliverables/summary")
+async def get_deliverables_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get deliverables summary for a project"""
+    await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        from datetime import date
+
+        # Get all deliverables
+        result = supabase.table("backlot_project_deliverables").select("id, status, due_date, asset:backlot_assets(title), template:backlot_deliverable_templates(name)").eq("project_id", project_id).execute()
+        deliverables = result.data or []
+
+        # Get asset count
+        assets_result = supabase.table("backlot_assets").select("id").eq("project_id", project_id).execute()
+
+        summary = {
+            "total_assets": len(assets_result.data or []),
+            "total_deliverables": len(deliverables),
+            "by_status": {
+                "not_started": 0, "in_progress": 0, "in_review": 0,
+                "approved": 0, "delivered": 0
+            },
+            "delivered_count": 0,
+            "overdue_count": 0,
+            "upcoming_deadlines": []
+        }
+
+        today = date.today().isoformat()
+
+        for d in deliverables:
+            status = d.get("status", "not_started")
+            if status in summary["by_status"]:
+                summary["by_status"][status] += 1
+
+            if status == "delivered":
+                summary["delivered_count"] += 1
+
+            # Check overdue
+            if d.get("due_date") and d["due_date"] < today and status not in ["delivered", "approved"]:
+                summary["overdue_count"] += 1
+
+            # Upcoming deadlines
+            if d.get("due_date") and d["due_date"] >= today and status not in ["delivered", "approved"]:
+                summary["upcoming_deadlines"].append({
+                    "id": d["id"],
+                    "asset_title": d.get("asset", {}).get("title") if d.get("asset") else None,
+                    "template_name": d.get("template", {}).get("name") if d.get("template") else None,
+                    "due_date": d["due_date"],
+                    "status": status
+                })
+
+        # Sort upcoming deadlines by due date
+        summary["upcoming_deadlines"] = sorted(summary["upcoming_deadlines"], key=lambda x: x["due_date"])[:5]
+
+        return {"success": True, "summary": summary}
+
+    except Exception as e:
+        print(f"Error fetching deliverables summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/assets/{asset_id}/deliverables/bulk")
+async def bulk_create_deliverables(
+    asset_id: str,
+    template_ids: List[str] = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Bulk create deliverables for an asset from multiple templates"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get asset to verify it exists and get project_id
+        asset_result = supabase.table("backlot_assets").select("id, project_id").eq("id", asset_id).single().execute()
+        if not asset_result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        project_id = asset_result.data["project_id"]
+
+        # Create deliverables for each template
+        created = []
+        for template_id in template_ids:
+            try:
+                insert_data = {
+                    "project_id": project_id,
+                    "asset_id": asset_id,
+                    "template_id": template_id,
+                    "status": "not_started",
+                    "created_by_user_id": user["id"],
+                }
+                result = supabase.table("backlot_project_deliverables").insert(insert_data).execute()
+                if result.data:
+                    created.append(result.data[0])
+            except Exception as e:
+                # Skip duplicates silently
+                print(f"Skipping template {template_id}: {e}")
+                continue
+
+        return {"success": True, "created_count": len(created), "deliverables": created}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk creating deliverables: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PRODUCER ANALYTICS (READ-ONLY)
+# =====================================================
+
+@router.get("/projects/{project_id}/analytics/cost-by-department")
+async def get_cost_by_department_analytics(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    READ-ONLY: Get cost vs budget breakdown by department/category.
+    Reads from budget categories and line items - no modifications.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify user has access to project (producer/admin only)
+        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
+            raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
+
+        # Get the active budget for the project
+        budget_result = supabase.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).eq("status", "approved").limit(1).execute()
+
+        if not budget_result.data:
+            # Try to get any budget if no approved one
+            budget_result = supabase.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).order("created_at", desc=True).limit(1).execute()
+
+        if not budget_result.data:
+            return {
+                "success": True,
+                "has_budget": False,
+                "departments": [],
+                "totals": {"budgeted": 0, "actual": 0, "variance": 0}
+            }
+
+        budget = budget_result.data[0]
+        budget_id = budget["id"]
+
+        # Get categories with their line items aggregated
+        categories_result = supabase.table("backlot_budget_categories").select(
+            "id, name, category_type, account_code_prefix, estimated_total, actual_total"
+        ).eq("budget_id", budget_id).order("sort_order").execute()
+
+        departments = []
+        for cat in (categories_result.data or []):
+            # Get line items for this category to sum by department
+            items_result = supabase.table("backlot_budget_line_items").select(
+                "department, estimated_total, actual_total"
+            ).eq("category_id", cat["id"]).execute()
+
+            # Group by department within category
+            dept_totals = {}
+            for item in (items_result.data or []):
+                dept = item.get("department") or cat["name"]
+                if dept not in dept_totals:
+                    dept_totals[dept] = {"budgeted": 0, "actual": 0}
+                dept_totals[dept]["budgeted"] += float(item.get("estimated_total") or 0)
+                dept_totals[dept]["actual"] += float(item.get("actual_total") or 0)
+
+            # If no items, use category totals
+            if not dept_totals:
+                dept_totals[cat["name"]] = {
+                    "budgeted": float(cat.get("estimated_total") or 0),
+                    "actual": float(cat.get("actual_total") or 0)
+                }
+
+            for dept_name, totals in dept_totals.items():
+                departments.append({
+                    "department": dept_name,
+                    "category_type": cat.get("category_type", "other"),
+                    "budgeted_amount": totals["budgeted"],
+                    "actual_amount": totals["actual"],
+                    "variance": totals["actual"] - totals["budgeted"],
+                    "variance_percent": round((totals["actual"] - totals["budgeted"]) / totals["budgeted"] * 100, 1) if totals["budgeted"] > 0 else 0
+                })
+
+        # Sort by budgeted amount descending
+        departments.sort(key=lambda x: x["budgeted_amount"], reverse=True)
+
+        return {
+            "success": True,
+            "has_budget": True,
+            "budget_name": budget["name"],
+            "departments": departments,
+            "totals": {
+                "budgeted": float(budget.get("estimated_total") or 0),
+                "actual": float(budget.get("actual_total") or 0),
+                "variance": float(budget.get("variance") or 0)
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching cost analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/analytics/time-and-schedule")
+async def get_time_schedule_analytics(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    READ-ONLY: Get schedule health metrics - pages planned vs shot over time.
+    Reads from scenes, call sheets, and production days - no modifications.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify user has access to project
+        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
+            raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
+
+        # Get all scenes with page counts and coverage status
+        scenes_result = supabase.table("backlot_scenes").select(
+            "id, scene_number, page_count, coverage_status, is_omitted"
+        ).eq("project_id", project_id).eq("is_omitted", False).execute()
+
+        scenes = scenes_result.data or []
+
+        # Calculate total pages
+        total_pages = 0
+        pages_by_status = {"not_scheduled": 0, "scheduled": 0, "shot": 0, "needs_pickup": 0}
+
+        for scene in scenes:
+            try:
+                page_count = float(scene.get("page_count") or 0)
+            except (ValueError, TypeError):
+                page_count = 0
+            total_pages += page_count
+            status = scene.get("coverage_status", "not_scheduled")
+            if status in pages_by_status:
+                pages_by_status[status] += page_count
+
+        # Get production days with dates
+        prod_days_result = supabase.table("backlot_production_days").select(
+            "id, day_number, date, is_completed"
+        ).eq("project_id", project_id).order("day_number").execute()
+
+        production_days = prod_days_result.data or []
+        total_shoot_days = len(production_days)
+        completed_days = sum(1 for d in production_days if d.get("is_completed"))
+
+        # Get call sheet scenes to calculate pages per day
+        daily_data = []
+        cumulative_planned = 0
+        cumulative_shot = 0
+
+        for day in production_days:
+            # Get scenes linked to this day's call sheet
+            cs_result = supabase.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
+
+            pages_planned = 0
+            pages_shot = 0
+
+            if cs_result.data:
+                call_sheet_id = cs_result.data[0]["id"]
+
+                # Get scene links for this call sheet
+                links_result = supabase.table("backlot_call_sheet_scene_links").select(
+                    "scene_id, status"
+                ).eq("call_sheet_id", call_sheet_id).execute()
+
+                for link in (links_result.data or []):
+                    # Find the scene's page count
+                    scene = next((s for s in scenes if s["id"] == link["scene_id"]), None)
+                    if scene:
+                        try:
+                            pc = float(scene.get("page_count") or 0)
+                        except:
+                            pc = 0
+                        pages_planned += pc
+                        if link.get("status") == "completed":
+                            pages_shot += pc
+
+            cumulative_planned += pages_planned
+            cumulative_shot += pages_shot
+
+            daily_data.append({
+                "day_number": day["day_number"],
+                "date": day.get("date"),
+                "is_completed": day.get("is_completed", False),
+                "pages_planned": round(pages_planned, 2),
+                "pages_shot": round(pages_shot, 2),
+                "cumulative_planned": round(cumulative_planned, 2),
+                "cumulative_shot": round(cumulative_shot, 2)
+            })
+
+        # Calculate schedule health
+        pages_shot = pages_by_status["shot"]
+        pages_scheduled = pages_by_status["scheduled"] + pages_by_status["shot"]
+
+        # Determine schedule status
+        if total_shoot_days == 0:
+            schedule_status = "not_started"
+            progress_percent = 0
+        else:
+            progress_percent = round((pages_shot / total_pages * 100) if total_pages > 0 else 0, 1)
+            expected_progress = (completed_days / total_shoot_days * 100) if total_shoot_days > 0 else 0
+
+            if progress_percent >= expected_progress + 5:
+                schedule_status = "ahead"
+            elif progress_percent >= expected_progress - 5:
+                schedule_status = "on_track"
+            else:
+                schedule_status = "behind"
+
+        # Average pages per day
+        avg_pages_per_day = round(pages_shot / completed_days, 2) if completed_days > 0 else 0
+        target_pages_per_day = round(total_pages / total_shoot_days, 2) if total_shoot_days > 0 else 0
+
+        return {
+            "success": True,
+            "summary": {
+                "total_pages": round(total_pages, 2),
+                "pages_shot": round(pages_shot, 2),
+                "pages_scheduled": round(pages_scheduled, 2),
+                "pages_remaining": round(total_pages - pages_shot, 2),
+                "total_shoot_days": total_shoot_days,
+                "completed_days": completed_days,
+                "remaining_days": total_shoot_days - completed_days,
+                "progress_percent": progress_percent,
+                "schedule_status": schedule_status,
+                "avg_pages_per_day": avg_pages_per_day,
+                "target_pages_per_day": target_pages_per_day
+            },
+            "pages_by_status": {
+                "not_scheduled": round(pages_by_status["not_scheduled"], 2),
+                "scheduled": round(pages_by_status["scheduled"], 2),
+                "shot": round(pages_by_status["shot"], 2),
+                "needs_pickup": round(pages_by_status["needs_pickup"], 2)
+            },
+            "daily_trend": daily_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching schedule analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/analytics/utilization")
+async def get_utilization_analytics(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    READ-ONLY: Get resource utilization metrics - locations, cast, and crew usage.
+    Reads from production days, call sheets, locations, and bookings - no modifications.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify user has access to project
+        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
+            raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
+
+        # Get all production days
+        prod_days_result = supabase.table("backlot_production_days").select(
+            "id, day_number, date, location_id, location_name, is_completed"
+        ).eq("project_id", project_id).execute()
+
+        production_days = prod_days_result.data or []
+        total_days = len(production_days)
+        completed_days = sum(1 for d in production_days if d.get("is_completed"))
+
+        # Location utilization
+        location_usage = {}
+        for day in production_days:
+            loc_id = day.get("location_id")
+            loc_name = day.get("location_name", "Unknown Location")
+
+            if loc_id:
+                if loc_id not in location_usage:
+                    # Get location name
+                    loc_result = supabase.table("backlot_locations").select("name").eq("id", loc_id).single().execute()
+                    location_usage[loc_id] = {
+                        "location_id": loc_id,
+                        "name": loc_result.data["name"] if loc_result.data else loc_name,
+                        "days_scheduled": 0,
+                        "days_completed": 0
+                    }
+                location_usage[loc_id]["days_scheduled"] += 1
+                if day.get("is_completed"):
+                    location_usage[loc_id]["days_completed"] += 1
+            elif loc_name:
+                key = f"name:{loc_name}"
+                if key not in location_usage:
+                    location_usage[key] = {
+                        "location_id": None,
+                        "name": loc_name,
+                        "days_scheduled": 0,
+                        "days_completed": 0
+                    }
+                location_usage[key]["days_scheduled"] += 1
+                if day.get("is_completed"):
+                    location_usage[key]["days_completed"] += 1
+
+        locations = sorted(location_usage.values(), key=lambda x: x["days_scheduled"], reverse=True)
+
+        # Cast and crew utilization from call sheet people
+        person_usage = {}
+
+        for day in production_days:
+            # Get call sheet for this day
+            cs_result = supabase.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
+
+            if cs_result.data:
+                call_sheet_id = cs_result.data[0]["id"]
+
+                # Get people on this call sheet
+                people_result = supabase.table("backlot_call_sheet_people").select(
+                    "id, name, role, department, is_cast, character_name"
+                ).eq("call_sheet_id", call_sheet_id).execute()
+
+                for person in (people_result.data or []):
+                    key = person.get("name", "Unknown")
+                    if key not in person_usage:
+                        person_usage[key] = {
+                            "name": key,
+                            "role": person.get("role") or person.get("character_name", ""),
+                            "department": person.get("department", ""),
+                            "is_cast": person.get("is_cast", False),
+                            "days_scheduled": 0,
+                            "days_worked": 0
+                        }
+                    person_usage[key]["days_scheduled"] += 1
+                    if day.get("is_completed"):
+                        person_usage[key]["days_worked"] += 1
+
+        # Separate cast and crew
+        cast_usage = [p for p in person_usage.values() if p["is_cast"]]
+        crew_usage = [p for p in person_usage.values() if not p["is_cast"]]
+
+        # Sort by days scheduled
+        cast_usage.sort(key=lambda x: x["days_scheduled"], reverse=True)
+        crew_usage.sort(key=lambda x: x["days_scheduled"], reverse=True)
+
+        # Get booked roles for additional context
+        roles_result = supabase.table("backlot_project_roles").select(
+            "id, title, type, department, status, days_estimated, booked_user_id"
+        ).eq("project_id", project_id).execute()
+
+        roles = roles_result.data or []
+        booked_roles = [r for r in roles if r.get("booked_user_id")]
+        open_roles = [r for r in roles if r.get("status") == "open"]
+
+        return {
+            "success": True,
+            "summary": {
+                "total_shoot_days": total_days,
+                "completed_days": completed_days,
+                "unique_locations": len(locations),
+                "total_cast_booked": len([c for c in cast_usage if c["days_scheduled"] > 0]),
+                "total_crew_booked": len([c for c in crew_usage if c["days_scheduled"] > 0]),
+                "open_roles": len(open_roles),
+                "filled_roles": len(booked_roles)
+            },
+            "locations": locations[:20],
+            "cast": cast_usage[:20],
+            "crew": crew_usage[:30],
+            "roles_summary": {
+                "total": len(roles),
+                "booked": len(booked_roles),
+                "open": len(open_roles),
+                "cast_roles": len([r for r in roles if r.get("type") == "cast"]),
+                "crew_roles": len([r for r in roles if r.get("type") == "crew"])
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching utilization analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/analytics/overview")
+async def get_analytics_overview(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    READ-ONLY: Get combined analytics overview for producer dashboard.
+    Aggregates key metrics from cost, schedule, and utilization.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify user has access to project (producer/admin only)
+        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
+            raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
+
+        # Get project info
+        project_result = supabase.table("backlot_projects").select("title, status").eq("id", project_id).single().execute()
+        project = project_result.data if project_result.data else {"title": "Unknown", "status": "unknown"}
+
+        # Budget summary
+        budget_result = supabase.table("backlot_budgets").select(
+            "estimated_total, actual_total, variance"
+        ).eq("project_id", project_id).order("created_at", desc=True).limit(1).execute()
+
+        budget_summary = {
+            "has_budget": bool(budget_result.data),
+            "estimated_total": float(budget_result.data[0].get("estimated_total") or 0) if budget_result.data else 0,
+            "actual_total": float(budget_result.data[0].get("actual_total") or 0) if budget_result.data else 0,
+            "variance": float(budget_result.data[0].get("variance") or 0) if budget_result.data else 0,
+            "budget_status": "on_track"
+        }
+
+        if budget_summary["has_budget"] and budget_summary["estimated_total"] > 0:
+            variance_percent = (budget_summary["variance"] / budget_summary["estimated_total"]) * 100
+            if variance_percent > 10:
+                budget_summary["budget_status"] = "over_budget"
+            elif variance_percent < -10:
+                budget_summary["budget_status"] = "under_budget"
+
+        # Schedule summary
+        scenes_result = supabase.table("backlot_scenes").select("page_count, coverage_status").eq("project_id", project_id).eq("is_omitted", False).execute()
+
+        total_pages = 0
+        pages_shot = 0
+        for scene in (scenes_result.data or []):
+            try:
+                pc = float(scene.get("page_count") or 0)
+            except:
+                pc = 0
+            total_pages += pc
+            if scene.get("coverage_status") == "shot":
+                pages_shot += pc
+
+        prod_days_result = supabase.table("backlot_production_days").select("id, is_completed").eq("project_id", project_id).execute()
+        total_days = len(prod_days_result.data or [])
+        completed_days = sum(1 for d in (prod_days_result.data or []) if d.get("is_completed"))
+
+        schedule_summary = {
+            "total_pages": round(total_pages, 2),
+            "pages_shot": round(pages_shot, 2),
+            "progress_percent": round((pages_shot / total_pages * 100) if total_pages > 0 else 0, 1),
+            "total_shoot_days": total_days,
+            "completed_days": completed_days,
+            "schedule_status": "on_track"
+        }
+
+        if total_days > 0:
+            expected = completed_days / total_days * 100
+            actual = schedule_summary["progress_percent"]
+            if actual >= expected + 5:
+                schedule_summary["schedule_status"] = "ahead"
+            elif actual < expected - 5:
+                schedule_summary["schedule_status"] = "behind"
+
+        # Team summary
+        members_result = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).execute()
+        roles_result = supabase.table("backlot_project_roles").select("status").eq("project_id", project_id).execute()
+
+        team_summary = {
+            "total_members": len(members_result.data or []),
+            "total_roles": len(roles_result.data or []),
+            "open_roles": len([r for r in (roles_result.data or []) if r.get("status") == "open"]),
+            "booked_roles": len([r for r in (roles_result.data or []) if r.get("status") == "booked"])
+        }
+
+        return {
+            "success": True,
+            "project": project,
+            "budget": budget_summary,
+            "schedule": schedule_summary,
+            "team": team_summary
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching analytics overview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SHOT LISTS API (Professional DP/Producer Shot Lists)
+# =====================================================
+
+class ShotListCreate(BaseModel):
+    """Request model for creating a shot list"""
+    title: str
+    description: Optional[str] = None
+    list_type: Optional[str] = None  # 'scene_based', 'day_based', 'sequence_based', 'location_based', 'custom'
+    production_day_id: Optional[str] = None
+    scene_id: Optional[str] = None
+
+
+class ShotListUpdate(BaseModel):
+    """Request model for updating a shot list"""
+    title: Optional[str] = None
+    description: Optional[str] = None
+    list_type: Optional[str] = None
+    production_day_id: Optional[str] = None
+    scene_id: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+
+class ShotCreate(BaseModel):
+    """Request model for creating a shot"""
+    shot_number: Optional[str] = None
+    scene_number: Optional[str] = None
+    scene_id: Optional[str] = None
+    camera_label: Optional[str] = None
+    frame_size: Optional[str] = None
+    lens: Optional[str] = None
+    focal_length_mm: Optional[float] = None
+    camera_height: Optional[str] = None
+    movement: Optional[str] = None
+    location_hint: Optional[str] = None
+    time_of_day: Optional[str] = None
+    description: Optional[str] = None
+    technical_notes: Optional[str] = None
+    performance_notes: Optional[str] = None
+    est_time_minutes: Optional[float] = None
+
+
+class ShotUpdate(BaseModel):
+    """Request model for updating a shot"""
+    shot_number: Optional[str] = None
+    scene_number: Optional[str] = None
+    scene_id: Optional[str] = None
+    camera_label: Optional[str] = None
+    frame_size: Optional[str] = None
+    lens: Optional[str] = None
+    focal_length_mm: Optional[float] = None
+    camera_height: Optional[str] = None
+    movement: Optional[str] = None
+    location_hint: Optional[str] = None
+    time_of_day: Optional[str] = None
+    description: Optional[str] = None
+    technical_notes: Optional[str] = None
+    performance_notes: Optional[str] = None
+    est_time_minutes: Optional[float] = None
+    is_completed: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class ShotReorderItem(BaseModel):
+    """Single item in a reorder request"""
+    id: str
+    sort_order: int
+
+
+class ShotReorderRequest(BaseModel):
+    """Request model for reordering shots"""
+    shots: List[ShotReorderItem]
+
+
+# Helper to check if user can edit shot lists (producer-level roles)
+async def verify_shot_list_edit_access(supabase, project_id: str, user_id: str) -> bool:
+    """Check if user has producer-level access to edit shot lists"""
+    # Check if owner
+    project_result = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).single().execute()
+    if project_result.data and project_result.data.get("owner_id") == user_id:
+        return True
+
+    # Check membership role
+    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+    if member_result.data:
+        role = member_result.data.get("role")
+        if role in ["owner", "admin", "editor", "producer", "director", "dp", "first_ad"]:
+            return True
+
+    return False
+
+
+@router.get("/projects/{project_id}/shot-lists")
+async def list_shot_lists(
+    project_id: str,
+    include_archived: bool = False,
+    authorization: str = Header(None)
+):
+    """
+    Get all shot lists for a project.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(supabase, project_id, user["id"])
+
+        # Build query - simple select without joins to avoid schema issues
+        query = supabase.table("backlot_shot_lists").select("*").eq("project_id", project_id)
+
+        if not include_archived:
+            query = query.eq("is_archived", False)
+
+        query = query.order("created_at", desc=True)
+        result = query.execute()
+
+        shot_lists = result.data or []
+
+        # Get shot counts for each list
+        for shot_list in shot_lists:
+            count_result = supabase.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).execute()
+            shot_list["shot_count"] = count_result.count or 0
+
+            # Get completion stats
+            completed_result = supabase.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).eq("is_completed", True).execute()
+            shot_list["completed_count"] = completed_result.count or 0
+
+        return {"success": True, "shot_lists": shot_lists}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing shot lists: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/shot-lists")
+async def create_shot_list(
+    project_id: str,
+    request: ShotListCreate,
+    authorization: str = Header(None)
+):
+    """
+    Create a new shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to create shot lists")
+
+        # Create shot list
+        shot_list_data = {
+            "project_id": project_id,
+            "title": request.title,
+            "description": request.description,
+            "list_type": request.list_type,
+            "production_day_id": request.production_day_id,
+            "scene_id": request.scene_id,
+            "created_by_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_shot_lists").insert(shot_list_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create shot list")
+
+        return {"success": True, "shot_list": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating shot list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/shot-lists/{shot_list_id}")
+async def get_shot_list(
+    shot_list_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get a single shot list with all its shots.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list - simple select without joins to avoid schema issues
+        shot_list_result = supabase.table("backlot_shot_lists").select("*").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        shot_list = shot_list_result.data
+
+        # Verify project access
+        await verify_project_access(supabase, shot_list["project_id"], user["id"])
+
+        # Get shots - simple select without joins to avoid schema issues
+        shots_result = supabase.table("backlot_shots").select("*").eq("shot_list_id", shot_list_id).order("sort_order").order("created_at").execute()
+
+        shot_list["shots"] = shots_result.data or []
+
+        return {"success": True, "shot_list": shot_list}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting shot list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/shot-lists/{shot_list_id}")
+async def update_shot_list(
+    shot_list_id: str,
+    request: ShotListUpdate,
+    authorization: str = Header(None)
+):
+    """
+    Update a shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list to verify access
+        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        project_id = shot_list_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit shot lists")
+
+        # Build update data
+        update_data = {}
+        if request.title is not None:
+            update_data["title"] = request.title
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.list_type is not None:
+            update_data["list_type"] = request.list_type
+        if request.production_day_id is not None:
+            update_data["production_day_id"] = request.production_day_id if request.production_day_id else None
+        if request.scene_id is not None:
+            update_data["scene_id"] = request.scene_id if request.scene_id else None
+        if request.is_archived is not None:
+            update_data["is_archived"] = request.is_archived
+
+        if update_data:
+            result = supabase.table("backlot_shot_lists").update(update_data).eq("id", shot_list_id).execute()
+            return {"success": True, "shot_list": result.data[0] if result.data else None}
+
+        return {"success": True, "shot_list": shot_list_result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating shot list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shot-lists/{shot_list_id}")
+async def delete_shot_list(
+    shot_list_id: str,
+    hard_delete: bool = False,
+    authorization: str = Header(None)
+):
+    """
+    Delete (archive) a shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list to verify access
+        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        project_id = shot_list_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete shot lists")
+
+        if hard_delete:
+            # Hard delete - will cascade to shots
+            supabase.table("backlot_shot_lists").delete().eq("id", shot_list_id).execute()
+        else:
+            # Soft delete - archive
+            supabase.table("backlot_shot_lists").update({"is_archived": True}).eq("id", shot_list_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting shot list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SHOTS API (Individual shots within a list)
+# =====================================================
+
+@router.post("/shot-lists/{shot_list_id}/shots")
+async def create_shot(
+    shot_list_id: str,
+    request: ShotCreate,
+    authorization: str = Header(None)
+):
+    """
+    Create a new shot in a shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list to verify access and get project_id
+        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        project_id = shot_list_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to add shots")
+
+        # Get next sort order
+        max_order_result = supabase.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
+        next_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
+
+        # Get next shot number if not provided
+        shot_number = request.shot_number
+        if not shot_number:
+            max_num_result = supabase.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
+            if max_num_result.data:
+                # Extract max numeric part
+                max_num = 0
+                for s in max_num_result.data:
+                    try:
+                        num_part = ''.join(c for c in s["shot_number"] if c.isdigit())
+                        if num_part:
+                            max_num = max(max_num, int(num_part))
+                    except:
+                        pass
+                shot_number = str(max_num + 1)
+            else:
+                shot_number = "1"
+
+        # Create shot
+        shot_data = {
+            "project_id": project_id,
+            "shot_list_id": shot_list_id,
+            "sort_order": next_sort_order,
+            "shot_number": shot_number,
+            "scene_number": request.scene_number,
+            "scene_id": request.scene_id,
+            "camera_label": request.camera_label,
+            "frame_size": request.frame_size,
+            "lens": request.lens,
+            "focal_length_mm": request.focal_length_mm,
+            "camera_height": request.camera_height,
+            "movement": request.movement,
+            "location_hint": request.location_hint,
+            "time_of_day": request.time_of_day,
+            "description": request.description,
+            "technical_notes": request.technical_notes,
+            "performance_notes": request.performance_notes,
+            "est_time_minutes": request.est_time_minutes,
+            "created_by_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_shots").insert(shot_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create shot")
+
+        return {"success": True, "shot": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/shots/{shot_id}")
+async def update_shot(
+    shot_id: str,
+    request: ShotUpdate,
+    authorization: str = Header(None)
+):
+    """
+    Update a shot.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot to verify access
+        shot_result = supabase.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
+
+        if not shot_result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        project_id = shot_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit shots")
+
+        # Build update data
+        update_data = {}
+        fields = [
+            "shot_number", "scene_number", "scene_id", "camera_label", "frame_size",
+            "lens", "focal_length_mm", "camera_height", "movement", "location_hint",
+            "time_of_day", "description", "technical_notes", "performance_notes",
+            "est_time_minutes", "is_completed", "sort_order"
+        ]
+
+        for field in fields:
+            value = getattr(request, field, None)
+            if value is not None:
+                update_data[field] = value
+
+        if update_data:
+            result = supabase.table("backlot_shots").update(update_data).eq("id", shot_id).execute()
+            return {"success": True, "shot": result.data[0] if result.data else None}
+
+        return {"success": True, "shot": shot_result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shots/{shot_id}")
+async def delete_shot(
+    shot_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Delete a shot.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot to verify access
+        shot_result = supabase.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
+
+        if not shot_result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        project_id = shot_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete shots")
+
+        # Delete
+        supabase.table("backlot_shots").delete().eq("id", shot_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/shot-lists/{shot_list_id}/shots/reorder")
+async def reorder_shots(
+    shot_list_id: str,
+    request: ShotReorderRequest,
+    authorization: str = Header(None)
+):
+    """
+    Reorder shots within a shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list to verify access
+        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        project_id = shot_list_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to reorder shots")
+
+        # Verify all shots belong to this shot list
+        shot_ids = [s.id for s in request.shots]
+        verify_result = supabase.table("backlot_shots").select("id").eq("shot_list_id", shot_list_id).in_("id", shot_ids).execute()
+
+        if len(verify_result.data or []) != len(shot_ids):
+            raise HTTPException(status_code=400, detail="Some shots don't belong to this shot list")
+
+        # Update sort orders
+        for shot_item in request.shots:
+            supabase.table("backlot_shots").update({"sort_order": shot_item.sort_order}).eq("id", shot_item.id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering shots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/shot-lists/{shot_list_id}/shots/bulk")
+async def bulk_create_shots(
+    shot_list_id: str,
+    shots: List[ShotCreate],
+    authorization: str = Header(None)
+):
+    """
+    Bulk create multiple shots in a shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get shot list to verify access and get project_id
+        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+
+        if not shot_list_result.data:
+            raise HTTPException(status_code=404, detail="Shot list not found")
+
+        project_id = shot_list_result.data["project_id"]
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to add shots")
+
+        # Get starting sort order
+        max_order_result = supabase.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
+        next_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
+
+        # Get max shot number
+        max_num_result = supabase.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
+        max_num = 0
+        if max_num_result.data:
+            for s in max_num_result.data:
+                try:
+                    num_part = ''.join(c for c in s["shot_number"] if c.isdigit())
+                    if num_part:
+                        max_num = max(max_num, int(num_part))
+                except:
+                    pass
+
+        # Create shots
+        created_shots = []
+        for i, shot_req in enumerate(shots):
+            shot_number = shot_req.shot_number or str(max_num + i + 1)
+
+            shot_data = {
+                "project_id": project_id,
+                "shot_list_id": shot_list_id,
+                "sort_order": next_sort_order + i,
+                "shot_number": shot_number,
+                "scene_number": shot_req.scene_number,
+                "scene_id": shot_req.scene_id,
+                "camera_label": shot_req.camera_label,
+                "frame_size": shot_req.frame_size,
+                "lens": shot_req.lens,
+                "focal_length_mm": shot_req.focal_length_mm,
+                "camera_height": shot_req.camera_height,
+                "movement": shot_req.movement,
+                "location_hint": shot_req.location_hint,
+                "time_of_day": shot_req.time_of_day,
+                "description": shot_req.description,
+                "technical_notes": shot_req.technical_notes,
+                "performance_notes": shot_req.performance_notes,
+                "est_time_minutes": shot_req.est_time_minutes,
+                "created_by_user_id": user["id"],
+            }
+
+            result = supabase.table("backlot_shots").insert(shot_data).execute()
+            if result.data:
+                created_shots.append(result.data[0])
+
+        return {"success": True, "shots": created_shots, "count": len(created_shots)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk creating shots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK SYSTEM - Pydantic Models
+# =====================================================
+
+class TaskListCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    default_view_type: Optional[str] = "board"
+    sharing_mode: Optional[str] = "project_wide"
+
+
+class TaskListUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    icon: Optional[str] = None
+    default_view_type: Optional[str] = None
+    sharing_mode: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+
+class TaskListMemberCreate(BaseModel):
+    user_id: str
+    can_edit: Optional[bool] = True
+
+
+class TaskCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: Optional[str] = "todo"
+    priority: Optional[str] = None
+    section: Optional[str] = None
+    due_date: Optional[str] = None
+    start_date: Optional[str] = None
+    department: Optional[str] = None
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    estimate_hours: Optional[float] = None
+    assignee_ids: Optional[List[str]] = None
+    label_ids: Optional[List[str]] = None
+
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    section: Optional[str] = None
+    due_date: Optional[str] = None
+    start_date: Optional[str] = None
+    department: Optional[str] = None
+    source_type: Optional[str] = None
+    source_id: Optional[str] = None
+    estimate_hours: Optional[float] = None
+    actual_hours: Optional[float] = None
+    is_completed: Optional[bool] = None
+    sort_index: Optional[float] = None
+
+
+class TaskLabelCreate(BaseModel):
+    name: str
+    color: Optional[str] = None
+
+
+class TaskCommentCreate(BaseModel):
+    body: str
+
+
+class TaskCommentUpdate(BaseModel):
+    body: str
+
+
+class TaskViewCreate(BaseModel):
+    name: str
+    view_type: str = "board"
+    config: Optional[Dict[str, Any]] = None
+    is_default: Optional[bool] = False
+
+
+class TaskViewUpdate(BaseModel):
+    name: Optional[str] = None
+    view_type: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    is_default: Optional[bool] = None
+
+
+# =====================================================
+# TASK SYSTEM - Helper Functions
+# =====================================================
+
+async def verify_task_list_access(supabase, task_list_id: str, user_id: str, require_edit: bool = False) -> Dict[str, Any]:
+    """Verify user has access to a task list and return task list data"""
+    # Get task list
+    result = supabase.table("backlot_task_lists").select("*").eq("id", task_list_id).single().execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Task list not found")
+
+    task_list = result.data
+    project_id = task_list["project_id"]
+
+    # Check if project admin
+    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+
+    if member_result.data and member_result.data["role"] == "admin":
+        return task_list
+
+    # Check sharing mode
+    if task_list["sharing_mode"] == "project_wide":
+        # Any project member can view
+        if not member_result.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this project")
+        if require_edit and member_result.data["role"] not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit this task list")
+        return task_list
+    else:
+        # Selected sharing mode - check task list members
+        list_member_result = supabase.table("backlot_task_list_members").select("can_edit").eq("task_list_id", task_list_id).eq("user_id", user_id).single().execute()
+
+        if not list_member_result.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this task list")
+
+        if require_edit and not list_member_result.data["can_edit"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit this task list")
+
+        return task_list
+
+
+async def can_manage_task_list(supabase, task_list_id: str, user_id: str) -> bool:
+    """Check if user can manage task list (owner, project admin)"""
+    result = supabase.table("backlot_task_lists").select("project_id, created_by_user_id").eq("id", task_list_id).single().execute()
+
+    if not result.data:
+        return False
+
+    # Creator can always manage
+    if result.data["created_by_user_id"] == user_id:
+        return True
+
+    # Check if project admin
+    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", result.data["project_id"]).eq("user_id", user_id).single().execute()
+
+    return member_result.data and member_result.data["role"] == "admin"
+
+
+# =====================================================
+# TASK LIST ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/task-lists")
+async def get_project_task_lists(
+    project_id: str,
+    include_archived: bool = False,
+    authorization: str = Header(None)
+):
+    """Get all task lists for a project that the user can access"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(supabase, project_id, user["id"])
+
+        # Check if user is project admin
+        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        is_admin = member_result.data and member_result.data["role"] == "admin"
+
+        # Build query
+        query = supabase.table("backlot_task_lists").select("*").eq("project_id", project_id)
+
+        if not include_archived:
+            query = query.eq("is_archived", False)
+
+        result = query.order("created_at", desc=False).execute()
+        task_lists = result.data or []
+
+        # Filter by sharing if not admin
+        if not is_admin:
+            # Get list memberships for user
+            memberships_result = supabase.table("backlot_task_list_members").select("task_list_id").eq("user_id", user["id"]).execute()
+            user_list_ids = set(m["task_list_id"] for m in (memberships_result.data or []))
+
+            task_lists = [
+                tl for tl in task_lists
+                if tl["sharing_mode"] == "project_wide" or tl["id"] in user_list_ids
+            ]
+
+        # Get task counts for each list
+        for task_list in task_lists:
+            # Get status counts
+            count_result = supabase.table("backlot_tasks").select("status").eq("task_list_id", task_list["id"]).execute()
+            tasks = count_result.data or []
+
+            status_counts = {}
+            for task in tasks:
+                status = task.get("status", "todo")
+                status_counts[status] = status_counts.get(status, 0) + 1
+
+            task_list["task_count"] = len(tasks)
+            task_list["status_counts"] = status_counts
+
+        return {"success": True, "task_lists": task_lists}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task lists: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/task-lists")
+async def create_task_list(
+    project_id: str,
+    request: TaskListCreate,
+    authorization: str = Header(None)
+):
+    """Create a new task list for a project"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify edit access to project
+        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+
+        # Create task list
+        task_list_data = {
+            "project_id": project_id,
+            "name": request.name,
+            "description": request.description,
+            "icon": request.icon,
+            "default_view_type": request.default_view_type or "board",
+            "sharing_mode": request.sharing_mode or "project_wide",
+            "created_by_user_id": user["id"],
+        }
+
+        result = supabase.table("backlot_task_lists").insert(task_list_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create task list")
+
+        task_list = result.data[0]
+
+        # Create default views
+        default_views = [
+            {
+                "task_list_id": task_list["id"],
+                "name": "Board",
+                "view_type": "board",
+                "is_default": True,
+                "config": {"group_by": "status", "sort_by": [{"field": "sort_index", "direction": "asc"}]},
+                "created_by_user_id": user["id"],
+            },
+            {
+                "task_list_id": task_list["id"],
+                "name": "List",
+                "view_type": "list",
+                "is_default": False,
+                "config": {"sort_by": [{"field": "sort_index", "direction": "asc"}]},
+                "created_by_user_id": user["id"],
+            },
+            {
+                "task_list_id": task_list["id"],
+                "name": "Calendar",
+                "view_type": "calendar",
+                "is_default": False,
+                "config": {"calendar_field": "due_date"},
+                "created_by_user_id": user["id"],
+            },
+        ]
+
+        supabase.table("backlot_task_views").insert(default_views).execute()
+
+        # If selective sharing mode, add creator as member
+        if request.sharing_mode == "selective":
+            supabase.table("backlot_task_list_members").insert({
+                "task_list_id": task_list["id"],
+                "user_id": user["id"],
+                "can_edit": True,
+            }).execute()
+
+        return {"success": True, "task_list": task_list}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/task-lists/{task_list_id}")
+async def get_task_list(
+    task_list_id: str,
+    authorization: str = Header(None)
+):
+    """Get a task list with its views and sharing info"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+
+        # Get views
+        views_result = supabase.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
+        task_list["views"] = views_result.data or []
+
+        # Get members if selective sharing mode
+        if task_list["sharing_mode"] == "selective":
+            members_result = supabase.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
+            task_list["members"] = members_result.data or []
+        else:
+            task_list["members"] = []
+
+        # Get task counts
+        count_result = supabase.table("backlot_tasks").select("status").eq("task_list_id", task_list_id).execute()
+        tasks = count_result.data or []
+
+        status_counts = {}
+        for task in tasks:
+            status = task.get("status", "todo")
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        task_list["task_count"] = len(tasks)
+        task_list["status_counts"] = status_counts
+
+        return {"success": True, "task_list": task_list}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/task-lists/{task_list_id}")
+async def update_task_list(
+    task_list_id: str,
+    request: TaskListUpdate,
+    authorization: str = Header(None)
+):
+    """Update a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        task_list = await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+
+        # Build update data
+        update_data = {}
+        if request.name is not None:
+            update_data["name"] = request.name
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.icon is not None:
+            update_data["icon"] = request.icon
+        if request.default_view_type is not None:
+            update_data["default_view_type"] = request.default_view_type
+        if request.sharing_mode is not None:
+            update_data["sharing_mode"] = request.sharing_mode
+        if request.is_archived is not None:
+            update_data["is_archived"] = request.is_archived
+
+        if update_data:
+            result = supabase.table("backlot_task_lists").update(update_data).eq("id", task_list_id).execute()
+
+            # If switching to selective mode, ensure creator is a member
+            if request.sharing_mode == "selective":
+                existing_member = supabase.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", task_list["created_by_user_id"]).single().execute()
+
+                if not existing_member.data:
+                    supabase.table("backlot_task_list_members").insert({
+                        "task_list_id": task_list_id,
+                        "user_id": task_list["created_by_user_id"],
+                        "can_edit": True,
+                    }).execute()
+
+            return {"success": True, "task_list": result.data[0] if result.data else None}
+
+        return {"success": True, "task_list": task_list}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/task-lists/{task_list_id}")
+async def delete_task_list(
+    task_list_id: str,
+    hard_delete: bool = False,
+    authorization: str = Header(None)
+):
+    """Delete (archive) a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        if not can_manage:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this task list")
+
+        if hard_delete:
+            supabase.table("backlot_task_lists").delete().eq("id", task_list_id).execute()
+        else:
+            supabase.table("backlot_task_lists").update({"is_archived": True}).eq("id", task_list_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting task list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK LIST MEMBERS ENDPOINTS
+# =====================================================
+
+@router.get("/task-lists/{task_list_id}/members")
+async def get_task_list_members(
+    task_list_id: str,
+    authorization: str = Header(None)
+):
+    """Get members of a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+
+        result = supabase.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
+
+        return {"success": True, "members": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task list members: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/task-lists/{task_list_id}/members")
+async def add_task_list_member(
+    task_list_id: str,
+    request: TaskListMemberCreate,
+    authorization: str = Header(None)
+):
+    """Add a member to a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        if not can_manage:
+            raise HTTPException(status_code=403, detail="You don't have permission to manage this task list")
+
+        # Check if already a member
+        existing = supabase.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", request.user_id).single().execute()
+
+        if existing.data:
+            # Update existing
+            result = supabase.table("backlot_task_list_members").update({"can_edit": request.can_edit}).eq("id", existing.data["id"]).execute()
+        else:
+            # Create new
+            result = supabase.table("backlot_task_list_members").insert({
+                "task_list_id": task_list_id,
+                "user_id": request.user_id,
+                "can_edit": request.can_edit if request.can_edit is not None else True,
+            }).execute()
+
+        return {"success": True, "member": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding task list member: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/task-list-members/{member_id}")
+async def remove_task_list_member(
+    member_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a member from a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get member to find task list
+        member_result = supabase.table("backlot_task_list_members").select("task_list_id").eq("id", member_id).single().execute()
+
+        if not member_result.data:
+            raise HTTPException(status_code=404, detail="Member not found")
+
+        task_list_id = member_result.data["task_list_id"]
+
+        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        if not can_manage:
+            raise HTTPException(status_code=403, detail="You don't have permission to manage this task list")
+
+        supabase.table("backlot_task_list_members").delete().eq("id", member_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing task list member: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK ENDPOINTS
+# =====================================================
+
+@router.get("/task-lists/{task_list_id}/tasks")
+async def get_task_list_tasks(
+    task_list_id: str,
+    view_id: Optional[str] = None,
+    status: Optional[str] = None,
+    section: Optional[str] = None,
+    department: Optional[str] = None,
+    assignee_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get tasks in a task list, optionally filtered by view"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+
+        # Build query
+        query = supabase.table("backlot_tasks").select("*").eq("task_list_id", task_list_id)
+
+        # Apply view filters if provided
+        if view_id:
+            view_result = supabase.table("backlot_task_views").select("config").eq("id", view_id).single().execute()
+            if view_result.data and view_result.data.get("config"):
+                config = view_result.data["config"]
+
+                # Apply filters from view config
+                filters = config.get("filters", [])
+                for f in filters:
+                    field = f.get("field")
+                    op = f.get("op")
+                    value = f.get("value")
+
+                    if field and op and value is not None:
+                        if op == "eq":
+                            query = query.eq(field, value)
+                        elif op == "in" and isinstance(value, list):
+                            query = query.in_(field, value)
+                        elif op == "neq":
+                            query = query.neq(field, value)
+
+        # Apply direct filters
+        if status:
+            query = query.eq("status", status)
+        if section:
+            query = query.eq("section", section)
+        if department:
+            query = query.eq("department", department)
+
+        query = query.order("sort_index").order("created_at")
+        result = query.execute()
+        tasks = result.data or []
+
+        # Get assignees for all tasks
+        if tasks:
+            task_ids = [t["id"] for t in tasks]
+            assignees_result = supabase.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
+
+            # Group assignees by task
+            assignees_by_task = {}
+            for a in (assignees_result.data or []):
+                task_id = a["task_id"]
+                if task_id not in assignees_by_task:
+                    assignees_by_task[task_id] = []
+                assignees_by_task[task_id].append(a)
+
+            # Get labels for all tasks
+            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+
+            # Group labels by task
+            labels_by_task = {}
+            for l in (labels_result.data or []):
+                task_id = l["task_id"]
+                if task_id not in labels_by_task:
+                    labels_by_task[task_id] = []
+                if l.get("label"):
+                    labels_by_task[task_id].append(l["label"])
+
+            # Add to tasks
+            for task in tasks:
+                task["assignees"] = assignees_by_task.get(task["id"], [])
+                task["labels"] = labels_by_task.get(task["id"], [])
+
+        # Filter by assignee if provided
+        if assignee_id:
+            tasks = [t for t in tasks if any(a["user_id"] == assignee_id for a in t.get("assignees", []))]
+
+        return {"success": True, "tasks": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/task-lists/{task_list_id}/tasks")
+async def create_task(
+    task_list_id: str,
+    request: TaskCreate,
+    authorization: str = Header(None)
+):
+    """Create a new task in a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        task_list = await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+
+        # Get next sort index
+        max_sort_result = supabase.table("backlot_tasks").select("sort_index").eq("task_list_id", task_list_id).order("sort_index", desc=True).limit(1).execute()
+        next_sort_index = (max_sort_result.data[0]["sort_index"] + 1) if max_sort_result.data else 0
+
+        # Create task
+        task_data = {
+            "project_id": task_list["project_id"],
+            "task_list_id": task_list_id,
+            "title": request.title,
+            "description": request.description,
+            "status": request.status or "todo",
+            "priority": request.priority,
+            "section": request.section,
+            "due_date": request.due_date,
+            "start_date": request.start_date,
+            "department": request.department,
+            "source_type": request.source_type,
+            "source_id": request.source_id,
+            "estimate_hours": request.estimate_hours,
+            "sort_index": next_sort_index,
+            "created_by_user_id": user["id"],
+            "is_completed": request.status == "done",
+        }
+
+        result = supabase.table("backlot_tasks").insert(task_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create task")
+
+        task = result.data[0]
+
+        # Add assignees if provided
+        if request.assignee_ids:
+            assignee_data = [{"task_id": task["id"], "user_id": uid} for uid in request.assignee_ids]
+            supabase.table("backlot_task_assignees").insert(assignee_data).execute()
+
+        # Add labels if provided
+        if request.label_ids:
+            label_data = [{"task_id": task["id"], "label_id": lid} for lid in request.label_ids]
+            supabase.table("backlot_task_label_links").insert(label_data).execute()
+
+        # Fetch complete task with relations
+        task["assignees"] = []
+        task["labels"] = []
+
+        if request.assignee_ids:
+            assignees_result = supabase.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
+            task["assignees"] = assignees_result.data or []
+
+        if request.label_ids:
+            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task["id"]).execute()
+            task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
+
+        return {"success": True, "task": task}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tasks/{task_id}")
+async def get_task(
+    task_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single task with all details"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("*").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = task_result.data
+
+        # Verify access to task list
+        await verify_task_list_access(supabase, task["task_list_id"], user["id"])
+
+        # Get assignees
+        assignees_result = supabase.table("backlot_task_assignees").select("*").eq("task_id", task_id).execute()
+        task["assignees"] = assignees_result.data or []
+
+        # Get watchers
+        watchers_result = supabase.table("backlot_task_watchers").select("*").eq("task_id", task_id).execute()
+        task["watchers"] = watchers_result.data or []
+
+        # Get labels
+        labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task_id).execute()
+        task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
+
+        # Get comment count
+        comments_result = supabase.table("backlot_task_comments").select("id", count="exact").eq("task_id", task_id).execute()
+        task["comment_count"] = comments_result.count or 0
+
+        return {"success": True, "task": task}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/tasks/{task_id}")
+async def update_task(
+    task_id: str,
+    request: TaskUpdate,
+    authorization: str = Header(None)
+):
+    """Update a task"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify edit access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"], require_edit=True)
+
+        # Build update data
+        update_data = {"last_updated_by_user_id": user["id"]}
+
+        if request.title is not None:
+            update_data["title"] = request.title
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.status is not None:
+            update_data["status"] = request.status
+            update_data["is_completed"] = request.status == "done"
+        if request.priority is not None:
+            update_data["priority"] = request.priority
+        if request.section is not None:
+            update_data["section"] = request.section
+        if request.due_date is not None:
+            update_data["due_date"] = request.due_date if request.due_date else None
+        if request.start_date is not None:
+            update_data["start_date"] = request.start_date if request.start_date else None
+        if request.department is not None:
+            update_data["department"] = request.department
+        if request.source_type is not None:
+            update_data["source_type"] = request.source_type
+        if request.source_id is not None:
+            update_data["source_id"] = request.source_id
+        if request.estimate_hours is not None:
+            update_data["estimate_hours"] = request.estimate_hours
+        if request.actual_hours is not None:
+            update_data["actual_hours"] = request.actual_hours
+        if request.is_completed is not None:
+            update_data["is_completed"] = request.is_completed
+            if request.is_completed:
+                update_data["status"] = "done"
+        if request.sort_index is not None:
+            update_data["sort_index"] = request.sort_index
+
+        result = supabase.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
+
+        return {"success": True, "task": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a task"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id, created_by_user_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = task_result.data
+
+        # Check if creator or can manage list
+        if task["created_by_user_id"] != user["id"]:
+            can_manage = await can_manage_task_list(supabase, task["task_list_id"], user["id"])
+            if not can_manage:
+                # Also check if user has edit access
+                await verify_task_list_access(supabase, task["task_list_id"], user["id"], require_edit=True)
+
+        supabase.table("backlot_tasks").delete().eq("id", task_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK ASSIGNEES & WATCHERS ENDPOINTS
+# =====================================================
+
+@router.post("/tasks/{task_id}/assignees")
+async def add_task_assignee(
+    task_id: str,
+    user_id: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Add an assignee to a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify edit access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+
+        # Check if already assigned
+        existing = supabase.table("backlot_task_assignees").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
+
+        if existing.data:
+            return {"success": True, "assignee": existing.data}
+
+        result = supabase.table("backlot_task_assignees").insert({
+            "task_id": task_id,
+            "user_id": user_id,
+        }).execute()
+
+        return {"success": True, "assignee": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding assignee: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tasks/{task_id}/assignees/{assignee_id}")
+async def remove_task_assignee(
+    task_id: str,
+    assignee_id: str,
+    authorization: str = Header(None)
+):
+    """Remove an assignee from a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify edit access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+
+        supabase.table("backlot_task_assignees").delete().eq("id", assignee_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing assignee: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tasks/{task_id}/watchers")
+async def add_task_watcher(
+    task_id: str,
+    user_id: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Add a watcher to a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify view access (anyone who can view can watch)
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"])
+
+        # Check if already watching
+        existing = supabase.table("backlot_task_watchers").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
+
+        if existing.data:
+            return {"success": True, "watcher": existing.data}
+
+        result = supabase.table("backlot_task_watchers").insert({
+            "task_id": task_id,
+            "user_id": user_id,
+        }).execute()
+
+        return {"success": True, "watcher": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding watcher: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tasks/{task_id}/watchers/{watcher_id}")
+async def remove_task_watcher(
+    task_id: str,
+    watcher_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a watcher from a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get watcher to check ownership
+        watcher_result = supabase.table("backlot_task_watchers").select("user_id, task_id").eq("id", watcher_id).single().execute()
+
+        if not watcher_result.data:
+            raise HTTPException(status_code=404, detail="Watcher not found")
+
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", watcher_result.data["task_id"]).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # User can remove themselves or admins can remove anyone
+        if watcher_result.data["user_id"] != current_user["id"]:
+            can_manage = await can_manage_task_list(supabase, task_result.data["task_list_id"], current_user["id"])
+            if not can_manage:
+                raise HTTPException(status_code=403, detail="You can only remove yourself as a watcher")
+
+        supabase.table("backlot_task_watchers").delete().eq("id", watcher_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing watcher: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK LABELS ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/task-labels")
+async def get_project_task_labels(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all task labels for a project"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_project_access(supabase, project_id, user["id"])
+
+        result = supabase.table("backlot_task_labels").select("*").eq("project_id", project_id).order("name").execute()
+
+        return {"success": True, "labels": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task labels: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/task-labels")
+async def create_task_label(
+    project_id: str,
+    request: TaskLabelCreate,
+    authorization: str = Header(None)
+):
+    """Create a new task label for a project"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+
+        result = supabase.table("backlot_task_labels").insert({
+            "project_id": project_id,
+            "name": request.name,
+            "color": request.color,
+        }).execute()
+
+        return {"success": True, "label": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating task label: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/task-labels/{label_id}")
+async def delete_task_label(
+    label_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a task label"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get label to find project
+        label_result = supabase.table("backlot_task_labels").select("project_id").eq("id", label_id).single().execute()
+
+        if not label_result.data:
+            raise HTTPException(status_code=404, detail="Label not found")
+
+        # Verify edit access
+        await verify_project_access(supabase, label_result.data["project_id"], user["id"], require_edit=True)
+
+        supabase.table("backlot_task_labels").delete().eq("id", label_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting task label: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tasks/{task_id}/labels")
+async def add_task_label(
+    task_id: str,
+    label_id: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Add a label to a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify edit access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+
+        # Check if already linked
+        existing = supabase.table("backlot_task_label_links").select("id").eq("task_id", task_id).eq("label_id", label_id).single().execute()
+
+        if existing.data:
+            return {"success": True, "label_link": existing.data}
+
+        result = supabase.table("backlot_task_label_links").insert({
+            "task_id": task_id,
+            "label_id": label_id,
+        }).execute()
+
+        return {"success": True, "label_link": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding task label: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/tasks/{task_id}/labels/{label_link_id}")
+async def remove_task_label(
+    task_id: str,
+    label_link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a label from a task"""
+    current_user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify edit access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+
+        supabase.table("backlot_task_label_links").delete().eq("id", label_link_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing task label: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK COMMENTS ENDPOINTS
+# =====================================================
+
+@router.get("/tasks/{task_id}/comments")
+async def get_task_comments(
+    task_id: str,
+    authorization: str = Header(None)
+):
+    """Get comments for a task"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify view access
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"])
+
+        result = supabase.table("backlot_task_comments").select("*").eq("task_id", task_id).order("created_at").execute()
+
+        return {"success": True, "comments": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task comments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tasks/{task_id}/comments")
+async def create_task_comment(
+    task_id: str,
+    request: TaskCommentCreate,
+    authorization: str = Header(None)
+):
+    """Add a comment to a task"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get task
+        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+
+        if not task_result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Verify view access (anyone who can view can comment)
+        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"])
+
+        result = supabase.table("backlot_task_comments").insert({
+            "task_id": task_id,
+            "author_user_id": user["id"],
+            "body": request.body,
+        }).execute()
+
+        return {"success": True, "comment": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/task-comments/{comment_id}")
+async def update_task_comment(
+    comment_id: str,
+    request: TaskCommentUpdate,
+    authorization: str = Header(None)
+):
+    """Update a comment"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get comment
+        comment_result = supabase.table("backlot_task_comments").select("author_user_id").eq("id", comment_id).single().execute()
+
+        if not comment_result.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        # Only author can edit
+        if comment_result.data["author_user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="You can only edit your own comments")
+
+        result = supabase.table("backlot_task_comments").update({
+            "body": request.body,
+        }).eq("id", comment_id).execute()
+
+        return {"success": True, "comment": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/task-comments/{comment_id}")
+async def delete_task_comment(
+    comment_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a comment"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get comment
+        comment_result = supabase.table("backlot_task_comments").select("author_user_id, task_id").eq("id", comment_id).single().execute()
+
+        if not comment_result.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        comment = comment_result.data
+
+        # Author can delete, or admins
+        if comment["author_user_id"] != user["id"]:
+            # Get task to check permissions
+            task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", comment["task_id"]).single().execute()
+
+            if task_result.data:
+                can_manage = await can_manage_task_list(supabase, task_result.data["task_list_id"], user["id"])
+                if not can_manage:
+                    raise HTTPException(status_code=403, detail="You can only delete your own comments")
+
+        supabase.table("backlot_task_comments").delete().eq("id", comment_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK VIEWS ENDPOINTS
+# =====================================================
+
+@router.get("/task-lists/{task_list_id}/views")
+async def get_task_list_views(
+    task_list_id: str,
+    authorization: str = Header(None)
+):
+    """Get views for a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_task_list_access(supabase, task_list_id, user["id"])
+
+        result = supabase.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
+
+        return {"success": True, "views": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task views: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/task-lists/{task_list_id}/views")
+async def create_task_view(
+    task_list_id: str,
+    request: TaskViewCreate,
+    authorization: str = Header(None)
+):
+    """Create a new view for a task list"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+
+        # If setting as default, unset other defaults
+        if request.is_default:
+            supabase.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", task_list_id).execute()
+
+        result = supabase.table("backlot_task_views").insert({
+            "task_list_id": task_list_id,
+            "name": request.name,
+            "view_type": request.view_type,
+            "config": request.config or {},
+            "is_default": request.is_default or False,
+            "created_by_user_id": user["id"],
+        }).execute()
+
+        return {"success": True, "view": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating task view: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/task-views/{view_id}")
+async def update_task_view(
+    view_id: str,
+    request: TaskViewUpdate,
+    authorization: str = Header(None)
+):
+    """Update a task view"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get view
+        view_result = supabase.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
+
+        if not view_result.data:
+            raise HTTPException(status_code=404, detail="View not found")
+
+        view = view_result.data
+
+        # Check if creator or can manage list
+        if view["created_by_user_id"] != user["id"]:
+            can_manage = await can_manage_task_list(supabase, view["task_list_id"], user["id"])
+            if not can_manage:
+                raise HTTPException(status_code=403, detail="You don't have permission to edit this view")
+
+        # Build update data
+        update_data = {}
+        if request.name is not None:
+            update_data["name"] = request.name
+        if request.view_type is not None:
+            update_data["view_type"] = request.view_type
+        if request.config is not None:
+            update_data["config"] = request.config
+        if request.is_default is not None:
+            # If setting as default, unset other defaults
+            if request.is_default:
+                supabase.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", view["task_list_id"]).execute()
+            update_data["is_default"] = request.is_default
+
+        if update_data:
+            result = supabase.table("backlot_task_views").update(update_data).eq("id", view_id).execute()
+            return {"success": True, "view": result.data[0] if result.data else None}
+
+        return {"success": True, "view": view}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating task view: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/task-views/{view_id}")
+async def delete_task_view(
+    view_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a task view"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get view
+        view_result = supabase.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
+
+        if not view_result.data:
+            raise HTTPException(status_code=404, detail="View not found")
+
+        view = view_result.data
+
+        # Check if creator or can manage list
+        if view["created_by_user_id"] != user["id"]:
+            can_manage = await can_manage_task_list(supabase, view["task_list_id"], user["id"])
+            if not can_manage:
+                raise HTTPException(status_code=403, detail="You don't have permission to delete this view")
+
+        supabase.table("backlot_task_views").delete().eq("id", view_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting task view: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK REORDERING ENDPOINT
+# =====================================================
+
+class TaskReorderItem(BaseModel):
+    id: str
+    sort_index: float
+    status: Optional[str] = None
+    section: Optional[str] = None
+
+
+class TaskReorderRequest(BaseModel):
+    tasks: List[TaskReorderItem]
+
+
+@router.post("/task-lists/{task_list_id}/tasks/reorder")
+async def reorder_tasks(
+    task_list_id: str,
+    request: TaskReorderRequest,
+    authorization: str = Header(None)
+):
+    """Reorder tasks (for drag-and-drop) and optionally update status/section"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+
+        # Verify all tasks belong to this list
+        task_ids = [t.id for t in request.tasks]
+        verify_result = supabase.table("backlot_tasks").select("id").eq("task_list_id", task_list_id).in_("id", task_ids).execute()
+
+        if len(verify_result.data or []) != len(task_ids):
+            raise HTTPException(status_code=400, detail="Some tasks don't belong to this task list")
+
+        # Update each task
+        for task_item in request.tasks:
+            update_data = {
+                "sort_index": task_item.sort_index,
+                "last_updated_by_user_id": user["id"],
+            }
+
+            if task_item.status is not None:
+                update_data["status"] = task_item.status
+                update_data["is_completed"] = task_item.status == "done"
+
+            if task_item.section is not None:
+                update_data["section"] = task_item.section
+
+            supabase.table("backlot_tasks").update(update_data).eq("id", task_item.id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

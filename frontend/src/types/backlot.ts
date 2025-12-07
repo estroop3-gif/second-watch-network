@@ -940,14 +940,20 @@ export interface ContactFilters {
 export type BacklotWorkspaceView =
   | 'overview'
   | 'script'
+  | 'shot-lists'
+  | 'coverage'
   | 'schedule'
   | 'call-sheets'
+  | 'casting'
   | 'tasks'
   | 'locations'
   | 'gear'
   | 'budget'
   | 'daily-budget'
   | 'receipts'
+  | 'clearances'
+  | 'assets'
+  | 'analytics'
   | 'updates'
   | 'contacts'
   | 'credits'
@@ -2553,3 +2559,1860 @@ export const BREAKDOWN_HIGHLIGHT_COLORS: Record<BacklotBreakdownItemType, string
   sound: '#87CEEB',          // Sky blue
   music: '#DA70D6',          // Orchid
 };
+
+// =============================================================================
+// CASTING & CREW HIRING PIPELINE TYPES
+// =============================================================================
+
+// Project Role Type (cast or crew)
+export type BacklotProjectRoleType = 'cast' | 'crew';
+
+// Project Role Status
+export type BacklotProjectRoleStatus = 'draft' | 'open' | 'closed' | 'booked' | 'cancelled';
+
+// Role Application Status
+export type BacklotApplicationStatus =
+  | 'applied'
+  | 'viewed'
+  | 'shortlisted'
+  | 'interview'
+  | 'offered'
+  | 'booked'
+  | 'rejected'
+  | 'withdrawn';
+
+// User Availability Status
+export type BacklotAvailabilityStatus = 'available' | 'unavailable' | 'hold' | 'booked' | 'tentative';
+
+// Rate Type
+export type BacklotRateType = 'flat' | 'daily' | 'weekly' | 'hourly';
+
+// Applicant Profile Snapshot (cached at application time)
+export interface BacklotApplicantProfileSnapshot {
+  name: string;
+  avatar_url?: string | null;
+  primary_role?: string;
+  department?: string;
+  city?: string;
+  portfolio_url?: string | null;
+  reel_url?: string | null;
+  years_experience?: number | null;
+  is_order_member: boolean;
+  credits_count?: number;
+}
+
+// Project Role (casting/crew position)
+export interface BacklotProjectRole {
+  id: string;
+  project_id: string;
+  type: BacklotProjectRoleType;
+  title: string;
+  description: string | null;
+  department: string | null;
+  // Cast-specific
+  character_name: string | null;
+  character_description: string | null;
+  age_range: string | null;
+  gender_requirement: string | null;
+  // Location & Schedule
+  location: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  days_estimated: number | null;
+  // Compensation
+  paid: boolean;
+  rate_description: string | null;
+  rate_amount_cents: number | null;
+  rate_type: BacklotRateType | null;
+  // Visibility
+  is_order_only: boolean;
+  is_featured: boolean;
+  // Status
+  status: BacklotProjectRoleStatus;
+  booked_user_id: string | null;
+  booked_at: string | null;
+  // Application settings
+  requires_reel: boolean;
+  requires_headshot: boolean;
+  application_deadline: string | null;
+  max_applications: number | null;
+  // Audit
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  booked_user?: BacklotProfile;
+  application_count?: number;
+  shortlisted_count?: number;
+  booked_count?: number;
+  applications?: BacklotRoleApplication[];
+  project_title?: string;
+  // From join with projects
+  backlot_projects?: {
+    id: string;
+    title: string;
+    slug: string;
+    cover_image_url: string | null;
+    owner_id: string;
+  };
+  // For open roles listing
+  user_has_applied?: boolean;
+  user_application_status?: BacklotApplicationStatus | null;
+}
+
+// Role Application
+export interface BacklotRoleApplication {
+  id: string;
+  role_id: string;
+  applicant_user_id: string;
+  applicant_profile_snapshot: BacklotApplicantProfileSnapshot;
+  cover_note: string | null;
+  availability_notes: string | null;
+  rate_expectation: string | null;
+  reel_url: string | null;
+  headshot_url: string | null;
+  resume_url: string | null;
+  status: BacklotApplicationStatus;
+  status_changed_at: string | null;
+  status_changed_by_user_id: string | null;
+  internal_notes: string | null;
+  rating: number | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  backlot_project_roles?: BacklotProjectRole & {
+    backlot_projects?: {
+      id: string;
+      title: string;
+      slug: string;
+      cover_image_url: string | null;
+    };
+  };
+}
+
+// User Availability Entry
+export interface BacklotUserAvailability {
+  id: string;
+  user_id: string;
+  date: string;
+  status: BacklotAvailabilityStatus;
+  project_id: string | null;
+  role_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  backlot_projects?: { id: string; title: string } | null;
+  backlot_project_roles?: { id: string; title: string; type: string } | null;
+}
+
+// Booked Person (for call sheet integration)
+export interface BacklotBookedPerson {
+  role_id: string;
+  role_title: string;
+  role_type: BacklotProjectRoleType;
+  department: string | null;
+  character_name: string | null;
+  user_id: string;
+  name: string;
+  avatar_url: string | null;
+  email: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+// =============================================================================
+// CASTING & CREW INPUT TYPES
+// =============================================================================
+
+export interface ProjectRoleInput {
+  type: BacklotProjectRoleType;
+  title: string;
+  description?: string | null;
+  department?: string | null;
+  character_name?: string | null;
+  character_description?: string | null;
+  age_range?: string | null;
+  gender_requirement?: string | null;
+  location?: string | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  days_estimated?: number | null;
+  paid?: boolean;
+  rate_description?: string | null;
+  rate_amount_cents?: number | null;
+  rate_type?: BacklotRateType | null;
+  is_order_only?: boolean;
+  is_featured?: boolean;
+  status?: BacklotProjectRoleStatus;
+  requires_reel?: boolean;
+  requires_headshot?: boolean;
+  application_deadline?: string | null;
+  max_applications?: number | null;
+}
+
+export interface RoleApplicationInput {
+  cover_note?: string | null;
+  availability_notes?: string | null;
+  rate_expectation?: string | null;
+  reel_url?: string | null;
+  headshot_url?: string | null;
+  resume_url?: string | null;
+}
+
+export interface ApplicationStatusUpdateInput {
+  status: BacklotApplicationStatus;
+  internal_notes?: string | null;
+  rating?: number | null;
+}
+
+export interface UserAvailabilityInput {
+  date: string;
+  status: BacklotAvailabilityStatus;
+  notes?: string | null;
+  project_id?: string | null;
+}
+
+export interface BulkAvailabilityInput {
+  start_date: string;
+  end_date: string;
+  status: BacklotAvailabilityStatus;
+  notes?: string | null;
+}
+
+// =============================================================================
+// CASTING & CREW FILTER TYPES
+// =============================================================================
+
+export interface ProjectRoleFilters {
+  type?: BacklotProjectRoleType | 'all';
+  status?: BacklotProjectRoleStatus | 'all';
+}
+
+export interface OpenRoleFilters {
+  type?: BacklotProjectRoleType | 'all';
+  location?: string;
+  paid_only?: boolean;
+  order_only?: boolean;
+}
+
+export interface ApplicationFilters {
+  status?: BacklotApplicationStatus | 'all';
+}
+
+// =============================================================================
+// CASTING & CREW LABELS
+// =============================================================================
+
+export const PROJECT_ROLE_TYPE_LABELS: Record<BacklotProjectRoleType, string> = {
+  cast: 'Cast',
+  crew: 'Crew',
+};
+
+export const PROJECT_ROLE_STATUS_LABELS: Record<BacklotProjectRoleStatus, string> = {
+  draft: 'Draft',
+  open: 'Open',
+  closed: 'Closed',
+  booked: 'Booked',
+  cancelled: 'Cancelled',
+};
+
+export const PROJECT_ROLE_STATUS_COLORS: Record<BacklotProjectRoleStatus, string> = {
+  draft: 'gray',
+  open: 'green',
+  closed: 'yellow',
+  booked: 'blue',
+  cancelled: 'red',
+};
+
+export const APPLICATION_STATUS_LABELS: Record<BacklotApplicationStatus, string> = {
+  applied: 'Applied',
+  viewed: 'Viewed',
+  shortlisted: 'Shortlisted',
+  interview: 'Interview',
+  offered: 'Offered',
+  booked: 'Booked',
+  rejected: 'Rejected',
+  withdrawn: 'Withdrawn',
+};
+
+export const APPLICATION_STATUS_COLORS: Record<BacklotApplicationStatus, string> = {
+  applied: 'gray',
+  viewed: 'blue',
+  shortlisted: 'yellow',
+  interview: 'purple',
+  offered: 'cyan',
+  booked: 'green',
+  rejected: 'red',
+  withdrawn: 'slate',
+};
+
+export const AVAILABILITY_STATUS_LABELS: Record<BacklotAvailabilityStatus, string> = {
+  available: 'Available',
+  unavailable: 'Unavailable',
+  hold: 'On Hold',
+  booked: 'Booked',
+  tentative: 'Tentative',
+};
+
+export const AVAILABILITY_STATUS_COLORS: Record<BacklotAvailabilityStatus, string> = {
+  available: 'green',
+  unavailable: 'red',
+  hold: 'yellow',
+  booked: 'blue',
+  tentative: 'orange',
+};
+
+// Common crew departments
+export const CREW_DEPARTMENTS = [
+  'Camera',
+  'Sound',
+  'Lighting/Grip',
+  'Art Department',
+  'Wardrobe',
+  'Makeup/Hair',
+  'Production',
+  'Post-Production',
+  'VFX',
+  'Stunts',
+  'Transportation',
+  'Locations',
+  'Catering/Craft Services',
+  'Other',
+] as const;
+
+// Gender options for cast roles
+export const GENDER_OPTIONS = [
+  { value: 'any', label: 'Any' },
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'rather_not_answer', label: 'Rather Not Answer' },
+] as const;
+
+// =============================================================================
+// CLEARANCES & RELEASES TYPES
+// =============================================================================
+
+// Clearance Item Type
+export type BacklotClearanceType =
+  | 'talent_release'
+  | 'location_release'
+  | 'appearance_release'
+  | 'nda'
+  | 'music_license'
+  | 'stock_license'
+  | 'other_contract';
+
+// Clearance Status
+export type BacklotClearanceStatus =
+  | 'not_started'
+  | 'requested'
+  | 'signed'
+  | 'expired'
+  | 'rejected';
+
+// Clearance Item
+export interface BacklotClearanceItem {
+  id: string;
+  project_id: string;
+  type: BacklotClearanceType;
+  // Related entities
+  related_person_id: string | null;
+  related_person_name: string | null;
+  related_location_id: string | null;
+  related_project_location_id: string | null;
+  related_asset_label: string | null;
+  // Details
+  title: string;
+  description: string | null;
+  file_url: string | null;
+  file_name: string | null;
+  file_is_sensitive: boolean;
+  // Status
+  status: BacklotClearanceStatus;
+  // Important dates
+  requested_date: string | null;
+  signed_date: string | null;
+  expiration_date: string | null;
+  // Additional info
+  notes: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  // Audit
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  related_location?: BacklotLocation;
+  created_by?: BacklotProfile;
+}
+
+// Clearance Template
+export interface BacklotClearanceTemplate {
+  id: string;
+  owner_user_id: string | null;
+  name: string;
+  type: BacklotClearanceType;
+  description: string | null;
+  template_file_url: string | null;
+  default_notes: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// =============================================================================
+// CLEARANCES INPUT TYPES
+// =============================================================================
+
+export interface ClearanceItemInput {
+  type: BacklotClearanceType;
+  title: string;
+  description?: string | null;
+  related_person_id?: string | null;
+  related_person_name?: string | null;
+  related_location_id?: string | null;
+  related_project_location_id?: string | null;
+  related_asset_label?: string | null;
+  file_url?: string | null;
+  file_name?: string | null;
+  file_is_sensitive?: boolean;
+  status?: BacklotClearanceStatus;
+  requested_date?: string | null;
+  signed_date?: string | null;
+  expiration_date?: string | null;
+  notes?: string | null;
+  contact_email?: string | null;
+  contact_phone?: string | null;
+}
+
+// =============================================================================
+// CLEARANCES FILTER TYPES
+// =============================================================================
+
+export interface ClearanceFilters {
+  type?: BacklotClearanceType | 'all';
+  status?: BacklotClearanceStatus | 'all';
+  search?: string;
+}
+
+// =============================================================================
+// CLEARANCES API RESPONSE TYPES
+// =============================================================================
+
+// Clearance summary (for project overview)
+export interface ClearanceSummary {
+  total: number;
+  by_status: Record<BacklotClearanceStatus, number>;
+  by_type: Record<
+    BacklotClearanceType,
+    {
+      total: number;
+      signed: number;
+      requested: number;
+      not_started: number;
+      expired: number;
+    }
+  >;
+  expiring_soon: number;
+}
+
+// Bulk status lookup response
+export interface ClearanceBulkStatusResponse {
+  locations: Record<string, BacklotClearanceStatus | 'missing'>;
+  persons: Record<string, BacklotClearanceStatus | 'missing'>;
+}
+
+// Clearance report row (for CSV export)
+export interface ClearanceReportRow {
+  type: string;
+  title: string;
+  status: string;
+  related_name: string;
+  requested_date: string | null;
+  signed_date: string | null;
+  expiration_date: string | null;
+  contact_email: string | null;
+  notes: string | null;
+}
+
+// =============================================================================
+// CLEARANCES LABELS
+// =============================================================================
+
+export const CLEARANCE_TYPE_LABELS: Record<BacklotClearanceType, string> = {
+  talent_release: 'Talent Release',
+  location_release: 'Location Release',
+  appearance_release: 'Appearance Release',
+  nda: 'NDA',
+  music_license: 'Music License',
+  stock_license: 'Stock License',
+  other_contract: 'Other Contract',
+};
+
+export const CLEARANCE_TYPE_COLORS: Record<BacklotClearanceType, string> = {
+  talent_release: 'red',
+  location_release: 'blue',
+  appearance_release: 'orange',
+  nda: 'purple',
+  music_license: 'pink',
+  stock_license: 'cyan',
+  other_contract: 'gray',
+};
+
+export const CLEARANCE_STATUS_LABELS: Record<BacklotClearanceStatus, string> = {
+  not_started: 'Not Started',
+  requested: 'Requested',
+  signed: 'Signed',
+  expired: 'Expired',
+  rejected: 'Rejected',
+};
+
+export const CLEARANCE_STATUS_COLORS: Record<BacklotClearanceStatus, string> = {
+  not_started: 'gray',
+  requested: 'yellow',
+  signed: 'green',
+  expired: 'orange',
+  rejected: 'red',
+};
+
+// Clearance type groups for matrix view
+export const CLEARANCE_TYPE_GROUPS = {
+  talent: ['talent_release', 'appearance_release'] as BacklotClearanceType[],
+  locations: ['location_release'] as BacklotClearanceType[],
+  music: ['music_license'] as BacklotClearanceType[],
+  other: ['nda', 'stock_license', 'other_contract'] as BacklotClearanceType[],
+};
+
+export const CLEARANCE_TYPE_GROUP_LABELS: Record<keyof typeof CLEARANCE_TYPE_GROUPS, string> = {
+  talent: 'Talent',
+  locations: 'Locations',
+  music: 'Music',
+  other: 'Stock & Other',
+};
+
+// =============================================================================
+// SHOT LIST & COVERAGE TYPES
+// =============================================================================
+
+// Shot Type Enum
+export type BacklotShotType =
+  | 'ECU'    // Extreme Close-Up
+  | 'CU'     // Close-Up
+  | 'MCU'    // Medium Close-Up
+  | 'MS'     // Medium Shot
+  | 'MLS'    // Medium Long Shot
+  | 'LS'     // Long Shot / Wide Shot
+  | 'WS'     // Wide Shot
+  | 'EWS'    // Extreme Wide Shot
+  | 'POV'    // Point of View
+  | 'OTS'    // Over the Shoulder
+  | 'INSERT' // Insert shot
+  | '2SHOT'  // Two Shot
+  | 'GROUP'  // Group Shot
+  | 'OTHER'; // Custom/Other
+
+// Camera Movement Enum
+export type BacklotCameraMovement =
+  | 'static'
+  | 'pan'
+  | 'tilt'
+  | 'dolly'
+  | 'dolly_in'
+  | 'dolly_out'
+  | 'tracking'
+  | 'handheld'
+  | 'gimbal'
+  | 'steadicam'
+  | 'crane'
+  | 'drone'
+  | 'push_in'
+  | 'pull_out'
+  | 'zoom'
+  | 'whip_pan'
+  | 'rack_focus'
+  | 'other';
+
+// Coverage Status Enum
+export type BacklotCoverageStatus = 'not_shot' | 'shot' | 'alt_needed' | 'dropped';
+
+// Shot Priority Enum
+export type BacklotShotPriority = 'must_have' | 'nice_to_have';
+
+// Scene Shot Interface
+export interface BacklotSceneShot {
+  id: string;
+  project_id: string;
+  scene_id: string;
+  shot_number: string;
+  shot_type: BacklotShotType;
+  lens?: string;
+  camera_movement?: BacklotCameraMovement;
+  description?: string;
+  est_time_minutes?: number;
+  priority?: BacklotShotPriority;
+  coverage_status: BacklotCoverageStatus;
+  covered_at?: string;
+  covered_by_user_id?: string;
+  notes?: string;
+  sort_order: number;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  scene?: BacklotScene;
+  images?: BacklotShotImage[];
+  covered_by_name?: string;
+}
+
+// Shot Image Interface
+export interface BacklotShotImage {
+  id: string;
+  scene_shot_id: string;
+  image_url: string;
+  thumbnail_url?: string;
+  description?: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// Shot Input for create/update
+export interface SceneShotInput {
+  shot_number?: string;
+  shot_type: BacklotShotType;
+  lens?: string;
+  camera_movement?: BacklotCameraMovement;
+  description?: string;
+  est_time_minutes?: number;
+  priority?: BacklotShotPriority;
+  notes?: string;
+  sort_order?: number;
+}
+
+// Shot Image Input
+export interface ShotImageInput {
+  image_url: string;
+  thumbnail_url?: string;
+  description?: string;
+  sort_order?: number;
+}
+
+// Coverage Update Input
+export interface CoverageUpdateInput {
+  coverage_status: BacklotCoverageStatus;
+  notes?: string;
+}
+
+// Bulk Coverage Update Input
+export interface BulkCoverageUpdateInput {
+  shot_ids: string[];
+  coverage_status: BacklotCoverageStatus;
+}
+
+// Scene Coverage Summary
+export interface SceneCoverageSummary {
+  total_shots: number;
+  shot: number;
+  not_shot: number;
+  alt_needed: number;
+  dropped: number;
+  must_have_total: number;
+  must_have_shot: number;
+  est_time_minutes: number;
+  shot_time_minutes: number;
+}
+
+// Project Coverage Summary
+export interface ProjectCoverageSummary {
+  total_scenes: number;
+  total_shots: number;
+  shot: number;
+  not_shot: number;
+  alt_needed: number;
+  dropped: number;
+  coverage_percentage: number;
+  must_have_coverage: number;
+  est_total_minutes: number;
+  est_remaining_minutes: number;
+  by_type: Record<BacklotShotType, number>;
+}
+
+// Coverage By Scene Response
+export interface CoverageByScene {
+  scene_id: string;
+  scene_number: string;
+  scene_heading?: string;
+  total_shots: number;
+  shot: number;
+  not_shot: number;
+  alt_needed: number;
+  dropped: number;
+  coverage_percentage: number;
+}
+
+// Shot with Scene Info (for flat list views)
+export interface ShotWithScene extends BacklotSceneShot {
+  scene_number: string;
+  scene_heading?: string;
+}
+
+// AI Coverage Summary Response
+export interface AICoverageSummary {
+  project_id: string;
+  project_title: string;
+  overall: ProjectCoverageSummary;
+  scenes: CoverageByScene[];
+  needs_attention: Array<{
+    shot_id: string;
+    scene_number: string;
+    shot_number: string;
+    shot_type: BacklotShotType;
+    status: BacklotCoverageStatus;
+    priority?: BacklotShotPriority;
+    description?: string;
+  }>;
+  timestamp: string;
+}
+
+// Call Sheet Shots Response
+export interface CallSheetShotsResponse {
+  call_sheet_id: string;
+  production_day_id: string;
+  scenes: Array<{
+    scene_id: string;
+    scene_number: string;
+    scene_heading?: string;
+    shots: BacklotSceneShot[];
+    coverage: SceneCoverageSummary;
+  }>;
+}
+
+// Shot Filters
+export interface ShotFilters {
+  scene_id?: string;
+  shot_type?: BacklotShotType | 'all';
+  coverage_status?: BacklotCoverageStatus | 'all';
+  priority?: BacklotShotPriority | 'all';
+}
+
+// =============================================================================
+// SHOT LIST LABELS & CONSTANTS
+// =============================================================================
+
+export const SHOT_TYPE_LABELS: Record<BacklotShotType, string> = {
+  ECU: 'Extreme Close-Up',
+  CU: 'Close-Up',
+  MCU: 'Medium Close-Up',
+  MS: 'Medium Shot',
+  MLS: 'Medium Long Shot',
+  LS: 'Long Shot',
+  WS: 'Wide Shot',
+  EWS: 'Extreme Wide',
+  POV: 'Point of View',
+  OTS: 'Over the Shoulder',
+  INSERT: 'Insert',
+  '2SHOT': 'Two Shot',
+  GROUP: 'Group Shot',
+  OTHER: 'Other',
+};
+
+export const SHOT_TYPE_SHORT_LABELS: Record<BacklotShotType, string> = {
+  ECU: 'ECU',
+  CU: 'CU',
+  MCU: 'MCU',
+  MS: 'MS',
+  MLS: 'MLS',
+  LS: 'LS',
+  WS: 'WS',
+  EWS: 'EWS',
+  POV: 'POV',
+  OTS: 'OTS',
+  INSERT: 'INS',
+  '2SHOT': '2S',
+  GROUP: 'GRP',
+  OTHER: 'OTH',
+};
+
+export const CAMERA_MOVEMENT_LABELS: Record<BacklotCameraMovement, string> = {
+  static: 'Static',
+  pan: 'Pan',
+  tilt: 'Tilt',
+  dolly: 'Dolly',
+  dolly_in: 'Dolly In',
+  dolly_out: 'Dolly Out',
+  tracking: 'Tracking',
+  handheld: 'Handheld',
+  gimbal: 'Gimbal',
+  steadicam: 'Steadicam',
+  crane: 'Crane',
+  drone: 'Drone',
+  push_in: 'Push In',
+  pull_out: 'Pull Out',
+  zoom: 'Zoom',
+  whip_pan: 'Whip Pan',
+  rack_focus: 'Rack Focus',
+  other: 'Other',
+};
+
+export const COVERAGE_STATUS_LABELS: Record<BacklotCoverageStatus, string> = {
+  not_shot: 'Not Shot',
+  shot: 'Shot',
+  alt_needed: 'Alt Needed',
+  dropped: 'Dropped',
+};
+
+export const COVERAGE_STATUS_COLORS: Record<BacklotCoverageStatus, string> = {
+  not_shot: 'gray',
+  shot: 'green',
+  alt_needed: 'orange',
+  dropped: 'red',
+};
+
+export const SHOT_PRIORITY_LABELS: Record<BacklotShotPriority, string> = {
+  must_have: 'Must Have',
+  nice_to_have: 'Nice to Have',
+};
+
+export const SHOT_PRIORITY_COLORS: Record<BacklotShotPriority, string> = {
+  must_have: 'red',
+  nice_to_have: 'blue',
+};
+
+// Common lens options
+export const COMMON_LENSES = [
+  '14mm',
+  '18mm',
+  '24mm',
+  '35mm',
+  '50mm',
+  '85mm',
+  '100mm',
+  '135mm',
+  '200mm',
+  '16-35mm',
+  '24-70mm',
+  '70-200mm',
+] as const;
+
+// Shot types grouped by category
+export const SHOT_TYPE_GROUPS = {
+  closeups: ['ECU', 'CU', 'MCU'] as BacklotShotType[],
+  medium: ['MS', 'MLS'] as BacklotShotType[],
+  wide: ['LS', 'WS', 'EWS'] as BacklotShotType[],
+  specialty: ['POV', 'OTS', 'INSERT', '2SHOT', 'GROUP', 'OTHER'] as BacklotShotType[],
+};
+
+export const SHOT_TYPE_GROUP_LABELS: Record<keyof typeof SHOT_TYPE_GROUPS, string> = {
+  closeups: 'Close-Ups',
+  medium: 'Medium Shots',
+  wide: 'Wide Shots',
+  specialty: 'Specialty',
+};
+
+// =====================================================
+// ASSETS & DELIVERABLES SYSTEM
+// =====================================================
+
+// Asset Types
+export type BacklotAssetType = 'episode' | 'feature' | 'trailer' | 'teaser' | 'social' | 'bts' | 'other';
+
+// Asset/Deliverable Status
+export type BacklotDeliverableStatus = 'not_started' | 'in_progress' | 'in_review' | 'approved' | 'delivered';
+
+// Asset Interface
+export interface BacklotAsset {
+  id: string;
+  project_id: string;
+  asset_type: BacklotAssetType;
+  title: string;
+  description: string | null;
+  duration_seconds: number | null;
+  version_label: string | null;
+  file_reference: string | null;
+  status: BacklotDeliverableStatus;
+  sort_order: number;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  created_by_name?: string;
+  deliverables_count?: number;
+  approved_count?: number;
+  delivered_count?: number;
+}
+
+// Asset Input
+export interface AssetInput {
+  asset_type: BacklotAssetType;
+  title: string;
+  description?: string;
+  duration_seconds?: number;
+  version_label?: string;
+  file_reference?: string;
+  status?: BacklotDeliverableStatus;
+  sort_order?: number;
+}
+
+// Platform Specs (stored as JSONB)
+export interface DeliverablePlatformSpecs {
+  resolution?: string;
+  aspect_ratio?: string;
+  codec?: string;
+  bitrate?: string;
+  frame_rate?: string;
+  audio_codec?: string;
+  audio_channels?: number;
+  audio_sample_rate?: string;
+  max_file_size_gb?: number;
+  container_format?: string;
+  color_space?: string;
+  hdr?: boolean;
+  closed_captions?: boolean;
+  subtitles?: boolean;
+  loudness_standard?: string;
+  additional_requirements?: string;
+}
+
+// Deliverable Template
+export interface BacklotDeliverableTemplate {
+  id: string;
+  name: string;
+  platform: string;
+  description: string | null;
+  specs: DeliverablePlatformSpecs;
+  is_system: boolean;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Template Input
+export interface DeliverableTemplateInput {
+  name: string;
+  platform: string;
+  description?: string;
+  specs?: DeliverablePlatformSpecs;
+}
+
+// Project Deliverable
+export interface BacklotProjectDeliverable {
+  id: string;
+  project_id: string;
+  asset_id: string | null;
+  template_id: string | null;
+  platform: string;
+  name: string;
+  specs: DeliverablePlatformSpecs;
+  status: BacklotDeliverableStatus;
+  due_date: string | null;
+  delivered_date: string | null;
+  delivery_notes: string | null;
+  download_url: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  asset_title?: string;
+  asset_type?: BacklotAssetType;
+  template_name?: string;
+  created_by_name?: string;
+}
+
+// Project Deliverable Input
+export interface ProjectDeliverableInput {
+  asset_id?: string;
+  template_id?: string;
+  platform: string;
+  name: string;
+  specs?: DeliverablePlatformSpecs;
+  status?: BacklotDeliverableStatus;
+  due_date?: string;
+  delivered_date?: string;
+  delivery_notes?: string;
+  download_url?: string;
+}
+
+// Bulk Create Input
+export interface BulkDeliverableInput {
+  template_ids: string[];
+  name_prefix?: string;
+}
+
+// Asset Summary
+export interface AssetsSummary {
+  total_assets: number;
+  by_status: Record<BacklotDeliverableStatus, number>;
+  by_type: Record<BacklotAssetType, number>;
+}
+
+// Deliverables Summary
+export interface DeliverablesSummary {
+  total_deliverables: number;
+  by_status: Record<BacklotDeliverableStatus, number>;
+  by_platform: Record<string, number>;
+  overdue_count: number;
+  upcoming_due: number;
+}
+
+// Asset Filters
+export interface AssetFilters {
+  asset_type?: BacklotAssetType | 'all';
+  status?: BacklotDeliverableStatus | 'all';
+  search?: string;
+}
+
+// Deliverable Filters
+export interface DeliverableFilters {
+  platform?: string | 'all';
+  status?: BacklotDeliverableStatus | 'all';
+  asset_id?: string | 'all';
+  search?: string;
+}
+
+// Status Labels
+export const ASSET_TYPE_LABELS: Record<BacklotAssetType, string> = {
+  episode: 'Episode',
+  feature: 'Feature',
+  trailer: 'Trailer',
+  teaser: 'Teaser',
+  social: 'Social',
+  bts: 'Behind the Scenes',
+  other: 'Other',
+};
+
+export const DELIVERABLE_STATUS_LABELS: Record<BacklotDeliverableStatus, string> = {
+  not_started: 'Not Started',
+  in_progress: 'In Progress',
+  in_review: 'In Review',
+  approved: 'Approved',
+  delivered: 'Delivered',
+};
+
+export const DELIVERABLE_STATUS_COLORS: Record<BacklotDeliverableStatus, string> = {
+  not_started: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+  in_progress: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  in_review: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  approved: 'bg-green-500/20 text-green-400 border-green-500/30',
+  delivered: 'bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30',
+};
+
+export const ASSET_TYPE_COLORS: Record<BacklotAssetType, string> = {
+  episode: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  feature: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  trailer: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  teaser: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  social: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  bts: 'bg-green-500/20 text-green-400 border-green-500/30',
+  other: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+};
+
+// =====================================================
+// PRODUCER ANALYTICS TYPES (READ-ONLY)
+// =====================================================
+
+// Schedule Status
+export type AnalyticsScheduleStatus = 'not_started' | 'ahead' | 'on_track' | 'behind';
+
+// Budget Status
+export type AnalyticsBudgetStatus = 'on_track' | 'over_budget' | 'under_budget';
+
+// Cost by Department Analytics
+export interface DepartmentCostData {
+  department: string;
+  category_type: string;
+  budgeted_amount: number;
+  actual_amount: number;
+  variance: number;
+  variance_percent: number;
+}
+
+export interface CostByDepartmentAnalytics {
+  success: boolean;
+  has_budget: boolean;
+  budget_name?: string;
+  departments: DepartmentCostData[];
+  totals: {
+    budgeted: number;
+    actual: number;
+    variance: number;
+  };
+}
+
+// Time & Schedule Analytics
+export interface DailyTrendData {
+  day_number: number;
+  date: string | null;
+  is_completed: boolean;
+  pages_planned: number;
+  pages_shot: number;
+  cumulative_planned: number;
+  cumulative_shot: number;
+}
+
+export interface TimeScheduleAnalytics {
+  success: boolean;
+  summary: {
+    total_pages: number;
+    pages_shot: number;
+    pages_scheduled: number;
+    pages_remaining: number;
+    total_shoot_days: number;
+    completed_days: number;
+    remaining_days: number;
+    progress_percent: number;
+    schedule_status: AnalyticsScheduleStatus;
+    avg_pages_per_day: number;
+    target_pages_per_day: number;
+  };
+  pages_by_status: {
+    not_scheduled: number;
+    scheduled: number;
+    shot: number;
+    needs_pickup: number;
+  };
+  daily_trend: DailyTrendData[];
+}
+
+// Utilization Analytics
+export interface LocationUsageData {
+  location_id: string | null;
+  name: string;
+  days_scheduled: number;
+  days_completed: number;
+}
+
+export interface PersonUsageData {
+  name: string;
+  role: string;
+  department: string;
+  is_cast: boolean;
+  days_scheduled: number;
+  days_worked: number;
+}
+
+export interface UtilizationAnalytics {
+  success: boolean;
+  summary: {
+    total_shoot_days: number;
+    completed_days: number;
+    unique_locations: number;
+    total_cast_booked: number;
+    total_crew_booked: number;
+    open_roles: number;
+    filled_roles: number;
+  };
+  locations: LocationUsageData[];
+  cast: PersonUsageData[];
+  crew: PersonUsageData[];
+  roles_summary: {
+    total: number;
+    booked: number;
+    open: number;
+    cast_roles: number;
+    crew_roles: number;
+  };
+}
+
+// Analytics Overview
+export interface AnalyticsOverview {
+  success: boolean;
+  project: {
+    title: string;
+    status: string;
+  };
+  budget: {
+    has_budget: boolean;
+    estimated_total: number;
+    actual_total: number;
+    variance: number;
+    budget_status: AnalyticsBudgetStatus;
+  };
+  schedule: {
+    total_pages: number;
+    pages_shot: number;
+    progress_percent: number;
+    total_shoot_days: number;
+    completed_days: number;
+    schedule_status: AnalyticsScheduleStatus;
+  };
+  team: {
+    total_members: number;
+    total_roles: number;
+    open_roles: number;
+    booked_roles: number;
+  };
+}
+
+// Schedule status labels
+export const SCHEDULE_STATUS_LABELS: Record<AnalyticsScheduleStatus, string> = {
+  not_started: 'Not Started',
+  ahead: 'Ahead of Schedule',
+  on_track: 'On Track',
+  behind: 'Behind Schedule',
+};
+
+export const SCHEDULE_STATUS_COLORS: Record<AnalyticsScheduleStatus, string> = {
+  not_started: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+  ahead: 'bg-green-500/20 text-green-400 border-green-500/30',
+  on_track: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  behind: 'bg-red-500/20 text-red-400 border-red-500/30',
+};
+
+export const BUDGET_STATUS_LABELS: Record<AnalyticsBudgetStatus, string> = {
+  on_track: 'On Track',
+  over_budget: 'Over Budget',
+  under_budget: 'Under Budget',
+};
+
+export const BUDGET_STATUS_COLORS: Record<AnalyticsBudgetStatus, string> = {
+  on_track: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  over_budget: 'bg-red-500/20 text-red-400 border-red-500/30',
+  under_budget: 'bg-green-500/20 text-green-400 border-green-500/30',
+};
+
+// =============================================================================
+// PROFESSIONAL SHOT LISTS (DP/Producer Tool)
+// =============================================================================
+
+// Shot List Type
+export type ShotListType =
+  | 'scene_based'
+  | 'day_based'
+  | 'sequence_based'
+  | 'location_based'
+  | 'custom';
+
+// Frame Size Options
+export type ShotFrameSize =
+  | 'ECU'    // Extreme Close-Up
+  | 'BCU'    // Big Close-Up
+  | 'CU'     // Close-Up
+  | 'MCU'    // Medium Close-Up
+  | 'MS'     // Medium Shot
+  | 'MWS'    // Medium Wide Shot
+  | 'MLS'    // Medium Long Shot
+  | 'LS'     // Long Shot
+  | 'WS'     // Wide Shot
+  | 'EWS'    // Extreme Wide Shot
+  | 'POV'    // Point of View
+  | 'OTS'    // Over the Shoulder
+  | 'INSERT' // Insert
+  | '2SHOT'  // Two Shot
+  | 'GROUP'  // Group Shot
+  | 'AERIAL' // Aerial/Drone
+  | 'ESTAB'  // Establishing
+  | 'OTHER'; // Other
+
+// Camera Height Options
+export type ShotCameraHeight =
+  | 'floor_level'
+  | 'low_angle'
+  | 'eye_level'
+  | 'high_angle'
+  | 'overhead'
+  | 'birds_eye'
+  | 'dutch'
+  | 'other';
+
+// Movement Options
+export type ShotMovement =
+  | 'static'
+  | 'pan'
+  | 'pan_left'
+  | 'pan_right'
+  | 'tilt'
+  | 'tilt_up'
+  | 'tilt_down'
+  | 'dolly'
+  | 'dolly_in'
+  | 'dolly_out'
+  | 'tracking'
+  | 'handheld'
+  | 'gimbal'
+  | 'steadicam'
+  | 'crane'
+  | 'drone'
+  | 'push_in'
+  | 'pull_out'
+  | 'zoom_in'
+  | 'zoom_out'
+  | 'whip_pan'
+  | 'rack_focus'
+  | 'roll'
+  | 'combination'
+  | 'other';
+
+// Time of Day Options
+export type ShotTimeOfDay =
+  | 'DAY'
+  | 'NIGHT'
+  | 'DAWN'
+  | 'DUSK'
+  | 'MAGIC_HOUR'
+  | 'CONTINUOUS'
+  | 'SAME'
+  | 'LATER'
+  | 'OTHER';
+
+// Shot List Interface
+export interface BacklotShotList {
+  id: string;
+  project_id: string;
+  title: string;
+  description?: string;
+  list_type?: ShotListType;
+  production_day_id?: string;
+  scene_id?: string;
+  is_archived: boolean;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  creator?: {
+    id: string;
+    email: string;
+  };
+  production_day?: {
+    id: string;
+    date: string;
+    label?: string;
+  };
+  scene?: {
+    id: string;
+    scene_number: string;
+    slugline?: string;
+  };
+  // Computed fields
+  shot_count?: number;
+  completed_count?: number;
+  shots?: BacklotShot[];
+}
+
+// Shot Interface
+export interface BacklotShot {
+  id: string;
+  project_id: string;
+  shot_list_id: string;
+  sort_order: number;
+  shot_number: string;
+  scene_number?: string;
+  scene_id?: string;
+  camera_label?: string;
+  frame_size?: ShotFrameSize;
+  lens?: string;
+  focal_length_mm?: number;
+  camera_height?: ShotCameraHeight;
+  movement?: ShotMovement;
+  location_hint?: string;
+  time_of_day?: ShotTimeOfDay;
+  description?: string;
+  technical_notes?: string;
+  performance_notes?: string;
+  est_time_minutes?: number;
+  is_completed: boolean;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  scene?: {
+    id: string;
+    scene_number: string;
+    slugline?: string;
+  };
+}
+
+// Shot List Input for create/update
+export interface ShotListInput {
+  title: string;
+  description?: string;
+  list_type?: ShotListType;
+  production_day_id?: string;
+  scene_id?: string;
+}
+
+// Shot Input for create/update
+export interface ShotInput {
+  shot_number?: string;
+  scene_number?: string;
+  scene_id?: string;
+  camera_label?: string;
+  frame_size?: ShotFrameSize;
+  lens?: string;
+  focal_length_mm?: number;
+  camera_height?: ShotCameraHeight;
+  movement?: ShotMovement;
+  location_hint?: string;
+  time_of_day?: ShotTimeOfDay;
+  description?: string;
+  technical_notes?: string;
+  performance_notes?: string;
+  est_time_minutes?: number;
+  is_completed?: boolean;
+  sort_order?: number;
+}
+
+// Labels and Colors
+export const SHOT_LIST_TYPE_LABELS: Record<ShotListType, string> = {
+  scene_based: 'Scene-Based',
+  day_based: 'Day-Based',
+  sequence_based: 'Sequence-Based',
+  location_based: 'Location-Based',
+  custom: 'Custom',
+};
+
+export const SHOT_FRAME_SIZE_LABELS: Record<ShotFrameSize, string> = {
+  ECU: 'Extreme Close-Up',
+  BCU: 'Big Close-Up',
+  CU: 'Close-Up',
+  MCU: 'Medium Close-Up',
+  MS: 'Medium Shot',
+  MWS: 'Medium Wide Shot',
+  MLS: 'Medium Long Shot',
+  LS: 'Long Shot',
+  WS: 'Wide Shot',
+  EWS: 'Extreme Wide Shot',
+  POV: 'Point of View',
+  OTS: 'Over the Shoulder',
+  INSERT: 'Insert',
+  '2SHOT': 'Two Shot',
+  GROUP: 'Group Shot',
+  AERIAL: 'Aerial/Drone',
+  ESTAB: 'Establishing',
+  OTHER: 'Other',
+};
+
+export const SHOT_FRAME_SIZE_SHORT_LABELS: Record<ShotFrameSize, string> = {
+  ECU: 'ECU',
+  BCU: 'BCU',
+  CU: 'CU',
+  MCU: 'MCU',
+  MS: 'MS',
+  MWS: 'MWS',
+  MLS: 'MLS',
+  LS: 'LS',
+  WS: 'WS',
+  EWS: 'EWS',
+  POV: 'POV',
+  OTS: 'OTS',
+  INSERT: 'INS',
+  '2SHOT': '2S',
+  GROUP: 'GRP',
+  AERIAL: 'AER',
+  ESTAB: 'EST',
+  OTHER: 'OTH',
+};
+
+export const SHOT_CAMERA_HEIGHT_LABELS: Record<ShotCameraHeight, string> = {
+  floor_level: 'Floor Level',
+  low_angle: 'Low Angle',
+  eye_level: 'Eye Level',
+  high_angle: 'High Angle',
+  overhead: 'Overhead',
+  birds_eye: "Bird's Eye",
+  dutch: 'Dutch Angle',
+  other: 'Other',
+};
+
+export const SHOT_MOVEMENT_LABELS: Record<ShotMovement, string> = {
+  static: 'Static',
+  pan: 'Pan',
+  pan_left: 'Pan Left',
+  pan_right: 'Pan Right',
+  tilt: 'Tilt',
+  tilt_up: 'Tilt Up',
+  tilt_down: 'Tilt Down',
+  dolly: 'Dolly',
+  dolly_in: 'Dolly In',
+  dolly_out: 'Dolly Out',
+  tracking: 'Tracking',
+  handheld: 'Handheld',
+  gimbal: 'Gimbal',
+  steadicam: 'Steadicam',
+  crane: 'Crane',
+  drone: 'Drone',
+  push_in: 'Push In',
+  pull_out: 'Pull Out',
+  zoom_in: 'Zoom In',
+  zoom_out: 'Zoom Out',
+  whip_pan: 'Whip Pan',
+  rack_focus: 'Rack Focus',
+  roll: 'Roll',
+  combination: 'Combination',
+  other: 'Other',
+};
+
+export const SHOT_TIME_OF_DAY_LABELS: Record<ShotTimeOfDay, string> = {
+  DAY: 'Day',
+  NIGHT: 'Night',
+  DAWN: 'Dawn',
+  DUSK: 'Dusk',
+  MAGIC_HOUR: 'Magic Hour',
+  CONTINUOUS: 'Continuous',
+  SAME: 'Same',
+  LATER: 'Later',
+  OTHER: 'Other',
+};
+
+// =====================================================
+// TASK SYSTEM TYPES (Notion-style Task Database)
+// =====================================================
+
+// Task List Sharing Mode
+export type TaskListSharingMode = 'project_wide' | 'selective';
+
+// Task List View Type
+export type TaskListViewType = 'board' | 'list' | 'calendar';
+
+// Task Label
+export interface BacklotTaskLabel {
+  id: string;
+  project_id: string;
+  name: string;
+  color: string | null;
+  created_at: string;
+}
+
+// Task List Member
+export interface BacklotTaskListMember {
+  id: string;
+  task_list_id: string;
+  user_id: string;
+  can_edit: boolean;
+  created_at: string;
+  // Joined data
+  profile?: BacklotProfile;
+}
+
+// Task List
+export interface BacklotTaskList {
+  id: string;
+  project_id: string;
+  created_by_user_id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  sharing_mode: TaskListSharingMode;
+  default_view_type: TaskListViewType;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  created_by_profile?: BacklotProfile;
+  members?: BacklotTaskListMember[];
+  tasks?: BacklotTask[];
+  task_count?: number;
+  status_counts?: Record<string, number>;
+  views?: BacklotTaskView[];
+}
+
+// Task Assignee
+export interface BacklotTaskAssignee {
+  id: string;
+  task_id: string;
+  user_id: string;
+  assigned_by: string | null;
+  assigned_at: string;
+  // Joined data
+  profile?: BacklotProfile;
+}
+
+// Task Watcher
+export interface BacklotTaskWatcher {
+  id: string;
+  task_id: string;
+  user_id: string;
+  added_at: string;
+  // Joined data
+  profile?: BacklotProfile;
+}
+
+// Task Label Link (many-to-many)
+export interface BacklotTaskLabelLink {
+  id: string;
+  task_id: string;
+  label_id: string;
+  added_at: string;
+  // Joined data
+  label?: BacklotTaskLabel;
+}
+
+// Task Comment
+export interface BacklotTaskComment {
+  id: string;
+  task_id: string;
+  user_id: string;
+  content: string;
+  is_edited: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  user_profile?: BacklotProfile;
+}
+
+// Task View (saved view configurations)
+export interface BacklotTaskView {
+  id: string;
+  task_list_id: string;
+  created_by: string;
+  name: string;
+  view_type: TaskListViewType;
+  filters: TaskViewFilters;
+  grouping: TaskViewGrouping | null;
+  sorting: TaskViewSorting[];
+  is_default: boolean;
+  is_shared: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  created_by_profile?: BacklotProfile;
+}
+
+// Task View Filter Configuration
+export interface TaskViewFilters {
+  status?: BacklotTaskStatus[];
+  priority?: BacklotTaskPriority[];
+  assignee_ids?: string[];
+  label_ids?: string[];
+  due_date_range?: {
+    start?: string;
+    end?: string;
+  };
+  search?: string;
+}
+
+// Task View Grouping Configuration
+export interface TaskViewGrouping {
+  field: 'status' | 'priority' | 'assignee' | 'label' | 'due_date' | 'none';
+  order?: 'asc' | 'desc';
+}
+
+// Task View Sorting Configuration
+export interface TaskViewSorting {
+  field: 'title' | 'status' | 'priority' | 'due_date' | 'created_at' | 'updated_at' | 'sort_order';
+  order: 'asc' | 'desc';
+}
+
+// Main Task Entity
+export interface BacklotTask {
+  id: string;
+  task_list_id: string;
+  created_by: string;
+  title: string;
+  description: string | null;
+  status: BacklotTaskStatus;
+  priority: BacklotTaskPriority;
+  due_date: string | null;
+  due_time: string | null;
+  estimated_hours: number | null;
+  actual_hours: number | null;
+  sort_order: number;
+  // Integration Links
+  linked_scene_id: string | null;
+  linked_location_id: string | null;
+  linked_call_sheet_id: string | null;
+  linked_shot_list_id: string | null;
+  linked_production_day_id: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  // Joined data
+  created_by_profile?: BacklotProfile;
+  assignees?: BacklotTaskAssignee[];
+  watchers?: BacklotTaskWatcher[];
+  labels?: BacklotTaskLabel[];
+  comments?: BacklotTaskComment[];
+  comment_count?: number;
+  // Linked entity data (for display)
+  linked_scene?: { id: string; scene_number: string; description?: string };
+  linked_location?: { id: string; name: string };
+  linked_call_sheet?: { id: string; title: string };
+  linked_shot_list?: { id: string; title: string };
+  linked_production_day?: { id: string; day_number: number; date: string };
+}
+
+// =====================================================
+// TASK SYSTEM INPUT TYPES
+// =====================================================
+
+// Task Label Input
+export interface TaskLabelInput {
+  name: string;
+  color?: string;
+}
+
+// Task List Input
+export interface TaskListInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  sharing_mode?: TaskListSharingMode;
+  default_view_type?: TaskListViewType;
+}
+
+// Task List Update Input
+export interface TaskListUpdateInput {
+  name?: string;
+  description?: string;
+  icon?: string;
+  sharing_mode?: TaskListSharingMode;
+  default_view_type?: TaskListViewType;
+  is_archived?: boolean;
+}
+
+// Task List Member Input
+export interface TaskListMemberInput {
+  user_id: string;
+  can_edit?: boolean;
+}
+
+// Task Input
+export interface TaskInput {
+  title: string;
+  description?: string;
+  status?: BacklotTaskStatus;
+  priority?: BacklotTaskPriority;
+  due_date?: string;
+  due_time?: string;
+  estimated_hours?: number;
+  sort_order?: number;
+  assignee_ids?: string[];
+  watcher_ids?: string[];
+  label_ids?: string[];
+  linked_scene_id?: string;
+  linked_location_id?: string;
+  linked_call_sheet_id?: string;
+  linked_shot_list_id?: string;
+  linked_production_day_id?: string;
+}
+
+// Task Update Input
+export interface TaskUpdateInput {
+  title?: string;
+  description?: string;
+  status?: BacklotTaskStatus;
+  priority?: BacklotTaskPriority;
+  due_date?: string | null;
+  due_time?: string | null;
+  estimated_hours?: number | null;
+  actual_hours?: number | null;
+  sort_order?: number;
+  assignee_ids?: string[];
+  watcher_ids?: string[];
+  label_ids?: string[];
+  linked_scene_id?: string | null;
+  linked_location_id?: string | null;
+  linked_call_sheet_id?: string | null;
+  linked_shot_list_id?: string | null;
+  linked_production_day_id?: string | null;
+}
+
+// Task Comment Input
+export interface TaskCommentInput {
+  content: string;
+}
+
+// Task View Input
+export interface TaskViewInput {
+  name: string;
+  view_type: TaskListViewType;
+  filters?: TaskViewFilters;
+  grouping?: TaskViewGrouping;
+  sorting?: TaskViewSorting[];
+  is_default?: boolean;
+  is_shared?: boolean;
+  sort_order?: number;
+}
+
+// Task Reorder Item
+export interface TaskReorderItem {
+  id: string;
+  sort_order: number;
+  status?: BacklotTaskStatus;
+}
+
+// =====================================================
+// TASK SYSTEM FILTER TYPES
+// =====================================================
+
+export interface TaskListFilters {
+  search?: string;
+  include_archived?: boolean;
+}
+
+export interface TaskFiltersExtended {
+  status?: BacklotTaskStatus | BacklotTaskStatus[] | 'all';
+  priority?: BacklotTaskPriority | BacklotTaskPriority[] | 'all';
+  assignee_id?: string | string[];
+  label_id?: string | string[];
+  due_date_start?: string;
+  due_date_end?: string;
+  has_due_date?: boolean;
+  is_overdue?: boolean;
+  search?: string;
+}
+
+// =====================================================
+// TASK SYSTEM CONSTANTS
+// =====================================================
+
+export const TASK_STATUS_LABELS: Record<BacklotTaskStatus, string> = {
+  todo: 'To Do',
+  in_progress: 'In Progress',
+  review: 'Review',
+  completed: 'Completed',
+  blocked: 'Blocked',
+};
+
+export const TASK_STATUS_COLORS: Record<BacklotTaskStatus, string> = {
+  todo: 'gray',
+  in_progress: 'blue',
+  review: 'amber',
+  completed: 'green',
+  blocked: 'red',
+};
+
+export const TASK_PRIORITY_LABELS: Record<BacklotTaskPriority, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  urgent: 'Urgent',
+};
+
+export const TASK_PRIORITY_COLORS: Record<BacklotTaskPriority, string> = {
+  low: 'slate',
+  medium: 'blue',
+  high: 'orange',
+  urgent: 'red',
+};
+
+export const TASK_VIEW_TYPE_LABELS: Record<TaskListViewType, string> = {
+  board: 'Board',
+  list: 'List',
+  calendar: 'Calendar',
+};
+
+export const TASK_SHARING_MODE_LABELS: Record<TaskListSharingMode, string> = {
+  project_wide: 'All Project Members',
+  selective: 'Selected Members Only',
+};
+
+// Default label colors for new projects
+export const DEFAULT_TASK_LABEL_COLORS = [
+  '#ef4444', // red
+  '#f97316', // orange
+  '#f59e0b', // amber
+  '#eab308', // yellow
+  '#84cc16', // lime
+  '#22c55e', // green
+  '#14b8a6', // teal
+  '#06b6d4', // cyan
+  '#3b82f6', // blue
+  '#6366f1', // indigo
+  '#8b5cf6', // violet
+  '#a855f7', // purple
+  '#d946ef', // fuchsia
+  '#ec4899', // pink
+  '#64748b', // slate
+];

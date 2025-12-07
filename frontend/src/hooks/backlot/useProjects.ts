@@ -110,6 +110,22 @@ export function useProjects(options: UseProjectsOptions = {}) {
         .single();
 
       if (error) throw error;
+
+      // Also add the owner as an admin member so RLS policies work correctly
+      const { error: memberError } = await supabase
+        .from('backlot_project_members')
+        .insert({
+          project_id: data.id,
+          user_id: userData.user.id,
+          role: 'admin',
+        });
+
+      if (memberError) {
+        console.error('Failed to add owner as member:', memberError);
+        // Don't throw - project was created, member insert might fail due to RLS
+        // but the owner_id on the project will still work for ownership checks
+      }
+
       return data as BacklotProject;
     },
     onSuccess: () => {

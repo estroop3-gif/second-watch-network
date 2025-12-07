@@ -29,6 +29,12 @@ import {
   CalendarDays,
   Receipt,
   Clapperboard,
+  UserPlus,
+  FileCheck,
+  Camera,
+  Target,
+  Film,
+  BarChart3,
 } from 'lucide-react';
 import { useProject, useProjectPermission } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -44,6 +50,7 @@ import GearView from '@/components/backlot/workspace/GearView';
 import BudgetView from '@/components/backlot/workspace/BudgetView';
 import DailyBudgetView from '@/components/backlot/workspace/DailyBudgetView';
 import ReceiptsView from '@/components/backlot/workspace/ReceiptsView';
+import ClearancesView from '@/components/backlot/workspace/ClearancesView';
 import UpdatesView from '@/components/backlot/workspace/UpdatesView';
 import ContactsView from '@/components/backlot/workspace/ContactsView';
 import ProjectSettings from '@/components/backlot/workspace/ProjectSettings';
@@ -52,6 +59,15 @@ import AICopilotPanel from '@/components/backlot/workspace/AICopilotPanel';
 import ScriptView from '@/components/backlot/workspace/ScriptView';
 import SceneDetailModal from '@/components/backlot/workspace/SceneDetailModal';
 import ScriptImportModal from '@/components/backlot/workspace/ScriptImportModal';
+import { CastingCrewTab } from '@/components/backlot/workspace/CastingCrewTab';
+import ShotListsView from '@/components/backlot/workspace/ShotListsView';
+import ShotListDetailView from '@/components/backlot/workspace/ShotListDetailView';
+import CoverageView from '@/components/backlot/workspace/CoverageView';
+import AssetsView from '@/components/backlot/workspace/AssetsView';
+import AnalyticsView from '@/components/backlot/workspace/AnalyticsView';
+import TaskListDetailView from '@/components/backlot/workspace/TaskListDetailView';
+import TaskDetailDrawer from '@/components/backlot/workspace/TaskDetailDrawer';
+import TaskListShareModal from '@/components/backlot/workspace/TaskListShareModal';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -92,14 +108,20 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'script', label: 'Script', icon: Clapperboard },
+  { id: 'shot-lists', label: 'Shot Lists', icon: Camera },
+  { id: 'coverage', label: 'Coverage', icon: Target },
   { id: 'schedule', label: 'Schedule', icon: Calendar },
   { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
+  { id: 'casting', label: 'Casting & Crew', icon: UserPlus },
   { id: 'tasks', label: 'Tasks', icon: CheckSquare },
   { id: 'locations', label: 'Locations', icon: MapPin },
   { id: 'gear', label: 'Gear', icon: Package },
   { id: 'budget', label: 'Budget', icon: DollarSign },
   { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
   { id: 'receipts', label: 'Receipts', icon: Receipt },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
+  { id: 'clearances', label: 'Clearances', icon: FileCheck },
+  { id: 'assets', label: 'Assets', icon: Film },
   { id: 'updates', label: 'Updates', icon: Megaphone },
   { id: 'contacts', label: 'Contacts', icon: Users },
   { id: 'credits', label: 'Credits', icon: Award },
@@ -114,6 +136,10 @@ const ProjectWorkspace: React.FC = () => {
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [showScriptImportModal, setShowScriptImportModal] = useState(false);
+  const [selectedShotListId, setSelectedShotListId] = useState<string | null>(null);
+  const [selectedTaskListId, setSelectedTaskListId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [showTaskShareModal, setShowTaskShareModal] = useState(false);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
@@ -244,11 +270,11 @@ const ProjectWorkspace: React.FC = () => {
         {/* Sidebar */}
         <aside
           className={cn(
-            'fixed lg:sticky top-[57px] left-0 z-30 h-[calc(100vh-57px)] w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform lg:translate-x-0',
+            'fixed lg:sticky top-[57px] left-0 z-30 h-[calc(100vh-57px)] w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform lg:translate-x-0 overflow-y-auto',
             sidebarOpen ? 'translate-x-0' : '-translate-x-full'
           )}
         >
-          <nav className="p-4 space-y-1">
+          <nav className="p-4 space-y-1 pb-8">
             {visibleNavItems.map((item) => (
               <button
                 key={item.id}
@@ -280,14 +306,51 @@ const ProjectWorkspace: React.FC = () => {
               onImportClick={() => setShowScriptImportModal(true)}
             />
           )}
+          {activeView === 'shot-lists' && (
+            selectedShotListId ? (
+              <ShotListDetailView
+                shotListId={selectedShotListId}
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedShotListId(null)}
+              />
+            ) : (
+              <ShotListsView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectShotList={(shotList) => setSelectedShotListId(shotList.id)}
+              />
+            )
+          )}
+          {activeView === 'coverage' && (
+            <CoverageView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
           {activeView === 'schedule' && (
             <ScheduleView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'call-sheets' && (
             <CallSheetsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
+          {activeView === 'casting' && (
+            <CastingCrewTab projectId={project.id} />
+          )}
           {activeView === 'tasks' && (
-            <TasksView projectId={project.id} canEdit={permission?.canEdit || false} />
+            selectedTaskListId ? (
+              <TaskListDetailView
+                taskListId={selectedTaskListId}
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedTaskListId(null)}
+                onOpenTask={(task) => setSelectedTaskId(task.id)}
+                onOpenShare={() => setShowTaskShareModal(true)}
+              />
+            ) : (
+              <TasksView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectTaskList={(taskList) => setSelectedTaskListId(taskList.id)}
+              />
+            )
           )}
           {activeView === 'locations' && (
             <LocationsView projectId={project.id} canEdit={permission?.canEdit || false} />
@@ -303,6 +366,15 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'receipts' && (
             <ReceiptsView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'analytics' && (
+            <AnalyticsView projectId={project.id} />
+          )}
+          {activeView === 'clearances' && (
+            <ClearancesView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'assets' && (
+            <AssetsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'updates' && (
             <UpdatesView projectId={project.id} canEdit={permission?.canEdit || false} />
@@ -348,6 +420,27 @@ const ProjectWorkspace: React.FC = () => {
         onClose={() => setShowScriptImportModal(false)}
         onSuccess={() => setShowScriptImportModal(false)}
       />
+
+      {/* Task Modals */}
+      <TaskDetailDrawer
+        taskId={selectedTaskId}
+        projectId={project.id}
+        canEdit={permission?.canEdit || false}
+        open={!!selectedTaskId}
+        onClose={() => setSelectedTaskId(null)}
+        onDelete={() => {
+          setSelectedTaskId(null);
+        }}
+      />
+      {selectedTaskListId && (
+        <TaskListShareModal
+          taskListId={selectedTaskListId}
+          projectId={project.id}
+          canManage={permission?.canEdit || false}
+          open={showTaskShareModal}
+          onOpenChange={setShowTaskShareModal}
+        />
+      )}
     </div>
   );
 };

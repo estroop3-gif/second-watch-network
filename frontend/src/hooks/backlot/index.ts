@@ -201,3 +201,101 @@ export {
   useScenePageMappings,
   useScenePageMappingMutations,
 } from './useScripts';
+
+// Casting & Crew Pipeline
+export {
+  // Project Roles
+  useProjectRoles,
+  useRole,
+  useProjectRoleMutations,
+  useOpenRoles,
+  // Applications
+  useRoleApplications,
+  useMyApplications,
+  useApplyToRole,
+  useUpdateApplicationStatus,
+  // Availability
+  useMyAvailability,
+  useUserAvailability,
+  useSetAvailability,
+  // Booked People & Conflicts
+  useBookedPeople,
+  useCheckAvailabilityConflicts,
+} from './useCastingCrew';
+
+// Clearances & Releases
+export {
+  useClearances,
+  useClearanceItem,
+  useClearanceSummary,
+  useClearanceTemplates,
+  useLocationClearances,
+  usePersonClearances,
+  useBulkClearanceStatus,
+  locationHasSignedRelease,
+  personHasSignedRelease,
+  getClearanceStatusColor,
+} from './useClearances';
+
+// Shot Lists & Coverage
+export {
+  useShots,
+  useShot,
+  useShotImages,
+  useCoverageSummary,
+  useCoverageByScene,
+  useSceneCoverageSummary,
+  useCallSheetShots,
+} from './useShots';
+
+// Assets & Deliverables
+export {
+  // Assets
+  useAssets,
+  useAsset,
+  useAssetsSummary,
+  useAssetMutations,
+  // Deliverable Templates
+  useDeliverableTemplates,
+  useDeliverableTemplate,
+  useDeliverablePlatforms,
+  useDeliverableTemplateMutations,
+  // Project Deliverables
+  useProjectDeliverables,
+  useProjectDeliverable,
+  useDeliverablesSummary,
+  useDeliverableMutations,
+} from './useAssets';
+
+// Producer Analytics (READ-ONLY)
+export {
+  useCostByDepartmentAnalytics,
+  useTimeScheduleAnalytics,
+  useUtilizationAnalytics,
+  useAnalyticsOverview,
+} from './useAnalytics';
+
+// Professional Shot Lists (DP/Producer Tool)
+export {
+  useShotLists,
+  useShotList,
+  useShotListShots,
+} from './useShotLists';
+
+// Task Lists (Notion-style Task Database)
+export {
+  // Labels
+  useTaskLabels,
+  // Task Lists
+  useTaskLists,
+  useTaskList,
+  // Task List Members
+  useTaskListMembers,
+  // Tasks
+  useTaskListTasks,
+  useTaskDetail,
+  // Comments
+  useTaskComments,
+  // Views
+  useTaskViews,
+} from './useTaskLists';
