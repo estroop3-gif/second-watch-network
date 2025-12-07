@@ -324,26 +324,15 @@ export function useTaskListTasks(options: UseTaskListTasksOptions) {
   const createTask = useMutation({
     mutationFn: async (input: TaskInput) => {
       if (!taskListId) throw new Error('No task list ID');
-      console.log('[createTask] Creating task with input:', input, 'for task list:', taskListId);
-      try {
-        const result = await api.post<{ success: boolean; task: BacklotTask }>(
-          `/api/v1/backlot/task-lists/${taskListId}/tasks`,
-          input
-        );
-        console.log('[createTask] Result:', result);
-        return result.task;
-      } catch (error) {
-        console.error('[createTask] Error:', error);
-        throw error;
-      }
+      const result = await api.post<{ success: boolean; task: BacklotTask }>(
+        `/api/v1/backlot/task-lists/${taskListId}/tasks`,
+        input
+      );
+      return result.task;
     },
-    onSuccess: (task) => {
-      console.log('[createTask] Success, invalidating queries for task:', task);
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-task-list', taskListId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-task-lists'] });
-    },
-    onError: (error) => {
-      console.error('[createTask] Mutation error:', error);
     },
   });
 

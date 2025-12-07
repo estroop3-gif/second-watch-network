@@ -24,10 +24,14 @@ class APIClient {
     }
   }
 
-  setToken(token: string) {
+  setToken(token: string | null) {
     this.token = token
     if (typeof window !== 'undefined') {
-      localStorage.setItem('access_token', token)
+      if (token) {
+        localStorage.setItem('access_token', token)
+      } else {
+        localStorage.removeItem('access_token')
+      }
     }
   }
 

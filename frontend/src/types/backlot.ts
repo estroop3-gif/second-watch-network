@@ -823,7 +823,8 @@ export interface CallSheetLocationInput {
   sort_order?: number;
 }
 
-export interface TaskInput {
+// Input for production day tasks (legacy backlot_tasks system)
+export interface ProductionTaskInput {
   title: string;
   description?: string;
   status?: BacklotTaskStatus;
@@ -4267,7 +4268,7 @@ export interface TaskListMemberInput {
   can_edit?: boolean;
 }
 
-// Task Input
+// Task Input for Notion-style task lists (backlot_task_lists system)
 export interface TaskInput {
   title: string;
   description?: string;
@@ -4275,6 +4276,7 @@ export interface TaskInput {
   priority?: BacklotTaskPriority;
   due_date?: string;
   due_time?: string;
+  department?: string;
   estimated_hours?: number;
   sort_order?: number;
   assignee_ids?: string[];

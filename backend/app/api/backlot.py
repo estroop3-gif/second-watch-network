@@ -13987,7 +13987,7 @@ async def get_task_list(
     task_list_id: str,
     authorization: str = Header(None)
 ):
-    """Get a task list with its views and sharing info"""
+    """Get a task list with its views, sharing info, and tasks"""
     user = await get_current_user_from_token(authorization)
     supabase = get_supabase_admin_client()
 
@@ -14005,10 +14005,41 @@ async def get_task_list(
         else:
             task_list["members"] = []
 
-        # Get task counts
-        count_result = supabase.table("backlot_tasks").select("status").eq("task_list_id", task_list_id).execute()
-        tasks = count_result.data or []
+        # Get all tasks for this task list
+        tasks_result = supabase.table("backlot_tasks").select("*").eq("task_list_id", task_list_id).order("sort_index").order("created_at").execute()
+        tasks = tasks_result.data or []
 
+        # Get assignees and labels for all tasks
+        if tasks:
+            task_ids = [t["id"] for t in tasks]
+
+            # Get assignees
+            assignees_result = supabase.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
+            assignees_by_task = {}
+            for a in (assignees_result.data or []):
+                task_id = a["task_id"]
+                if task_id not in assignees_by_task:
+                    assignees_by_task[task_id] = []
+                assignees_by_task[task_id].append(a)
+
+            # Get labels
+            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+            labels_by_task = {}
+            for l in (labels_result.data or []):
+                task_id = l["task_id"]
+                if task_id not in labels_by_task:
+                    labels_by_task[task_id] = []
+                if l.get("label"):
+                    labels_by_task[task_id].append(l["label"])
+
+            # Add assignees and labels to tasks
+            for task in tasks:
+                task["assignees"] = assignees_by_task.get(task["id"], [])
+                task["labels"] = labels_by_task.get(task["id"], [])
+
+        task_list["tasks"] = tasks
+
+        # Calculate status counts
         status_counts = {}
         for task in tasks:
             status = task.get("status", "todo")

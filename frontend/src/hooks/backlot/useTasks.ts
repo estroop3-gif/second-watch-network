@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import {
   BacklotTask,
-  TaskInput,
+  ProductionTaskInput,
   TaskFilters,
   BacklotTaskStatus,
 } from '@/types/backlot';
@@ -114,7 +114,7 @@ export function useTasks(options: UseTasksOptions) {
   });
 
   const createTask = useMutation({
-    mutationFn: async (input: TaskInput & { projectId: string }) => {
+    mutationFn: async (input: ProductionTaskInput & { projectId: string }) => {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) throw new Error('Not authenticated');
 
@@ -158,7 +158,7 @@ export function useTasks(options: UseTasksOptions) {
   });
 
   const updateTask = useMutation({
-    mutationFn: async ({ id, ...input }: Partial<TaskInput> & { id: string }) => {
+    mutationFn: async ({ id, ...input }: Partial<ProductionTaskInput> & { id: string }) => {
       const updateData: Record<string, any> = {};
       if (input.title !== undefined) updateData.title = input.title;
       if (input.description !== undefined) updateData.description = input.description;

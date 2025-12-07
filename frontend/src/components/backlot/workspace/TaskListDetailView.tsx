@@ -163,11 +163,8 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       due_date: dueDate ? format(dueDate, 'yyyy-MM-dd') : undefined,
       department: department.trim() || undefined,
     };
-    console.log('[CreateTaskModal] Submitting task:', taskData);
-
     try {
       await onCreate(taskData);
-      console.log('[CreateTaskModal] Task creation succeeded');
       // Reset form
       setTitle('');
       setDescription('');
@@ -177,7 +174,7 @@ const CreateTaskModal: React.FC<CreateTaskModalProps> = ({
       setDepartment('');
       onOpenChange(false);
     } catch (error) {
-      console.error('[CreateTaskModal] Task creation failed:', error);
+      console.error('Error creating task:', error);
     }
   };
 
@@ -1080,12 +1077,10 @@ const TaskListDetailView: React.FC<TaskListDetailViewProps> = ({
   };
 
   const handleCreateTaskWithDetails = async (data: TaskInput) => {
-    console.log('[handleCreateTaskWithDetails] Creating task with data:', data);
     try {
-      const result = await createTask.mutateAsync(data);
-      console.log('[handleCreateTaskWithDetails] Task created:', result);
+      await createTask.mutateAsync(data);
     } catch (error) {
-      console.error('[handleCreateTaskWithDetails] Error creating task:', error);
+      console.error('Error creating task:', error);
     }
   };
 
