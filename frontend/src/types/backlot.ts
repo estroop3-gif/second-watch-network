@@ -1897,6 +1897,7 @@ export interface BacklotScene {
   set_name: string | null;
   location_id: string | null;
   page_start: number | null;
+  page_end: number | null;
   page_count: string | null;
   synopsis: string | null;
   notes: string | null;
@@ -1960,7 +1961,9 @@ export interface BacklotCallSheetSceneLink {
   id: string;
   call_sheet_id: string;
   scene_id: string;
-  shoot_order: number;
+  sequence: number;        // Order in the call sheet's scene list (from DB)
+  sort_order: number;      // Alias for sequence (UI compatibility)
+  shoot_order?: number;    // Legacy alias
   notes: string | null;
   created_at: string;
   // Joined data
@@ -2204,4 +2207,349 @@ export const SCRIPT_STATUS_LABELS: Record<BacklotScriptStatus, string> = {
   draft: 'Draft',
   locked: 'Locked',
   archived: 'Archived',
+};
+
+// =============================================================================
+// SCRIPT PAGE NOTES TYPES
+// =============================================================================
+
+// Script page note types
+export type BacklotScriptPageNoteType =
+  | 'general'
+  | 'direction'
+  | 'production'
+  | 'character'
+  | 'blocking'
+  | 'camera'
+  | 'continuity'
+  | 'sound'
+  | 'vfx'
+  | 'prop'
+  | 'wardrobe'
+  | 'makeup'
+  | 'location'
+  | 'safety'
+  | 'other';
+
+// Script page note
+export interface BacklotScriptPageNote {
+  id: string;
+  script_id: string;
+  project_id: string;
+  page_number: number;
+  position_x: number | null;
+  position_y: number | null;
+  note_text: string;
+  note_type: BacklotScriptPageNoteType;
+  scene_id: string | null;
+  resolved: boolean;
+  resolved_at: string | null;
+  resolved_by_user_id: string | null;
+  author_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  author?: BacklotProfile;
+  resolved_by?: BacklotProfile;
+  scene?: BacklotScene;
+}
+
+// Script page note input
+export interface ScriptPageNoteInput {
+  page_number: number;
+  position_x?: number | null;
+  position_y?: number | null;
+  note_text: string;
+  note_type?: BacklotScriptPageNoteType;
+  scene_id?: string | null;
+}
+
+// Script page note update input
+export interface ScriptPageNoteUpdateInput {
+  page_number?: number;
+  position_x?: number | null;
+  position_y?: number | null;
+  note_text?: string;
+  note_type?: BacklotScriptPageNoteType;
+  scene_id?: string | null;
+}
+
+// Script page notes summary (per page)
+export interface ScriptPageNoteSummary {
+  page_number: number;
+  note_count: number;
+  unresolved_count: number;
+  note_types: BacklotScriptPageNoteType[];
+}
+
+// Script page notes filter
+export interface ScriptPageNoteFilters {
+  page_number?: number;
+  note_type?: BacklotScriptPageNoteType | 'all';
+  resolved?: boolean;
+  scene_id?: string;
+  author_user_id?: string;
+}
+
+// Labels for script page note types
+export const SCRIPT_PAGE_NOTE_TYPE_LABELS: Record<BacklotScriptPageNoteType, string> = {
+  general: 'General',
+  direction: "Director's Note",
+  production: 'Production',
+  character: 'Character',
+  blocking: 'Blocking/Staging',
+  camera: 'Camera/Shot',
+  continuity: 'Continuity',
+  sound: 'Sound/Audio',
+  vfx: 'VFX',
+  prop: 'Props',
+  wardrobe: 'Wardrobe',
+  makeup: 'Makeup/Hair',
+  location: 'Location',
+  safety: 'Safety',
+  other: 'Other',
+};
+
+// Colors for script page note types
+export const SCRIPT_PAGE_NOTE_TYPE_COLORS: Record<BacklotScriptPageNoteType, string> = {
+  general: 'gray',
+  direction: 'purple',
+  production: 'blue',
+  character: 'red',
+  blocking: 'orange',
+  camera: 'cyan',
+  continuity: 'yellow',
+  sound: 'sky',
+  vfx: 'fuchsia',
+  prop: 'violet',
+  wardrobe: 'indigo',
+  makeup: 'pink',
+  location: 'amber',
+  safety: 'rose',
+  other: 'slate',
+};
+
+// =============================================================================
+// SCRIPT VERSIONING TYPES
+// =============================================================================
+
+// Industry standard revision colors
+export type BacklotScriptColorCode =
+  | 'white'      // First draft
+  | 'blue'       // 1st revision
+  | 'pink'       // 2nd revision
+  | 'yellow'     // 3rd revision
+  | 'green'      // 4th revision
+  | 'goldenrod'  // 5th revision
+  | 'buff'       // 6th revision
+  | 'salmon'     // 7th revision
+  | 'cherry'     // 8th revision
+  | 'tan'        // 9th revision
+  | 'gray'       // 10th revision
+  | 'ivory';     // 11th revision
+
+// Extended BacklotScript interface with versioning fields
+export interface BacklotScriptVersion {
+  id: string;
+  project_id: string;
+  parent_version_id: string | null;
+  version_number: number;
+  title: string;
+  version: string | null;
+  color_code: BacklotScriptColorCode;
+  revision_notes: string | null;
+  is_current: boolean;
+  is_locked: boolean;
+  locked_by_user_id: string | null;
+  locked_at: string | null;
+  text_content: string | null;
+  file_url: string | null;
+  file_type: 'fdx' | 'pdf' | 'manual' | null;
+  page_count: number | null;
+  total_pages: number | null;
+  format: string | null;
+  parse_status: string | null;
+  parse_error: string | null;
+  total_scenes: number;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  created_by?: BacklotProfile;
+  locked_by?: BacklotProfile;
+  scenes?: BacklotScene[];
+  scene_count?: number;
+}
+
+// Version history item
+export interface BacklotScriptVersionHistoryItem {
+  id: string;
+  version: string | null;
+  version_number: number;
+  color_code: BacklotScriptColorCode;
+  is_current: boolean;
+  is_locked: boolean;
+  revision_notes: string | null;
+  created_at: string;
+  created_by_user_id: string | null;
+  created_by?: BacklotProfile;
+}
+
+// Input for creating a new script version
+export interface ScriptVersionInput {
+  parent_version_id?: string;
+  title?: string;
+  version?: string;
+  color_code?: BacklotScriptColorCode;
+  revision_notes?: string;
+  text_content?: string;
+  file_url?: string;
+  file_type?: 'fdx' | 'pdf' | 'manual';
+}
+
+// Labels for script color codes
+export const SCRIPT_COLOR_CODE_LABELS: Record<BacklotScriptColorCode, string> = {
+  white: 'White (First Draft)',
+  blue: 'Blue',
+  pink: 'Pink',
+  yellow: 'Yellow',
+  green: 'Green',
+  goldenrod: 'Goldenrod',
+  buff: 'Buff',
+  salmon: 'Salmon',
+  cherry: 'Cherry',
+  tan: 'Tan',
+  gray: 'Gray',
+  ivory: 'Ivory',
+};
+
+// Hex colors for script revisions (for rendering)
+export const SCRIPT_COLOR_CODE_HEX: Record<BacklotScriptColorCode, string> = {
+  white: '#FFFFFF',
+  blue: '#ADD8E6',
+  pink: '#FFB6C1',
+  yellow: '#FFFFE0',
+  green: '#90EE90',
+  goldenrod: '#DAA520',
+  buff: '#F0DC82',
+  salmon: '#FA8072',
+  cherry: '#DE3163',
+  tan: '#D2B48C',
+  gray: '#D3D3D3',
+  ivory: '#FFFFF0',
+};
+
+// =============================================================================
+// SCRIPT HIGHLIGHT BREAKDOWN TYPES
+// =============================================================================
+
+// Highlight status
+export type BacklotHighlightStatus = 'pending' | 'confirmed' | 'rejected';
+
+// Highlight breakdown (text selection that creates breakdown items)
+export interface BacklotScriptHighlightBreakdown {
+  id: string;
+  script_id: string;
+  scene_id: string | null;
+  page_number: number;
+  start_offset: number;
+  end_offset: number;
+  highlighted_text: string;
+  rect_x: number | null;
+  rect_y: number | null;
+  rect_width: number | null;
+  rect_height: number | null;
+  category: BacklotBreakdownItemType;
+  color: string;
+  suggested_label: string | null;
+  breakdown_item_id: string | null;
+  status: BacklotHighlightStatus;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  breakdown_item?: BacklotBreakdownItem;
+  scene?: BacklotScene;
+  created_by?: BacklotProfile;
+}
+
+// Input for creating a highlight
+export interface ScriptHighlightInput {
+  scene_id?: string;
+  page_number: number;
+  start_offset: number;
+  end_offset: number;
+  highlighted_text: string;
+  rect_x?: number;
+  rect_y?: number;
+  rect_width?: number;
+  rect_height?: number;
+  category: BacklotBreakdownItemType;
+  color?: string;
+  suggested_label?: string;
+}
+
+// Highlight summary by category
+export interface ScriptHighlightSummary {
+  category: BacklotBreakdownItemType;
+  total_count: number;
+  pending_count: number;
+  confirmed_count: number;
+  labels: string[];
+}
+
+// =============================================================================
+// SCENE PAGE MAPPING TYPES
+// =============================================================================
+
+// Mapping source
+export type BacklotMappingSource = 'auto' | 'manual' | 'ai';
+
+// Scene to page mapping
+export interface BacklotScenePageMapping {
+  id: string;
+  script_id: string;
+  scene_id: string;
+  page_start: number;
+  page_end: number;
+  start_y: number | null;
+  end_y: number | null;
+  mapping_source: BacklotMappingSource;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  scene?: BacklotScene;
+}
+
+// Input for creating/updating a mapping
+export interface ScenePageMappingInput {
+  scene_id: string;
+  page_start: number;
+  page_end: number;
+  start_y?: number;
+  end_y?: number;
+  mapping_source?: BacklotMappingSource;
+}
+
+// =============================================================================
+// HIGHLIGHT BREAKDOWN COLORS (Standard breakdown colors)
+// =============================================================================
+
+export const BREAKDOWN_HIGHLIGHT_COLORS: Record<BacklotBreakdownItemType, string> = {
+  cast: '#FF0000',           // Red
+  background: '#00FF00',     // Green
+  stunt: '#FFA500',          // Orange
+  location: '#8B4513',       // Brown
+  prop: '#800080',           // Purple
+  set_dressing: '#00FFFF',   // Cyan
+  wardrobe: '#0000FF',       // Blue (circled)
+  makeup: '#FF69B4',         // Pink
+  sfx: '#FFFF00',            // Yellow
+  vfx: '#FF00FF',            // Magenta
+  vehicle: '#A52A2A',        // Brown
+  animal: '#32CD32',         // Lime green
+  greenery: '#228B22',       // Forest green
+  special_equipment: '#4B0082', // Indigo
+  sound: '#87CEEB',          // Sky blue
+  music: '#DA70D6',          // Orchid
 };

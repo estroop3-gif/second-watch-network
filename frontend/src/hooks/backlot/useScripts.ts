@@ -9,16 +9,28 @@ import {
   BacklotBreakdownItem,
   BacklotBudgetSuggestion,
   BacklotCallSheetSceneLink,
+  BacklotScriptPageNote,
+  BacklotScriptVersionHistoryItem,
+  BacklotScriptHighlightBreakdown,
+  BacklotScenePageMapping,
   ScriptInput,
   SceneInput,
   BreakdownItemInput,
   CallSheetSceneLinkInput,
+  ScriptPageNoteInput,
+  ScriptPageNoteUpdateInput,
+  ScriptVersionInput,
+  ScriptHighlightInput,
+  ScenePageMappingInput,
+  ScriptHighlightSummary,
   BacklotSceneCoverageStatus,
   SceneCoverageStats,
   LocationNeedsResponse,
   TaskGenerationResponse,
   BudgetSuggestionGenerationResponse,
   SceneFilters,
+  ScriptPageNoteFilters,
+  ScriptPageNoteSummary,
 } from '@/types/backlot';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -911,7 +923,12 @@ export function useCallSheetSceneLinks(callSheetId: string | null) {
       }
 
       const result = await response.json();
-      return result.links as BacklotCallSheetSceneLink[];
+      // Backend returns linked_scenes with `sequence` field, normalize to include sort_order
+      const links = (result.linked_scenes || []).map((link: any) => ({
+        ...link,
+        sort_order: link.sequence ?? link.sort_order ?? 0,
+      }));
+      return links as BacklotCallSheetSceneLink[];
     },
     enabled: !!callSheetId,
   });
@@ -955,25 +972,21 @@ export function useCallSheetSceneLinkMutations() {
   });
 
   const unlinkScene = useMutation({
-    mutationFn: async ({
-      callSheetId,
-      sceneId,
-    }: {
-      callSheetId: string;
-      sceneId: string;
-    }) => {
+    mutationFn: async (params: { callSheetId: string; sceneId: string } | { linkId: string }) => {
       const { data: session } = await supabase.auth.getSession();
       if (!session.session) throw new Error('Not authenticated');
 
-      const response = await fetch(
-        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes/${sceneId}`,
-        {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
-          },
-        }
-      );
+      // Support both deletion by linkId or by callSheetId/sceneId
+      const url = 'linkId' in params
+        ? `${API_BASE}/api/v1/backlot/call-sheet-scene-links/${params.linkId}`
+        : `${API_BASE}/api/v1/backlot/call-sheets/${params.callSheetId}/linked-scenes/${params.sceneId}`;
+
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.session.access_token}`,
+        },
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -990,5 +1003,872 @@ export function useCallSheetSceneLinkMutations() {
   return {
     linkScene,
     unlinkScene,
+  };
+}
+
+// =============================================================================
+// SCRIPT PAGE NOTES
+// =============================================================================
+
+interface UseScriptPageNotesOptions extends ScriptPageNoteFilters {
+  scriptId: string | null;
+}
+
+export function useScriptPageNotes(options: UseScriptPageNotesOptions) {
+  const {
+    scriptId,
+    page_number,
+    note_type = 'all',
+    resolved,
+    scene_id,
+    author_user_id,
+  } = options;
+
+  const queryKey = ['backlot-script-page-notes', { scriptId, page_number, note_type, resolved, scene_id, author_user_id }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const params = new URLSearchParams();
+      if (page_number !== undefined) params.append('page_number', String(page_number));
+      if (note_type !== 'all') params.append('note_type', note_type);
+      if (resolved !== undefined) params.append('resolved', String(resolved));
+      if (scene_id) params.append('scene_id', scene_id);
+      if (author_user_id) params.append('author_user_id', author_user_id);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch script page notes');
+      }
+
+      const result = await response.json();
+      return result.notes as BacklotScriptPageNote[];
+    },
+    enabled: !!scriptId,
+  });
+
+  return {
+    notes: data || [],
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+export function useScriptPageNotesSummary(scriptId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-script-page-notes-summary', scriptId],
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/summary`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch notes summary');
+      }
+
+      const result = await response.json();
+      // Backend returns pages_with_notes, not summary
+      return (result.pages_with_notes || result.summary || []) as ScriptPageNoteSummary[];
+    },
+    enabled: !!scriptId,
+  });
+}
+
+export function useScriptPageNoteMutations() {
+  const queryClient = useQueryClient();
+
+  const createNote = useMutation({
+    mutationFn: async (input: ScriptPageNoteInput & { scriptId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const { scriptId, ...noteInput } = input;
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(noteInput),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create note');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes-summary'] });
+    },
+  });
+
+  const updateNote = useMutation({
+    mutationFn: async ({
+      scriptId,
+      noteId,
+      ...input
+    }: ScriptPageNoteUpdateInput & { scriptId: string; noteId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update note');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes-summary'] });
+    },
+  });
+
+  const deleteNote = useMutation({
+    mutationFn: async ({ scriptId, noteId }: { scriptId: string; noteId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete note');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes-summary'] });
+    },
+  });
+
+  const toggleResolved = useMutation({
+    mutationFn: async ({
+      scriptId,
+      noteId,
+      resolved,
+    }: {
+      scriptId: string;
+      noteId: string;
+      resolved: boolean;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}/resolve`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify({ resolved }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to toggle resolved status');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-page-notes-summary'] });
+    },
+  });
+
+  return {
+    createNote,
+    updateNote,
+    deleteNote,
+    toggleResolved,
+  };
+}
+
+// =============================================================================
+// SCRIPT VERSIONING
+// =============================================================================
+
+/**
+ * Get version history for a script
+ */
+export function useScriptVersionHistory(scriptId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-script-versions', scriptId],
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/versions`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch version history');
+      }
+
+      const result = await response.json();
+      return result.versions as BacklotScriptVersionHistoryItem[];
+    },
+    enabled: !!scriptId,
+  });
+}
+
+/**
+ * Create a new script version (revision)
+ */
+export function useCreateScriptVersion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      scriptId,
+      ...input
+    }: ScriptVersionInput & { scriptId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/versions`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create script version');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-versions'] });
+    },
+  });
+}
+
+/**
+ * Lock/unlock a script version
+ */
+export function useLockScriptVersion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      scriptId,
+      lock,
+    }: {
+      scriptId: string;
+      lock: boolean;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      // Use the appropriate endpoint based on lock/unlock action
+      const endpoint = lock ? 'lock' : 'unlock';
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/${endpoint}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to toggle script lock');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-versions'] });
+    },
+  });
+}
+
+/**
+ * Set a script version as current
+ */
+export function useSetCurrentScriptVersion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (scriptId: string) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/set-current`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to set current version');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-versions'] });
+    },
+  });
+}
+
+/**
+ * Update script text content (for the editor)
+ */
+export function useUpdateScriptText() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      scriptId,
+      textContent,
+      createNewVersion = false,
+      versionLabel,
+      colorCode,
+      revisionNotes,
+    }: {
+      scriptId: string;
+      textContent: string;
+      createNewVersion?: boolean;
+      versionLabel?: string;
+      colorCode?: string;
+      revisionNotes?: string;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/text`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify({
+            text_content: textContent,
+            create_new_version: createNewVersion,
+            version_label: versionLabel,
+            color_code: colorCode,
+            revision_notes: revisionNotes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update script text');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-versions'] });
+    },
+  });
+}
+
+/**
+ * Extract text from a script's PDF for editing
+ */
+export function useExtractScriptText() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (scriptId: string) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/extract-text`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to extract text from script');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+    },
+  });
+}
+
+// =============================================================================
+// SCRIPT HIGHLIGHT BREAKDOWNS
+// =============================================================================
+
+/**
+ * Get highlights for a script
+ */
+export function useScriptHighlights(scriptId: string | null, pageNumber?: number) {
+  const queryKey = ['backlot-script-highlights', scriptId, pageNumber];
+
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const params = new URLSearchParams();
+      if (pageNumber !== undefined) params.append('page_number', String(pageNumber));
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch highlights');
+      }
+
+      const result = await response.json();
+      return result.highlights as BacklotScriptHighlightBreakdown[];
+    },
+    enabled: !!scriptId,
+  });
+}
+
+/**
+ * Get highlight summary by category
+ */
+export function useScriptHighlightSummary(scriptId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-script-highlight-summary', scriptId],
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/summary`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch highlight summary');
+      }
+
+      const result = await response.json();
+      return result.summary as ScriptHighlightSummary[];
+    },
+    enabled: !!scriptId,
+  });
+}
+
+/**
+ * Mutations for script highlights
+ */
+export function useScriptHighlightMutations() {
+  const queryClient = useQueryClient();
+
+  const createHighlight = useMutation({
+    mutationFn: async (input: ScriptHighlightInput & { scriptId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const { scriptId, ...highlightInput } = input;
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(highlightInput),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create highlight');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+    },
+  });
+
+  const confirmHighlight = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+      label,
+      sceneId,
+    }: {
+      scriptId: string;
+      highlightId: string;
+      label?: string;
+      sceneId?: string;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const body: Record<string, any> = {};
+      if (label) body.label = label;
+      if (sceneId) body.scene_id = sceneId;
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(body),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to confirm highlight');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-breakdown-items'] });
+    },
+  });
+
+  const rejectHighlight = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+    }: {
+      scriptId: string;
+      highlightId: string;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/reject`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to reject highlight');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+    },
+  });
+
+  const deleteHighlight = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+    }: {
+      scriptId: string;
+      highlightId: string;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete highlight');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+    },
+  });
+
+  return {
+    createHighlight,
+    confirmHighlight,
+    rejectHighlight,
+    deleteHighlight,
+  };
+}
+
+// =============================================================================
+// SCENE PAGE MAPPINGS
+// =============================================================================
+
+/**
+ * Get scene-to-page mappings for a script
+ */
+export function useScenePageMappings(scriptId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-scene-page-mappings', scriptId],
+    queryFn: async () => {
+      if (!scriptId) return [];
+
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch page mappings');
+      }
+
+      const result = await response.json();
+      return result.mappings as BacklotScenePageMapping[];
+    },
+    enabled: !!scriptId,
+  });
+}
+
+/**
+ * Mutations for scene page mappings
+ */
+export function useScenePageMappingMutations() {
+  const queryClient = useQueryClient();
+
+  const createMapping = useMutation({
+    mutationFn: async (input: ScenePageMappingInput & { scriptId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const { scriptId, ...mappingInput } = input;
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(mappingInput),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create page mapping');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scene-page-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+    },
+  });
+
+  const updateMapping = useMutation({
+    mutationFn: async ({
+      scriptId,
+      mappingId,
+      ...input
+    }: Partial<ScenePageMappingInput> & { scriptId: string; mappingId: string }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings/${mappingId}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update page mapping');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scene-page-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+    },
+  });
+
+  const deleteMapping = useMutation({
+    mutationFn: async ({
+      scriptId,
+      mappingId,
+    }: {
+      scriptId: string;
+      mappingId: string;
+    }) => {
+      const { data: session } = await supabase.auth.getSession();
+      if (!session.session) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings/${mappingId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${session.session.access_token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete page mapping');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-scene-page-mappings'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+    },
+  });
+
+  return {
+    createMapping,
+    updateMapping,
+    deleteMapping,
   };
 }

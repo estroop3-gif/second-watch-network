@@ -35,6 +35,13 @@ import {
   ExternalLink,
   Settings,
   Sparkles,
+  BookOpen,
+  Link2,
+  Lock,
+  Unlock,
+  GitBranch,
+  History,
+  ChevronDown,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -58,6 +65,9 @@ import {
   useLocationNeeds,
   useGenerateTasks,
   useGenerateBudgetSuggestions,
+  useScriptVersionHistory,
+  useSetCurrentScriptVersion,
+  useLockScriptVersion,
 } from '@/hooks/backlot';
 import {
   BacklotScript,
@@ -66,10 +76,16 @@ import {
   BacklotIntExt,
   SCENE_COVERAGE_STATUS_LABELS,
   SCENE_COVERAGE_STATUS_COLORS,
+  SCRIPT_COLOR_CODE_HEX,
+  SCRIPT_COLOR_CODE_LABELS,
+  BacklotScriptColorCode,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import CoverageBoard from './CoverageBoard';
+import ScriptPDFViewer from './ScriptPDFViewer';
+import ScenePageMapper from './ScenePageMapper';
+import ScriptEditorPanel from './ScriptEditorPanel';
 
 interface ScriptViewProps {
   projectId: string;
@@ -227,6 +243,180 @@ const SceneCard: React.FC<{
   );
 };
 
+// Script Version Selector Component
+const ScriptVersionSelector: React.FC<{
+  scripts: BacklotScript[];
+  selectedScriptId: string | null;
+  onSelectScript: (scriptId: string) => void;
+  canEdit: boolean;
+}> = ({ scripts, selectedScriptId, onSelectScript, canEdit }) => {
+  const { toast } = useToast();
+  const selectedScript = scripts.find((s) => s.id === selectedScriptId) || scripts[0];
+  const { data: versions = [] } = useScriptVersionHistory(selectedScript?.id || null);
+  const setCurrentVersion = useSetCurrentScriptVersion();
+  const lockVersion = useLockScriptVersion();
+
+  if (!selectedScript) return null;
+
+  const handleSetCurrent = async (scriptId: string) => {
+    try {
+      await setCurrentVersion.mutateAsync(scriptId);
+      toast({
+        title: 'Current Version Set',
+        description: 'Script version updated successfully',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to set current version',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleToggleLock = async (scriptId: string, lock: boolean) => {
+    try {
+      await lockVersion.mutateAsync({ scriptId, lock });
+      toast({
+        title: lock ? 'Script Locked' : 'Script Unlocked',
+        description: lock ? 'This version is now locked' : 'This version can be edited',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to toggle lock status',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Get color code safely
+  const colorCode = (selectedScript as any).color_code as BacklotScriptColorCode || 'white';
+  const colorHex = SCRIPT_COLOR_CODE_HEX[colorCode] || '#FFFFFF';
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" className="gap-2 min-w-[200px] justify-between">
+          <div className="flex items-center gap-2">
+            <div
+              className="w-3 h-3 rounded-full border border-muted-gray/30"
+              style={{ backgroundColor: colorHex }}
+            />
+            <span className="truncate max-w-[140px]">
+              {selectedScript.title}
+              {selectedScript.version && ` (${selectedScript.version})`}
+            </span>
+            {(selectedScript as any).is_locked && <Lock className="w-3 h-3 text-amber-400" />}
+          </div>
+          <ChevronDown className="w-4 h-4 text-muted-gray" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-[280px]">
+        {/* Current script info */}
+        <div className="px-2 py-1.5 text-xs text-muted-gray">
+          {selectedScript.page_count ? `${selectedScript.page_count} pages` : 'No page count'}
+          {(selectedScript as any).is_current && (
+            <Badge className="ml-2 text-[10px] bg-green-500/20 text-green-400">Current</Badge>
+          )}
+        </div>
+        <DropdownMenuSeparator />
+
+        {/* Script selection */}
+        {scripts.length > 1 && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium text-bone-white">Scripts</div>
+            {scripts.map((script) => (
+              <DropdownMenuItem
+                key={script.id}
+                onClick={() => onSelectScript(script.id)}
+                className={cn(script.id === selectedScript.id && 'bg-accent-yellow/10')}
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                <span className="truncate">{script.title}</span>
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+          </>
+        )}
+
+        {/* Version history */}
+        {versions.length > 1 && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-medium text-bone-white flex items-center gap-1">
+              <History className="w-3 h-3" />
+              Version History
+            </div>
+            {versions.map((version) => {
+              const vColorCode = version.color_code as BacklotScriptColorCode || 'white';
+              const vColorHex = SCRIPT_COLOR_CODE_HEX[vColorCode] || '#FFFFFF';
+              return (
+                <DropdownMenuItem
+                  key={version.id}
+                  onClick={() => onSelectScript(version.id)}
+                  className={cn(
+                    'flex items-center justify-between',
+                    version.id === selectedScript.id && 'bg-accent-yellow/10'
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-3 h-3 rounded-full border border-muted-gray/30"
+                      style={{ backgroundColor: vColorHex }}
+                    />
+                    <span>
+                      v{version.version_number}
+                      {version.version && ` - ${version.version}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {version.is_current && (
+                      <Badge className="text-[10px] bg-green-500/20 text-green-400">Current</Badge>
+                    )}
+                    {version.is_locked && <Lock className="w-3 h-3 text-amber-400" />}
+                  </div>
+                </DropdownMenuItem>
+              );
+            })}
+            <DropdownMenuSeparator />
+          </>
+        )}
+
+        {/* Actions */}
+        {canEdit && (
+          <>
+            {!(selectedScript as any).is_current && (
+              <DropdownMenuItem onClick={() => handleSetCurrent(selectedScript.id)}>
+                <CheckCircle2 className="w-4 h-4 mr-2" />
+                Set as Current Version
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem
+              onClick={() => handleToggleLock(selectedScript.id, !(selectedScript as any).is_locked)}
+            >
+              {(selectedScript as any).is_locked ? (
+                <>
+                  <Unlock className="w-4 h-4 mr-2" />
+                  Unlock Version
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4 mr-2" />
+                  Lock Version
+                </>
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuItem>
+              <GitBranch className="w-4 h-4 mr-2" />
+              Create New Revision
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
 // Coverage Stats Dashboard
 const CoverageStatsDashboard: React.FC<{
   projectId: string;
@@ -363,13 +553,14 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   onSceneClick,
 }) => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'scenes' | 'coverage' | 'locations'>('scenes');
+  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'scenes' | 'board' | 'coverage' | 'locations'>('scenes');
+  const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [coverageFilter, setCoverageFilter] = useState<BacklotSceneCoverageStatus | 'all'>('all');
   const [intExtFilter, setIntExtFilter] = useState<BacklotIntExt | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const { scripts, isLoading: scriptsLoading } = useScripts({ projectId });
+  const { scripts, isLoading: scriptsLoading, refetch: refetchScripts } = useScripts({ projectId });
   const { scenes, isLoading: scenesLoading, createScene } = useScenes({
     projectId,
     coverage_status: coverageFilter,
@@ -431,6 +622,9 @@ const ScriptView: React.FC<ScriptViewProps> = ({
 
   const isLoading = scriptsLoading || scenesLoading;
 
+  // Get active script (selected or first available)
+  const activeScript = scripts.find((s) => s.id === selectedScriptId) || scripts[0];
+
   // Empty state when no scripts
   if (!isLoading && scripts.length === 0) {
     return (
@@ -462,12 +656,23 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-heading text-bone-white">Script & Breakdown</h2>
-          <p className="text-sm text-muted-gray">
-            {scenes.length} scenes {scripts.length > 0 && `from ${scripts.length} script${scripts.length > 1 ? 's' : ''}`}
-          </p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div className="flex items-center gap-4">
+          <div>
+            <h2 className="text-2xl font-heading text-bone-white">Script & Breakdown</h2>
+            <p className="text-sm text-muted-gray">
+              {scenes.length} scenes {scripts.length > 0 && `from ${scripts.length} script${scripts.length > 1 ? 's' : ''}`}
+            </p>
+          </div>
+          {/* Script/Version Selector */}
+          {scripts.length > 0 && (
+            <ScriptVersionSelector
+              scripts={scripts}
+              selectedScriptId={selectedScriptId}
+              onSelectScript={setSelectedScriptId}
+              canEdit={canEdit}
+            />
+          )}
         </div>
         {canEdit && (
           <div className="flex items-center gap-2">
@@ -503,11 +708,87 @@ const ScriptView: React.FC<ScriptViewProps> = ({
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
         <TabsList className="bg-charcoal-black border border-muted-gray/20">
+          {activeScript?.file_url && (
+            <TabsTrigger value="viewer" className="flex items-center gap-1">
+              <BookOpen className="w-3 h-3" />
+              View Script
+            </TabsTrigger>
+          )}
+          {activeScript?.file_url && (
+            <TabsTrigger value="mapper" className="flex items-center gap-1">
+              <Link2 className="w-3 h-3" />
+              Page Mapping
+            </TabsTrigger>
+          )}
+          <TabsTrigger value="editor" className="flex items-center gap-1">
+            <Edit className="w-3 h-3" />
+            Editor
+          </TabsTrigger>
           <TabsTrigger value="scenes">Scenes</TabsTrigger>
           <TabsTrigger value="board">Coverage Board</TabsTrigger>
           <TabsTrigger value="coverage">Coverage Stats</TabsTrigger>
           <TabsTrigger value="locations">Location Needs</TabsTrigger>
         </TabsList>
+
+        {/* Script Viewer Tab */}
+        <TabsContent value="viewer" className="mt-6">
+          {activeScript?.file_url ? (
+            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <ScriptPDFViewer
+                script={activeScript}
+                projectId={projectId}
+                canEdit={canEdit}
+              />
+            </div>
+          ) : (
+            <div className="text-center py-12 text-muted-gray">
+              <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-40" />
+              <p>No PDF script available</p>
+              <p className="text-sm">Import a PDF script to view it here</p>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Scene Page Mapper Tab */}
+        <TabsContent value="mapper" className="mt-6">
+          {activeScript?.file_url ? (
+            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <ScenePageMapper
+                script={activeScript}
+                projectId={projectId}
+                canEdit={canEdit}
+              />
+            </div>
+          ) : (
+            <div className="text-center py-12 text-muted-gray">
+              <Link2 className="w-12 h-12 mx-auto mb-4 opacity-40" />
+              <p>No PDF script available</p>
+              <p className="text-sm">Import a PDF script to map scenes to pages</p>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Script Editor Tab */}
+        <TabsContent value="editor" className="mt-6">
+          {activeScript ? (
+            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <ScriptEditorPanel
+                script={activeScript}
+                canEdit={canEdit}
+                onVersionCreated={(newScript) => {
+                  // Refresh the scripts list when a new version is created
+                  refetchScripts();
+                }}
+              />
+            </div>
+          ) : (
+            <div className="text-center py-12 text-muted-gray">
+              <Edit className="w-12 h-12 mx-auto mb-4 opacity-40" />
+              <p>No script selected</p>
+              <p className="text-sm">Select or import a script to edit</p>
+            </div>
+          )}
+        </TabsContent>
 
         {/* Scenes Tab */}
         <TabsContent value="scenes" className="mt-6">
@@ -615,10 +896,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
 
         {/* Coverage Board Tab */}
         <TabsContent value="board" className="mt-6">
-          {scripts.length > 0 ? (
+          {activeScript ? (
             <CoverageBoard
               projectId={projectId}
-              scriptId={scripts[0]?.id}
+              scriptId={activeScript.id}
               canEdit={canEdit}
               onSceneClick={onSceneClick}
             />
@@ -644,7 +925,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 <Skeleton key={i} className="h-32" />
               ))}
             </div>
-          ) : !locationNeeds || locationNeeds.needs.length === 0 ? (
+          ) : !locationNeeds || !locationNeeds.needs || locationNeeds.needs.length === 0 ? (
             <div className="text-center py-12 text-muted-gray">
               <MapPin className="w-12 h-12 mx-auto mb-4 opacity-40" />
               <p>No location needs data available</p>

@@ -6272,59 +6272,120 @@ async def import_script(
         filename = file.filename or "script"
         ext = filename.split(".")[-1].lower() if "." in filename else ""
 
-        if ext not in ["pdf", "fdx"]:
-            raise HTTPException(status_code=400, detail="Only PDF and FDX files are supported")
+        if ext not in ["pdf", "fdx", "txt", "fountain"]:
+            raise HTTPException(status_code=400, detail="Only PDF, FDX, TXT, and Fountain files are supported")
 
         # Read file content
         content = await file.read()
 
-        # Upload to storage
-        storage_path = f"scripts/{project_id}/{uuid.uuid4()}.{ext}"
-        upload_result = supabase.storage.from_("backlot").upload(storage_path, content, {"content-type": file.content_type or "application/octet-stream"})
-
-        # Get public URL
-        file_url = supabase.storage.from_("backlot").get_public_url(storage_path)
-
-        # Create script record
-        script_data = {
-            "project_id": project_id,
-            "title": title,
-            "file_url": file_url,
-            "format": ext,
-            "version": version,
-            "parse_status": "pending",
-            "created_by_user_id": user_id
-        }
-
-        script_result = supabase.table("backlot_scripts").insert(script_data).execute()
-
-        if not script_result.data:
-            raise HTTPException(status_code=500, detail="Failed to create script record")
-
-        script = script_result.data[0]
+        # Initialize variables for extraction
+        page_count = None
+        text_content = None  # For the script editor
         parsed_scenes = []
 
-        # Basic FDX parsing (if FDX file)
-        if ext == "fdx":
+        # Extract text and page count from PDF
+        if ext == "pdf":
             try:
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(content.decode('utf-8'))
+                from pypdf import PdfReader
+                import io
+                pdf_reader = PdfReader(io.BytesIO(content))
+                page_count = len(pdf_reader.pages)
 
-                scene_count = 0
-                for para in root.iter():
-                    if para.tag == "Paragraph":
-                        para_type = para.get("Type", "")
-                        if para_type == "Scene Heading":
+                # Extract text from all pages for the editor
+                extracted_pages = []
+                for i, page in enumerate(pdf_reader.pages):
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        extracted_pages.append(f"=== PAGE {i + 1} ===\n\n{page_text}")
+
+                if extracted_pages:
+                    text_content = "\n\n".join(extracted_pages)
+
+                    # Try to detect and parse scenes from extracted text
+                    scene_count = 0
+                    for line in text_content.split("\n"):
+                        line = line.strip()
+                        line_upper = line.upper()
+
+                        # Detect scene headings
+                        if any(line_upper.startswith(prefix) for prefix in ["INT.", "INT ", "EXT.", "EXT ", "INT/EXT", "INT./EXT.", "I/E "]):
                             scene_count += 1
-                            text_elem = para.find("Text")
-                            slugline = text_elem.text if text_elem is not None and text_elem.text else f"SCENE {scene_count}"
+                            slugline = line
 
                             # Parse slugline
                             int_ext = None
                             day_night = None
                             location_hint = slugline
 
+                            if line_upper.startswith("INT.") or line_upper.startswith("INT "):
+                                int_ext = "INT"
+                                location_hint = line[4:].strip()
+                            elif line_upper.startswith("EXT.") or line_upper.startswith("EXT "):
+                                int_ext = "EXT"
+                                location_hint = line[4:].strip()
+                            elif line_upper.startswith("INT/EXT") or line_upper.startswith("INT./EXT."):
+                                int_ext = "INT/EXT"
+                                location_hint = line[7:].strip() if "/" in line[:10] else line[8:].strip()
+                            elif line_upper.startswith("I/E "):
+                                int_ext = "INT/EXT"
+                                location_hint = line[4:].strip()
+
+                            # Extract day/night
+                            for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
+                                if f" - {dn}" in line_upper or f"- {dn}" in line_upper:
+                                    day_night = dn
+                                    location_hint = location_hint.replace(f" - {dn}", "").replace(f"- {dn}", "").strip()
+                                    break
+
+                            parsed_scenes.append({
+                                "scene_number": str(scene_count),
+                                "slugline": slugline,
+                                "int_ext": int_ext,
+                                "day_night": day_night,
+                                "location_hint": location_hint,
+                                "page_length": 1.0,
+                                "sequence": scene_count
+                            })
+
+            except Exception as pdf_err:
+                print(f"Could not extract from PDF: {pdf_err}")
+
+        # Parse FDX (Final Draft) files
+        elif ext == "fdx":
+            try:
+                import xml.etree.ElementTree as ET
+                root = ET.fromstring(content.decode('utf-8'))
+
+                # Build text content from FDX for the editor
+                text_lines = []
+                scene_count = 0
+
+                for para in root.iter():
+                    if para.tag == "Paragraph":
+                        para_type = para.get("Type", "")
+
+                        # Extract text from all Text elements
+                        para_text_parts = []
+                        for text_elem in para.findall(".//Text"):
+                            if text_elem.text:
+                                para_text_parts.append(text_elem.text)
+                        para_text = "".join(para_text_parts).strip()
+
+                        if not para_text:
+                            continue
+
+                        # Format based on paragraph type (Celtx-style)
+                        if para_type == "Scene Heading":
+                            scene_count += 1
+                            text_lines.append(f"\n{para_text.upper()}\n")
+
+                            # Parse scene for breakdown
+                            slugline = para_text
+                            int_ext = None
+                            day_night = None
+                            location_hint = slugline
                             slugline_upper = slugline.upper()
+
                             if slugline_upper.startswith("INT.") or slugline_upper.startswith("INT "):
                                 int_ext = "INT"
                                 location_hint = slugline[4:].strip()
@@ -6335,7 +6396,6 @@ async def import_script(
                                 int_ext = "INT/EXT"
                                 location_hint = slugline[7:].strip() if "/" in slugline[:10] else slugline[8:].strip()
 
-                            # Extract day/night
                             for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
                                 if f" - {dn}" in slugline_upper or f"- {dn}" in slugline_upper:
                                     day_night = dn
@@ -6348,30 +6408,109 @@ async def import_script(
                                 "int_ext": int_ext,
                                 "day_night": day_night,
                                 "location_hint": location_hint,
-                                "page_length": 1.0,  # Default estimate
+                                "page_length": 1.0,
                                 "sequence": scene_count
                             })
 
-                # Update script with scene count
-                supabase.table("backlot_scripts").update({
-                    "parse_status": "completed",
-                    "total_scenes": len(parsed_scenes),
-                    "total_pages": len(parsed_scenes)  # Rough estimate
-                }).eq("id", script["id"]).execute()
+                        elif para_type == "Character":
+                            text_lines.append(f"\n                    {para_text.upper()}")
+                        elif para_type == "Dialogue":
+                            text_lines.append(f"          {para_text}")
+                        elif para_type == "Parenthetical":
+                            text_lines.append(f"               ({para_text})")
+                        elif para_type == "Action":
+                            text_lines.append(f"\n{para_text}")
+                        elif para_type == "Transition":
+                            text_lines.append(f"\n                                        {para_text.upper()}\n")
+                        else:
+                            text_lines.append(para_text)
+
+                text_content = "\n".join(text_lines).strip()
+                page_count = max(1, len(text_content) // 3000)  # Rough estimate: ~3000 chars per page
 
             except Exception as parse_err:
                 print(f"FDX parsing error: {parse_err}")
-                supabase.table("backlot_scripts").update({
-                    "parse_status": "failed",
-                    "parse_error": str(parse_err)
-                }).eq("id", script["id"]).execute()
 
-        # For PDF, mark as needing manual entry
-        elif ext == "pdf":
-            supabase.table("backlot_scripts").update({
-                "parse_status": "manual",
-                "parse_error": "PDF parsing requires manual scene entry or OCR enhancement"
-            }).eq("id", script["id"]).execute()
+        # Handle plain text and Fountain files
+        elif ext in ["txt", "fountain"]:
+            try:
+                text_content = content.decode('utf-8')
+                page_count = max(1, len(text_content) // 3000)
+
+                # Parse scenes from text
+                scene_count = 0
+                for line in text_content.split("\n"):
+                    line = line.strip()
+                    line_upper = line.upper()
+
+                    if any(line_upper.startswith(prefix) for prefix in ["INT.", "INT ", "EXT.", "EXT ", "INT/EXT", "INT./EXT.", "I/E "]):
+                        scene_count += 1
+                        slugline = line
+
+                        int_ext = None
+                        day_night = None
+                        location_hint = slugline
+
+                        if line_upper.startswith("INT.") or line_upper.startswith("INT "):
+                            int_ext = "INT"
+                            location_hint = line[4:].strip()
+                        elif line_upper.startswith("EXT.") or line_upper.startswith("EXT "):
+                            int_ext = "EXT"
+                            location_hint = line[4:].strip()
+                        elif line_upper.startswith("INT/EXT") or line_upper.startswith("INT./EXT."):
+                            int_ext = "INT/EXT"
+                            location_hint = line[7:].strip() if "/" in line[:10] else line[8:].strip()
+
+                        for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
+                            if f" - {dn}" in line_upper or f"- {dn}" in line_upper:
+                                day_night = dn
+                                location_hint = location_hint.replace(f" - {dn}", "").replace(f"- {dn}", "").strip()
+                                break
+
+                        parsed_scenes.append({
+                            "scene_number": str(scene_count),
+                            "slugline": slugline,
+                            "int_ext": int_ext,
+                            "day_night": day_night,
+                            "location_hint": location_hint,
+                            "page_length": 1.0,
+                            "sequence": scene_count
+                        })
+
+            except Exception as txt_err:
+                print(f"Text parsing error: {txt_err}")
+
+        # Upload to storage
+        storage_path = f"scripts/{project_id}/{uuid.uuid4()}.{ext}"
+        upload_result = supabase.storage.from_("backlot").upload(storage_path, content, {"content-type": file.content_type or "application/octet-stream"})
+
+        # Get public URL
+        file_url = supabase.storage.from_("backlot").get_public_url(storage_path)
+
+        # Create script record with text_content for the editor
+        script_data = {
+            "project_id": project_id,
+            "title": title,
+            "file_url": file_url,
+            "format": ext,
+            "version": version or "v1",
+            "version_number": 1,
+            "color_code": "white",
+            "is_current": True,
+            "is_locked": False,
+            "parse_status": "completed" if text_content else "pending",
+            "created_by_user_id": user_id,
+            "total_pages": page_count,
+            "total_scenes": len(parsed_scenes),
+            "text_content": text_content  # For the script editor
+        }
+
+        script_result = supabase.table("backlot_scripts").insert(script_data).execute()
+
+        if not script_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create script record")
+
+        script = script_result.data[0]
 
         # Create scene records if any were parsed
         if parsed_scenes:
@@ -6381,11 +6520,27 @@ async def import_script(
 
             supabase.table("backlot_scenes").insert(parsed_scenes).execute()
 
+        # Build response message
+        text_extracted = bool(text_content)
+        scenes_found = len(parsed_scenes)
+
+        if text_extracted and scenes_found:
+            message = f"Script imported ({page_count or 'unknown'} pages, {scenes_found} scenes detected). Text extracted for editor."
+        elif text_extracted:
+            message = f"Script imported ({page_count or 'unknown'} pages). Text extracted for editor, no scenes auto-detected."
+        elif scenes_found:
+            message = f"Script imported ({page_count or 'unknown'} pages, {scenes_found} scenes detected). Text extraction limited."
+        else:
+            message = f"Script imported ({page_count or 'unknown'} pages). Manual scene entry may be needed."
+
         return {
             "success": True,
             "script": script,
+            "scenes_created": len(parsed_scenes),
             "scenes_parsed": len(parsed_scenes),
-            "message": f"Script imported. {'Scenes extracted from FDX.' if parsed_scenes else 'Manual scene entry required for PDF.'}"
+            "page_count": page_count,
+            "text_extracted": text_extracted,
+            "message": message
         }
 
     except HTTPException:
@@ -6514,6 +6669,526 @@ async def delete_script(
         raise
     except Exception as e:
         print(f"Error deleting script: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SCRIPT VERSIONING
+# =====================================================
+
+class CreateScriptVersionInput(BaseModel):
+    """Input for creating a new script version"""
+    version_label: Optional[str] = None
+    color_code: Optional[str] = "blue"
+    revision_notes: Optional[str] = None
+    carry_over_text: bool = True
+    carry_over_scenes: bool = True
+
+class UpdateScriptTextInput(BaseModel):
+    """Input for updating script text content"""
+    text_content: str
+    create_new_version: bool = False
+    version_label: Optional[str] = None
+    color_code: Optional[str] = None
+    revision_notes: Optional[str] = None
+
+
+@router.get("/scripts/{script_id}/versions")
+async def get_script_version_history(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Get the version history for a script"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script.data["project_id"]
+
+        # Verify project access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Use database function to get version history
+        try:
+            result = supabase.rpc("get_script_version_history", {"p_script_id": script_id}).execute()
+            versions = result.data or []
+        except Exception as rpc_err:
+            # Fallback: find root and traverse manually
+            print(f"RPC failed, using fallback: {rpc_err}")
+
+            # Find the root script (no parent) in the chain
+            current_id = script_id
+            visited = set()
+            while True:
+                if current_id in visited:
+                    break
+                visited.add(current_id)
+                current_script = supabase.table("backlot_scripts").select("id, parent_version_id").eq("id", current_id).single().execute()
+                if not current_script.data or not current_script.data.get("parent_version_id"):
+                    break
+                current_id = current_script.data["parent_version_id"]
+
+            root_id = current_id
+
+            # Get all versions descending from root
+            versions_result = supabase.table("backlot_scripts").select(
+                "id, version, version_number, color_code, is_current, is_locked, revision_notes, created_at, created_by_user_id, parent_version_id"
+            ).eq("project_id", project_id).order("version_number").execute()
+
+            # Filter to only scripts in this version chain
+            all_versions = versions_result.data or []
+            chain_ids = {root_id}
+
+            # Build the chain by iterating
+            changed = True
+            while changed:
+                changed = False
+                for v in all_versions:
+                    if v.get("parent_version_id") in chain_ids and v["id"] not in chain_ids:
+                        chain_ids.add(v["id"])
+                        changed = True
+
+            versions = [v for v in all_versions if v["id"] in chain_ids]
+
+        return {"versions": versions}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching version history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/versions")
+async def create_script_version(
+    script_id: str,
+    input_data: CreateScriptVersionInput,
+    authorization: str = Header(None)
+):
+    """Create a new version from an existing script"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get the source script
+        source_script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        if not source_script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        source = source_script.data
+        project_id = source["project_id"]
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to create script versions")
+
+        # Calculate next version number
+        current_version = source.get("version_number") or 1
+        next_version = current_version + 1
+
+        # Industry standard color code sequence
+        color_sequence = ["white", "blue", "pink", "yellow", "green", "goldenrod", "buff", "salmon", "cherry", "tan", "gray", "ivory"]
+        default_color = color_sequence[min(next_version - 1, len(color_sequence) - 1)]
+
+        # Create new version
+        new_script_data = {
+            "project_id": project_id,
+            "title": source["title"],
+            "file_url": source.get("file_url"),
+            "format": source.get("format"),
+            "version": input_data.version_label or f"v{next_version}",
+            "version_number": next_version,
+            "parent_version_id": script_id,
+            "color_code": input_data.color_code or default_color,
+            "revision_notes": input_data.revision_notes,
+            "is_current": True,
+            "is_locked": False,
+            "text_content": source.get("text_content") if input_data.carry_over_text else None,
+            "page_count": source.get("page_count"),
+            "total_scenes": source.get("total_scenes"),
+            "total_pages": source.get("total_pages"),
+            "parse_status": source.get("parse_status"),
+            "created_by_user_id": user_id
+        }
+
+        # Mark old versions as not current
+        supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+
+        # Create new version
+        new_script_result = supabase.table("backlot_scripts").insert(new_script_data).execute()
+        if not new_script_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create new version")
+
+        new_script = new_script_result.data[0]
+
+        # Optionally copy scenes to new version
+        scenes_copied = 0
+        if input_data.carry_over_scenes:
+            source_scenes = supabase.table("backlot_scenes").select("*").eq("script_id", script_id).execute()
+            if source_scenes.data:
+                for scene in source_scenes.data:
+                    new_scene_data = {
+                        "project_id": project_id,
+                        "script_id": new_script["id"],
+                        "scene_number": scene.get("scene_number"),
+                        "slugline": scene.get("slugline"),
+                        "description": scene.get("description"),
+                        "synopsis": scene.get("synopsis"),
+                        "page_length": scene.get("page_length"),
+                        "int_ext": scene.get("int_ext"),
+                        "time_of_day": scene.get("time_of_day"),
+                        "location_hint": scene.get("location_hint"),
+                        "location_id": scene.get("location_id"),
+                        "sequence": scene.get("sequence"),
+                        "coverage_status": scene.get("coverage_status", "not_scheduled"),
+                        "is_omitted": scene.get("is_omitted", False)
+                    }
+                    supabase.table("backlot_scenes").insert(new_scene_data).execute()
+                    scenes_copied += 1
+
+        return {
+            "success": True,
+            "script": new_script,
+            "scenes_copied": scenes_copied,
+            "message": f"Created version {new_script['version']} ({new_script['color_code']})"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating script version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/set-current")
+async def set_current_script_version(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Set a script version as the current active version"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("project_id, is_locked").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script.data["project_id"]
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to change script versions")
+
+        # Mark all versions in this project as not current
+        supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+
+        # Set this version as current
+        result = supabase.table("backlot_scripts").update({"is_current": True}).eq("id", script_id).execute()
+
+        return {"success": True, "script": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting current version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/lock")
+async def lock_script_version(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Lock a script version to prevent editing"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script.data["project_id"]
+
+        # Verify edit access (only owners/admins can lock)
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Only admins can lock script versions")
+
+        # Lock the version
+        result = supabase.table("backlot_scripts").update({
+            "is_locked": True,
+            "locked_by_user_id": user_id,
+            "locked_at": "now()"
+        }).eq("id", script_id).execute()
+
+        return {"success": True, "script": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error locking script: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/unlock")
+async def unlock_script_version(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Unlock a script version to allow editing"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script.data["project_id"]
+
+        # Verify edit access (only owners/admins can unlock)
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Only admins can unlock script versions")
+
+        # Unlock the version
+        result = supabase.table("backlot_scripts").update({
+            "is_locked": False,
+            "locked_by_user_id": None,
+            "locked_at": None
+        }).eq("id", script_id).execute()
+
+        return {"success": True, "script": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error unlocking script: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/scripts/{script_id}/text")
+async def update_script_text(
+    script_id: str,
+    input_data: UpdateScriptTextInput,
+    authorization: str = Header(None)
+):
+    """Update the text content of a script (for the editor)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script_data = script.data
+        project_id = script_data["project_id"]
+
+        # Check if locked
+        if script_data.get("is_locked"):
+            raise HTTPException(status_code=403, detail="This script version is locked and cannot be edited")
+
+        # Verify edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to edit scripts")
+
+        if input_data.create_new_version:
+            # Create a new version with the updated text
+            current_version = script_data.get("version_number") or 1
+            next_version = current_version + 1
+
+            color_sequence = ["white", "blue", "pink", "yellow", "green", "goldenrod", "buff", "salmon", "cherry", "tan", "gray", "ivory"]
+            default_color = color_sequence[min(next_version - 1, len(color_sequence) - 1)]
+
+            new_script_data = {
+                "project_id": project_id,
+                "title": script_data["title"],
+                "file_url": script_data.get("file_url"),
+                "format": script_data.get("format"),
+                "version": input_data.version_label or f"v{next_version}",
+                "version_number": next_version,
+                "parent_version_id": script_id,
+                "color_code": input_data.color_code or default_color,
+                "revision_notes": input_data.revision_notes,
+                "is_current": True,
+                "is_locked": False,
+                "text_content": input_data.text_content,
+                "page_count": script_data.get("page_count"),
+                "total_scenes": script_data.get("total_scenes"),
+                "total_pages": script_data.get("total_pages"),
+                "parse_status": "manual",
+                "created_by_user_id": user_id
+            }
+
+            # Mark old versions as not current
+            supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+
+            # Create new version
+            result = supabase.table("backlot_scripts").insert(new_script_data).execute()
+
+            return {
+                "success": True,
+                "script": result.data[0] if result.data else None,
+                "new_version_created": True,
+                "message": f"Created new version {new_script_data['version']}"
+            }
+        else:
+            # Update text in place
+            result = supabase.table("backlot_scripts").update({
+                "text_content": input_data.text_content
+            }).eq("id", script_id).execute()
+
+            return {
+                "success": True,
+                "script": result.data[0] if result.data else None,
+                "new_version_created": False,
+                "message": "Script text updated"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating script text: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/extract-text")
+async def extract_text_from_script_pdf(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Extract text content from a script's PDF file for editing"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get script and verify access
+        script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        if not script.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script_data = script.data
+        project_id = script_data["project_id"]
+
+        # Verify project edit access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
+                raise HTTPException(status_code=403, detail="Edit access required")
+
+        # Check if script has a file URL
+        file_url = script_data.get("file_url")
+        if not file_url:
+            raise HTTPException(status_code=400, detail="Script has no PDF file to extract from")
+
+        # Check if already has text content
+        if script_data.get("text_content"):
+            return {
+                "success": True,
+                "text_content": script_data["text_content"],
+                "already_extracted": True,
+                "message": "Script already has text content"
+            }
+
+        # Download the PDF from storage
+        import httpx
+        from pypdf import PdfReader
+        import io
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(file_url)
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to download script PDF")
+            content = response.content
+
+        # Extract text from PDF
+        try:
+            pdf_reader = PdfReader(io.BytesIO(content))
+            page_count = len(pdf_reader.pages)
+            extracted_pages = []
+
+            for i, page in enumerate(pdf_reader.pages):
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    extracted_pages.append(f"=== PAGE {i + 1} ===\n\n{page_text}")
+
+            text_content = "\n\n".join(extracted_pages)
+
+            if not text_content.strip():
+                raise HTTPException(status_code=400, detail="Could not extract text from PDF. The PDF may be image-based.")
+
+        except Exception as pdf_err:
+            print(f"PDF extraction error: {pdf_err}")
+            raise HTTPException(status_code=500, detail=f"Failed to extract text from PDF: {str(pdf_err)}")
+
+        # Update the script with extracted text
+        result = supabase.table("backlot_scripts").update({
+            "text_content": text_content,
+            "total_pages": page_count
+        }).eq("id", script_id).execute()
+
+        return {
+            "success": True,
+            "text_content": text_content,
+            "page_count": page_count,
+            "already_extracted": False,
+            "message": f"Successfully extracted text from {page_count} pages"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error extracting text from script: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -7609,4 +8284,895 @@ async def unlink_scene_from_call_sheet(
         raise
     except Exception as e:
         print(f"Error unlinking scene: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/call-sheet-scene-links/{link_id}")
+async def delete_call_sheet_scene_link(
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a call sheet scene link by its ID"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get the link to find associated call sheet and scene
+        link = supabase.table("backlot_call_sheet_scene_links").select("*").eq("id", link_id).single().execute()
+        if not link.data:
+            raise HTTPException(status_code=404, detail="Scene link not found")
+
+        call_sheet_id = link.data["call_sheet_id"]
+        scene_id = link.data["scene_id"]
+
+        # Verify access via call sheet
+        cs = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        project_id = cs.data["project_id"]
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to delete scene links")
+
+        # Delete link
+        supabase.table("backlot_call_sheet_scene_links").delete().eq("id", link_id).execute()
+
+        # Check if scene is linked to any other call sheets
+        other_links = supabase.table("backlot_call_sheet_scene_links").select("id").eq("scene_id", scene_id).execute()
+        if not other_links.data:
+            # Unmark scene as scheduled
+            supabase.table("backlot_scenes").update({
+                "is_scheduled": False,
+                "scheduled_day_id": None
+            }).eq("id", scene_id).execute()
+
+        return {"success": True, "message": "Scene link deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting scene link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SCRIPT PAGE NOTES - Acrobat-style annotations
+# =====================================================
+
+class ScriptPageNoteInput(BaseModel):
+    page_number: int
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+    note_text: str
+    note_type: Optional[str] = "general"
+    scene_id: Optional[str] = None
+
+class ScriptPageNoteUpdate(BaseModel):
+    note_text: Optional[str] = None
+    note_type: Optional[str] = None
+    position_x: Optional[float] = None
+    position_y: Optional[float] = None
+    scene_id: Optional[str] = None
+    resolved: Optional[bool] = None
+
+
+@router.get("/scripts/{script_id}/notes")
+async def get_script_page_notes(
+    script_id: str,
+    page_number: Optional[int] = None,
+    note_type: Optional[str] = None,
+    resolved: Optional[bool] = None,
+    authorization: str = Header(None)
+):
+    """Get all notes for a script, optionally filtered by page, type, or resolved status"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Verify project access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Build query - don't use relationship, just select the base columns
+        query = supabase.table("backlot_script_page_notes").select("*").eq("script_id", script_id)
+
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+        if note_type is not None:
+            query = query.eq("note_type", note_type)
+        if resolved is not None:
+            query = query.eq("resolved", resolved)
+
+        query = query.order("page_number").order("created_at")
+        result = query.execute()
+
+        return {"notes": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching script notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scripts/{script_id}/notes/summary")
+async def get_script_notes_summary(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Get summary of notes per page for a script"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access - page_count might not exist, use total_pages instead
+        script_result = supabase.table("backlot_scripts").select("project_id, total_pages").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+        page_count = script_result.data.get("total_pages")
+
+        # Verify project access
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Get notes grouped by page
+        notes_result = supabase.table("backlot_script_page_notes").select("page_number, note_type, resolved").eq("script_id", script_id).execute()
+
+        # Build summary
+        page_summary = {}
+        for note in notes_result.data or []:
+            pg = note["page_number"]
+            if pg not in page_summary:
+                page_summary[pg] = {
+                    "page_number": pg,
+                    "total_count": 0,
+                    "unresolved_count": 0,
+                    "note_types": []
+                }
+            page_summary[pg]["total_count"] += 1
+            if not note.get("resolved"):
+                page_summary[pg]["unresolved_count"] += 1
+            if note["note_type"] not in page_summary[pg]["note_types"]:
+                page_summary[pg]["note_types"].append(note["note_type"])
+
+        return {
+            "page_count": page_count,
+            "pages_with_notes": list(page_summary.values())
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching notes summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/notes")
+async def create_script_page_note(
+    script_id: str,
+    note: ScriptPageNoteInput,
+    authorization: str = Header(None)
+):
+    """Create a new note on a script page"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Verify project membership (any member can add notes)
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Validate note_type
+        valid_types = ["general", "direction", "production", "character", "blocking", "camera", "continuity", "sound", "vfx", "prop", "wardrobe", "makeup", "location", "safety", "other"]
+        if note.note_type and note.note_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid note type. Must be one of: {', '.join(valid_types)}")
+
+        # Create note
+        note_data = {
+            "script_id": script_id,
+            "project_id": project_id,
+            "page_number": note.page_number,
+            "position_x": note.position_x,
+            "position_y": note.position_y,
+            "note_text": note.note_text,
+            "note_type": note.note_type or "general",
+            "scene_id": note.scene_id,
+            "author_user_id": user_id,
+            "resolved": False
+        }
+
+        result = supabase.table("backlot_script_page_notes").insert(note_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create note")
+
+        # Fetch with author profile
+        created_note = supabase.table("backlot_script_page_notes").select("*, profiles:author_user_id(id, full_name, avatar_url)").eq("id", result.data[0]["id"]).single().execute()
+
+        return {"success": True, "note": created_note.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating script note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/scripts/{script_id}/notes/{note_id}")
+async def update_script_page_note(
+    script_id: str,
+    note_id: str,
+    note_update: ScriptPageNoteUpdate,
+    authorization: str = Header(None)
+):
+    """Update a script page note"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get note and verify ownership/permissions
+        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        note_data = note_result.data
+        project_id = note_data["backlot_scripts"]["project_id"]
+        is_author = note_data["author_user_id"] == user_id
+
+        # Check if user can edit (author or editor role)
+        can_edit = is_author
+        if not can_edit:
+            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            is_owner = project_response.data[0]["owner_id"] == user_id
+            if is_owner:
+                can_edit = True
+            else:
+                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                if member_response.data and member_response.data[0]["role"] in ["owner", "admin", "editor"]:
+                    can_edit = True
+
+        if not can_edit:
+            raise HTTPException(status_code=403, detail="You don't have permission to edit this note")
+
+        # Build update data
+        update_data = {}
+        if note_update.note_text is not None:
+            update_data["note_text"] = note_update.note_text
+        if note_update.note_type is not None:
+            valid_types = ["general", "direction", "production", "character", "blocking", "camera", "continuity", "sound", "vfx", "prop", "wardrobe", "makeup", "location", "safety", "other"]
+            if note_update.note_type not in valid_types:
+                raise HTTPException(status_code=400, detail=f"Invalid note type")
+            update_data["note_type"] = note_update.note_type
+        if note_update.position_x is not None:
+            update_data["position_x"] = note_update.position_x
+        if note_update.position_y is not None:
+            update_data["position_y"] = note_update.position_y
+        if note_update.scene_id is not None:
+            update_data["scene_id"] = note_update.scene_id if note_update.scene_id else None
+        if note_update.resolved is not None:
+            update_data["resolved"] = note_update.resolved
+            if note_update.resolved:
+                update_data["resolved_at"] = datetime.utcnow().isoformat()
+                update_data["resolved_by_user_id"] = user_id
+            else:
+                update_data["resolved_at"] = None
+                update_data["resolved_by_user_id"] = None
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No update data provided")
+
+        result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
+
+        # Fetch updated note with author
+        updated_note = supabase.table("backlot_script_page_notes").select("*, profiles:author_user_id(id, full_name, avatar_url)").eq("id", note_id).single().execute()
+
+        return {"success": True, "note": updated_note.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating script note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/scripts/{script_id}/notes/{note_id}")
+async def delete_script_page_note(
+    script_id: str,
+    note_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a script page note"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get note and verify ownership/permissions
+        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        note_data = note_result.data
+        project_id = note_data["backlot_scripts"]["project_id"]
+        is_author = note_data["author_user_id"] == user_id
+
+        # Check if user can delete (author or editor role)
+        can_delete = is_author
+        if not can_delete:
+            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            is_owner = project_response.data[0]["owner_id"] == user_id
+            if is_owner:
+                can_delete = True
+            else:
+                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                if member_response.data and member_response.data[0]["role"] in ["owner", "admin"]:
+                    can_delete = True
+
+        if not can_delete:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this note")
+
+        # Delete note
+        supabase.table("backlot_script_page_notes").delete().eq("id", note_id).execute()
+
+        return {"success": True, "message": "Note deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting script note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/scripts/{script_id}/notes/{note_id}/resolve")
+async def toggle_note_resolved(
+    script_id: str,
+    note_id: str,
+    resolved: bool = True,
+    authorization: str = Header(None)
+):
+    """Toggle the resolved status of a note"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get note and verify access
+        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        project_id = note_result.data["backlot_scripts"]["project_id"]
+
+        # Any project member can resolve/unresolve
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Update resolved status
+        update_data = {"resolved": resolved}
+        if resolved:
+            update_data["resolved_at"] = datetime.utcnow().isoformat()
+            update_data["resolved_by_user_id"] = user_id
+        else:
+            update_data["resolved_at"] = None
+            update_data["resolved_by_user_id"] = None
+
+        result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
+
+        return {"success": True, "resolved": resolved}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling note resolved: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Script Highlight Endpoints (Breakdown from text selection)
+# =====================================================
+
+class ScriptHighlightInput(BaseModel):
+    """Input for creating a script highlight"""
+    scene_id: Optional[str] = None
+    page_number: int
+    start_offset: int
+    end_offset: int
+    highlighted_text: str
+    rect_x: Optional[float] = None
+    rect_y: Optional[float] = None
+    rect_width: Optional[float] = None
+    rect_height: Optional[float] = None
+    category: str  # breakdown item type
+    color: Optional[str] = None
+    suggested_label: Optional[str] = None
+
+
+class ScriptHighlightUpdate(BaseModel):
+    """Input for updating a highlight"""
+    scene_id: Optional[str] = None
+    category: Optional[str] = None
+    color: Optional[str] = None
+    suggested_label: Optional[str] = None
+    breakdown_item_id: Optional[str] = None
+    status: Optional[str] = None  # pending, confirmed, rejected
+
+
+@router.get("/scripts/{script_id}/highlights")
+async def get_script_highlights(
+    script_id: str,
+    page_number: Optional[int] = None,
+    scene_id: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get highlights for a script with optional filtering"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Build query - don't use nested relationships that don't exist
+        query = supabase.table("backlot_script_highlight_breakdowns").select("*").eq("script_id", script_id)
+
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if category:
+            query = query.eq("category", category)
+        if status:
+            query = query.eq("status", status)
+
+        result = query.order("page_number").order("start_offset").execute()
+
+        return {"highlights": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting script highlights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scripts/{script_id}/highlights/summary")
+async def get_script_highlight_summary(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Get summary of highlights by category"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Get all highlights for this script
+        result = supabase.table("backlot_script_highlight_breakdowns").select(
+            "category, status, suggested_label"
+        ).eq("script_id", script_id).execute()
+
+        highlights = result.data or []
+
+        # Group by category
+        summary = {}
+        for h in highlights:
+            cat = h["category"]
+            if cat not in summary:
+                summary[cat] = {
+                    "category": cat,
+                    "total_count": 0,
+                    "pending_count": 0,
+                    "confirmed_count": 0,
+                    "labels": set()
+                }
+            summary[cat]["total_count"] += 1
+            if h["status"] == "pending":
+                summary[cat]["pending_count"] += 1
+            elif h["status"] == "confirmed":
+                summary[cat]["confirmed_count"] += 1
+            if h.get("suggested_label"):
+                summary[cat]["labels"].add(h["suggested_label"])
+
+        # Convert sets to lists
+        for cat in summary:
+            summary[cat]["labels"] = list(summary[cat]["labels"])
+
+        return {"summary": list(summary.values())}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting highlight summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/highlights")
+async def create_script_highlight(
+    script_id: str,
+    input: ScriptHighlightInput,
+    authorization: str = Header(None)
+):
+    """Create a new highlight (text selection for breakdown)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify script access and get project_id
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Check project membership - need edit rights
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+            role = member_response.data[0]["role"]
+            if role not in ["admin", "editor", "coordinator"]:
+                raise HTTPException(status_code=403, detail="Insufficient permissions to create highlights")
+
+        # Determine default color based on category
+        default_colors = {
+            "cast": "#FF6B6B",
+            "extra": "#FFA07A",
+            "stunt": "#FF4500",
+            "vehicle": "#4ECDC4",
+            "prop": "#45B7D1",
+            "set_dressing": "#96CEB4",
+            "wardrobe": "#DDA0DD",
+            "makeup": "#FFB6C1",
+            "hair": "#D2691E",
+            "livestock": "#8B4513",
+            "animal": "#228B22",
+            "sfx": "#9932CC",
+            "vfx": "#00CED1",
+            "sound": "#1E90FF",
+            "music": "#FF1493",
+            "greenery": "#32CD32",
+            "special_equipment": "#FFD700",
+            "security": "#DC143C",
+            "other": "#808080",
+        }
+        color = input.color or default_colors.get(input.category, "#808080")
+
+        highlight_data = {
+            "id": str(uuid.uuid4()),
+            "script_id": script_id,
+            "scene_id": input.scene_id,
+            "page_number": input.page_number,
+            "start_offset": input.start_offset,
+            "end_offset": input.end_offset,
+            "highlighted_text": input.highlighted_text,
+            "rect_x": input.rect_x,
+            "rect_y": input.rect_y,
+            "rect_width": input.rect_width,
+            "rect_height": input.rect_height,
+            "category": input.category,
+            "color": color,
+            "suggested_label": input.suggested_label or input.highlighted_text,
+            "status": "pending",
+            "created_by_user_id": user_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        result = supabase.table("backlot_script_highlight_breakdowns").insert(highlight_data).execute()
+
+        return {"success": True, "highlight": result.data[0] if result.data else highlight_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating script highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/scripts/{script_id}/highlights/{highlight_id}")
+async def update_script_highlight(
+    script_id: str,
+    highlight_id: str,
+    input: ScriptHighlightUpdate,
+    authorization: str = Header(None)
+):
+    """Update a highlight"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify highlight exists and access
+        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+            "*, backlot_scripts(project_id)"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+            role = member_response.data[0]["role"]
+            if role not in ["admin", "editor", "coordinator"]:
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Build update data
+        update_data = {"updated_at": datetime.utcnow().isoformat()}
+        if input.scene_id is not None:
+            update_data["scene_id"] = input.scene_id
+        if input.category is not None:
+            update_data["category"] = input.category
+        if input.color is not None:
+            update_data["color"] = input.color
+        if input.suggested_label is not None:
+            update_data["suggested_label"] = input.suggested_label
+        if input.breakdown_item_id is not None:
+            update_data["breakdown_item_id"] = input.breakdown_item_id
+        if input.status is not None:
+            update_data["status"] = input.status
+
+        result = supabase.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
+
+        return {"success": True, "highlight": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating script highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/highlights/{highlight_id}/confirm")
+async def confirm_script_highlight(
+    script_id: str,
+    highlight_id: str,
+    create_breakdown: bool = True,
+    authorization: str = Header(None)
+):
+    """Confirm a highlight and optionally create a breakdown item from it"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify highlight exists and access
+        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+            "*, backlot_scripts(project_id)"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        highlight = highlight_result.data
+        project_id = highlight["backlot_scripts"]["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        breakdown_item_id = highlight.get("breakdown_item_id")
+
+        # Create breakdown item if requested and doesn't exist
+        if create_breakdown and not breakdown_item_id and highlight.get("scene_id"):
+            breakdown_data = {
+                "id": str(uuid.uuid4()),
+                "scene_id": highlight["scene_id"],
+                "type": highlight["category"],
+                "label": highlight.get("suggested_label") or highlight["highlighted_text"],
+                "notes": f"Created from script highlight on page {highlight['page_number']}",
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            breakdown_result = supabase.table("backlot_scene_breakdown_items").insert(breakdown_data).execute()
+            if breakdown_result.data:
+                breakdown_item_id = breakdown_result.data[0]["id"]
+
+        # Update highlight status
+        update_data = {
+            "status": "confirmed",
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        if breakdown_item_id:
+            update_data["breakdown_item_id"] = breakdown_item_id
+
+        supabase.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
+
+        return {
+            "success": True,
+            "status": "confirmed",
+            "breakdown_item_id": breakdown_item_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error confirming script highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/highlights/{highlight_id}/reject")
+async def reject_script_highlight(
+    script_id: str,
+    highlight_id: str,
+    authorization: str = Header(None)
+):
+    """Reject/dismiss a highlight"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify highlight exists and access
+        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+            "*, backlot_scripts(project_id)"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Update highlight status
+        supabase.table("backlot_script_highlight_breakdowns").update({
+            "status": "rejected",
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", highlight_id).execute()
+
+        return {"success": True, "status": "rejected"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting script highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/scripts/{script_id}/highlights/{highlight_id}")
+async def delete_script_highlight(
+    script_id: str,
+    highlight_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a highlight"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify highlight exists and access
+        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+            "*, backlot_scripts(project_id)"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+
+        # Check project membership
+        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+            role = member_response.data[0]["role"]
+            if role not in ["admin", "editor", "coordinator"]:
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Delete highlight
+        supabase.table("backlot_script_highlight_breakdowns").delete().eq("id", highlight_id).execute()
+
+        return {"success": True, "message": "Highlight deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting script highlight: {e}")
         raise HTTPException(status_code=500, detail=str(e))

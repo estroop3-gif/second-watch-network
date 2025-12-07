@@ -182,4 +182,22 @@ export {
   // Call Sheet Scene Links
   useCallSheetSceneLinks,
   useCallSheetSceneLinkMutations,
+  // Script Page Notes
+  useScriptPageNotes,
+  useScriptPageNotesSummary,
+  useScriptPageNoteMutations,
+  // Script Versioning
+  useScriptVersionHistory,
+  useCreateScriptVersion,
+  useLockScriptVersion,
+  useSetCurrentScriptVersion,
+  useUpdateScriptText,
+  useExtractScriptText,
+  // Script Highlight Breakdowns
+  useScriptHighlights,
+  useScriptHighlightSummary,
+  useScriptHighlightMutations,
+  // Scene Page Mappings
+  useScenePageMappings,
+  useScenePageMappingMutations,
 } from './useScripts';
