@@ -299,3 +299,25 @@ export {
   // Views
   useTaskViews,
 } from './useTaskLists';
+
+// Script Breakdown Panel (Project-level breakdown tab)
+export {
+  useProjectBreakdown,
+  useBreakdownSummary,
+  useSceneBreakdown,
+  useBreakdownMutations,
+  useBreakdownPdfExport,
+} from './useScriptBreakdown';
+
+// Project Script Notes (Notes tab)
+export {
+  useProjectScriptNotes,
+  useProjectNotesSummary,
+  useProjectNotesPdfExport,
+} from './useProjectScriptNotes';
+export type {
+  NotesGroupBy,
+  ProjectNotesFilters,
+  ProjectNotesResponse,
+  ProjectNotesSummary,
+} from './useProjectScriptNotes';

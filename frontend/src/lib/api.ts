@@ -540,8 +540,145 @@ class APIClient {
   async globalSearch(query: string, type?: string) {
     const params = new URLSearchParams({ query })
     if (type) params.append('type', type)
-    
+
     return this.request<any>(`/api/v1/community/search?${params}`)
+  }
+
+  // ============================================================================
+  // BACKLOT REVIEW (Frame.io-style)
+  // ============================================================================
+
+  // Review Assets
+  async listReviewAssets(projectId: string) {
+    return this.request<{ assets: any[] }>(`/api/v1/backlot/projects/${projectId}/review/assets`)
+  }
+
+  async createReviewAsset(projectId: string, data: {
+    name: string;
+    description?: string | null;
+    video_url: string;
+    video_provider?: string;
+    external_video_id?: string | null;
+    thumbnail_url?: string | null;
+    duration_seconds?: number | null;
+    linked_scene_id?: string | null;
+    linked_shot_list_id?: string | null;
+  }) {
+    return this.request<{ asset: any }>(`/api/v1/backlot/projects/${projectId}/review/assets`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getReviewAsset(assetId: string) {
+    return this.request<{ asset: any }>(`/api/v1/backlot/review/assets/${assetId}`)
+  }
+
+  async updateReviewAsset(assetId: string, data: {
+    name?: string;
+    description?: string | null;
+    thumbnail_url?: string | null;
+    linked_scene_id?: string | null;
+    linked_shot_list_id?: string | null;
+  }) {
+    return this.request<{ asset: any }>(`/api/v1/backlot/review/assets/${assetId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteReviewAsset(assetId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/backlot/review/assets/${assetId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Review Versions
+  async createReviewVersion(assetId: string, data: {
+    name?: string | null;
+    video_url: string;
+    video_provider?: string;
+    external_video_id?: string | null;
+    thumbnail_url?: string | null;
+    duration_seconds?: number | null;
+  }) {
+    return this.request<{ version: any }>(`/api/v1/backlot/review/assets/${assetId}/versions`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async makeVersionActive(versionId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/backlot/review/versions/${versionId}/make-active`, {
+      method: 'POST',
+    })
+  }
+
+  async deleteReviewVersion(versionId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/backlot/review/versions/${versionId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Review Notes
+  async listReviewNotes(versionId: string) {
+    return this.request<{ notes: any[] }>(`/api/v1/backlot/review/versions/${versionId}/notes`)
+  }
+
+  async createReviewNote(versionId: string, data: {
+    timecode_seconds?: number | null;
+    timecode_end_seconds?: number | null;
+    content: string;
+    drawing_data?: Record<string, unknown> | null;
+  }) {
+    return this.request<{ note: any }>(`/api/v1/backlot/review/versions/${versionId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateReviewNote(noteId: string, data: {
+    content?: string;
+    drawing_data?: Record<string, unknown> | null;
+    is_resolved?: boolean;
+  }) {
+    return this.request<{ note: any }>(`/api/v1/backlot/review/notes/${noteId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteReviewNote(noteId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/backlot/review/notes/${noteId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Review Note Replies
+  async createNoteReply(noteId: string, content: string) {
+    return this.request<{ reply: any }>(`/api/v1/backlot/review/notes/${noteId}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    })
+  }
+
+  async deleteNoteReply(replyId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/backlot/review/replies/${replyId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Note to Task Integration
+  async createTaskFromNote(noteId: string, data: {
+    task_list_id: string;
+    title?: string;
+    priority?: string;
+    assignee_user_id?: string | null;
+  }) {
+    return this.request<{ task: any }>(`/api/v1/backlot/review/notes/${noteId}/create-task`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 }
 

@@ -68,6 +68,8 @@ import AnalyticsView from '@/components/backlot/workspace/AnalyticsView';
 import TaskListDetailView from '@/components/backlot/workspace/TaskListDetailView';
 import TaskDetailDrawer from '@/components/backlot/workspace/TaskDetailDrawer';
 import TaskListShareModal from '@/components/backlot/workspace/TaskListShareModal';
+import { ReviewsView, ReviewDetailView } from '@/components/backlot/review';
+import { SquarePlay } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -114,6 +116,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
   { id: 'casting', label: 'Casting & Crew', icon: UserPlus },
   { id: 'tasks', label: 'Tasks', icon: CheckSquare },
+  { id: 'review', label: 'Review', icon: SquarePlay },
   { id: 'locations', label: 'Locations', icon: MapPin },
   { id: 'gear', label: 'Gear', icon: Package },
   { id: 'budget', label: 'Budget', icon: DollarSign },
@@ -140,6 +143,7 @@ const ProjectWorkspace: React.FC = () => {
   const [selectedTaskListId, setSelectedTaskListId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showTaskShareModal, setShowTaskShareModal] = useState(false);
+  const [selectedReviewAssetId, setSelectedReviewAssetId] = useState<string | null>(null);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
@@ -349,6 +353,22 @@ const ProjectWorkspace: React.FC = () => {
                 projectId={project.id}
                 canEdit={permission?.canEdit || false}
                 onSelectTaskList={(taskList) => setSelectedTaskListId(taskList.id)}
+              />
+            )
+          )}
+          {activeView === 'review' && (
+            selectedReviewAssetId ? (
+              <ReviewDetailView
+                assetId={selectedReviewAssetId}
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedReviewAssetId(null)}
+              />
+            ) : (
+              <ReviewsView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectAsset={(asset) => setSelectedReviewAssetId(asset.id)}
               />
             )
           )}

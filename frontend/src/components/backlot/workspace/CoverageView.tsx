@@ -1,6 +1,7 @@
 /**
  * CoverageView - On-set coverage tracking and reporting
  * Shows coverage status by scene with quick-mark functionality for on-set use
+ * Includes a Kanban board view for visual scene status tracking
  */
 import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
@@ -9,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -30,6 +32,9 @@ import {
   ChevronRight,
   Film,
   Loader2,
+  LayoutGrid,
+  List,
+  Kanban,
 } from 'lucide-react';
 import {
   Collapsible,
@@ -40,8 +45,7 @@ import {
   useCoverageSummary,
   useCoverageByScene,
   useShots,
-  useCallSheets,
-  useCallSheetShots,
+  useScripts,
 } from '@/hooks/backlot';
 import {
   BacklotSceneShot,
@@ -49,24 +53,16 @@ import {
   CoverageByScene,
   SHOT_TYPE_SHORT_LABELS,
   COVERAGE_STATUS_LABELS,
-  COVERAGE_STATUS_COLORS,
   SHOT_PRIORITY_LABELS,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+import CoverageBoard from './CoverageBoard';
 
 interface CoverageViewProps {
   projectId: string;
   canEdit: boolean;
 }
-
-// Coverage status icons
-const COVERAGE_ICONS: Record<BacklotCoverageStatus, React.ReactNode> = {
-  not_shot: <Clock className="w-4 h-4" />,
-  shot: <CheckCircle2 className="w-4 h-4" />,
-  alt_needed: <AlertTriangle className="w-4 h-4" />,
-  dropped: <XCircle className="w-4 h-4" />,
-};
 
 // Coverage status badge styling
 const COVERAGE_BADGE_STYLES: Record<BacklotCoverageStatus, string> = {
@@ -272,6 +268,7 @@ const EmptyState: React.FC = () => (
 
 const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
   const { toast } = useToast();
+  const [activeTab, setActiveTab] = useState<'board' | 'list'>('board');
   const [filterStatus, setFilterStatus] = useState<BacklotCoverageStatus | 'all'>('all');
   const [expandedScenes, setExpandedScenes] = useState<Set<string>>(new Set());
   const [isExporting, setIsExporting] = useState(false);
@@ -280,6 +277,12 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
   const { data: summary, isLoading: summaryLoading } = useCoverageSummary(projectId);
   const { data: coverageByScene, isLoading: scenesLoading } = useCoverageByScene(projectId);
   const { shots, updateCoverage } = useShots({ projectId });
+  const { scripts } = useScripts({ projectId });
+
+  // Get the primary script (first non-archived)
+  const primaryScript = useMemo(() => {
+    return scripts?.find(s => s.status !== 'archived') || scripts?.[0];
+  }, [scripts]);
 
   // Filter scenes based on status filter
   const filteredScenes = useMemo(() => {
@@ -336,8 +339,6 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
   const handleExport = async (format: 'json' | 'csv') => {
     setIsExporting(true);
     try {
-      // In a real implementation, this would call the backend export endpoint
-      // For now, we'll generate a simple CSV/JSON from the client-side data
       if (format === 'csv') {
         const headers = ['Scene', 'Shot', 'Type', 'Priority', 'Status', 'Description'];
         const rows = (shots || []).map((shot) => {
@@ -417,22 +418,6 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
     );
   }
 
-  if (!summary || summary.total_shots === 0) {
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-xl font-heading text-bone-white">Coverage</h2>
-            <p className="text-sm text-muted-gray">
-              Track shot coverage on set
-            </p>
-          </div>
-        </div>
-        <EmptyState />
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -440,7 +425,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
         <div>
           <h2 className="text-xl font-heading text-bone-white">Coverage</h2>
           <p className="text-sm text-muted-gray">
-            Track shot coverage on set and generate reports
+            Track scene and shot coverage status
           </p>
         </div>
 
@@ -450,7 +435,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
             variant="outline"
             size="sm"
             onClick={() => handleExport('csv')}
-            disabled={isExporting}
+            disabled={isExporting || !summary || summary.total_shots === 0}
             className="border-muted-gray/30"
           >
             {isExporting ? (
@@ -464,7 +449,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
             variant="outline"
             size="sm"
             onClick={() => handleExport('json')}
-            disabled={isExporting}
+            disabled={isExporting || !summary || summary.total_shots === 0}
             className="border-muted-gray/30"
           >
             Export JSON
@@ -472,149 +457,182 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
         </div>
       </div>
 
-      {/* Summary stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard
-          label="Total Shots"
-          value={summary.total_shots}
-          icon={<Camera className="w-5 h-5" />}
-        />
-        <StatCard
-          label="Shot"
-          value={summary.shot}
-          icon={<CheckCircle2 className="w-5 h-5" />}
-          color="text-green-400"
-        />
-        <StatCard
-          label="Remaining"
-          value={summary.not_shot}
-          icon={<Clock className="w-5 h-5" />}
-          color="text-muted-gray"
-        />
-        <StatCard
-          label="Coverage"
-          value={`${summary.coverage_percentage}%`}
-          icon={<Target className="w-5 h-5" />}
-          color={
-            summary.coverage_percentage >= 80
-              ? 'text-green-400'
-              : summary.coverage_percentage >= 50
-              ? 'text-yellow-400'
-              : 'text-red-400'
-          }
-        />
-      </div>
+      {/* Summary stats - always show */}
+      {summary && summary.total_shots > 0 && (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard
+              label="Total Shots"
+              value={summary.total_shots}
+              icon={<Camera className="w-5 h-5" />}
+            />
+            <StatCard
+              label="Shot"
+              value={summary.shot}
+              icon={<CheckCircle2 className="w-5 h-5" />}
+              color="text-green-400"
+            />
+            <StatCard
+              label="Remaining"
+              value={summary.not_shot}
+              icon={<Clock className="w-5 h-5" />}
+              color="text-muted-gray"
+            />
+            <StatCard
+              label="Coverage"
+              value={`${summary.coverage_percentage}%`}
+              icon={<Target className="w-5 h-5" />}
+              color={
+                summary.coverage_percentage >= 80
+                  ? 'text-green-400'
+                  : summary.coverage_percentage >= 50
+                  ? 'text-yellow-400'
+                  : 'text-red-400'
+              }
+            />
+          </div>
 
-      {/* Must-have coverage alert */}
-      {summary.must_have_coverage < 100 && (
-        <Card className="bg-red-500/10 border-red-500/30">
-          <CardContent className="py-3">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="w-5 h-5 text-red-400" />
-              <div>
-                <span className="text-sm text-red-400 font-medium">
-                  Must-Have Coverage: {summary.must_have_coverage}%
-                </span>
-                <span className="text-sm text-muted-gray ml-2">
-                  Priority shots need attention
+          {/* Must-have coverage alert */}
+          {summary.must_have_coverage < 100 && (
+            <Card className="bg-red-500/10 border-red-500/30">
+              <CardContent className="py-3">
+                <div className="flex items-center gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-400" />
+                  <div>
+                    <span className="text-sm text-red-400 font-medium">
+                      Must-Have Coverage: {summary.must_have_coverage}%
+                    </span>
+                    <span className="text-sm text-muted-gray ml-2">
+                      Priority shots need attention
+                    </span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Progress bar */}
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
+            <CardContent className="py-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-muted-gray">Overall Progress</span>
+                <span className="text-sm text-bone-white font-medium">
+                  {summary.shot} / {summary.total_shots} shots
                 </span>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <Progress value={summary.coverage_percentage} className="h-3" />
+              <div className="flex justify-between mt-2 text-xs text-muted-gray">
+                <span>
+                  Est. remaining: {Math.round(summary.est_remaining_minutes)} min
+                </span>
+                <span>
+                  Est. total: {Math.round(summary.est_total_minutes)} min
+                </span>
+              </div>
+            </CardContent>
+          </Card>
+        </>
       )}
 
-      {/* Progress bar */}
-      <Card className="bg-charcoal-black/50 border-muted-gray/20">
-        <CardContent className="py-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-muted-gray">Overall Progress</span>
-            <span className="text-sm text-bone-white font-medium">
-              {summary.shot} / {summary.total_shots} shots
-            </span>
-          </div>
-          <Progress value={summary.coverage_percentage} className="h-3" />
-          <div className="flex justify-between mt-2 text-xs text-muted-gray">
-            <span>
-              Est. remaining: {Math.round(summary.est_remaining_minutes)} min
-            </span>
-            <span>
-              Est. total: {Math.round(summary.est_total_minutes)} min
-            </span>
-          </div>
-        </CardContent>
-      </Card>
+      {/* Tabs for Board vs List view */}
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'board' | 'list')}>
+        <TabsList className="bg-charcoal-black/50 border border-muted-gray/20">
+          <TabsTrigger value="board" className="gap-2">
+            <Kanban className="w-4 h-4" />
+            Board
+          </TabsTrigger>
+          <TabsTrigger value="list" className="gap-2">
+            <List className="w-4 h-4" />
+            List
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Scene list with filters */}
-      <Card className="bg-charcoal-black/50 border-muted-gray/20">
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <CardTitle className="text-sm font-medium text-bone-white flex items-center gap-2">
-              <Film className="w-4 h-4" />
-              Coverage by Scene
-            </CardTitle>
+        {/* Board View - Kanban style */}
+        <TabsContent value="board" className="mt-4">
+          <CoverageBoard
+            projectId={projectId}
+            scriptId={primaryScript?.id}
+            canEdit={canEdit}
+          />
+        </TabsContent>
 
-            <div className="flex items-center gap-2">
-              {/* Filter dropdown */}
-              <Select
-                value={filterStatus}
-                onValueChange={(val) =>
-                  setFilterStatus(val as BacklotCoverageStatus | 'all')
-                }
-              >
-                <SelectTrigger className="w-[130px] h-8 bg-charcoal-black/50 border-muted-gray/20">
-                  <Filter className="w-3 h-3 mr-2" />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="not_shot">Not Shot</SelectItem>
-                  <SelectItem value="shot">Shot</SelectItem>
-                  <SelectItem value="alt_needed">Alt Needed</SelectItem>
-                  <SelectItem value="dropped">Dropped</SelectItem>
-                </SelectContent>
-              </Select>
-
-              {/* Expand/Collapse buttons */}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={expandAll}
-                className="text-xs"
-              >
-                Expand All
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={collapseAll}
-                className="text-xs"
-              >
-                Collapse
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {filteredScenes.length === 0 ? (
-            <p className="text-sm text-muted-gray text-center py-4">
-              No scenes match the current filter
-            </p>
+        {/* List View - Detailed shots by scene */}
+        <TabsContent value="list" className="mt-4">
+          {!summary || summary.total_shots === 0 ? (
+            <EmptyState />
           ) : (
-            filteredScenes.map((scene) => (
-              <SceneCoverageRow
-                key={scene.scene_id}
-                scene={scene}
-                shots={shots || []}
-                canEdit={canEdit}
-                onShotStatusChange={handleShotStatusChange}
-                isExpanded={expandedScenes.has(scene.scene_id)}
-                onToggle={() => toggleScene(scene.scene_id)}
-              />
-            ))
+            <Card className="bg-charcoal-black/50 border-muted-gray/20">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <CardTitle className="text-sm font-medium text-bone-white flex items-center gap-2">
+                    <Film className="w-4 h-4" />
+                    Coverage by Scene
+                  </CardTitle>
+
+                  <div className="flex items-center gap-2">
+                    {/* Filter dropdown */}
+                    <Select
+                      value={filterStatus}
+                      onValueChange={(val) =>
+                        setFilterStatus(val as BacklotCoverageStatus | 'all')
+                      }
+                    >
+                      <SelectTrigger className="w-[130px] h-8 bg-charcoal-black/50 border-muted-gray/20">
+                        <Filter className="w-3 h-3 mr-2" />
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
+                        <SelectItem value="not_shot">Not Shot</SelectItem>
+                        <SelectItem value="shot">Shot</SelectItem>
+                        <SelectItem value="alt_needed">Alt Needed</SelectItem>
+                        <SelectItem value="dropped">Dropped</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {/* Expand/Collapse buttons */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={expandAll}
+                      className="text-xs"
+                    >
+                      Expand All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={collapseAll}
+                      className="text-xs"
+                    >
+                      Collapse
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {filteredScenes.length === 0 ? (
+                  <p className="text-sm text-muted-gray text-center py-4">
+                    No scenes match the current filter
+                  </p>
+                ) : (
+                  filteredScenes.map((scene) => (
+                    <SceneCoverageRow
+                      key={scene.scene_id}
+                      scene={scene}
+                      shots={shots || []}
+                      canEdit={canEdit}
+                      onShotStatusChange={handleShotStatusChange}
+                      isExpanded={expandedScenes.has(scene.scene_id)}
+                      onToggle={() => toggleScene(scene.scene_id)}
+                    />
+                  ))
+                )}
+              </CardContent>
+            </Card>
           )}
-        </CardContent>
-      </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

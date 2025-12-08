@@ -7,6 +7,7 @@ import { Document, Page, pdfjs } from 'react-pdf';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
+import { Avatar, AvatarImage, AvatarFallback } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -55,6 +56,7 @@ import {
   RotateCcw,
   Highlighter,
   Users,
+  User,
   Clapperboard,
   MapPin,
   Package,
@@ -70,6 +72,8 @@ import {
   HelpCircle,
   Maximize2,
   Minimize2,
+  Clock,
+  CheckCircle,
 } from 'lucide-react';
 import {
   BacklotScript,
@@ -170,73 +174,41 @@ const NoteMarker: React.FC<{
   const markerSize = Math.max(20, Math.min(32, 24 / scale));
 
   return (
-    <Popover open={isSelected} onOpenChange={(open) => !open && onClick()}>
-      <PopoverTrigger asChild>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          className={cn(
-            'absolute flex items-center justify-center cursor-pointer transition-all duration-200 z-10',
-            'rounded-full shadow-lg border-2 border-white',
-            bgColor,
-            isSelected && 'ring-2 ring-accent-yellow ring-offset-1 ring-offset-charcoal-black',
-            isHovered && !isSelected && 'scale-125',
-            note.resolved && 'opacity-60'
-          )}
-          style={{
-            left: `${(note.position_x || 0) * 100}%`,
-            top: `${(note.position_y || 0) * 100}%`,
-            transform: 'translate(-50%, -50%)',
-            width: `${markerSize}px`,
-            height: `${markerSize}px`,
-          }}
-        >
-          <StickyNote className="text-white" style={{ width: markerSize * 0.5, height: markerSize * 0.5 }} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="right"
-        align="start"
-        className="w-80 p-0 bg-charcoal-black border-muted-gray/30"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="p-4 space-y-3">
-          {/* Header with type badge */}
-          <div className="flex items-center justify-between">
-            <Badge className={cn('text-xs', bgColor)}>
-              {SCRIPT_PAGE_NOTE_TYPE_LABELS[note.note_type]}
-            </Badge>
-            {note.resolved && (
-              <Badge variant="outline" className="text-green-500 text-xs border-green-500/30">
-                <Check className="w-3 h-3 mr-1" />
-                Resolved
-              </Badge>
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onClick();
+            }}
+            onMouseEnter={() => setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
+            className={cn(
+              'absolute flex items-center justify-center cursor-pointer transition-all duration-200 z-10 pointer-events-auto',
+              'rounded-full shadow-lg border-2 border-white',
+              bgColor,
+              isSelected && 'ring-2 ring-accent-yellow ring-offset-1 ring-offset-charcoal-black',
+              isHovered && !isSelected && 'scale-125',
+              note.resolved && 'opacity-60'
             )}
-          </div>
-
-          {/* Note content */}
-          <div className="bg-black/30 rounded-lg p-3">
-            <p className="text-sm text-bone-white whitespace-pre-wrap">{note.note_text}</p>
-          </div>
-
-          {/* Meta info */}
-          <div className="text-xs text-muted-gray flex items-center gap-2">
-            <StickyNote className="w-3 h-3" />
-            Page {note.page_number}
-            {note.author && (
-              <>
-                <span className="mx-1">•</span>
-                {note.author.display_name || note.author.username}
-              </>
-            )}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
+            style={{
+              left: `${(note.position_x || 0) * 100}%`,
+              top: `${(note.position_y || 0) * 100}%`,
+              transform: 'translate(-50%, -50%)',
+              width: `${markerSize}px`,
+              height: `${markerSize}px`,
+            }}
+          >
+            <StickyNote className="text-white" style={{ width: markerSize * 0.5, height: markerSize * 0.5 }} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right" className="max-w-[200px]">
+          <p className="text-xs font-medium">{SCRIPT_PAGE_NOTE_TYPE_LABELS[note.note_type]}</p>
+          <p className="text-xs text-muted-foreground line-clamp-2">{note.note_text}</p>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 };
 
@@ -330,9 +302,9 @@ const ScriptPDFViewer: React.FC<ScriptPDFViewerProps> = ({
   const { createNote, updateNote, deleteNote, toggleResolved } = useScriptPageNoteMutations();
 
   // Highlight hooks
-  const { highlights, isLoading: highlightsLoading } = useScriptHighlights(script.id, currentPage);
-  const { createHighlight, updateHighlight, deleteHighlight, confirmHighlight } = useScriptHighlightMutations();
-  const { scenes } = useScenes(script.id);
+  const { data: highlights = [], isLoading: highlightsLoading } = useScriptHighlights(script.id, currentPage);
+  const { createHighlight, deleteHighlight, confirmHighlight } = useScriptHighlightMutations();
+  const { scenes } = useScenes({ projectId });
 
   // PDF document loaded
   const onDocumentLoadSuccess = useCallback(({ numPages }: { numPages: number }) => {
@@ -1037,11 +1009,12 @@ const ScriptPDFViewer: React.FC<ScriptPDFViewerProps> = ({
           )}
         </div>
 
-        {/* Notes action panel (when note is selected) - compact version since popover shows content */}
-        {selectedNote && canEdit && (
-          <div className="w-64 border-l border-muted-gray/20 p-4 overflow-y-auto bg-black/10">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-medium text-bone-white">Note Actions</h3>
+        {/* Notes detail panel (when note is selected) - comprehensive view for all users */}
+        {selectedNote && (
+          <div className="w-80 border-l border-muted-gray/20 overflow-y-auto bg-black/10">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-muted-gray/20">
+              <h3 className="text-sm font-medium text-bone-white">Note Details</h3>
               <Button
                 variant="ghost"
                 size="sm"
@@ -1051,54 +1024,127 @@ const ScriptPDFViewer: React.FC<ScriptPDFViewerProps> = ({
               </Button>
             </div>
 
-            <div className="space-y-3">
-              {/* Type indicator */}
-              <div className="flex items-center gap-2">
+            <div className="p-4 space-y-4">
+              {/* Author section */}
+              <div className="flex items-center gap-3">
+                <Avatar className="h-10 w-10">
+                  {selectedNote.author?.avatar_url ? (
+                    <AvatarImage src={selectedNote.author.avatar_url} alt={selectedNote.author.display_name || selectedNote.author.username || 'User'} />
+                  ) : null}
+                  <AvatarFallback className="bg-muted-gray/30 text-bone-white">
+                    {selectedNote.author?.display_name?.[0] || selectedNote.author?.username?.[0] || <User className="w-4 h-4" />}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-bone-white truncate">
+                    {selectedNote.author?.display_name || selectedNote.author?.full_name || selectedNote.author?.username || 'Unknown User'}
+                  </p>
+                  <p className="text-xs text-muted-gray flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    {new Date(selectedNote.created_at).toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}
+                  </p>
+                </div>
+              </div>
+
+              {/* Type and status badges */}
+              <div className="flex flex-wrap items-center gap-2">
                 <Badge className={cn('text-xs', NOTE_TYPE_BG_COLORS[selectedNote.note_type])}>
                   {SCRIPT_PAGE_NOTE_TYPE_LABELS[selectedNote.note_type]}
                 </Badge>
+                <Badge variant="outline" className="text-xs">
+                  Page {selectedNote.page_number}
+                </Badge>
                 {selectedNote.resolved && (
-                  <Badge variant="outline" className="text-green-500 text-xs">
+                  <Badge variant="outline" className="text-green-500 text-xs border-green-500/30">
+                    <CheckCircle className="w-3 h-3 mr-1" />
                     Resolved
                   </Badge>
                 )}
               </div>
 
-              {/* Quick preview */}
-              <p className="text-xs text-muted-gray line-clamp-2">
-                {selectedNote.note_text}
-              </p>
-
-              {/* Action buttons */}
-              <div className="flex flex-col gap-2 pt-2 border-t border-muted-gray/20">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleToggleResolved(selectedNote)}
-                  className="w-full justify-start"
-                >
-                  {selectedNote.resolved ? (
-                    <>
-                      <RotateCcw className="w-3 h-3 mr-2" />
-                      Reopen Note
-                    </>
-                  ) : (
-                    <>
-                      <Check className="w-3 h-3 mr-2" />
-                      Mark as Resolved
-                    </>
-                  )}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleDeleteNote(selectedNote.id)}
-                  className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                >
-                  <Trash2 className="w-3 h-3 mr-2" />
-                  Delete Note
-                </Button>
+              {/* Note content */}
+              <div className="bg-black/30 rounded-lg p-3 border border-muted-gray/20">
+                <p className="text-sm text-bone-white whitespace-pre-wrap leading-relaxed">
+                  {selectedNote.note_text}
+                </p>
               </div>
+
+              {/* Resolved info (if resolved) */}
+              {selectedNote.resolved && selectedNote.resolved_at && (
+                <div className="bg-green-500/10 rounded-lg p-3 border border-green-500/20">
+                  <div className="flex items-center gap-2 text-xs text-green-400 mb-1">
+                    <CheckCircle className="w-3 h-3" />
+                    Resolved
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {selectedNote.resolved_by && (
+                      <>
+                        <Avatar className="h-5 w-5">
+                          {selectedNote.resolved_by.avatar_url ? (
+                            <AvatarImage src={selectedNote.resolved_by.avatar_url} />
+                          ) : null}
+                          <AvatarFallback className="bg-green-500/20 text-green-400 text-[10px]">
+                            {selectedNote.resolved_by.display_name?.[0] || selectedNote.resolved_by.username?.[0] || '?'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-xs text-muted-gray">
+                          by {selectedNote.resolved_by.display_name || selectedNote.resolved_by.username}
+                        </span>
+                      </>
+                    )}
+                    <span className="text-xs text-muted-gray ml-auto">
+                      {new Date(selectedNote.resolved_at).toLocaleDateString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons (only for users who can edit) */}
+              {canEdit && (
+                <div className="flex flex-col gap-2 pt-3 border-t border-muted-gray/20">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleToggleResolved(selectedNote)}
+                    className={cn(
+                      "w-full justify-start",
+                      !selectedNote.resolved && "text-green-400 hover:text-green-300 hover:bg-green-500/10 border-green-400/30"
+                    )}
+                  >
+                    {selectedNote.resolved ? (
+                      <>
+                        <RotateCcw className="w-4 h-4 mr-2" />
+                        Reopen Note
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4 mr-2" />
+                        Mark as Resolved
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleDeleteNote(selectedNote.id)}
+                    className="w-full justify-start text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-400/30"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Note
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
         )}

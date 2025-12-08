@@ -13,6 +13,10 @@ from app.services.email_service import (
     generate_call_sheet_text
 )
 from app.services.pdf_service import generate_call_sheet_pdf
+from app.services.breakdown_pdf_service import (
+    generate_breakdown_pdf,
+    generate_project_breakdown_pdf,
+)
 from fastapi.responses import Response
 import uuid
 from app.core.supabase import get_supabase_client, get_supabase_admin_client
@@ -6152,6 +6156,8 @@ class BreakdownItemInput(BaseModel):
     notes: Optional[str] = None
     linked_entity_id: Optional[str] = None
     linked_entity_type: Optional[str] = None
+    department: Optional[str] = None  # cast, locations, props, wardrobe, makeup, sfx, vfx, background, stunts, camera, sound
+    stripboard_day: Optional[int] = None  # Optional mapping to schedule day
 
 class CallSheetSceneLinkInput(BaseModel):
     scene_id: str
@@ -7609,7 +7615,9 @@ async def create_breakdown_item(
             "quantity": item.quantity or 1,
             "notes": item.notes,
             "linked_entity_id": item.linked_entity_id,
-            "linked_entity_type": item.linked_entity_type
+            "linked_entity_type": item.linked_entity_type,
+            "department": item.department,
+            "stripboard_day": item.stripboard_day
         }
 
         result = supabase.table("backlot_scene_breakdown_items").insert(item_data).execute()
@@ -7659,7 +7667,9 @@ async def update_breakdown_item(
             "quantity": item.quantity,
             "notes": item.notes,
             "linked_entity_id": item.linked_entity_id,
-            "linked_entity_type": item.linked_entity_type
+            "linked_entity_type": item.linked_entity_type,
+            "department": item.department,
+            "stripboard_day": item.stripboard_day
         }
 
         result = supabase.table("backlot_scene_breakdown_items").update(update_data).eq("id", item_id).execute()
@@ -8532,10 +8542,18 @@ async def create_script_page_note(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create note")
 
-        # Fetch with author profile
-        created_note = supabase.table("backlot_script_page_notes").select("*, profiles:author_user_id(id, full_name, avatar_url)").eq("id", result.data[0]["id"]).single().execute()
+        # Return the created note - fetch author profile separately if needed
+        created_note = result.data[0]
 
-        return {"success": True, "note": created_note.data}
+        # Try to fetch author profile
+        try:
+            author_profile = supabase.table("profiles").select("id, full_name, avatar_url").eq("id", user_id).single().execute()
+            if author_profile.data:
+                created_note["author"] = author_profile.data
+        except Exception:
+            created_note["author"] = None
+
+        return {"success": True, "note": created_note}
 
     except HTTPException:
         raise
@@ -8611,10 +8629,20 @@ async def update_script_page_note(
 
         result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
 
-        # Fetch updated note with author
-        updated_note = supabase.table("backlot_script_page_notes").select("*, profiles:author_user_id(id, full_name, avatar_url)").eq("id", note_id).single().execute()
+        # Fetch updated note
+        updated_note = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).single().execute()
+        note_data = updated_note.data
 
-        return {"success": True, "note": updated_note.data}
+        # Try to fetch author profile separately
+        if note_data and note_data.get("author_user_id"):
+            try:
+                author_profile = supabase.table("profiles").select("id, full_name, avatar_url").eq("id", note_data["author_user_id"]).single().execute()
+                if author_profile.data:
+                    note_data["author"] = author_profile.data
+            except Exception:
+                note_data["author"] = None
+
+        return {"success": True, "note": note_data}
 
     except HTTPException:
         raise
@@ -8636,13 +8664,19 @@ async def delete_script_page_note(
 
     try:
         # Get note and verify ownership/permissions
-        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+        note_result = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         note_data = note_result.data
-        project_id = note_data["backlot_scripts"]["project_id"]
+
+        # Fetch script to get project_id
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+        project_id = script_result.data["project_id"]
+
         is_author = note_data["author_user_id"] == user_id
 
         # Check if user can delete (author or editor role)
@@ -8672,11 +8706,16 @@ async def delete_script_page_note(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class NoteResolveInput(BaseModel):
+    """Input for toggling note resolved status"""
+    resolved: bool
+
+
 @router.patch("/scripts/{script_id}/notes/{note_id}/resolve")
 async def toggle_note_resolved(
     script_id: str,
     note_id: str,
-    resolved: bool = True,
+    body: NoteResolveInput,
     authorization: str = Header(None)
 ):
     """Toggle the resolved status of a note"""
@@ -8686,12 +8725,16 @@ async def toggle_note_resolved(
 
     try:
         # Get note and verify access
-        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+        note_result = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
-        project_id = note_result.data["backlot_scripts"]["project_id"]
+        # Fetch script to get project_id
+        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+        project_id = script_result.data["project_id"]
 
         # Any project member can resolve/unresolve
         project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -8702,8 +8745,8 @@ async def toggle_note_resolved(
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Update resolved status
-        update_data = {"resolved": resolved}
-        if resolved:
+        update_data = {"resolved": body.resolved}
+        if body.resolved:
             update_data["resolved_at"] = datetime.utcnow().isoformat()
             update_data["resolved_by_user_id"] = user_id
         else:
@@ -8712,7 +8755,7 @@ async def toggle_note_resolved(
 
         result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
 
-        return {"success": True, "resolved": resolved}
+        return {"success": True, "resolved": body.resolved}
 
     except HTTPException:
         raise
@@ -15219,4 +15262,1576 @@ async def reorder_tasks(
         raise
     except Exception as e:
         print(f"Error reordering tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Review System Models (Frame.io-style)
+# =====================================================
+
+class ReviewAssetCreate(BaseModel):
+    """Create a new review asset"""
+    name: str
+    description: Optional[str] = None
+    video_url: str  # For placeholder player
+    video_provider: str = "placeholder"  # 'placeholder' | 'vimeo' | 'youtube'
+    external_video_id: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    linked_scene_id: Optional[str] = None
+    linked_shot_list_id: Optional[str] = None
+
+
+class ReviewAssetUpdate(BaseModel):
+    """Update a review asset"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    linked_scene_id: Optional[str] = None
+    linked_shot_list_id: Optional[str] = None
+
+
+class ReviewAssetResponse(BaseModel):
+    """Review asset response"""
+    id: str
+    project_id: str
+    name: str
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    active_version_id: Optional[str] = None
+    linked_scene_id: Optional[str] = None
+    linked_shot_list_id: Optional[str] = None
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+    # Joined data
+    active_version: Optional[Dict[str, Any]] = None
+    version_count: Optional[int] = None
+    note_count: Optional[int] = None
+
+
+class ReviewVersionCreate(BaseModel):
+    """Create a new version for a review asset"""
+    name: Optional[str] = None  # e.g., "V2", "Final Cut"
+    video_url: str
+    video_provider: str = "placeholder"
+    external_video_id: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+
+
+class ReviewVersionResponse(BaseModel):
+    """Review version response"""
+    id: str
+    asset_id: str
+    version_number: int
+    name: Optional[str] = None
+    video_url: str
+    video_provider: str
+    external_video_id: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    created_by_user_id: str
+    created_at: datetime
+
+
+class ReviewNoteCreate(BaseModel):
+    """Create a new review note"""
+    timecode_seconds: Optional[float] = None  # None for general notes
+    timecode_end_seconds: Optional[float] = None  # For range notes
+    content: str
+    drawing_data: Optional[Dict[str, Any]] = None  # For future annotation support
+
+
+class ReviewNoteUpdate(BaseModel):
+    """Update a review note"""
+    content: Optional[str] = None
+    drawing_data: Optional[Dict[str, Any]] = None
+    is_resolved: Optional[bool] = None
+
+
+class ReviewNoteResponse(BaseModel):
+    """Review note response"""
+    id: str
+    version_id: str
+    timecode_seconds: Optional[float] = None
+    timecode_end_seconds: Optional[float] = None
+    content: str
+    drawing_data: Optional[Dict[str, Any]] = None
+    is_resolved: bool
+    created_by_user_id: str
+    created_at: datetime
+    updated_at: datetime
+    # Joined data
+    created_by_user: Optional[Dict[str, Any]] = None
+    replies: Optional[List[Dict[str, Any]]] = None
+    linked_task_id: Optional[str] = None
+
+
+class ReviewNoteReplyCreate(BaseModel):
+    """Create a reply to a note"""
+    content: str
+
+
+class ReviewNoteReplyResponse(BaseModel):
+    """Review note reply response"""
+    id: str
+    note_id: str
+    content: str
+    created_by_user_id: str
+    created_at: datetime
+    # Joined data
+    created_by_user: Optional[Dict[str, Any]] = None
+
+
+class CreateTaskFromNoteRequest(BaseModel):
+    """Create a task from a review note"""
+    task_list_id: str
+    title: Optional[str] = None  # Will use note content if not provided
+    priority: Optional[str] = "medium"
+    assignee_user_id: Optional[str] = None
+
+
+# =====================================================
+# Review Helper Functions
+# =====================================================
+
+async def verify_review_asset_access(
+    supabase,
+    asset_id: str,
+    user_id: str,
+    require_edit: bool = False
+) -> Dict[str, Any]:
+    """Verify user has access to review asset and return asset data"""
+    asset_response = supabase.table("backlot_review_assets").select("*, backlot_projects(*)").eq("id", asset_id).execute()
+
+    if not asset_response.data:
+        raise HTTPException(status_code=404, detail="Review asset not found")
+
+    asset = asset_response.data[0]
+    project_id = asset["project_id"]
+
+    # Verify project access
+    await verify_project_access(supabase, project_id, user_id, require_edit)
+
+    return asset
+
+
+async def verify_review_version_access(
+    supabase,
+    version_id: str,
+    user_id: str,
+    require_edit: bool = False
+) -> Dict[str, Any]:
+    """Verify user has access to review version and return version data"""
+    version_response = supabase.table("backlot_review_versions").select("*, backlot_review_assets(project_id)").eq("id", version_id).execute()
+
+    if not version_response.data:
+        raise HTTPException(status_code=404, detail="Review version not found")
+
+    version = version_response.data[0]
+    project_id = version["backlot_review_assets"]["project_id"]
+
+    # Verify project access
+    await verify_project_access(supabase, project_id, user_id, require_edit)
+
+    return version
+
+
+async def verify_review_note_access(
+    supabase,
+    note_id: str,
+    user_id: str,
+    require_edit: bool = False
+) -> Dict[str, Any]:
+    """Verify user has access to review note and return note data"""
+    note_response = supabase.table("backlot_review_notes").select(
+        "*, backlot_review_versions(asset_id, backlot_review_assets(project_id))"
+    ).eq("id", note_id).execute()
+
+    if not note_response.data:
+        raise HTTPException(status_code=404, detail="Review note not found")
+
+    note = note_response.data[0]
+    project_id = note["backlot_review_versions"]["backlot_review_assets"]["project_id"]
+
+    # Verify project access
+    await verify_project_access(supabase, project_id, user_id, require_edit)
+
+    # If editing, user must own the note or have edit permission
+    if require_edit and note["created_by_user_id"] != user_id:
+        # Check if user has edit permission on project
+        await verify_project_access(supabase, project_id, user_id, require_edit=True)
+
+    return note
+
+
+def enrich_user_data(supabase, user_id: str) -> Optional[Dict[str, Any]]:
+    """Get basic user info for display"""
+    try:
+        profile = supabase.table("profiles").select("id, display_name, avatar_url").eq("id", user_id).execute()
+        if profile.data:
+            return profile.data[0]
+    except:
+        pass
+    return {"id": user_id, "display_name": "Unknown User", "avatar_url": None}
+
+
+# =====================================================
+# Review Asset Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/review/assets")
+async def list_review_assets(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """List all review assets for a project"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_project_access(supabase, project_id, user["id"])
+
+        # Get assets with version and note counts
+        assets_response = supabase.table("backlot_review_assets").select(
+            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
+        ).eq("project_id", project_id).order("created_at", desc=True).execute()
+
+        assets = assets_response.data or []
+
+        # Get counts for each asset
+        for asset in assets:
+            # Get version count
+            versions_count = supabase.table("backlot_review_versions").select("id", count="exact").eq("asset_id", asset["id"]).execute()
+            asset["version_count"] = versions_count.count or 0
+
+            # Get note count across all versions
+            if asset["version_count"] > 0:
+                versions = supabase.table("backlot_review_versions").select("id").eq("asset_id", asset["id"]).execute()
+                version_ids = [v["id"] for v in (versions.data or [])]
+                if version_ids:
+                    notes_count = supabase.table("backlot_review_notes").select("id", count="exact").in_("version_id", version_ids).execute()
+                    asset["note_count"] = notes_count.count or 0
+                else:
+                    asset["note_count"] = 0
+            else:
+                asset["note_count"] = 0
+
+        return {"assets": assets}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing review assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/review/assets")
+async def create_review_asset(
+    project_id: str,
+    request: ReviewAssetCreate,
+    authorization: str = Header(None)
+):
+    """Create a new review asset with initial version"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+
+        asset_id = str(uuid.uuid4())
+        version_id = str(uuid.uuid4())
+
+        # Create the asset
+        asset_data = {
+            "id": asset_id,
+            "project_id": project_id,
+            "name": request.name,
+            "description": request.description,
+            "thumbnail_url": request.thumbnail_url,
+            "linked_scene_id": request.linked_scene_id,
+            "linked_shot_list_id": request.linked_shot_list_id,
+            "created_by_user_id": user["id"],
+            "active_version_id": version_id,  # Will point to the first version
+        }
+
+        supabase.table("backlot_review_assets").insert(asset_data).execute()
+
+        # Create the initial version (V1)
+        version_data = {
+            "id": version_id,
+            "asset_id": asset_id,
+            "version_number": 1,
+            "name": "V1",
+            "video_url": request.video_url,
+            "video_provider": request.video_provider,
+            "external_video_id": request.external_video_id or "",
+            "thumbnail_url": request.thumbnail_url,
+            "duration_seconds": request.duration_seconds,
+            "created_by_user_id": user["id"],
+        }
+
+        supabase.table("backlot_review_versions").insert(version_data).execute()
+
+        # Return the created asset with version
+        result = supabase.table("backlot_review_assets").select(
+            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
+        ).eq("id", asset_id).execute()
+
+        return {"asset": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating review asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/review/assets/{asset_id}")
+async def get_review_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single review asset with all versions"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        asset = await verify_review_asset_access(supabase, asset_id, user["id"])
+
+        # Get all versions
+        versions_response = supabase.table("backlot_review_versions").select("*").eq("asset_id", asset_id).order("version_number", desc=True).execute()
+        asset["versions"] = versions_response.data or []
+
+        # Get note counts per version
+        for version in asset["versions"]:
+            notes_count = supabase.table("backlot_review_notes").select("id", count="exact").eq("version_id", version["id"]).execute()
+            version["note_count"] = notes_count.count or 0
+
+        return {"asset": asset}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting review asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/review/assets/{asset_id}")
+async def update_review_asset(
+    asset_id: str,
+    request: ReviewAssetUpdate,
+    authorization: str = Header(None)
+):
+    """Update a review asset"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+
+        update_data = {}
+        if request.name is not None:
+            update_data["name"] = request.name
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.thumbnail_url is not None:
+            update_data["thumbnail_url"] = request.thumbnail_url
+        if request.linked_scene_id is not None:
+            update_data["linked_scene_id"] = request.linked_scene_id
+        if request.linked_shot_list_id is not None:
+            update_data["linked_shot_list_id"] = request.linked_shot_list_id
+
+        if update_data:
+            supabase.table("backlot_review_assets").update(update_data).eq("id", asset_id).execute()
+
+        result = supabase.table("backlot_review_assets").select(
+            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
+        ).eq("id", asset_id).execute()
+
+        return {"asset": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating review asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/assets/{asset_id}")
+async def delete_review_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a review asset and all its versions/notes"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+
+        # Delete is cascaded via foreign keys
+        supabase.table("backlot_review_assets").delete().eq("id", asset_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting review asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Review Version Endpoints
+# =====================================================
+
+@router.post("/review/assets/{asset_id}/versions")
+async def create_review_version(
+    asset_id: str,
+    request: ReviewVersionCreate,
+    authorization: str = Header(None)
+):
+    """Create a new version for a review asset"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        asset = await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+
+        # Get current highest version number
+        versions = supabase.table("backlot_review_versions").select("version_number").eq("asset_id", asset_id).order("version_number", desc=True).limit(1).execute()
+        next_version_number = (versions.data[0]["version_number"] + 1) if versions.data else 1
+
+        version_id = str(uuid.uuid4())
+        version_data = {
+            "id": version_id,
+            "asset_id": asset_id,
+            "version_number": next_version_number,
+            "name": request.name or f"V{next_version_number}",
+            "video_url": request.video_url,
+            "video_provider": request.video_provider,
+            "external_video_id": request.external_video_id or "",
+            "thumbnail_url": request.thumbnail_url,
+            "duration_seconds": request.duration_seconds,
+            "created_by_user_id": user["id"],
+        }
+
+        supabase.table("backlot_review_versions").insert(version_data).execute()
+
+        # Automatically set as active version
+        supabase.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", asset_id).execute()
+
+        result = supabase.table("backlot_review_versions").select("*").eq("id", version_id).execute()
+
+        return {"version": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating review version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/review/versions/{version_id}/make-active")
+async def make_version_active(
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """Set a version as the active version for its asset"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        version = await verify_review_version_access(supabase, version_id, user["id"], require_edit=True)
+
+        supabase.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", version["asset_id"]).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error making version active: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/versions/{version_id}")
+async def delete_review_version(
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a review version"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        version = await verify_review_version_access(supabase, version_id, user["id"], require_edit=True)
+
+        # Check if this is the only version
+        versions_count = supabase.table("backlot_review_versions").select("id", count="exact").eq("asset_id", version["asset_id"]).execute()
+        if versions_count.count <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete the only version. Delete the asset instead.")
+
+        # Check if this is the active version
+        asset = supabase.table("backlot_review_assets").select("active_version_id").eq("id", version["asset_id"]).execute()
+        if asset.data and asset.data[0]["active_version_id"] == version_id:
+            # Set another version as active
+            other_version = supabase.table("backlot_review_versions").select("id").eq("asset_id", version["asset_id"]).neq("id", version_id).order("version_number", desc=True).limit(1).execute()
+            if other_version.data:
+                supabase.table("backlot_review_assets").update({"active_version_id": other_version.data[0]["id"]}).eq("id", version["asset_id"]).execute()
+
+        supabase.table("backlot_review_versions").delete().eq("id", version_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting review version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Review Note Endpoints
+# =====================================================
+
+@router.get("/review/versions/{version_id}/notes")
+async def list_version_notes(
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """List all notes for a version"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_version_access(supabase, version_id, user["id"])
+
+        notes_response = supabase.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False, nullsfirst=False).execute()
+
+        notes = notes_response.data or []
+
+        # Enrich with user data and replies
+        for note in notes:
+            note["created_by_user"] = enrich_user_data(supabase, note["created_by_user_id"])
+
+            # Get replies
+            replies_response = supabase.table("backlot_review_note_replies").select("*").eq("note_id", note["id"]).order("created_at", desc=False).execute()
+            note["replies"] = replies_response.data or []
+
+            for reply in note["replies"]:
+                reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+
+        return {"notes": notes}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/review/versions/{version_id}/notes")
+async def create_review_note(
+    version_id: str,
+    request: ReviewNoteCreate,
+    authorization: str = Header(None)
+):
+    """Create a new note on a version"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_version_access(supabase, version_id, user["id"])
+
+        note_id = str(uuid.uuid4())
+        note_data = {
+            "id": note_id,
+            "version_id": version_id,
+            "timecode_seconds": request.timecode_seconds,
+            "timecode_end_seconds": request.timecode_end_seconds,
+            "content": request.content,
+            "drawing_data": request.drawing_data,
+            "created_by_user_id": user["id"],
+        }
+
+        supabase.table("backlot_review_notes").insert(note_data).execute()
+
+        result = supabase.table("backlot_review_notes").select("*").eq("id", note_id).execute()
+        note = result.data[0] if result.data else None
+
+        if note:
+            note["created_by_user"] = enrich_user_data(supabase, note["created_by_user_id"])
+            note["replies"] = []
+
+        return {"note": note}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/review/notes/{note_id}")
+async def update_review_note(
+    note_id: str,
+    request: ReviewNoteUpdate,
+    authorization: str = Header(None)
+):
+    """Update a review note"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        note = await verify_review_note_access(supabase, note_id, user["id"], require_edit=True)
+
+        update_data = {}
+        if request.content is not None:
+            update_data["content"] = request.content
+        if request.drawing_data is not None:
+            update_data["drawing_data"] = request.drawing_data
+        if request.is_resolved is not None:
+            update_data["is_resolved"] = request.is_resolved
+
+        if update_data:
+            supabase.table("backlot_review_notes").update(update_data).eq("id", note_id).execute()
+
+        result = supabase.table("backlot_review_notes").select("*").eq("id", note_id).execute()
+        updated_note = result.data[0] if result.data else None
+
+        if updated_note:
+            updated_note["created_by_user"] = enrich_user_data(supabase, updated_note["created_by_user_id"])
+            # Get replies
+            replies_response = supabase.table("backlot_review_note_replies").select("*").eq("note_id", note_id).order("created_at", desc=False).execute()
+            updated_note["replies"] = replies_response.data or []
+            for reply in updated_note["replies"]:
+                reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+
+        return {"note": updated_note}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/notes/{note_id}")
+async def delete_review_note(
+    note_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a review note"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_note_access(supabase, note_id, user["id"], require_edit=True)
+
+        supabase.table("backlot_review_notes").delete().eq("id", note_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Review Note Reply Endpoints
+# =====================================================
+
+@router.post("/review/notes/{note_id}/replies")
+async def create_note_reply(
+    note_id: str,
+    request: ReviewNoteReplyCreate,
+    authorization: str = Header(None)
+):
+    """Create a reply to a note"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        await verify_review_note_access(supabase, note_id, user["id"])
+
+        reply_id = str(uuid.uuid4())
+        reply_data = {
+            "id": reply_id,
+            "note_id": note_id,
+            "content": request.content,
+            "created_by_user_id": user["id"],
+        }
+
+        supabase.table("backlot_review_note_replies").insert(reply_data).execute()
+
+        result = supabase.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
+        reply = result.data[0] if result.data else None
+
+        if reply:
+            reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+
+        return {"reply": reply}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating reply: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/replies/{reply_id}")
+async def delete_note_reply(
+    reply_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a reply (only owner can delete)"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get reply and verify ownership
+        reply_response = supabase.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
+        if not reply_response.data:
+            raise HTTPException(status_code=404, detail="Reply not found")
+
+        reply = reply_response.data[0]
+        if reply["created_by_user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="You can only delete your own replies")
+
+        supabase.table("backlot_review_note_replies").delete().eq("id", reply_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting reply: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Note to Task Integration
+# =====================================================
+
+@router.post("/review/notes/{note_id}/create-task")
+async def create_task_from_note(
+    note_id: str,
+    request: CreateTaskFromNoteRequest,
+    authorization: str = Header(None)
+):
+    """Create a task from a review note"""
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        note = await verify_review_note_access(supabase, note_id, user["id"])
+
+        # Verify task list access
+        await verify_task_list_access(supabase, request.task_list_id, user["id"], require_edit=True)
+
+        # Get note details for task description
+        version_response = supabase.table("backlot_review_versions").select(
+            "*, backlot_review_assets(id, name, project_id)"
+        ).eq("id", note["version_id"]).execute()
+
+        version = version_response.data[0] if version_response.data else None
+        asset_name = version["backlot_review_assets"]["name"] if version else "Unknown"
+
+        # Build task title
+        task_title = request.title or note["content"][:100]  # Truncate if too long
+        if note["timecode_seconds"] is not None:
+            # Format timecode as MM:SS
+            minutes = int(note["timecode_seconds"] // 60)
+            seconds = int(note["timecode_seconds"] % 60)
+            task_title = f"[{minutes:02d}:{seconds:02d}] {task_title}"
+
+        # Build task description with link back to review
+        task_description = f"From review note on \"{asset_name}\":\n\n{note['content']}"
+
+        # Create the task
+        task_id = str(uuid.uuid4())
+        task_data = {
+            "id": task_id,
+            "task_list_id": request.task_list_id,
+            "title": task_title,
+            "description": task_description,
+            "priority": request.priority or "medium",
+            "status": "todo",
+            "created_by_user_id": user["id"],
+            "assignee_user_id": request.assignee_user_id,
+        }
+
+        supabase.table("backlot_tasks").insert(task_data).execute()
+
+        # Update note with linked task ID
+        supabase.table("backlot_review_notes").update({"linked_task_id": task_id}).eq("id", note_id).execute()
+
+        # Get the created task
+        task_result = supabase.table("backlot_tasks").select("*").eq("id", task_id).execute()
+
+        return {"task": task_result.data[0] if task_result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating task from note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PROJECT-LEVEL SCRIPT BREAKDOWN ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/script/breakdown")
+async def get_project_breakdown(
+    project_id: str,
+    scene_id: Optional[str] = None,
+    type_filter: Optional[str] = None,
+    department_filter: Optional[str] = None,
+    stripboard_day: Optional[int] = None,
+    authorization: str = Header(None)
+):
+    """Get all breakdown items for a project with optional filters
+
+    Query params:
+    - scene_id: Filter by specific scene
+    - type_filter: Filter by breakdown type (cast, prop, etc.)
+    - department_filter: Filter by department
+    - stripboard_day: Filter by stripboard day number
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Get all scenes for project
+        scenes_response = supabase.table("backlot_scenes").select(
+            "id, scene_number, slugline, page_length, int_ext, day_night, sequence"
+        ).eq("project_id", project_id).order("sequence").execute()
+
+        scenes = {s["id"]: s for s in (scenes_response.data or [])}
+        scene_ids = list(scenes.keys())
+
+        if not scene_ids:
+            return {
+                "breakdown_items": [],
+                "scenes": [],
+                "grouped_by_type": {},
+                "grouped_by_department": {},
+                "grouped_by_scene": {}
+            }
+
+        # Build breakdown query
+        query = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
+
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if type_filter:
+            query = query.eq("type", type_filter)
+        if department_filter:
+            query = query.eq("department", department_filter)
+        if stripboard_day is not None:
+            query = query.eq("stripboard_day", stripboard_day)
+
+        breakdown_response = query.order("type").execute()
+        breakdown_items = breakdown_response.data or []
+
+        # Add scene info to each item
+        for item in breakdown_items:
+            if item["scene_id"] in scenes:
+                item["scene"] = scenes[item["scene_id"]]
+
+        # Get related highlights for each breakdown item
+        item_ids = [item["id"] for item in breakdown_items]
+        if item_ids:
+            highlights_response = supabase.table("backlot_script_highlight_breakdowns").select(
+                "breakdown_item_id, highlight_id"
+            ).in_("breakdown_item_id", item_ids).execute()
+
+            highlight_map = {}
+            for h in (highlights_response.data or []):
+                if h["breakdown_item_id"] not in highlight_map:
+                    highlight_map[h["breakdown_item_id"]] = []
+                highlight_map[h["breakdown_item_id"]].append(h["highlight_id"])
+
+            for item in breakdown_items:
+                item["highlight_ids"] = highlight_map.get(item["id"], [])
+
+        # Group by type
+        grouped_by_type = {}
+        for item in breakdown_items:
+            item_type = item["type"]
+            if item_type not in grouped_by_type:
+                grouped_by_type[item_type] = []
+            grouped_by_type[item_type].append(item)
+
+        # Group by department
+        grouped_by_department = {}
+        for item in breakdown_items:
+            dept = item.get("department") or "unassigned"
+            if dept not in grouped_by_department:
+                grouped_by_department[dept] = []
+            grouped_by_department[dept].append(item)
+
+        # Group by scene
+        grouped_by_scene = {}
+        for item in breakdown_items:
+            sid = item["scene_id"]
+            if sid not in grouped_by_scene:
+                scene = scenes.get(sid, {})
+                grouped_by_scene[sid] = {
+                    "scene": scene,
+                    "items": []
+                }
+            grouped_by_scene[sid]["items"].append(item)
+
+        return {
+            "breakdown_items": breakdown_items,
+            "scenes": list(scenes.values()),
+            "grouped_by_type": grouped_by_type,
+            "grouped_by_department": grouped_by_department,
+            "grouped_by_scene": grouped_by_scene,
+            "project_title": project_response.data[0]["title"]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching project breakdown: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script/breakdown/summary")
+async def get_project_breakdown_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get breakdown summary stats for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Get scene IDs
+        scenes_response = supabase.table("backlot_scenes").select("id").eq("project_id", project_id).execute()
+        scene_ids = [s["id"] for s in (scenes_response.data or [])]
+
+        if not scene_ids:
+            return {
+                "total_items": 0,
+                "by_type": {},
+                "by_department": {},
+                "scenes_with_breakdown": 0
+            }
+
+        # Get all breakdown items
+        breakdown_response = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids).execute()
+        items = breakdown_response.data or []
+
+        # Count by type
+        by_type = {}
+        for item in items:
+            t = item["type"]
+            if t not in by_type:
+                by_type[t] = 0
+            by_type[t] += 1
+
+        # Count by department
+        by_department = {}
+        for item in items:
+            d = item.get("department") or "unassigned"
+            if d not in by_department:
+                by_department[d] = 0
+            by_department[d] += 1
+
+        # Scenes with at least one breakdown item
+        scenes_with_breakdown = len(set(item["scene_id"] for item in items))
+
+        return {
+            "total_items": len(items),
+            "by_type": by_type,
+            "by_department": by_department,
+            "scenes_with_breakdown": scenes_with_breakdown,
+            "total_scenes": len(scene_ids)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching breakdown summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script/breakdown/pdf")
+async def export_project_breakdown_pdf(
+    project_id: str,
+    scene_id: Optional[str] = None,
+    type_filter: Optional[str] = None,
+    department_filter: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Export project breakdown as PDF
+
+    If scene_id is provided, exports just that scene's breakdown.
+    Otherwise, exports all scenes with breakdown items.
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_title = project_response.data[0]["title"]
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Get scenes
+        scenes_response = supabase.table("backlot_scenes").select(
+            "id, scene_number, slugline, page_length, int_ext, day_night, description, sequence"
+        ).eq("project_id", project_id).order("sequence").execute()
+
+        scenes = {s["id"]: s for s in (scenes_response.data or [])}
+        scene_ids = list(scenes.keys())
+
+        if not scene_ids:
+            raise HTTPException(status_code=404, detail="No scenes found for this project")
+
+        # Build breakdown query
+        query = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
+
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if type_filter:
+            query = query.eq("type", type_filter)
+        if department_filter:
+            query = query.eq("department", department_filter)
+
+        breakdown_response = query.order("type").execute()
+        breakdown_items = breakdown_response.data or []
+
+        if not breakdown_items:
+            raise HTTPException(status_code=404, detail="No breakdown items found")
+
+        # Single scene export
+        if scene_id:
+            scene = scenes.get(scene_id)
+            if not scene:
+                raise HTTPException(status_code=404, detail="Scene not found")
+
+            pdf_bytes = generate_breakdown_pdf(
+                project_title=project_title,
+                scene=scene,
+                breakdown_items=breakdown_items,
+            )
+
+            filename = f"breakdown_scene_{scene.get('scene_number', scene_id)}.pdf"
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+
+        # Multi-scene export
+        # Group items by scene
+        scenes_with_breakdown = []
+        items_by_scene = {}
+        for item in breakdown_items:
+            sid = item["scene_id"]
+            if sid not in items_by_scene:
+                items_by_scene[sid] = []
+            items_by_scene[sid].append(item)
+
+        for sid in scene_ids:
+            if sid in items_by_scene:
+                scenes_with_breakdown.append({
+                    "scene": scenes[sid],
+                    "items": items_by_scene[sid]
+                })
+
+        # Generate summary stats
+        by_type = {}
+        by_department = {}
+        for item in breakdown_items:
+            t = item["type"]
+            d = item.get("department") or "unassigned"
+            by_type[t] = by_type.get(t, 0) + 1
+            by_department[d] = by_department.get(d, 0) + 1
+
+        summary_stats = {
+            "total_items": len(breakdown_items),
+            "by_type": by_type,
+            "by_department": by_department,
+            "total_scenes": len(scene_ids),
+            "scenes_with_breakdown": len(scenes_with_breakdown)
+        }
+
+        # Build filter info string
+        filter_parts = []
+        if type_filter:
+            filter_parts.append(f"Type: {type_filter}")
+        if department_filter:
+            filter_parts.append(f"Department: {department_filter}")
+        filter_info = " | ".join(filter_parts) if filter_parts else None
+
+        pdf_bytes = generate_project_breakdown_pdf(
+            project_title=project_title,
+            scenes_with_breakdown=scenes_with_breakdown,
+            summary_stats=summary_stats,
+            filter_info=filter_info,
+        )
+
+        filename = f"breakdown_{project_title.replace(' ', '_')}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
+    except Exception as e:
+        print(f"Error generating breakdown PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scenes/{scene_id}/breakdown/pdf")
+async def export_scene_breakdown_pdf(
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Export a single scene's breakdown as PDF"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Get scene and verify access
+        scene_response = supabase.table("backlot_scenes").select(
+            "id, scene_number, slugline, page_length, int_ext, day_night, description, project_id"
+        ).eq("id", scene_id).single().execute()
+
+        if not scene_response.data:
+            raise HTTPException(status_code=404, detail="Scene not found")
+
+        scene = scene_response.data
+        project_id = scene["project_id"]
+
+        # Check access
+        project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project_title = project_response.data[0]["title"]
+
+        is_owner = project_response.data[0]["owner_id"] == user_id
+        if not is_owner:
+            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Get breakdown items for this scene
+        breakdown_response = supabase.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
+        breakdown_items = breakdown_response.data or []
+
+        if not breakdown_items:
+            raise HTTPException(status_code=404, detail="No breakdown items found for this scene")
+
+        pdf_bytes = generate_breakdown_pdf(
+            project_title=project_title,
+            scene=scene,
+            breakdown_items=breakdown_items,
+        )
+
+        filename = f"breakdown_scene_{scene.get('scene_number', scene_id)}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
+    except Exception as e:
+        print(f"Error generating scene breakdown PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PROJECT-LEVEL SCRIPT NOTES ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/script/notes")
+async def get_project_script_notes(
+    project_id: str,
+    script_id: Optional[str] = None,
+    page_number: Optional[int] = None,
+    note_type: Optional[str] = None,
+    resolved: Optional[bool] = None,
+    scene_id: Optional[str] = None,
+    author_user_id: Optional[str] = None,
+    group_by: Optional[str] = None,  # page, scene, type, author
+    authorization: str = Header(None)
+):
+    """Get all script page notes for a project with optional filters
+
+    Query params:
+    - script_id: Filter by specific script
+    - page_number: Filter by page number
+    - note_type: Filter by note type (general, direction, production, etc.)
+    - resolved: Filter by resolved status
+    - scene_id: Filter by linked scene
+    - author_user_id: Filter by note author
+    - group_by: How to group results (page, scene, type, author)
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Build query
+        query = supabase.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
+
+        if script_id:
+            query = query.eq("script_id", script_id)
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+        if note_type and note_type != "all":
+            query = query.eq("note_type", note_type)
+        if resolved is not None:
+            query = query.eq("resolved", resolved)
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if author_user_id:
+            query = query.eq("author_user_id", author_user_id)
+
+        query = query.order("page_number").order("created_at")
+        notes_result = query.execute()
+        notes = notes_result.data or []
+
+        # Get scripts for this project
+        scripts_response = supabase.table("backlot_scripts").select("id, title, version").eq("project_id", project_id).execute()
+        scripts = {s["id"]: s for s in (scripts_response.data or [])}
+
+        # Get scenes for linking
+        scenes_response = supabase.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
+        scenes = {s["id"]: s for s in (scenes_response.data or [])}
+
+        # Get author profiles
+        author_ids = list(set(n.get("author_user_id") for n in notes if n.get("author_user_id")))
+        authors = {}
+        if author_ids:
+            authors_response = supabase.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
+            authors = {a["id"]: a for a in (authors_response.data or [])}
+
+        # Enrich notes with joined data
+        for note in notes:
+            note["script"] = scripts.get(note.get("script_id"))
+            note["scene"] = scenes.get(note.get("scene_id"))
+            note["author"] = authors.get(note.get("author_user_id"))
+
+        # Group if requested
+        grouped = None
+        if group_by:
+            grouped = {}
+            if group_by == "page":
+                for note in notes:
+                    key = note.get("page_number", 0)
+                    if key not in grouped:
+                        grouped[key] = []
+                    grouped[key].append(note)
+            elif group_by == "scene":
+                for note in notes:
+                    scene_id = note.get("scene_id")
+                    scene = scenes.get(scene_id, {})
+                    key = scene.get("scene_number", "No Scene") if scene_id else "No Scene"
+                    if key not in grouped:
+                        grouped[key] = []
+                    grouped[key].append(note)
+            elif group_by == "type":
+                for note in notes:
+                    key = note.get("note_type", "general")
+                    if key not in grouped:
+                        grouped[key] = []
+                    grouped[key].append(note)
+            elif group_by == "author":
+                for note in notes:
+                    author = authors.get(note.get("author_user_id"), {})
+                    key = author.get("full_name", "Unknown")
+                    if key not in grouped:
+                        grouped[key] = []
+                    grouped[key].append(note)
+
+        return {
+            "notes": notes,
+            "grouped": grouped,
+            "scripts": list(scripts.values()),
+            "scenes": list(scenes.values()),
+            "authors": list(authors.values()),
+            "project_title": project_response.data[0]["title"],
+            "total_count": len(notes),
+            "unresolved_count": sum(1 for n in notes if not n.get("resolved", False))
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching project notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script/notes/summary")
+async def get_project_notes_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get notes summary stats for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Get all notes for project
+        notes_response = supabase.table("backlot_script_page_notes").select(
+            "page_number, note_type, resolved, scene_id, author_user_id"
+        ).eq("project_id", project_id).execute()
+        notes = notes_response.data or []
+
+        if not notes:
+            return {
+                "total_notes": 0,
+                "unresolved_count": 0,
+                "resolved_count": 0,
+                "by_type": {},
+                "by_page": [],
+                "pages_with_notes": 0,
+                "unique_authors": 0
+            }
+
+        # Count by type
+        by_type = {}
+        for note in notes:
+            t = note.get("note_type", "general")
+            if t not in by_type:
+                by_type[t] = {"total": 0, "unresolved": 0}
+            by_type[t]["total"] += 1
+            if not note.get("resolved", False):
+                by_type[t]["unresolved"] += 1
+
+        # Summary by page
+        page_summary = {}
+        for note in notes:
+            pg = note.get("page_number", 0)
+            if pg not in page_summary:
+                page_summary[pg] = {
+                    "page_number": pg,
+                    "total_count": 0,
+                    "unresolved_count": 0,
+                    "note_types": []
+                }
+            page_summary[pg]["total_count"] += 1
+            if not note.get("resolved", False):
+                page_summary[pg]["unresolved_count"] += 1
+            note_type = note.get("note_type", "general")
+            if note_type not in page_summary[pg]["note_types"]:
+                page_summary[pg]["note_types"].append(note_type)
+
+        unresolved_count = sum(1 for n in notes if not n.get("resolved", False))
+        unique_authors = len(set(n.get("author_user_id") for n in notes if n.get("author_user_id")))
+
+        return {
+            "total_notes": len(notes),
+            "unresolved_count": unresolved_count,
+            "resolved_count": len(notes) - unresolved_count,
+            "by_type": by_type,
+            "by_page": list(page_summary.values()),
+            "pages_with_notes": len(page_summary),
+            "unique_authors": unique_authors
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching notes summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script/notes/pdf")
+async def export_project_notes_pdf(
+    project_id: str,
+    script_id: Optional[str] = None,
+    note_type: Optional[str] = None,
+    resolved: Optional[bool] = None,
+    scene_id: Optional[str] = None,
+    author_user_id: Optional[str] = None,
+    group_by: str = "page",  # page, scene, type, author
+    authorization: str = Header(None)
+):
+    """Export project script notes as PDF
+
+    Query params:
+    - script_id: Filter by specific script
+    - note_type: Filter by note type
+    - resolved: Filter by resolved status
+    - scene_id: Filter by linked scene
+    - author_user_id: Filter by author
+    - group_by: How to group notes in PDF (page, scene, type, author)
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    supabase = get_supabase_admin_client()
+
+    # Verify project access
+    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_title = project_response.data[0]["title"]
+
+    is_owner = project_response.data[0]["owner_id"] == user_id
+    if not is_owner:
+        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        # Build query
+        query = supabase.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
+
+        if script_id:
+            query = query.eq("script_id", script_id)
+        if note_type and note_type != "all":
+            query = query.eq("note_type", note_type)
+        if resolved is not None:
+            query = query.eq("resolved", resolved)
+        if scene_id:
+            query = query.eq("scene_id", scene_id)
+        if author_user_id:
+            query = query.eq("author_user_id", author_user_id)
+
+        query = query.order("page_number").order("created_at")
+        notes_result = query.execute()
+        notes = notes_result.data or []
+
+        if not notes:
+            raise HTTPException(status_code=404, detail="No notes found matching filters")
+
+        # Get script info for title
+        script_title = "All Scripts"
+        if script_id:
+            script_response = supabase.table("backlot_scripts").select("title, version").eq("id", script_id).single().execute()
+            if script_response.data:
+                script_title = script_response.data.get("title", "Script")
+                if script_response.data.get("version"):
+                    script_title += f" ({script_response.data['version']})"
+
+        # Get scenes
+        scenes_response = supabase.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
+        scenes_by_id = {s["id"]: s for s in (scenes_response.data or [])}
+
+        # Get author profiles
+        author_ids = list(set(n.get("author_user_id") for n in notes if n.get("author_user_id")))
+        authors_by_id = {}
+        if author_ids:
+            authors_response = supabase.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
+            authors_by_id = {a["id"]: a for a in (authors_response.data or [])}
+
+        # Build filter info string
+        filter_parts = []
+        if script_id:
+            filter_parts.append(f"Script: {script_title}")
+        if note_type and note_type != "all":
+            filter_parts.append(f"Type: {note_type}")
+        if resolved is not None:
+            filter_parts.append(f"Status: {'Resolved' if resolved else 'Unresolved'}")
+        if author_user_id and author_user_id in authors_by_id:
+            filter_parts.append(f"Author: {authors_by_id[author_user_id].get('full_name', 'Unknown')}")
+        filter_info = " | ".join(filter_parts) if filter_parts else None
+
+        # Import and generate PDF
+        from app.services.notes_pdf_service import generate_notes_pdf
+
+        pdf_bytes = generate_notes_pdf(
+            project_title=project_title,
+            script_title=script_title,
+            notes=notes,
+            scenes_by_id=scenes_by_id,
+            authors_by_id=authors_by_id,
+            group_by=group_by,
+            filter_info=filter_info,
+        )
+
+        filename = f"script_notes_{project_title.replace(' ', '_')}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
+    except Exception as e:
+        print(f"Error generating notes PDF: {e}")
         raise HTTPException(status_code=500, detail=str(e))

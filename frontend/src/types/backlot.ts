@@ -947,6 +947,7 @@ export type BacklotWorkspaceView =
   | 'call-sheets'
   | 'casting'
   | 'tasks'
+  | 'review'
   | 'locations'
   | 'gear'
   | 'budget'
@@ -4417,4 +4418,323 @@ export const DEFAULT_TASK_LABEL_COLORS = [
   '#d946ef', // fuchsia
   '#ec4899', // pink
   '#64748b', // slate
+];
+
+// =====================================================
+// Review System Types (Frame.io-style)
+// =====================================================
+
+export type VideoProvider = 'placeholder' | 'vimeo' | 'youtube';
+
+export interface ReviewVersion {
+  id: string;
+  asset_id: string;
+  version_number: number;
+  name: string | null;
+  video_url: string;
+  video_provider: VideoProvider;
+  external_video_id: string | null;
+  thumbnail_url: string | null;
+  duration_seconds: number | null;
+  created_by_user_id: string;
+  created_at: string;
+  // Computed
+  note_count?: number;
+}
+
+export interface ReviewAsset {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  thumbnail_url: string | null;
+  active_version_id: string | null;
+  linked_scene_id: string | null;
+  linked_shot_list_id: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  active_version: ReviewVersion | null;
+  versions?: ReviewVersion[];
+  // Computed
+  version_count?: number;
+  note_count?: number;
+}
+
+export interface ReviewNoteUser {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
+export interface ReviewNoteReply {
+  id: string;
+  note_id: string;
+  content: string;
+  created_by_user_id: string;
+  created_at: string;
+  // Joined
+  created_by_user: ReviewNoteUser | null;
+}
+
+export interface ReviewNote {
+  id: string;
+  version_id: string;
+  timecode_seconds: number | null;
+  timecode_end_seconds: number | null;
+  content: string;
+  drawing_data: Record<string, unknown> | null;
+  is_resolved: boolean;
+  linked_task_id: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  created_by_user: ReviewNoteUser | null;
+  replies: ReviewNoteReply[];
+}
+
+// Input types for creating/updating
+export interface ReviewAssetInput {
+  name: string;
+  description?: string | null;
+  video_url: string;
+  video_provider?: VideoProvider;
+  external_video_id?: string | null;
+  thumbnail_url?: string | null;
+  duration_seconds?: number | null;
+  linked_scene_id?: string | null;
+  linked_shot_list_id?: string | null;
+}
+
+export interface ReviewAssetUpdateInput {
+  name?: string;
+  description?: string | null;
+  thumbnail_url?: string | null;
+  linked_scene_id?: string | null;
+  linked_shot_list_id?: string | null;
+}
+
+export interface ReviewVersionInput {
+  name?: string | null;
+  video_url: string;
+  video_provider?: VideoProvider;
+  external_video_id?: string | null;
+  thumbnail_url?: string | null;
+  duration_seconds?: number | null;
+}
+
+export interface ReviewNoteInput {
+  timecode_seconds?: number | null;
+  timecode_end_seconds?: number | null;
+  content: string;
+  drawing_data?: Record<string, unknown> | null;
+}
+
+export interface ReviewNoteUpdateInput {
+  content?: string;
+  drawing_data?: Record<string, unknown> | null;
+  is_resolved?: boolean;
+}
+
+export interface CreateTaskFromNoteInput {
+  task_list_id: string;
+  title?: string;
+  priority?: BacklotTaskPriority;
+  assignee_user_id?: string | null;
+}
+
+// =====================================================
+// Review Player Adapter Interface
+// =====================================================
+
+/**
+ * Abstract interface for video players.
+ * Allows swapping between placeholder HTML5 player and Vimeo SDK player.
+ */
+export interface ReviewPlayerAdapter {
+  // Lifecycle
+  initialize(container: HTMLElement, videoUrl: string): Promise<void>;
+  destroy(): void;
+
+  // Playback control
+  play(): void;
+  pause(): void;
+  seekTo(seconds: number): void;
+
+  // State getters
+  getCurrentTime(): number;
+  getDuration(): number;
+  isPaused(): boolean;
+
+  // Event handlers
+  onTimeUpdate(callback: (currentTime: number) => void): void;
+  onPlay(callback: () => void): void;
+  onPause(callback: () => void): void;
+  onSeeked(callback: (currentTime: number) => void): void;
+  onDurationChange(callback: (duration: number) => void): void;
+  onEnded(callback: () => void): void;
+}
+
+// Helper functions
+export function formatTimecode(seconds: number | null): string {
+  if (seconds === null || seconds === undefined) return '--:--';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+export function parseTimecode(timecode: string): number | null {
+  const parts = timecode.split(':');
+  if (parts.length !== 2) return null;
+  const mins = parseInt(parts[0], 10);
+  const secs = parseInt(parts[1], 10);
+  if (isNaN(mins) || isNaN(secs)) return null;
+  return mins * 60 + secs;
+}
+
+// =============================================================================
+// SCRIPT BREAKDOWN TAB TYPES
+// =============================================================================
+
+// Department type for breakdown items
+export type BacklotBreakdownDepartment =
+  | 'cast'
+  | 'locations'
+  | 'props'
+  | 'wardrobe'
+  | 'makeup'
+  | 'sfx'
+  | 'vfx'
+  | 'background'
+  | 'stunts'
+  | 'camera'
+  | 'sound';
+
+// Scene breakdown item (matches DB schema for backlot_scene_breakdown_items)
+export interface BacklotSceneBreakdownItem {
+  id: string;
+  scene_id: string;
+  type: BacklotBreakdownItemType;
+  label: string;
+  quantity: number;
+  notes: string | null;
+  linked_entity_id: string | null;
+  linked_entity_type: string | null;
+  task_generated: boolean;
+  task_id: string | null;
+  department: BacklotBreakdownDepartment | null;
+  stripboard_day: number | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data from API
+  scene?: BacklotScene;
+  highlight_ids?: string[];
+}
+
+// Input for creating/updating a breakdown item
+export interface BreakdownItemInput {
+  type: BacklotBreakdownItemType;
+  label: string;
+  quantity?: number;
+  notes?: string;
+  linked_entity_id?: string;
+  linked_entity_type?: string;
+  department?: BacklotBreakdownDepartment;
+  stripboard_day?: number;
+}
+
+// Project breakdown response from API
+export interface ProjectBreakdownResponse {
+  breakdown_items: BacklotSceneBreakdownItem[];
+  scenes: BacklotScene[];
+  grouped_by_type: Record<string, BacklotSceneBreakdownItem[]>;
+  grouped_by_department: Record<string, BacklotSceneBreakdownItem[]>;
+  grouped_by_scene: Record<string, {
+    scene: BacklotScene;
+    items: BacklotSceneBreakdownItem[];
+  }>;
+  project_title: string;
+}
+
+// Breakdown summary stats
+export interface BreakdownSummaryStats {
+  total_items: number;
+  by_type: Record<string, number>;
+  by_department: Record<string, number>;
+  scenes_with_breakdown: number;
+  total_scenes: number;
+}
+
+// Labels for breakdown item types
+export const BREAKDOWN_TYPE_LABELS: Record<BacklotBreakdownItemType, string> = {
+  cast: 'Cast',
+  background: 'Background/Extras',
+  stunt: 'Stunts',
+  location: 'Locations',
+  prop: 'Props',
+  set_dressing: 'Set Dressing',
+  wardrobe: 'Wardrobe',
+  makeup: 'Makeup/Hair',
+  sfx: 'Special Effects',
+  vfx: 'Visual Effects',
+  vehicle: 'Vehicles',
+  animal: 'Animals',
+  greenery: 'Greenery',
+  special_equipment: 'Special Equipment',
+  sound: 'Sound',
+  music: 'Music',
+  other: 'Other',
+};
+
+// Labels for departments
+export const BREAKDOWN_DEPARTMENT_LABELS: Record<BacklotBreakdownDepartment, string> = {
+  cast: 'Cast',
+  locations: 'Locations',
+  props: 'Props',
+  wardrobe: 'Wardrobe',
+  makeup: 'Makeup/Hair',
+  sfx: 'SFX',
+  vfx: 'VFX',
+  background: 'Background',
+  stunts: 'Stunts',
+  camera: 'Camera',
+  sound: 'Sound',
+};
+
+// All available breakdown departments
+export const BREAKDOWN_DEPARTMENTS: BacklotBreakdownDepartment[] = [
+  'cast',
+  'locations',
+  'props',
+  'wardrobe',
+  'makeup',
+  'sfx',
+  'vfx',
+  'background',
+  'stunts',
+  'camera',
+  'sound',
+];
+
+// All available breakdown item types
+export const BREAKDOWN_ITEM_TYPES: BacklotBreakdownItemType[] = [
+  'cast',
+  'background',
+  'stunt',
+  'location',
+  'prop',
+  'set_dressing',
+  'wardrobe',
+  'makeup',
+  'sfx',
+  'vfx',
+  'vehicle',
+  'animal',
+  'greenery',
+  'special_equipment',
+  'sound',
+  'music',
+  'other',
 ];

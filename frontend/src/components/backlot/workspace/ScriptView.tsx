@@ -42,6 +42,7 @@ import {
   GitBranch,
   History,
   ChevronDown,
+  StickyNote,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -61,7 +62,6 @@ import {
   useScripts,
   useScenes,
   useSceneMutations,
-  useCoverageStats,
   useLocationNeeds,
   useGenerateTasks,
   useGenerateBudgetSuggestions,
@@ -82,10 +82,11 @@ import {
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
-import CoverageBoard from './CoverageBoard';
 import ScriptPDFViewer from './ScriptPDFViewer';
 import ScenePageMapper from './ScenePageMapper';
 import ScriptEditorPanel from './ScriptEditorPanel';
+import ScriptBreakdownPanel from './ScriptBreakdownPanel';
+import ScriptNotesPanel from './ScriptNotesPanel';
 
 interface ScriptViewProps {
   projectId: string;
@@ -145,7 +146,7 @@ const SceneCard: React.FC<{
   onStatusChange: (id: string, status: BacklotSceneCoverageStatus) => void;
   onClick: () => void;
 }> = ({ scene, canEdit, onStatusChange, onClick }) => {
-  const config = COVERAGE_CONFIG[scene.coverage_status];
+  const config = COVERAGE_CONFIG[scene.coverage_status] || COVERAGE_CONFIG.not_scheduled;
 
   return (
     <div
@@ -417,134 +418,6 @@ const ScriptVersionSelector: React.FC<{
   );
 };
 
-// Coverage Stats Dashboard
-const CoverageStatsDashboard: React.FC<{
-  projectId: string;
-}> = ({ projectId }) => {
-  const { data: stats, isLoading } = useCoverageStats(projectId);
-
-  if (isLoading) {
-    return (
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-24" />
-        ))}
-      </div>
-    );
-  }
-
-  if (!stats) return null;
-
-  const completionPercent = stats.total_scenes > 0
-    ? Math.round((stats.shot / stats.total_scenes) * 100)
-    : 0;
-
-  return (
-    <div className="space-y-4">
-      {/* Progress Overview */}
-      <Card className="bg-charcoal-black border-muted-gray/20">
-        <CardContent className="pt-6">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm text-muted-gray">Coverage Progress</span>
-            <span className="text-lg font-bold text-bone-white">{completionPercent}%</span>
-          </div>
-          <Progress value={completionPercent} className="h-2" />
-          <div className="flex justify-between mt-2 text-xs text-muted-gray">
-            <span>{stats.shot} / {stats.total_scenes} scenes shot</span>
-            <span>{stats.pages_shot?.toFixed(1) || 0} / {stats.total_pages?.toFixed(1) || 0} pages</span>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Status Breakdown */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-full bg-muted-gray/20">
-                <Clock className="w-4 h-4 text-muted-gray" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-bone-white">{stats.not_scheduled}</div>
-                <div className="text-xs text-muted-gray">Not Scheduled</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-full bg-blue-500/20">
-                <Calendar className="w-4 h-4 text-blue-400" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-bone-white">{stats.scheduled}</div>
-                <div className="text-xs text-muted-gray">Scheduled</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-full bg-green-500/20">
-                <CheckCircle2 className="w-4 h-4 text-green-400" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-bone-white">{stats.shot}</div>
-                <div className="text-xs text-muted-gray">Shot</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardContent className="pt-4 pb-4">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-full bg-orange-500/20">
-                <AlertCircle className="w-4 h-4 text-orange-400" />
-              </div>
-              <div>
-                <div className="text-2xl font-bold text-bone-white">{stats.needs_pickup}</div>
-                <div className="text-xs text-muted-gray">Needs Pickup</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Location Breakdown */}
-      {stats.scenes_by_location && stats.scenes_by_location.length > 0 && (
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-bone-white flex items-center gap-2">
-              <MapPin className="w-4 h-4" />
-              Scenes by Location
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {stats.scenes_by_location.slice(0, 5).map((loc, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-muted-gray truncate max-w-[200px]">
-                    {loc.location_name || 'TBD'}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-bone-white">{loc.scene_count} scenes</span>
-                    <span className="text-muted-gray text-xs">({loc.page_count} pgs)</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
-};
-
 // Main ScriptView Component
 const ScriptView: React.FC<ScriptViewProps> = ({
   projectId,
@@ -553,7 +426,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   onSceneClick,
 }) => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'scenes' | 'board' | 'coverage' | 'locations'>('scenes');
+  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'editor' | 'scenes' | 'breakdown' | 'notes' | 'locations'>('scenes');
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [coverageFilter, setCoverageFilter] = useState<BacklotSceneCoverageStatus | 'all'>('all');
@@ -725,8 +598,11 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             Editor
           </TabsTrigger>
           <TabsTrigger value="scenes">Scenes</TabsTrigger>
-          <TabsTrigger value="board">Coverage Board</TabsTrigger>
-          <TabsTrigger value="coverage">Coverage Stats</TabsTrigger>
+          <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
+          <TabsTrigger value="notes" className="flex items-center gap-1">
+            <StickyNote className="w-3 h-3" />
+            Notes
+          </TabsTrigger>
           <TabsTrigger value="locations">Location Needs</TabsTrigger>
         </TabsList>
 
@@ -894,27 +770,34 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           )}
         </TabsContent>
 
-        {/* Coverage Board Tab */}
-        <TabsContent value="board" className="mt-6">
-          {activeScript ? (
-            <CoverageBoard
-              projectId={projectId}
-              scriptId={activeScript.id}
-              canEdit={canEdit}
-              onSceneClick={onSceneClick}
-            />
-          ) : (
-            <div className="text-center py-12 text-muted-gray">
-              <Camera className="w-12 h-12 mx-auto mb-4 opacity-40" />
-              <p>No scripts available</p>
-              <p className="text-sm">Import or create a script to use the coverage board</p>
-            </div>
-          )}
+        {/* Breakdown Tab */}
+        <TabsContent value="breakdown" className="mt-6">
+          <ScriptBreakdownPanel
+            projectId={projectId}
+            canEdit={canEdit}
+            onSceneClick={(sceneId) => {
+              // Find the scene and navigate to viewer
+              const scene = scenes.find((s) => s.id === sceneId);
+              if (scene) {
+                setActiveTab('viewer');
+                // The viewer will handle highlighting
+              }
+            }}
+          />
         </TabsContent>
 
-        {/* Coverage Dashboard Tab */}
-        <TabsContent value="coverage" className="mt-6">
-          <CoverageStatsDashboard projectId={projectId} />
+        {/* Notes Tab */}
+        <TabsContent value="notes" className="mt-6">
+          <ScriptNotesPanel
+            projectId={projectId}
+            canEdit={canEdit}
+            onNoteClick={(note, page) => {
+              // Navigate to script viewer at the note's page
+              setActiveTab('viewer');
+              // The ScriptPDFViewer should handle scrolling to the page
+              // This could be enhanced with state to pass the target page
+            }}
+          />
         </TabsContent>
 
         {/* Location Needs Tab */}
@@ -992,7 +875,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                           variant="outline"
                           className={cn(
                             'text-xs cursor-pointer hover:bg-muted-gray/10',
-                            COVERAGE_CONFIG[s.coverage_status].color
+                            (COVERAGE_CONFIG[s.coverage_status] || COVERAGE_CONFIG.not_scheduled).color
                           )}
                           onClick={() => {
                             const scene = scenes.find((sc) => sc.id === s.scene_id);
