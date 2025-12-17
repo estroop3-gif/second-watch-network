@@ -1,5 +1,6 @@
 /**
  * useUpdates - Hook for managing project updates/announcements
+ * Enhanced with visible_to_roles filtering and read tracking
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
@@ -12,6 +13,12 @@ interface UseUpdatesOptions {
   limit?: number;
 }
 
+// Extended update type with read status
+export interface BacklotProjectUpdateWithRead extends BacklotProjectUpdate {
+  visible_to_roles?: string[];
+  has_read?: boolean;
+}
+
 export function useUpdates(options: UseUpdatesOptions) {
   const { projectId, type = 'all', publicOnly = false, limit = 50 } = options;
   const queryClient = useQueryClient();
@@ -22,6 +29,9 @@ export function useUpdates(options: UseUpdatesOptions) {
     queryKey,
     queryFn: async () => {
       if (!projectId) return [];
+
+      const { data: userData } = await supabase.auth.getUser();
+      const currentUserId = userData?.user?.id;
 
       let query = supabase
         .from('backlot_project_updates')
@@ -51,16 +61,30 @@ export function useUpdates(options: UseUpdatesOptions) {
 
       const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
 
+      // Fetch read status for current user
+      let readMap = new Map<string, boolean>();
+      if (currentUserId) {
+        const updateIds = updatesData.map(u => u.id);
+        const { data: reads } = await supabase
+          .from('backlot_project_update_reads')
+          .select('update_id')
+          .eq('user_id', currentUserId)
+          .in('update_id', updateIds);
+
+        reads?.forEach(r => readMap.set(r.update_id, true));
+      }
+
       return updatesData.map(update => ({
         ...update,
         author: profileMap.get(update.created_by) || null,
-      })) as BacklotProjectUpdate[];
+        has_read: readMap.get(update.id) || false,
+      })) as BacklotProjectUpdateWithRead[];
     },
     enabled: !!projectId,
   });
 
   const createUpdate = useMutation({
-    mutationFn: async ({ projectId, ...input }: ProjectUpdateInput & { projectId: string }) => {
+    mutationFn: async ({ projectId, ...input }: ProjectUpdateInput & { projectId: string; visible_to_roles?: string[] }) => {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) throw new Error('Not authenticated');
 
@@ -73,6 +97,7 @@ export function useUpdates(options: UseUpdatesOptions) {
           type: input.type || 'general',
           is_public: input.is_public ?? false,
           attachments: input.attachments || [],
+          visible_to_roles: (input as any).visible_to_roles || [],
           created_by: userData.user.id,
         })
         .select()
@@ -80,6 +105,27 @@ export function useUpdates(options: UseUpdatesOptions) {
 
       if (error) throw error;
       return data as BacklotProjectUpdate;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
+    },
+  });
+
+  const markAsRead = useMutation({
+    mutationFn: async (updateId: string) => {
+      const { data: userData } = await supabase.auth.getUser();
+      if (!userData.user) throw new Error('Not authenticated');
+
+      const { error } = await supabase
+        .from('backlot_project_update_reads')
+        .upsert({
+          update_id: updateId,
+          user_id: userData.user.id,
+        }, {
+          onConflict: 'update_id,user_id',
+        });
+
+      if (error) throw error;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -150,6 +196,7 @@ export function useUpdates(options: UseUpdatesOptions) {
     updateUpdate,
     deleteUpdate,
     togglePublic,
+    markAsRead,
   };
 }
 

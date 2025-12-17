@@ -1,5 +1,6 @@
 /**
  * UpdatesView - Post and manage project updates/announcements
+ * Enhanced with visible_to_roles and read/unread tracking
  */
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -10,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -35,6 +37,10 @@ import {
   Flag,
   Calendar,
   Bell,
+  Eye,
+  EyeOff,
+  Users,
+  Circle,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -42,8 +48,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useUpdates } from '@/hooks/backlot';
+import { useUpdates, BACKLOT_ROLES } from '@/hooks/backlot';
 import { BacklotProjectUpdate, ProjectUpdateInput, BacklotUpdateType } from '@/types/backlot';
+import { BacklotProjectUpdateWithRead } from '@/hooks/backlot/useUpdates';
 import { formatDistanceToNow, format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
@@ -60,20 +67,38 @@ const TYPE_CONFIG: Record<BacklotUpdateType, { label: string; icon: React.Elemen
 };
 
 const UpdateCard: React.FC<{
-  update: BacklotProjectUpdate;
+  update: BacklotProjectUpdateWithRead;
   canEdit: boolean;
-  onEdit: (update: BacklotProjectUpdate) => void;
+  onEdit: (update: BacklotProjectUpdateWithRead) => void;
   onDelete: (id: string) => void;
   onTogglePublic: (id: string, isPublic: boolean) => void;
-}> = ({ update, canEdit, onEdit, onDelete, onTogglePublic }) => {
+  onMarkRead: (id: string) => void;
+}> = ({ update, canEdit, onEdit, onDelete, onTogglePublic, onMarkRead }) => {
   const typeConfig = TYPE_CONFIG[update.type];
   const TypeIcon = typeConfig.icon;
+  const visibleRoles = update.visible_to_roles || [];
+
+  // Auto-mark as read when rendered (if not already read)
+  React.useEffect(() => {
+    if (!update.has_read) {
+      onMarkRead(update.id);
+    }
+  }, [update.id, update.has_read, onMarkRead]);
 
   return (
-    <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
+    <div className={cn(
+      "bg-charcoal-black/50 border rounded-lg p-4 hover:border-muted-gray/40 transition-colors",
+      update.has_read ? "border-muted-gray/20" : "border-accent-yellow/30 bg-accent-yellow/5"
+    )}>
       {/* Header */}
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-start gap-3">
+          {/* Unread indicator */}
+          {!update.has_read && (
+            <div className="mt-1">
+              <Circle className="w-2 h-2 fill-accent-yellow text-accent-yellow" />
+            </div>
+          )}
           <Avatar className="w-10 h-10">
             <AvatarImage src={update.author?.avatar_url || ''} />
             <AvatarFallback>
@@ -81,7 +106,7 @@ const UpdateCard: React.FC<{
             </AvatarFallback>
           </Avatar>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium text-bone-white">
                 {update.author?.display_name || update.author?.full_name || 'Team Member'}
               </span>
@@ -101,9 +126,17 @@ const UpdateCard: React.FC<{
                 </Badge>
               )}
             </div>
-            <span className="text-xs text-muted-gray">
-              {formatDistanceToNow(new Date(update.created_at), { addSuffix: true })}
-            </span>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs text-muted-gray">
+                {formatDistanceToNow(new Date(update.created_at), { addSuffix: true })}
+              </span>
+              {visibleRoles.length > 0 && (
+                <span className="text-xs text-muted-gray flex items-center gap-1">
+                  <Users className="w-3 h-3" />
+                  {visibleRoles.map(r => BACKLOT_ROLES.find(br => br.value === r)?.label || r).join(', ')}
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -167,23 +200,28 @@ const UpdateCard: React.FC<{
   );
 };
 
+interface FormDataWithRoles extends ProjectUpdateInput {
+  visible_to_roles: string[];
+}
+
 const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
   const [typeFilter, setTypeFilter] = useState<BacklotUpdateType | 'all'>('all');
-  const { updates, isLoading, createUpdate, updateUpdate, deleteUpdate, togglePublic } = useUpdates({
+  const { updates, isLoading, createUpdate, updateUpdate, deleteUpdate, togglePublic, markAsRead } = useUpdates({
     projectId,
     type: typeFilter,
   });
 
   const [showForm, setShowForm] = useState(false);
-  const [editingUpdate, setEditingUpdate] = useState<BacklotProjectUpdate | null>(null);
+  const [editingUpdate, setEditingUpdate] = useState<BacklotProjectUpdateWithRead | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Form state
-  const [formData, setFormData] = useState<ProjectUpdateInput>({
+  // Form state with visible_to_roles
+  const [formData, setFormData] = useState<FormDataWithRoles>({
     title: '',
     content: '',
     type: 'general',
     is_public: false,
+    visible_to_roles: [],
   });
 
   const resetForm = () => {
@@ -192,10 +230,11 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
       content: '',
       type: 'general',
       is_public: false,
+      visible_to_roles: [],
     });
   };
 
-  const handleOpenForm = (update?: BacklotProjectUpdate) => {
+  const handleOpenForm = (update?: BacklotProjectUpdateWithRead) => {
     if (update) {
       setEditingUpdate(update);
       setFormData({
@@ -203,6 +242,7 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
         content: update.content,
         type: update.type,
         is_public: update.is_public,
+        visible_to_roles: update.visible_to_roles || [],
       });
     } else {
       setEditingUpdate(null);
@@ -210,6 +250,10 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
     }
     setShowForm(true);
   };
+
+  const handleMarkRead = React.useCallback((updateId: string) => {
+    markAsRead.mutate(updateId);
+  }, [markAsRead]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -308,6 +352,7 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
               onEdit={handleOpenForm}
               onDelete={handleDelete}
               onTogglePublic={handleTogglePublic}
+              onMarkRead={handleMarkRead}
             />
           ))}
         </div>
@@ -377,6 +422,44 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
                 disabled={isSubmitting}
                 rows={6}
               />
+            </div>
+
+            {/* Visible to Roles */}
+            <div className="space-y-2">
+              <Label className="flex items-center gap-2">
+                <Users className="w-4 h-4" />
+                Visible to Roles
+              </Label>
+              <p className="text-xs text-muted-gray mb-2">
+                Select which roles can see this update. Leave empty for all team members.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {BACKLOT_ROLES.map((role) => (
+                  <div key={role.value} className="flex items-center gap-2">
+                    <Checkbox
+                      id={`role-${role.value}`}
+                      checked={formData.visible_to_roles.includes(role.value)}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          setFormData({
+                            ...formData,
+                            visible_to_roles: [...formData.visible_to_roles, role.value],
+                          });
+                        } else {
+                          setFormData({
+                            ...formData,
+                            visible_to_roles: formData.visible_to_roles.filter(r => r !== role.value),
+                          });
+                        }
+                      }}
+                      disabled={isSubmitting}
+                    />
+                    <Label htmlFor={`role-${role.value}`} className="text-sm cursor-pointer">
+                      {role.label}
+                    </Label>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="flex items-center justify-between py-2 border border-muted-gray/20 rounded-lg px-4">

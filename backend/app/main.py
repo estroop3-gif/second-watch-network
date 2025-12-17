@@ -12,7 +12,11 @@ from app.core.startup import on_startup
 from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
-    admin, availability, credits, community, greenroom, order, backlot
+    admin, availability, credits, community, greenroom, order, backlot,
+    scene_view, day_view, person_view, timecards, project_access, directory,
+    camera_continuity, utilities,
+    church_services, church_people, church_content, church_planning,
+    church_resources, church_readiness
 )
 
 
@@ -98,6 +102,26 @@ app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
 app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
 app.include_router(backlot.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot"])
+
+# Backlot Glue Views
+app.include_router(scene_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Scene View"])
+app.include_router(day_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Day View"])
+app.include_router(person_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Person View"])
+app.include_router(timecards.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Timecards"])
+app.include_router(project_access.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Project Access"])
+app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory", tags=["Directory"])
+
+# Camera & Continuity and Utilities
+app.include_router(camera_continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Camera & Continuity"])
+app.include_router(utilities.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Utilities"])
+
+# Church Production Tools
+app.include_router(church_services.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Services"])
+app.include_router(church_people.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church People"])
+app.include_router(church_content.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Content"])
+app.include_router(church_planning.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Planning"])
+app.include_router(church_resources.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Resources"])
+app.include_router(church_readiness.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Readiness"])
 
 
 if __name__ == "__main__":

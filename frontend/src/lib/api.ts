@@ -89,8 +89,18 @@ class APIClient {
     })
   }
 
-  async delete<T>(endpoint: string): Promise<T> {
-    return this.request<T>(endpoint, { method: 'DELETE' })
+  async delete<T>(endpoint: string, options?: { data?: any }): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'DELETE',
+      body: options?.data ? JSON.stringify(options.data) : undefined,
+    })
+  }
+
+  async patch<T>(endpoint: string, data?: any): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'PATCH',
+      body: data ? JSON.stringify(data) : undefined,
+    })
   }
 
   // ============================================================================
@@ -684,4 +694,5 @@ class APIClient {
 
 // Export singleton instance
 export const api = new APIClient()
+export const apiClient = api // Alias for hooks that use apiClient
 export default api

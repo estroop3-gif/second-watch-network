@@ -24,7 +24,7 @@ const AppHeader = () => {
   };
 
   return (
-    <header className="fixed top-0 left-0 w-full bg-charcoal-black/80 backdrop-blur-sm px-4 py-3 sm:p-4 z-50 flex items-center justify-between">
+    <header className="fixed top-0 left-0 w-full h-20 bg-charcoal-black/80 backdrop-blur-sm px-4 z-50 flex items-center justify-between">
       <Link to="/" className="text-xl md:text-2xl font-bold text-bone-white tracking-widest flex-shrink-0 mr-auto">
         <span className="font-spray">Second Watch</span>
         <span className="hidden sm:inline"> Network</span>

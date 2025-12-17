@@ -126,6 +126,21 @@ export function useProjects(options: UseProjectsOptions = {}) {
         // but the owner_id on the project will still work for ownership checks
       }
 
+      // Assign the showrunner Backlot role to the project creator
+      const { error: roleError } = await supabase
+        .from('backlot_project_roles')
+        .insert({
+          project_id: data.id,
+          user_id: userData.user.id,
+          backlot_role: 'showrunner',
+          is_primary: true,
+        });
+
+      if (roleError) {
+        console.error('Failed to assign showrunner role:', roleError);
+        // Don't throw - project was created, role assignment is secondary
+      }
+
       return data as BacklotProject;
     },
     onSuccess: () => {

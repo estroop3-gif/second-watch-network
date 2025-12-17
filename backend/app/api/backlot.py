@@ -2922,6 +2922,16 @@ class ReceiptMappingInput(BaseModel):
     is_verified: Optional[bool] = False
 
 
+class ReceiptRegisterInput(BaseModel):
+    """Input for registering an uploaded receipt file"""
+    file_url: str
+    original_filename: Optional[str] = None
+    file_type: Optional[str] = "image/jpeg"
+    file_size_bytes: Optional[int] = None
+    run_ocr: bool = True
+    daily_budget_id: Optional[str] = None
+
+
 class Receipt(BaseModel):
     """Receipt response model"""
     id: str
@@ -3039,12 +3049,7 @@ async def get_receipt(
 @router.post("/projects/{project_id}/receipts/register", response_model=ReceiptCreateResponse)
 async def register_receipt(
     project_id: str,
-    file_url: str,
-    original_filename: Optional[str] = None,
-    file_type: Optional[str] = "image/jpeg",
-    file_size_bytes: Optional[int] = None,
-    run_ocr: bool = True,
-    daily_budget_id: Optional[str] = None,
+    data: ReceiptRegisterInput,
     authorization: str = Header(None)
 ):
     """
@@ -3067,13 +3072,13 @@ async def register_receipt(
     receipt_data = {
         "project_id": project_id,
         "budget_id": budget_id,
-        "daily_budget_id": daily_budget_id,
-        "file_url": file_url,
-        "original_filename": original_filename,
-        "file_type": file_type,
-        "file_size_bytes": file_size_bytes,
+        "daily_budget_id": data.daily_budget_id,
+        "file_url": data.file_url,
+        "original_filename": data.original_filename,
+        "file_type": data.file_type,
+        "file_size_bytes": data.file_size_bytes,
         "created_by_user_id": user_id,
-        "ocr_status": "pending" if run_ocr else "succeeded",
+        "ocr_status": "pending" if data.run_ocr else "succeeded",
     }
 
     result = supabase.table("backlot_receipts").insert(receipt_data).execute()
@@ -3084,7 +3089,7 @@ async def register_receipt(
     ocr_result = None
 
     # Run OCR if requested
-    if run_ocr:
+    if data.run_ocr:
         from app.services.ocr_service import process_receipt
 
         # Update status to processing
@@ -3093,7 +3098,7 @@ async def register_receipt(
         }).eq("id", receipt["id"]).execute()
 
         try:
-            ocr_data = await process_receipt(file_url, file_type or "image/jpeg")
+            ocr_data = await process_receipt(data.file_url, data.file_type or "image/jpeg")
 
             # Update receipt with OCR results
             update_data = {
@@ -6289,202 +6294,67 @@ async def import_script(
         text_content = None  # For the script editor
         parsed_scenes = []
 
-        # Extract text and page count from PDF
-        if ext == "pdf":
-            try:
-                from pypdf import PdfReader
-                import io
-                pdf_reader = PdfReader(io.BytesIO(content))
-                page_count = len(pdf_reader.pages)
+        # Use the improved script parser
+        try:
+            from app.utils.script_parser import parse_script_file
 
-                # Extract text from all pages for the editor
-                extracted_pages = []
-                for i, page in enumerate(pdf_reader.pages):
-                    page_text = page.extract_text() or ""
-                    if page_text.strip():
-                        extracted_pages.append(f"=== PAGE {i + 1} ===\n\n{page_text}")
+            parse_result = parse_script_file(content, ext)
+            text_content = parse_result.text_content
+            page_count = parse_result.page_count
 
-                if extracted_pages:
-                    text_content = "\n\n".join(extracted_pages)
+            # Convert parsed scenes to dict format for database
+            for scene in parse_result.scenes:
+                parsed_scenes.append({
+                    "scene_number": scene.scene_number,
+                    "slugline": scene.slugline,
+                    "int_ext": scene.int_ext,
+                    "time_of_day": scene.time_of_day,
+                    "set_name": scene.location_hint,
+                    "page_start": scene.page_start,
+                    "sequence": scene.sequence
+                })
 
-                    # Try to detect and parse scenes from extracted text
-                    scene_count = 0
-                    for line in text_content.split("\n"):
-                        line = line.strip()
-                        line_upper = line.upper()
+            print(f"Parsed {ext.upper()} file: {page_count} pages, {len(parsed_scenes)} scenes")
 
-                        # Detect scene headings
-                        if any(line_upper.startswith(prefix) for prefix in ["INT.", "INT ", "EXT.", "EXT ", "INT/EXT", "INT./EXT.", "I/E "]):
-                            scene_count += 1
-                            slugline = line
+        except ImportError as ie:
+            print(f"Script parser import error: {ie}")
+            # Fallback to basic text extraction
+            if ext == "pdf":
+                try:
+                    from pypdf import PdfReader
+                    import io
+                    pdf_reader = PdfReader(io.BytesIO(content))
+                    page_count = len(pdf_reader.pages)
+                    text_parts = []
+                    for page in pdf_reader.pages:
+                        text_parts.append(page.extract_text() or "")
+                    text_content = "\n".join(text_parts)
+                except Exception as e:
+                    print(f"PDF fallback error: {e}")
+            elif ext in ["txt", "fountain", "fdx"]:
+                try:
+                    text_content = content.decode('utf-8')
+                    page_count = max(1, len(text_content) // 3000)
+                except Exception as e:
+                    print(f"Text fallback error: {e}")
 
-                            # Parse slugline
-                            int_ext = None
-                            day_night = None
-                            location_hint = slugline
-
-                            if line_upper.startswith("INT.") or line_upper.startswith("INT "):
-                                int_ext = "INT"
-                                location_hint = line[4:].strip()
-                            elif line_upper.startswith("EXT.") or line_upper.startswith("EXT "):
-                                int_ext = "EXT"
-                                location_hint = line[4:].strip()
-                            elif line_upper.startswith("INT/EXT") or line_upper.startswith("INT./EXT."):
-                                int_ext = "INT/EXT"
-                                location_hint = line[7:].strip() if "/" in line[:10] else line[8:].strip()
-                            elif line_upper.startswith("I/E "):
-                                int_ext = "INT/EXT"
-                                location_hint = line[4:].strip()
-
-                            # Extract day/night
-                            for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
-                                if f" - {dn}" in line_upper or f"- {dn}" in line_upper:
-                                    day_night = dn
-                                    location_hint = location_hint.replace(f" - {dn}", "").replace(f"- {dn}", "").strip()
-                                    break
-
-                            parsed_scenes.append({
-                                "scene_number": str(scene_count),
-                                "slugline": slugline,
-                                "int_ext": int_ext,
-                                "day_night": day_night,
-                                "location_hint": location_hint,
-                                "page_length": 1.0,
-                                "sequence": scene_count
-                            })
-
-            except Exception as pdf_err:
-                print(f"Could not extract from PDF: {pdf_err}")
-
-        # Parse FDX (Final Draft) files
-        elif ext == "fdx":
-            try:
-                import xml.etree.ElementTree as ET
-                root = ET.fromstring(content.decode('utf-8'))
-
-                # Build text content from FDX for the editor
-                text_lines = []
-                scene_count = 0
-
-                for para in root.iter():
-                    if para.tag == "Paragraph":
-                        para_type = para.get("Type", "")
-
-                        # Extract text from all Text elements
-                        para_text_parts = []
-                        for text_elem in para.findall(".//Text"):
-                            if text_elem.text:
-                                para_text_parts.append(text_elem.text)
-                        para_text = "".join(para_text_parts).strip()
-
-                        if not para_text:
-                            continue
-
-                        # Format based on paragraph type (Celtx-style)
-                        if para_type == "Scene Heading":
-                            scene_count += 1
-                            text_lines.append(f"\n{para_text.upper()}\n")
-
-                            # Parse scene for breakdown
-                            slugline = para_text
-                            int_ext = None
-                            day_night = None
-                            location_hint = slugline
-                            slugline_upper = slugline.upper()
-
-                            if slugline_upper.startswith("INT.") or slugline_upper.startswith("INT "):
-                                int_ext = "INT"
-                                location_hint = slugline[4:].strip()
-                            elif slugline_upper.startswith("EXT.") or slugline_upper.startswith("EXT "):
-                                int_ext = "EXT"
-                                location_hint = slugline[4:].strip()
-                            elif slugline_upper.startswith("INT/EXT") or slugline_upper.startswith("INT./EXT."):
-                                int_ext = "INT/EXT"
-                                location_hint = slugline[7:].strip() if "/" in slugline[:10] else slugline[8:].strip()
-
-                            for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
-                                if f" - {dn}" in slugline_upper or f"- {dn}" in slugline_upper:
-                                    day_night = dn
-                                    location_hint = location_hint.replace(f" - {dn}", "").replace(f"- {dn}", "").strip()
-                                    break
-
-                            parsed_scenes.append({
-                                "scene_number": str(scene_count),
-                                "slugline": slugline,
-                                "int_ext": int_ext,
-                                "day_night": day_night,
-                                "location_hint": location_hint,
-                                "page_length": 1.0,
-                                "sequence": scene_count
-                            })
-
-                        elif para_type == "Character":
-                            text_lines.append(f"\n                    {para_text.upper()}")
-                        elif para_type == "Dialogue":
-                            text_lines.append(f"          {para_text}")
-                        elif para_type == "Parenthetical":
-                            text_lines.append(f"               ({para_text})")
-                        elif para_type == "Action":
-                            text_lines.append(f"\n{para_text}")
-                        elif para_type == "Transition":
-                            text_lines.append(f"\n                                        {para_text.upper()}\n")
-                        else:
-                            text_lines.append(para_text)
-
-                text_content = "\n".join(text_lines).strip()
-                page_count = max(1, len(text_content) // 3000)  # Rough estimate: ~3000 chars per page
-
-            except Exception as parse_err:
-                print(f"FDX parsing error: {parse_err}")
-
-        # Handle plain text and Fountain files
-        elif ext in ["txt", "fountain"]:
-            try:
-                text_content = content.decode('utf-8')
-                page_count = max(1, len(text_content) // 3000)
-
-                # Parse scenes from text
-                scene_count = 0
-                for line in text_content.split("\n"):
-                    line = line.strip()
-                    line_upper = line.upper()
-
-                    if any(line_upper.startswith(prefix) for prefix in ["INT.", "INT ", "EXT.", "EXT ", "INT/EXT", "INT./EXT.", "I/E "]):
-                        scene_count += 1
-                        slugline = line
-
-                        int_ext = None
-                        day_night = None
-                        location_hint = slugline
-
-                        if line_upper.startswith("INT.") or line_upper.startswith("INT "):
-                            int_ext = "INT"
-                            location_hint = line[4:].strip()
-                        elif line_upper.startswith("EXT.") or line_upper.startswith("EXT "):
-                            int_ext = "EXT"
-                            location_hint = line[4:].strip()
-                        elif line_upper.startswith("INT/EXT") or line_upper.startswith("INT./EXT."):
-                            int_ext = "INT/EXT"
-                            location_hint = line[7:].strip() if "/" in line[:10] else line[8:].strip()
-
-                        for dn in ["DAY", "NIGHT", "DAWN", "DUSK", "MORNING", "EVENING", "CONTINUOUS", "LATER"]:
-                            if f" - {dn}" in line_upper or f"- {dn}" in line_upper:
-                                day_night = dn
-                                location_hint = location_hint.replace(f" - {dn}", "").replace(f"- {dn}", "").strip()
-                                break
-
-                        parsed_scenes.append({
-                            "scene_number": str(scene_count),
-                            "slugline": slugline,
-                            "int_ext": int_ext,
-                            "day_night": day_night,
-                            "location_hint": location_hint,
-                            "page_length": 1.0,
-                            "sequence": scene_count
-                        })
-
-            except Exception as txt_err:
-                print(f"Text parsing error: {txt_err}")
+        except Exception as parse_err:
+            print(f"Script parsing error: {parse_err}")
+            # Continue with basic fallback
+            if ext == "pdf":
+                try:
+                    from pypdf import PdfReader
+                    import io
+                    pdf_reader = PdfReader(io.BytesIO(content))
+                    page_count = len(pdf_reader.pages)
+                except:
+                    pass
+            elif ext in ["txt", "fountain"]:
+                try:
+                    text_content = content.decode('utf-8')
+                    page_count = max(1, len(text_content) // 3000)
+                except:
+                    pass
 
         # Upload to storage
         storage_path = f"scripts/{project_id}/{uuid.uuid4()}.{ext}"
@@ -16834,4 +16704,241 @@ async def export_project_notes_pdf(
         raise HTTPException(status_code=500, detail="PDF generation not available - WeasyPrint not installed")
     except Exception as e:
         print(f"Error generating notes PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Dailies System Models and Endpoints
+# =====================================================
+
+class DailiesLocalIngestClip(BaseModel):
+    """Single clip from local ingest"""
+    file_name: str
+    relative_path: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    timecode_start: Optional[str] = None
+    frame_rate: Optional[float] = None
+    resolution: Optional[str] = None
+    codec: Optional[str] = None
+    scene_number: Optional[str] = None
+    take_number: Optional[int] = None
+
+
+class DailiesLocalIngestCard(BaseModel):
+    """Single card/roll from local ingest"""
+    camera_label: str
+    roll_name: str
+    media_root_path: Optional[str] = None
+    storage_location: Optional[str] = None
+    clips: List[DailiesLocalIngestClip] = []
+
+
+class DailiesLocalIngestRequest(BaseModel):
+    """Request to ingest dailies from local drive via desktop companion"""
+    project_id: str
+    shoot_date: str  # YYYY-MM-DD format
+    day_label: str
+    unit: Optional[str] = None
+    cards: List[DailiesLocalIngestCard]
+
+
+class DailiesLocalIngestResponse(BaseModel):
+    """Response from local ingest"""
+    success: bool
+    day_id: str
+    cards_created: int
+    clips_created: int
+    message: str = ""
+
+
+class DailiesProjectSummary(BaseModel):
+    """Summary statistics for project dailies"""
+    total_days: int
+    total_cards: int
+    total_clips: int
+    circle_takes: int
+    cloud_clips: int
+    local_clips: int
+    total_notes: int
+    unresolved_notes: int
+
+
+@router.post("/dailies/local-ingest", response_model=DailiesLocalIngestResponse)
+async def ingest_local_dailies(
+    request: DailiesLocalIngestRequest,
+    authorization: str = Header(None)
+):
+    """
+    Ingest dailies metadata from local drive (via desktop companion app)
+    Creates day, cards, and clips with storage_mode='local_drive'
+
+    Args:
+        request: Ingest request with project, date, and cards/clips
+
+    Returns:
+        Ingest result with created counts
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(supabase, request.project_id, user["id"], require_edit=True)
+
+        # Check if day exists for this date
+        existing_day = supabase.table("backlot_dailies_days").select("id").eq(
+            "project_id", request.project_id
+        ).eq("shoot_date", request.shoot_date).execute()
+
+        day_id = None
+        if existing_day.data:
+            day_id = existing_day.data[0]["id"]
+        else:
+            # Create new day
+            new_day = supabase.table("backlot_dailies_days").insert({
+                "project_id": request.project_id,
+                "shoot_date": request.shoot_date,
+                "label": request.day_label,
+                "unit": request.unit,
+                "created_by_user_id": user["id"]
+            }).execute()
+
+            if not new_day.data:
+                raise HTTPException(status_code=500, detail="Failed to create dailies day")
+            day_id = new_day.data[0]["id"]
+
+        cards_created = 0
+        clips_created = 0
+
+        # Process each card
+        for card_input in request.cards:
+            # Create card
+            new_card = supabase.table("backlot_dailies_cards").insert({
+                "dailies_day_id": day_id,
+                "project_id": request.project_id,
+                "camera_label": card_input.camera_label,
+                "roll_name": card_input.roll_name,
+                "storage_mode": "local_drive",
+                "media_root_path": card_input.media_root_path,
+                "storage_location": card_input.storage_location,
+                "created_by_user_id": user["id"]
+            }).execute()
+
+            if not new_card.data:
+                continue
+
+            cards_created += 1
+            card_id = new_card.data[0]["id"]
+
+            # Create clips for this card
+            if card_input.clips:
+                clip_inserts = []
+                for clip in card_input.clips:
+                    clip_inserts.append({
+                        "dailies_card_id": card_id,
+                        "project_id": request.project_id,
+                        "file_name": clip.file_name,
+                        "relative_path": clip.relative_path,
+                        "storage_mode": "local_drive",
+                        "duration_seconds": clip.duration_seconds,
+                        "timecode_start": clip.timecode_start,
+                        "frame_rate": clip.frame_rate,
+                        "resolution": clip.resolution,
+                        "codec": clip.codec,
+                        "scene_number": clip.scene_number,
+                        "take_number": clip.take_number,
+                        "is_circle_take": False,
+                        "created_by_user_id": user["id"]
+                    })
+
+                if clip_inserts:
+                    result = supabase.table("backlot_dailies_clips").insert(clip_inserts).execute()
+                    clips_created += len(result.data) if result.data else 0
+
+        return DailiesLocalIngestResponse(
+            success=True,
+            day_id=day_id,
+            cards_created=cards_created,
+            clips_created=clips_created,
+            message=f"Successfully ingested {cards_created} cards with {clips_created} clips"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in local dailies ingest: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/summary", response_model=DailiesProjectSummary)
+async def get_dailies_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get summary statistics for project dailies
+
+    Args:
+        project_id: Project ID
+
+    Returns:
+        Summary with counts for days, cards, clips, notes
+    """
+    user = await get_current_user_from_token(authorization)
+    supabase = get_supabase_admin_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(supabase, project_id, user["id"])
+
+        # Count days
+        days_result = supabase.table("backlot_dailies_days").select(
+            "id", count="exact"
+        ).eq("project_id", project_id).execute()
+        total_days = days_result.count or 0
+
+        # Count cards
+        cards_result = supabase.table("backlot_dailies_cards").select(
+            "id", count="exact"
+        ).eq("project_id", project_id).execute()
+        total_cards = cards_result.count or 0
+
+        # Get clips with details
+        clips_result = supabase.table("backlot_dailies_clips").select(
+            "id, is_circle_take, storage_mode"
+        ).eq("project_id", project_id).execute()
+
+        total_clips = len(clips_result.data) if clips_result.data else 0
+        circle_takes = sum(1 for c in (clips_result.data or []) if c.get("is_circle_take"))
+        cloud_clips = sum(1 for c in (clips_result.data or []) if c.get("storage_mode") == "cloud")
+        local_clips = sum(1 for c in (clips_result.data or []) if c.get("storage_mode") == "local_drive")
+
+        # Get notes
+        clip_ids = [c["id"] for c in (clips_result.data or [])]
+        total_notes = 0
+        unresolved_notes = 0
+
+        if clip_ids:
+            notes_result = supabase.table("backlot_dailies_clip_notes").select(
+                "is_resolved"
+            ).in_("dailies_clip_id", clip_ids).execute()
+
+            total_notes = len(notes_result.data) if notes_result.data else 0
+            unresolved_notes = sum(1 for n in (notes_result.data or []) if not n.get("is_resolved"))
+
+        return DailiesProjectSummary(
+            total_days=total_days,
+            total_cards=total_cards,
+            total_clips=total_clips,
+            circle_takes=circle_takes,
+            cloud_clips=cloud_clips,
+            local_clips=local_clips,
+            total_notes=total_notes,
+            unresolved_notes=unresolved_notes
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))

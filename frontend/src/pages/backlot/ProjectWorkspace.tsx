@@ -36,8 +36,15 @@ import {
   Film,
   BarChart3,
 } from 'lucide-react';
-import { useProject, useProjectPermission } from '@/hooks/backlot';
+import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, BACKLOT_ROLES } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
 // View Components
@@ -69,7 +76,22 @@ import TaskListDetailView from '@/components/backlot/workspace/TaskListDetailVie
 import TaskDetailDrawer from '@/components/backlot/workspace/TaskDetailDrawer';
 import TaskListShareModal from '@/components/backlot/workspace/TaskListShareModal';
 import { ReviewsView, ReviewDetailView } from '@/components/backlot/review';
-import { SquarePlay } from 'lucide-react';
+import DailiesView from '@/components/backlot/workspace/DailiesView';
+import RolesManagementView from '@/components/backlot/workspace/RolesManagementView';
+import ScenesView from '@/components/backlot/workspace/ScenesView';
+import SceneDetailView from '@/components/backlot/workspace/SceneDetailView';
+import DaysView from '@/components/backlot/workspace/DaysView';
+import DayDetailView from '@/components/backlot/workspace/DayDetailView';
+import PeopleView from '@/components/backlot/workspace/PeopleView';
+import PersonDetailView from '@/components/backlot/workspace/PersonDetailView';
+import TimecardsView from '@/components/backlot/workspace/TimecardsView';
+import TeamAccessView from '@/components/backlot/workspace/TeamAccessView';
+import CameraAndContinuityView from '@/components/backlot/workspace/CameraAndContinuityView';
+import CheckInView from '@/components/backlot/workspace/CheckInView';
+import MySpacePanel from '@/components/backlot/workspace/MySpacePanel';
+import ChurchToolsView from '@/components/backlot/workspace/ChurchToolsView';
+import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
+import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -107,29 +129,104 @@ interface NavItem {
   adminOnly?: boolean;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-  { id: 'script', label: 'Script', icon: Clapperboard },
-  { id: 'shot-lists', label: 'Shot Lists', icon: Camera },
-  { id: 'coverage', label: 'Coverage', icon: Target },
-  { id: 'schedule', label: 'Schedule', icon: Calendar },
-  { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
-  { id: 'casting', label: 'Casting & Crew', icon: UserPlus },
-  { id: 'tasks', label: 'Tasks', icon: CheckSquare },
-  { id: 'review', label: 'Review', icon: SquarePlay },
-  { id: 'locations', label: 'Locations', icon: MapPin },
-  { id: 'gear', label: 'Gear', icon: Package },
-  { id: 'budget', label: 'Budget', icon: DollarSign },
-  { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
-  { id: 'receipts', label: 'Receipts', icon: Receipt },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
-  { id: 'clearances', label: 'Clearances', icon: FileCheck },
-  { id: 'assets', label: 'Assets', icon: Film },
-  { id: 'updates', label: 'Updates', icon: Megaphone },
-  { id: 'contacts', label: 'Contacts', icon: Users },
-  { id: 'credits', label: 'Credits', icon: Award },
-  { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
+interface NavSection {
+  title: string;
+  items: NavItem[];
+}
+
+// Organized navigation by workflow category
+const NAV_SECTIONS: NavSection[] = [
+  {
+    title: 'Overview',
+    items: [
+      { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    ],
+  },
+  {
+    title: 'Story & Script',
+    items: [
+      { id: 'script', label: 'Script', icon: Clapperboard },
+      { id: 'scenes', label: 'Scenes', icon: Layers },
+      { id: 'shot-lists', label: 'Shot Lists', icon: Camera },
+      { id: 'coverage', label: 'Coverage', icon: Target },
+    ],
+  },
+  {
+    title: 'Planning & Scheduling',
+    items: [
+      { id: 'schedule', label: 'Schedule', icon: Calendar },
+      { id: 'days', label: 'Shoot Days', icon: CalendarCheck },
+      { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
+      { id: 'casting', label: 'Casting & Crew', icon: UserPlus },
+      { id: 'people', label: 'Team', icon: Users },
+      { id: 'locations', label: 'Locations', icon: MapPin },
+      { id: 'gear', label: 'Gear', icon: Package },
+    ],
+  },
+  {
+    title: 'On Set & Dailies',
+    items: [
+      { id: 'camera-continuity', label: 'Camera & Continuity', icon: Aperture },
+      { id: 'dailies', label: 'Dailies', icon: Video },
+      { id: 'checkin', label: 'Check-In', icon: QrCode },
+    ],
+  },
+  {
+    title: 'Post & Review',
+    items: [
+      { id: 'review', label: 'Review', icon: SquarePlay },
+      { id: 'assets', label: 'Assets', icon: Film },
+    ],
+  },
+  {
+    title: 'Budget & Finance',
+    items: [
+      { id: 'budget', label: 'Budget', icon: DollarSign },
+      { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
+      { id: 'timecards', label: 'Timecards', icon: Timer },
+      { id: 'receipts', label: 'Receipts', icon: Receipt },
+      { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
+    ],
+  },
+  {
+    title: 'Tasks & Collaboration',
+    items: [
+      { id: 'tasks', label: 'Tasks', icon: CheckSquare },
+      { id: 'updates', label: 'Updates', icon: Megaphone },
+      { id: 'contacts', label: 'Contacts', icon: Users },
+    ],
+  },
+  {
+    title: 'Legal & Credits',
+    items: [
+      { id: 'clearances', label: 'Clearances', icon: FileCheck },
+      { id: 'credits', label: 'Credits', icon: Award },
+    ],
+  },
+  {
+    title: 'Personal',
+    items: [
+      { id: 'my-space', label: 'My Space', icon: Star },
+    ],
+  },
+  {
+    title: 'Church Tools',
+    items: [
+      { id: 'church-tools', label: 'Church Tools', icon: Church },
+    ],
+  },
+  {
+    title: 'Project',
+    items: [
+      { id: 'access', label: 'Team & Access', icon: Shield, adminOnly: true },
+      { id: 'roles', label: 'Team Roles', icon: UserCog, adminOnly: true },
+      { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
+    ],
+  },
 ];
+
+// Flatten for filtering (maintain backward compatibility)
+const NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap(section => section.items);
 
 const ProjectWorkspace: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -144,16 +241,61 @@ const ProjectWorkspace: React.FC = () => {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showTaskShareModal, setShowTaskShareModal] = useState(false);
   const [selectedReviewAssetId, setSelectedReviewAssetId] = useState<string | null>(null);
+  const [viewAsRole, setViewAsRole] = useState<string | null>(null);
+  // New view states for scenes, days, people
+  const [selectedSceneForView, setSelectedSceneForView] = useState<SceneListItem | null>(null);
+  const [selectedDayForView, setSelectedDayForView] = useState<DayListItem | null>(null);
+  const [selectedPersonForView, setSelectedPersonForView] = useState<PersonListItem | null>(null);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
+  const { data: viewConfig, isLoading: viewConfigLoading } = useViewConfig(projectId || null, viewAsRole);
+  const { data: canViewAsRole } = useCanViewAsRole(projectId || null);
 
-  const isLoading = projectLoading || permissionLoading;
+  const isLoading = projectLoading || permissionLoading || viewConfigLoading;
 
-  // Filter nav items based on permissions
+  // Get tabs visibility from view config
+  const tabsVisibility = viewConfig?.tabs || viewConfig?.config?.tabs || {};
+
+  // Check if a tab is visible based on view config
+  // Supports both boolean (legacy) and {view, edit} object formats
+  const isTabVisible = (tabId: string): boolean => {
+    // Admin always sees everything
+    if (permission?.isAdmin) return true;
+    // If no view config yet, show all
+    if (!viewConfig) return true;
+    // Check the tabs visibility map
+    const tabValue = tabsVisibility[tabId];
+    if (tabValue === undefined) return true;
+    // Handle both boolean and object formats
+    if (typeof tabValue === 'boolean') return tabValue;
+    if (typeof tabValue === 'object' && tabValue !== null) {
+      return tabValue.view !== false;
+    }
+    return tabValue !== false;
+  };
+
+  // Check if a tab is editable based on view config
+  const isTabEditable = (tabId: string): boolean => {
+    // Admin always has edit
+    if (permission?.isAdmin) return true;
+    // If no view config yet, use permission
+    if (!viewConfig) return permission?.canEdit || false;
+    // Check the tabs visibility map
+    const tabValue = tabsVisibility[tabId];
+    if (tabValue === undefined) return permission?.canEdit || false;
+    // Handle both boolean and object formats
+    if (typeof tabValue === 'boolean') return permission?.canEdit || false;
+    if (typeof tabValue === 'object' && tabValue !== null) {
+      return tabValue.edit === true;
+    }
+    return permission?.canEdit || false;
+  };
+
+  // Filter nav items based on both permissions and view config
   const visibleNavItems = NAV_ITEMS.filter((item) => {
     if (item.adminOnly && !permission?.isAdmin) return false;
-    return true;
+    return isTabVisible(item.id);
   });
 
   const handleNavClick = (view: BacklotWorkspaceView) => {
@@ -213,9 +355,9 @@ const ProjectWorkspace: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-charcoal-black">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-charcoal-black/95 backdrop-blur border-b border-muted-gray/20">
-        <div className="container mx-auto px-4 py-3 flex items-center gap-4">
+      {/* Header - fixed below the main AppHeader (top-20 = 5rem = 80px) */}
+      <header className="fixed top-20 left-0 right-0 z-40 h-14 bg-charcoal-black border-b border-muted-gray/20">
+        <div className="container mx-auto px-4 h-full flex items-center gap-4">
           {/* Mobile Menu Button */}
           <Button
             variant="ghost"
@@ -254,6 +396,37 @@ const ProjectWorkspace: React.FC = () => {
             )}
           </div>
 
+          {/* View as Role (for admins/showrunners) */}
+          {canViewAsRole && (
+            <div className="hidden sm:flex items-center gap-2">
+              <Select
+                value={viewAsRole || 'my-view'}
+                onValueChange={(v) => setViewAsRole(v === 'my-view' ? null : v)}
+              >
+                <SelectTrigger className={cn(
+                  'w-36 h-8 text-xs border-muted-gray/30',
+                  viewAsRole && 'border-orange-500/50 text-orange-400'
+                )}>
+                  <Eye className="w-3 h-3 mr-1" />
+                  <SelectValue placeholder="View as..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="my-view">My View</SelectItem>
+                  {BACKLOT_ROLES.map((role) => (
+                    <SelectItem key={role.value} value={role.value}>
+                      {role.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {viewAsRole && (
+                <Badge variant="outline" className="text-xs border-orange-500/30 text-orange-400">
+                  Viewing as {BACKLOT_ROLES.find(r => r.value === viewAsRole)?.label}
+                </Badge>
+              )}
+            </div>
+          )}
+
           {/* AI Co-pilot Toggle */}
           <Button
             variant="outline"
@@ -270,35 +443,57 @@ const ProjectWorkspace: React.FC = () => {
         </div>
       </header>
 
-      <div className="flex">
-        {/* Sidebar */}
+      {/* Add pt-14 to account for fixed project header */}
+      <div className="flex pt-14">
+        {/* Sidebar - fixed below AppHeader (5rem) + project header (3.5rem) = 8.5rem */}
         <aside
           className={cn(
-            'fixed lg:sticky top-[57px] left-0 z-30 h-[calc(100vh-57px)] w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform lg:translate-x-0 overflow-y-auto',
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            'fixed top-[8.5rem] left-0 z-30 h-[calc(100vh-8.5rem)] w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform overflow-y-auto',
+            sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           )}
         >
-          <nav className="p-4 space-y-1 pb-8">
-            {visibleNavItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => handleNavClick(item.id)}
-                className={cn(
-                  'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-                  activeView === item.id
-                    ? 'bg-accent-yellow/10 text-accent-yellow'
-                    : 'text-muted-gray hover:text-bone-white hover:bg-muted-gray/10'
-                )}
-              >
-                <item.icon className="w-4 h-4" />
-                {item.label}
-              </button>
-            ))}
+          <nav className="p-4 pb-8">
+            {NAV_SECTIONS.map((section, sectionIndex) => {
+              // Filter items based on permissions and view config
+              const visibleItems = section.items.filter((item) => {
+                if (item.adminOnly && !permission?.isAdmin) return false;
+                return isTabVisible(item.id);
+              });
+              if (visibleItems.length === 0) return null;
+
+              return (
+                <div key={section.title} className={cn(sectionIndex > 0 && 'mt-4')}>
+                  {/* Section title - hide for Overview */}
+                  {section.title !== 'Overview' && (
+                    <h3 className="px-3 mb-1 text-xs font-medium text-muted-gray/60 uppercase tracking-wider">
+                      {section.title}
+                    </h3>
+                  )}
+                  <div className="space-y-0.5">
+                    {visibleItems.map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => handleNavClick(item.id)}
+                        className={cn(
+                          'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+                          activeView === item.id
+                            ? 'bg-accent-yellow/10 text-accent-yellow'
+                            : 'text-muted-gray hover:text-bone-white hover:bg-muted-gray/10'
+                        )}
+                      >
+                        <item.icon className="w-4 h-4" />
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </nav>
         </aside>
 
-        {/* Main Content */}
-        <main className="flex-1 min-w-0 p-4 lg:p-6">
+        {/* Main Content - add lg:ml-64 to account for fixed sidebar */}
+        <main className="flex-1 min-w-0 p-4 lg:p-6 lg:ml-64">
           {activeView === 'overview' && (
             <ProjectOverview project={project} permission={permission} />
           )}
@@ -329,14 +524,62 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'coverage' && (
             <CoverageView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
+          {activeView === 'scenes' && (
+            selectedSceneForView ? (
+              <SceneDetailView
+                projectId={project.id}
+                sceneId={selectedSceneForView.id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedSceneForView(null)}
+              />
+            ) : (
+              <ScenesView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectScene={(scene) => setSelectedSceneForView(scene)}
+              />
+            )
+          )}
           {activeView === 'schedule' && (
             <ScheduleView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'days' && (
+            selectedDayForView ? (
+              <DayDetailView
+                projectId={project.id}
+                dayId={selectedDayForView.id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedDayForView(null)}
+              />
+            ) : (
+              <DaysView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectDay={(day) => setSelectedDayForView(day)}
+              />
+            )
           )}
           {activeView === 'call-sheets' && (
             <CallSheetsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'casting' && (
             <CastingCrewTab projectId={project.id} />
+          )}
+          {activeView === 'people' && (
+            selectedPersonForView ? (
+              <PersonDetailView
+                projectId={project.id}
+                userId={selectedPersonForView.user_id}
+                canEdit={permission?.canEdit || false}
+                onBack={() => setSelectedPersonForView(null)}
+              />
+            ) : (
+              <PeopleView
+                projectId={project.id}
+                canEdit={permission?.canEdit || false}
+                onSelectPerson={(person) => setSelectedPersonForView(person)}
+              />
+            )
           )}
           {activeView === 'tasks' && (
             selectedTaskListId ? (
@@ -372,6 +615,18 @@ const ProjectWorkspace: React.FC = () => {
               />
             )
           )}
+          {activeView === 'dailies' && (
+            <DailiesView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'camera-continuity' && (
+            <CameraAndContinuityView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'checkin' && (
+            <CheckInView projectId={project.id} canManage={permission?.isAdmin || false} />
+          )}
+          {activeView === 'my-space' && (
+            <MySpacePanel projectId={project.id} />
+          )}
           {activeView === 'locations' && (
             <LocationsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
@@ -383,6 +638,12 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'daily-budget' && (
             <DailyBudgetView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'timecards' && (
+            <TimecardsView
+              projectId={project.id}
+              canReview={permission?.isAdmin || false}
+            />
           )}
           {activeView === 'receipts' && (
             <ReceiptsView projectId={project.id} canEdit={permission?.canEdit || false} />
@@ -405,8 +666,17 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'credits' && (
             <CreditsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
+          {activeView === 'access' && (
+            <TeamAccessView projectId={project.id} />
+          )}
+          {activeView === 'roles' && (
+            <RolesManagementView projectId={project.id} />
+          )}
           {activeView === 'settings' && (
             <ProjectSettings project={project} permission={permission} />
+          )}
+          {activeView === 'church-tools' && (
+            <ChurchToolsView projectId={project.id} />
           )}
         </main>
 

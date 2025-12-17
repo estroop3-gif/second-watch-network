@@ -271,21 +271,34 @@ async def process_receipt(
     Returns:
         ReceiptOCRResult with extracted data
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         # Download the file
+        logger.info(f"OCR: Downloading file from {file_url[:100]}...")
         image_data = await download_file(file_url)
+        logger.info(f"OCR: Downloaded {len(image_data)} bytes, file_type={file_type}")
 
         # Try Claude first (better at structured extraction)
         if settings.ANTHROPIC_API_KEY:
+            logger.info("OCR: Using Claude for processing")
             result = await process_receipt_with_claude(image_data, file_type)
+            logger.info(f"OCR: Claude result - success={result.success}, vendor={result.vendor_name}, amount={result.amount}, error={result.error}")
             if result.success:
                 return result
+        else:
+            logger.warning("OCR: ANTHROPIC_API_KEY not configured")
 
         # Fall back to OpenAI
         if settings.OPENAI_API_KEY:
+            logger.info("OCR: Using OpenAI for processing")
             result = await process_receipt_with_openai(image_data, file_type)
+            logger.info(f"OCR: OpenAI result - success={result.success}, vendor={result.vendor_name}, amount={result.amount}, error={result.error}")
             if result.success:
                 return result
+        else:
+            logger.warning("OCR: OPENAI_API_KEY not configured")
 
         return ReceiptOCRResult(
             success=False,
@@ -293,6 +306,7 @@ async def process_receipt(
         )
 
     except Exception as e:
+        logger.error(f"OCR: Exception - {str(e)}")
         return ReceiptOCRResult(
             success=False,
             error=f"Failed to process receipt: {str(e)}"

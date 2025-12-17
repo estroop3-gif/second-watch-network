@@ -941,17 +941,25 @@ export interface ContactFilters {
 export type BacklotWorkspaceView =
   | 'overview'
   | 'script'
+  | 'scenes'
   | 'shot-lists'
   | 'coverage'
   | 'schedule'
+  | 'days'
   | 'call-sheets'
   | 'casting'
+  | 'people'
   | 'tasks'
   | 'review'
+  | 'dailies'
+  | 'camera-continuity'
+  | 'checkin'
+  | 'my-space'
   | 'locations'
   | 'gear'
   | 'budget'
   | 'daily-budget'
+  | 'timecards'
   | 'receipts'
   | 'clearances'
   | 'assets'
@@ -959,7 +967,10 @@ export type BacklotWorkspaceView =
   | 'updates'
   | 'contacts'
   | 'credits'
-  | 'settings';
+  | 'roles'
+  | 'access'
+  | 'settings'
+  | 'church-tools';
 
 // Project stats for dashboard
 export interface ProjectStats {
@@ -4738,3 +4749,243 @@ export const BREAKDOWN_ITEM_TYPES: BacklotBreakdownItemType[] = [
   'music',
   'other',
 ];
+
+// =============================================================================
+// DAILIES SYSTEM TYPES
+// =============================================================================
+
+export type DailiesStorageMode = 'cloud' | 'local_drive';
+
+export type DailiesClipNoteCategory =
+  | 'performance'
+  | 'camera'
+  | 'sound'
+  | 'technical'
+  | 'continuity'
+  | 'vfx'
+  | 'general';
+
+export interface BacklotDailiesDay {
+  id: string;
+  project_id: string;
+  shoot_date: string;
+  label: string;
+  unit?: string | null;
+  notes?: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Computed fields from summary
+  card_count?: number;
+  clip_count?: number;
+  circle_take_count?: number;
+  total_duration_seconds?: number;
+}
+
+export interface BacklotDailiesCard {
+  id: string;
+  dailies_day_id: string;
+  project_id: string;
+  camera_label: string;
+  roll_name: string;
+  storage_mode: DailiesStorageMode;
+  media_root_path?: string | null;
+  storage_location?: string | null;
+  checksum_verified: boolean;
+  notes?: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Computed
+  clip_count?: number;
+}
+
+export interface BacklotDailiesClip {
+  id: string;
+  dailies_card_id: string;
+  project_id: string;
+  file_name: string;
+  relative_path?: string | null;
+  storage_mode: DailiesStorageMode;
+  cloud_url?: string | null;
+  duration_seconds?: number | null;
+  timecode_start?: string | null;
+  frame_rate?: number | null;
+  resolution?: string | null;
+  codec?: string | null;
+  camera_label?: string | null;
+  scene_number?: string | null;
+  take_number?: number | null;
+  is_circle_take: boolean;
+  rating?: number | null;
+  script_scene_id?: string | null;
+  shot_id?: string | null;
+  notes?: string | null;
+  created_by_user_id: string;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  card?: BacklotDailiesCard;
+  scene?: BacklotScene;
+  note_count?: number;
+}
+
+export interface BacklotDailiesClipNote {
+  id: string;
+  dailies_clip_id: string;
+  author_user_id: string;
+  time_seconds?: number | null;
+  note_text: string;
+  category?: DailiesClipNoteCategory | null;
+  is_resolved: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  author?: BacklotProfile;
+}
+
+// Input types for creating/updating
+export interface DailiesDayInput {
+  shoot_date: string;
+  label: string;
+  unit?: string | null;
+  notes?: string | null;
+}
+
+export interface DailiesCardInput {
+  camera_label: string;
+  roll_name: string;
+  storage_mode?: DailiesStorageMode;
+  media_root_path?: string | null;
+  storage_location?: string | null;
+  notes?: string | null;
+}
+
+export interface DailiesClipInput {
+  file_name: string;
+  relative_path?: string | null;
+  storage_mode?: DailiesStorageMode;
+  cloud_url?: string | null;
+  duration_seconds?: number | null;
+  timecode_start?: string | null;
+  frame_rate?: number | null;
+  resolution?: string | null;
+  codec?: string | null;
+  camera_label?: string | null;
+  scene_number?: string | null;
+  take_number?: number | null;
+  is_circle_take?: boolean;
+  rating?: number | null;
+  script_scene_id?: string | null;
+  shot_id?: string | null;
+  notes?: string | null;
+}
+
+export interface DailiesClipUpdateInput {
+  scene_number?: string | null;
+  take_number?: number | null;
+  is_circle_take?: boolean;
+  rating?: number | null;
+  script_scene_id?: string | null;
+  shot_id?: string | null;
+  notes?: string | null;
+}
+
+export interface DailiesClipNoteInput {
+  time_seconds?: number | null;
+  note_text: string;
+  category?: DailiesClipNoteCategory | null;
+}
+
+// Local ingest for desktop companion
+export interface DailiesLocalIngestClip {
+  file_name: string;
+  relative_path?: string | null;
+  duration_seconds?: number | null;
+  timecode_start?: string | null;
+  frame_rate?: number | null;
+  resolution?: string | null;
+  codec?: string | null;
+  scene_number?: string | null;
+  take_number?: number | null;
+}
+
+export interface DailiesLocalIngestCard {
+  camera_label: string;
+  roll_name: string;
+  media_root_path?: string | null;
+  storage_location?: string | null;
+  clips: DailiesLocalIngestClip[];
+}
+
+export interface DailiesLocalIngestRequest {
+  project_id: string;
+  shoot_date: string;
+  day_label: string;
+  unit?: string | null;
+  cards: DailiesLocalIngestCard[];
+}
+
+// Summary types
+export interface DailiesProjectSummary {
+  total_days: number;
+  total_cards: number;
+  total_clips: number;
+  circle_takes: number;
+  cloud_clips: number;
+  local_clips: number;
+  total_notes: number;
+  unresolved_notes: number;
+}
+
+export interface DailiesDaySummary {
+  card_count: number;
+  clip_count: number;
+  circle_take_count: number;
+  total_duration_seconds: number;
+}
+
+// Filter types
+export interface DailiesClipFilters {
+  scene_number?: string;
+  take_number?: number;
+  is_circle_take?: boolean;
+  rating_min?: number;
+  storage_mode?: DailiesStorageMode;
+  text_search?: string;
+}
+
+// Labels and constants
+export const DAILIES_STORAGE_MODE_LABELS: Record<DailiesStorageMode, string> = {
+  cloud: 'Cloud',
+  local_drive: 'Local Drive',
+};
+
+export const DAILIES_CLIP_NOTE_CATEGORY_LABELS: Record<DailiesClipNoteCategory, string> = {
+  performance: 'Performance',
+  camera: 'Camera',
+  sound: 'Sound',
+  technical: 'Technical',
+  continuity: 'Continuity',
+  vfx: 'VFX',
+  general: 'General',
+};
+
+export const DAILIES_CLIP_NOTE_CATEGORIES: DailiesClipNoteCategory[] = [
+  'performance',
+  'camera',
+  'sound',
+  'technical',
+  'continuity',
+  'vfx',
+  'general',
+];
+
+export const DAILIES_RATING_LABELS: Record<number, string> = {
+  0: 'No Rating',
+  1: 'Poor',
+  2: 'Below Average',
+  3: 'Average',
+  4: 'Good',
+  5: 'Excellent',
+};

@@ -426,7 +426,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   onSceneClick,
 }) => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'editor' | 'scenes' | 'breakdown' | 'notes' | 'locations'>('scenes');
+  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'editor' | 'scenes' | 'breakdown' | 'notes' | 'locations'>('viewer');
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [coverageFilter, setCoverageFilter] = useState<BacklotSceneCoverageStatus | 'all'>('all');
@@ -587,12 +587,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
               View Script
             </TabsTrigger>
           )}
-          {activeScript?.file_url && (
-            <TabsTrigger value="mapper" className="flex items-center gap-1">
-              <Link2 className="w-3 h-3" />
-              Page Mapping
-            </TabsTrigger>
-          )}
           <TabsTrigger value="editor" className="flex items-center gap-1">
             <Edit className="w-3 h-3" />
             Editor
@@ -625,24 +619,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           )}
         </TabsContent>
 
-        {/* Scene Page Mapper Tab */}
-        <TabsContent value="mapper" className="mt-6">
-          {activeScript?.file_url ? (
-            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
-              <ScenePageMapper
-                script={activeScript}
-                projectId={projectId}
-                canEdit={canEdit}
-              />
-            </div>
-          ) : (
-            <div className="text-center py-12 text-muted-gray">
-              <Link2 className="w-12 h-12 mx-auto mb-4 opacity-40" />
-              <p>No PDF script available</p>
-              <p className="text-sm">Import a PDF script to map scenes to pages</p>
-            </div>
-          )}
-        </TabsContent>
 
         {/* Script Editor Tab */}
         <TabsContent value="editor" className="mt-6">

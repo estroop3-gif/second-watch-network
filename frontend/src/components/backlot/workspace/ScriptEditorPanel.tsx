@@ -58,7 +58,10 @@ import {
   Parentheses,
   Maximize2,
   Minimize2,
+  FileStack,
+  AlignJustify,
 } from 'lucide-react';
+import ScriptPageView from './ScriptPageView';
 import {
   useScript,
   useScriptMutations,
@@ -68,10 +71,14 @@ import {
 } from '@/hooks/backlot';
 import {
   BacklotScript,
+  BacklotScriptVersion,
   BacklotScriptColorCode,
   SCRIPT_COLOR_CODE_HEX,
   SCRIPT_COLOR_CODE_LABELS,
 } from '@/types/backlot';
+
+// Extended script type that includes versioning fields (what the API actually returns)
+type ScriptWithVersioning = BacklotScript & Partial<BacklotScriptVersion>;
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -234,7 +241,7 @@ function parseScriptElements(content: string): ScriptElement[] {
 }
 
 interface ScriptEditorPanelProps {
-  script: BacklotScript;
+  script: ScriptWithVersioning;
   canEdit: boolean;
   onBack?: () => void;
   onVersionCreated?: (newScript: BacklotScript) => void;
@@ -281,14 +288,23 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   const [currentElementType, setCurrentElementType] = useState<ScriptElementType>('action');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showFormatted, setShowFormatted] = useState(true);
+  const [viewMode, setViewMode] = useState<'page' | 'inline'>('page'); // Default to page view
 
   // New version modal
   const [showNewVersionModal, setShowNewVersionModal] = useState(false);
   const [newVersionColor, setNewVersionColor] = useState<BacklotScriptColorCode>('blue');
   const [revisionNotes, setRevisionNotes] = useState('');
 
-  // Use current script data or fallback to prop
-  const activeScript = currentScript || script;
+  // Use current script data or fallback to prop, with defaults for versioning fields
+  const activeScript: ScriptWithVersioning = {
+    ...script,
+    ...(currentScript || {}),
+    color_code: currentScript?.color_code || script.color_code || 'white',
+    is_locked: currentScript?.is_locked ?? script.is_locked ?? false,
+    text_content: currentScript?.text_content || script.text_content || null,
+    version_number: currentScript?.version_number || script.version_number || 1,
+    revision_notes: currentScript?.revision_notes || script.revision_notes || null,
+  };
 
   // Parse script elements for formatted view
   const scriptElements = useMemo(() => {
@@ -421,7 +437,8 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
 
   // Get next color in sequence
   const getNextColor = useCallback(() => {
-    const currentIndex = REVISION_COLORS.indexOf(activeScript.color_code as BacklotScriptColorCode);
+    const currentColorCode = (activeScript.color_code || 'white') as BacklotScriptColorCode;
+    const currentIndex = REVISION_COLORS.indexOf(currentColorCode);
     const nextIndex = (currentIndex + 1) % REVISION_COLORS.length;
     return REVISION_COLORS[nextIndex];
   }, [activeScript]);
@@ -603,8 +620,9 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     }
   }, [currentElementType, formatAsElement, handleSave, hasUnsavedChanges]);
 
-  const colorHex = SCRIPT_COLOR_CODE_HEX[activeScript.color_code as BacklotScriptColorCode] || '#FFFFFF';
-  const colorLabel = SCRIPT_COLOR_CODE_LABELS[activeScript.color_code as BacklotScriptColorCode] || activeScript.color_code;
+  const colorCode = (activeScript.color_code || 'white') as BacklotScriptColorCode;
+  const colorHex = SCRIPT_COLOR_CODE_HEX[colorCode] || '#FFFFFF';
+  const colorLabel = SCRIPT_COLOR_CODE_LABELS[colorCode] || 'White (First Draft)';
 
   return (
     <div ref={containerRef} className={cn(
@@ -655,6 +673,34 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View Mode Toggle */}
+          <div className="flex items-center border border-muted-gray/30 rounded-md overflow-hidden">
+            <Button
+              variant={viewMode === 'page' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setViewMode('page')}
+              className={cn(
+                'h-8 rounded-none border-0',
+                viewMode === 'page' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
+              )}
+            >
+              <FileStack className="w-4 h-4 mr-1" />
+              Page
+            </Button>
+            <Button
+              variant={viewMode === 'inline' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setViewMode('inline')}
+              className={cn(
+                'h-8 rounded-none border-0',
+                viewMode === 'inline' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
+              )}
+            >
+              <AlignJustify className="w-4 h-4 mr-1" />
+              Inline
+            </Button>
+          </div>
+
           {/* Fullscreen Toggle */}
           <Button
             variant="ghost"
@@ -820,22 +866,42 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       )}
 
       {/* Editor Content */}
-      <ScrollArea className="flex-1">
-        <div className="p-6">
-          {isEditing ? (
-            <div className="relative">
-              {/* Raw Editor (always present for input) */}
-              <Textarea
-                ref={editorRef}
-                value={editContent}
-                onChange={(e) => {
-                  setEditContent(e.target.value);
-                  updateCurrentElement();
-                }}
-                onKeyDown={handleKeyDown}
-                onClick={updateCurrentElement}
-                onSelect={updateCurrentElement}
-                placeholder="Start writing your script...
+      {viewMode === 'page' ? (
+        // Page View Mode - give it explicit height so scroll works
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScriptPageView
+            content={isEditing ? editContent : (activeScript.text_content || '')}
+            title={activeScript.title}
+            pageCount={activeScript.total_pages || undefined}
+            isEditing={isEditing}
+            canEdit={canEdit && !activeScript.is_locked}
+            onContentChange={(content) => {
+              setEditContent(content);
+              setHasUnsavedChanges(true);
+            }}
+            onStartEdit={handleStartEditing}
+            onSave={handleSave}
+            onCancel={handleCancelEdit}
+          />
+        </div>
+      ) : (
+        // Inline View Mode
+        <ScrollArea className="flex-1">
+          <div className="p-6">
+            {isEditing ? (
+              <div className="relative">
+                {/* Raw Editor (always present for input) */}
+                <Textarea
+                  ref={editorRef}
+                  value={editContent}
+                  onChange={(e) => {
+                    setEditContent(e.target.value);
+                    updateCurrentElement();
+                  }}
+                  onKeyDown={handleKeyDown}
+                  onClick={updateCurrentElement}
+                  onSelect={updateCurrentElement}
+                  placeholder="Start writing your script...
 
 Use keyboard shortcuts:
   Ctrl+1: Scene Heading (INT./EXT.)
@@ -847,58 +913,58 @@ Use keyboard shortcuts:
   Ctrl+S: Save
 
 Or Tab to cycle between element types on empty lines."
-                className={cn(
-                  "min-h-[600px] font-mono text-sm bg-charcoal-black border-muted-gray/30 resize-none",
-                  !showFormatted && "text-bone-white"
+                  className={cn(
+                    "min-h-[600px] font-mono text-sm bg-charcoal-black border-muted-gray/30 resize-none",
+                    !showFormatted && "text-bone-white"
+                  )}
+                  style={{
+                    lineHeight: 1.8,
+                    fontFamily: 'Courier New, monospace',
+                    opacity: showFormatted ? 0 : 1,
+                    position: showFormatted ? 'absolute' : 'relative',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    zIndex: showFormatted ? -1 : 1,
+                  }}
+                />
+
+                {/* Formatted Preview (overlay when showFormatted is true) */}
+                {showFormatted && (
+                  <div
+                    className="min-h-[600px] font-mono text-sm border border-muted-gray/30 rounded-md p-4 bg-charcoal-black cursor-text"
+                    onClick={() => editorRef.current?.focus()}
+                  >
+                    {scriptElements.map((element, idx) => {
+                      const style = ELEMENT_STYLES[element.type];
+                      const isEmptyLine = !element.content.trim();
+
+                      return (
+                        <div
+                          key={idx}
+                          className={cn(
+                            "text-bone-white",
+                            isEmptyLine && "h-6"
+                          )}
+                          style={{
+                            ...style,
+                            fontFamily: 'Courier New, monospace',
+                            lineHeight: 1.8,
+                          }}
+                        >
+                          {element.content || '\u00A0'}
+                        </div>
+                      );
+                    })}
+                  </div>
                 )}
-                style={{
-                  lineHeight: 1.8,
-                  fontFamily: 'Courier New, monospace',
-                  opacity: showFormatted ? 0 : 1,
-                  position: showFormatted ? 'absolute' : 'relative',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  zIndex: showFormatted ? -1 : 1,
-                }}
-              />
-
-              {/* Formatted Preview (overlay when showFormatted is true) */}
-              {showFormatted && (
-                <div
-                  className="min-h-[600px] font-mono text-sm border border-muted-gray/30 rounded-md p-4 bg-charcoal-black cursor-text"
-                  onClick={() => editorRef.current?.focus()}
-                >
-                  {scriptElements.map((element, idx) => {
-                    const style = ELEMENT_STYLES[element.type];
-                    const isEmptyLine = !element.content.trim();
-
-                    return (
-                      <div
-                        key={idx}
-                        className={cn(
-                          "text-bone-white",
-                          isEmptyLine && "h-6"
-                        )}
-                        style={{
-                          ...style,
-                          fontFamily: 'Courier New, monospace',
-                          lineHeight: 1.8,
-                        }}
-                      >
-                        {element.content || '\u00A0'}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ) : activeScript.text_content ? (
-            // Read-only formatted view
-            <div className="max-w-[800px] mx-auto">
-              {scriptElements.map((element, idx) => {
-                const style = ELEMENT_STYLES[element.type];
-                const isEmptyLine = !element.content.trim();
+              </div>
+            ) : activeScript.text_content ? (
+              // Read-only formatted view
+              <div className="max-w-[800px] mx-auto">
+                {scriptElements.map((element, idx) => {
+                  const style = ELEMENT_STYLES[element.type];
+                  const isEmptyLine = !element.content.trim();
 
                 return (
                   <div
@@ -962,8 +1028,9 @@ Or Tab to cycle between element types on empty lines."
               </div>
             </div>
           )}
-        </div>
-      </ScrollArea>
+          </div>
+        </ScrollArea>
+      )}
 
       {/* Revision Notes */}
       {activeScript.revision_notes && (

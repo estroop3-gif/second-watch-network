@@ -95,6 +95,9 @@ import PartnerPromotions from "./pages/partner/Promotions";
 // Backlot Production Hub Pages
 import { BacklotHome, ProjectWorkspace, PublicProjectPage } from "./pages/backlot";
 
+// Church Production Tools Pages
+import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
+
 
 const queryClient = new QueryClient();
 
@@ -166,6 +169,10 @@ const App = () => (
                     {/* Backlot Production Hub Routes */}
                     <Route path="/backlot" element={<BacklotHome />} />
                     <Route path="/backlot/projects/:projectId" element={<ProjectWorkspace />} />
+
+                    {/* Church Production Tools Routes */}
+                    <Route path="/church" element={<ChurchToolsHome />} />
+                    <Route path="/church/:tool" element={<ChurchToolPage />} />
 
                     {/* Green Room Routes */}
                     <Route path="/greenroom" element={<GreenRoom />} />
