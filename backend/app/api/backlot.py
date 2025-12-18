@@ -18621,17 +18621,20 @@ async def get_project_script_notes(
     - group_by: How to group results (page, scene, type, author)
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -18734,17 +18737,20 @@ async def get_project_notes_summary(
 ):
     """Get notes summary stats for a project"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -18836,8 +18842,11 @@ async def export_project_notes_pdf(
     - group_by: How to group notes in PDF (page, scene, type, author)
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
@@ -18846,9 +18855,9 @@ async def export_project_notes_pdf(
 
     project_title = project_response.data[0]["title"]
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
