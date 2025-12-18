@@ -134,33 +134,23 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     token = authorization.replace("Bearer ", "")
 
     try:
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
 
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            if not user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user.get("id"), "email": user.get("email")}
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user_response = supabase.auth.get_user(token)
-            if not user_response or not user_response.user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user_response.user.id, "email": user_response.user.email}
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"id": user.get("id"), "email": user.get("email")}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
-async def verify_project_member(supabase, project_id: str, user_id: str) -> bool:
+async def verify_project_member(client, project_id: str, user_id: str) -> bool:
     """Verify user is a member of the project"""
     # Check owner
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return True
 
     # Check membership
@@ -168,11 +158,11 @@ async def verify_project_member(supabase, project_id: str, user_id: str) -> bool
     return bool(member_resp.data)
 
 
-async def can_approve_timecards(supabase, project_id: str, user_id: str) -> bool:
+async def can_approve_timecards(client, project_id: str, user_id: str) -> bool:
     """Check if user can approve/reject timecards"""
     # Check owner
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return True
 
     # Check for showrunner/producer role
@@ -230,7 +220,7 @@ async def list_my_timecards(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get timecards
@@ -275,7 +265,7 @@ async def list_timecards_for_review(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_approve_timecards(supabase, project_id, user["id"]):
+    if not await can_approve_timecards(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to review timecards")
 
     # Get timecards with user info
@@ -346,7 +336,7 @@ async def get_timecard(
     profile = tc.get("profiles") or {}
 
     # Check access (owner or can approve)
-    if tc["user_id"] != user["id"] and not await can_approve_timecards(supabase, project_id, user["id"]):
+    if tc["user_id"] != user["id"] and not await can_approve_timecards(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get entries
@@ -393,7 +383,7 @@ async def create_or_get_timecard(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Normalize to Monday
@@ -588,7 +578,7 @@ async def approve_timecard(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_approve_timecards(supabase, project_id, user["id"]):
+    if not await can_approve_timecards(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to approve timecards")
 
     # Verify timecard exists and is submitted
@@ -626,7 +616,7 @@ async def reject_timecard(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_approve_timecards(supabase, project_id, user["id"]):
+    if not await can_approve_timecards(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to reject timecards")
 
     # Verify timecard exists and is submitted
@@ -663,7 +653,7 @@ async def get_timecard_summary(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_approve_timecards(supabase, project_id, user["id"]):
+    if not await can_approve_timecards(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get all timecards

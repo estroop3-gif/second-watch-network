@@ -45,6 +45,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": True, "edit": True},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace
+            "continuity": {"view": True, "edit": True},
             # Utilities
             "checkin": {"view": True, "edit": True},
             "my-space": {"view": True, "edit": True},
@@ -57,6 +59,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": True},
             "camera_media": {"view": True, "edit": True},
             "continuity_notes": {"view": True, "edit": True},
+            # Continuity workspace sections
+            "lining_marks": {"view": True, "edit": True},
+            "take_notes": {"view": True, "edit": True},
+            "continuity_photos": {"view": True, "edit": True},
             # Utility sections
             "day_settings": {"view": True, "edit": True},
             "checkin_admin": {"view": True, "edit": True},
@@ -93,6 +99,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": True, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace - view only for producer
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": True},
             "my-space": {"view": True, "edit": True},
@@ -105,6 +113,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": True},
             "camera_media": {"view": True, "edit": True},
             "continuity_notes": {"view": True, "edit": True},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": True},
             "checkin_admin": {"view": True, "edit": True},
@@ -141,6 +153,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace - view only for director
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": False},
             "my-space": {"view": True, "edit": True},
@@ -153,6 +167,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": False},
             "camera_media": {"view": True, "edit": False},
             "continuity_notes": {"view": True, "edit": True},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": False},
             "checkin_admin": {"view": False, "edit": False},
@@ -189,6 +207,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace - view only for 1st AD
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": True},
             "my-space": {"view": True, "edit": True},
@@ -201,6 +221,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": True},
             "camera_media": {"view": True, "edit": False},
             "continuity_notes": {"view": True, "edit": False},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": True},
             "checkin_admin": {"view": True, "edit": True},
@@ -237,6 +261,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - DP has full access
             "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace - view only for DP
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": False},
             "my-space": {"view": True, "edit": True},
@@ -249,6 +275,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": True},
             "camera_media": {"view": True, "edit": True},
             "continuity_notes": {"view": True, "edit": True},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": False},
             "checkin_admin": {"view": False, "edit": False},
@@ -285,6 +315,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - editor has view only
             "camera-continuity": {"view": True, "edit": False},
+            # Continuity workspace - view only for editor
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": False},
             "my-space": {"view": True, "edit": True},
@@ -297,6 +329,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": False},
             "camera_media": {"view": True, "edit": False},
             "continuity_notes": {"view": True, "edit": False},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": False},
             "checkin_admin": {"view": False, "edit": False},
@@ -333,6 +369,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - dept head can view, edit continuity for their dept
             "camera-continuity": {"view": True, "edit": False},
+            # Continuity workspace - view only for department head
+            "continuity": {"view": True, "edit": False},
             # Utilities
             "checkin": {"view": True, "edit": False},
             "my-space": {"view": True, "edit": True},
@@ -345,6 +383,10 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": False},
             "camera_media": {"view": True, "edit": False},
             "continuity_notes": {"view": True, "edit": True},  # Can edit for their department
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": False},
             "checkin_admin": {"view": False, "edit": False},
@@ -381,6 +423,8 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - crew has view only
             "camera-continuity": {"view": True, "edit": False},
+            # Continuity workspace - crew has view only
+            "continuity": {"view": True, "edit": False},
             # Utilities - can check in
             "checkin": {"view": True, "edit": False},
             "my-space": {"view": True, "edit": True},
@@ -393,8 +437,67 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "slate_logger": {"view": True, "edit": False},
             "camera_media": {"view": True, "edit": False},
             "continuity_notes": {"view": True, "edit": False},
+            # Continuity workspace sections - view only
+            "lining_marks": {"view": True, "edit": False},
+            "take_notes": {"view": True, "edit": False},
+            "continuity_photos": {"view": True, "edit": False},
             # Utility sections
             "day_settings": {"view": True, "edit": False},
+            "checkin_admin": {"view": False, "edit": False},
+        },
+    },
+    # Script Supervisor - full access to Continuity workspace
+    "script_supervisor": {
+        "tabs": {
+            "overview": {"view": True, "edit": False},
+            "script": {"view": True, "edit": True},
+            "shot-lists": {"view": True, "edit": True},
+            "coverage": {"view": True, "edit": True},
+            "schedule": {"view": True, "edit": False},
+            "call-sheets": {"view": True, "edit": False},
+            "casting": {"view": False, "edit": False},
+            "locations": {"view": True, "edit": False},
+            "gear": {"view": True, "edit": False},
+            "dailies": {"view": True, "edit": False},
+            "review": {"view": True, "edit": False},
+            "assets": {"view": False, "edit": False},
+            "budget": {"view": False, "edit": False},
+            "daily-budget": {"view": False, "edit": False},
+            "receipts": {"view": False, "edit": False},
+            "analytics": {"view": False, "edit": False},
+            "tasks": {"view": True, "edit": True},
+            "updates": {"view": True, "edit": True},
+            "contacts": {"view": True, "edit": False},
+            "clearances": {"view": False, "edit": False},
+            "credits": {"view": True, "edit": False},
+            "settings": {"view": False, "edit": False},
+            "timecards": {"view": True, "edit": True},
+            "scene-view": {"view": True, "edit": True},
+            "day-view": {"view": True, "edit": True},
+            "person-view": {"view": True, "edit": False},
+            "access": {"view": False, "edit": False},
+            # Camera & Continuity tools - full access
+            "camera-continuity": {"view": True, "edit": True},
+            # Continuity workspace - FULL ACCESS (primary role)
+            "continuity": {"view": True, "edit": True},
+            # Utilities
+            "checkin": {"view": True, "edit": False},
+            "my-space": {"view": True, "edit": True},
+        },
+        "sections": {
+            "budget_numbers": {"view": False, "edit": False},
+            "admin_tools": {"view": False, "edit": False},
+            # Camera & Continuity sub-sections - full access
+            "shot_list": {"view": True, "edit": True},
+            "slate_logger": {"view": True, "edit": True},
+            "camera_media": {"view": True, "edit": True},
+            "continuity_notes": {"view": True, "edit": True},
+            # Continuity workspace sections - FULL ACCESS
+            "lining_marks": {"view": True, "edit": True},
+            "take_notes": {"view": True, "edit": True},
+            "continuity_photos": {"view": True, "edit": True},
+            # Utility sections
+            "day_settings": {"view": True, "edit": True},
             "checkin_admin": {"view": False, "edit": False},
         },
     },

@@ -14,6 +14,8 @@ import {
   BacklotMemberRole,
 } from '@/types/backlot';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 interface UseProjectsOptions extends ProjectFilters {
   limit?: number;
 }
@@ -220,20 +222,40 @@ export function useProjectPermission(projectId: string | null) {
       }
 
       try {
-        // Try to get the project - if we can access it, we have at least view permission
-        const project = await api.getBacklotProject(projectId);
-
-        // Check if owner
-        const isOwner = project.owner_id === user.id;
-
-        if (isOwner) {
-          return { canView: true, canEdit: true, isAdmin: true, isOwner: true, role: 'owner' as BacklotMemberRole };
+        // Fetch the user's actual role from the backend
+        const token = api.getToken();
+        if (!token) {
+          return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
         }
 
-        // For now, if we can access the project, assume we have view access
-        // More granular permissions would need additional backend endpoints
-        return { canView: true, canEdit: false, isAdmin: false, isOwner: false, role: 'viewer' as BacklotMemberRole };
+        const response = await fetch(
+          `${API_BASE}/api/v1/backlot/projects/${projectId}/my-role`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          // If 403, user doesn't have access
+          if (response.status === 403) {
+            return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
+          }
+          throw new Error('Failed to fetch role');
+        }
+
+        const roleData = await response.json();
+
+        return {
+          canView: roleData.can_view ?? false,
+          canEdit: roleData.can_edit ?? false,
+          isAdmin: roleData.is_admin ?? false,
+          isOwner: roleData.is_owner ?? false,
+          role: (roleData.role as BacklotMemberRole) || null,
+        };
       } catch (error) {
+        console.error('Error fetching project permission:', error);
         return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
       }
     },

@@ -138,43 +138,33 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     token = authorization.replace("Bearer ", "")
 
     try:
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
 
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            if not user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user.get("id"), "email": user.get("email")}
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user_response = supabase.auth.get_user(token)
-            if not user_response or not user_response.user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user_response.user.id, "email": user_response.user.email}
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"id": user.get("id"), "email": user.get("email")}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
-async def verify_project_access(supabase, project_id: str, user_id: str) -> bool:
+async def verify_project_access(client, project_id: str, user_id: str) -> bool:
     """Verify user has access to project"""
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return True
 
     member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
-async def get_user_view_config(supabase, project_id: str, user_id: str) -> Dict[str, Any]:
+async def get_user_view_config(client, project_id: str, user_id: str) -> Dict[str, Any]:
     """Get user's view config to check budget visibility"""
     # Check if owner
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return {"can_view_budget": True}
 
     # Get user's role
@@ -206,7 +196,7 @@ async def list_production_days(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_access(supabase, project_id, user["id"]):
+    if not await verify_project_access(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get production days
@@ -289,10 +279,10 @@ async def get_day_overview(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_access(supabase, project_id, user["id"]):
+    if not await verify_project_access(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    view_config = await get_user_view_config(supabase, project_id, user["id"])
+    view_config = await get_user_view_config(client, project_id, user["id"])
 
     # Get day metadata
     day_resp = client.table("backlot_production_days").select("*").eq("id", day_id).eq("project_id", project_id).execute()

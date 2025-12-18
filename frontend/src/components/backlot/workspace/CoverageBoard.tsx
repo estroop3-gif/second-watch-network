@@ -43,6 +43,7 @@ import {
   CheckCircle2,
   GripVertical,
   ChevronRight,
+  ChevronLeft,
   Film,
   Plus,
   MoreHorizontal,
@@ -51,6 +52,8 @@ import {
   Eye,
   Check,
   Clapperboard,
+  ArrowLeft,
+  ArrowRight,
 } from 'lucide-react';
 import {
   useScenes,
@@ -127,6 +130,19 @@ const TIME_OF_DAY_ICONS: Record<string, React.ElementType> = {
   night: Moon,
   dawn: Sunrise,
   dusk: Sunset,
+};
+
+// Status order for navigation
+const STATUS_ORDER: BacklotSceneCoverageStatus[] = ['not_scheduled', 'scheduled', 'shot', 'needs_pickup'];
+
+const getPreviousStatus = (current: BacklotSceneCoverageStatus): BacklotSceneCoverageStatus | null => {
+  const index = STATUS_ORDER.indexOf(current);
+  return index > 0 ? STATUS_ORDER[index - 1] : null;
+};
+
+const getNextStatus = (current: BacklotSceneCoverageStatus): BacklotSceneCoverageStatus | null => {
+  const index = STATUS_ORDER.indexOf(current);
+  return index < STATUS_ORDER.length - 1 ? STATUS_ORDER[index + 1] : null;
 };
 
 // Scene card component for the kanban board
@@ -232,6 +248,55 @@ const SceneCard: React.FC<{
               </Badge>
             )}
           </div>
+
+          {/* Move buttons */}
+          {canEdit && (
+            <div className="flex items-center justify-between mt-3 pt-2 border-t border-muted-gray/10">
+              {(() => {
+                const prevStatus = getPreviousStatus(scene.coverage_status);
+                const nextStatus = getNextStatus(scene.coverage_status);
+                const prevCol = prevStatus ? COLUMNS.find(c => c.status === prevStatus) : null;
+                const nextCol = nextStatus ? COLUMNS.find(c => c.status === nextStatus) : null;
+
+                return (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={!prevStatus}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (prevStatus) onQuickStatusChange?.(scene, prevStatus);
+                      }}
+                      className={cn(
+                        "h-7 px-2 text-xs gap-1",
+                        prevCol ? prevCol.color : "text-muted-gray/30"
+                      )}
+                    >
+                      <ArrowLeft className="w-3 h-3" />
+                      {prevCol?.label || 'Back'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={!nextStatus}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (nextStatus) onQuickStatusChange?.(scene, nextStatus);
+                      }}
+                      className={cn(
+                        "h-7 px-2 text-xs gap-1",
+                        nextCol ? nextCol.color : "text-muted-gray/30"
+                      )}
+                    >
+                      {nextCol?.label || 'Next'}
+                      <ArrowRight className="w-3 h-3" />
+                    </Button>
+                  </>
+                );
+              })()}
+            </div>
+          )}
         </div>
 
         {/* Quick actions */}
@@ -313,7 +378,7 @@ const BoardColumn: React.FC<{
   return (
     <div
       className={cn(
-        'flex-1 min-w-[280px] max-w-[350px] rounded-lg border transition-colors flex flex-col',
+        'flex-1 min-w-[280px] rounded-lg border transition-colors flex flex-col',
         config.bgColor,
         isDragOver ? `${config.borderColor} border-2` : 'border-muted-gray/20'
       )}
@@ -343,7 +408,7 @@ const BoardColumn: React.FC<{
       )}
 
       {/* Column content */}
-      <div className="flex-1 p-2 space-y-2 overflow-y-auto max-h-[calc(100vh-320px)]">
+      <div className="flex-1 p-2 space-y-2">
         {scenes.length === 0 ? (
           <div className="py-8 text-center text-muted-gray text-sm">
             {isDragOver ? 'Drop scene here' : 'No scenes'}
@@ -768,8 +833,9 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
 
     try {
       await updateScene.mutateAsync({
-        sceneId: draggingScene.id,
-        data: { coverage_status: newStatus },
+        id: draggingScene.id,
+        scene_number: draggingScene.scene_number,
+        coverage_status: newStatus,
       });
 
       toast({
@@ -793,8 +859,9 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
   ) => {
     try {
       await updateScene.mutateAsync({
-        sceneId: scene.id,
-        data: { coverage_status: newStatus },
+        id: scene.id,
+        scene_number: scene.scene_number,
+        coverage_status: newStatus,
       });
 
       toast({
@@ -820,8 +887,9 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
 
     try {
       await updateScene.mutateAsync({
-        sceneId: selectedScene.id,
-        data: { coverage_status: newStatus },
+        id: selectedScene.id,
+        scene_number: selectedScene.scene_number,
+        coverage_status: newStatus,
       });
 
       // Update local state
@@ -864,9 +932,9 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
   const overallProgress = totalShots > 0 ? Math.round((completedShots / totalShots) * 100) : 0;
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col">
       {/* Summary Stats Bar */}
-      <div className="flex items-center gap-6 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3">
+      <div className="flex items-center gap-6 bg-charcoal-black/50 border border-muted-gray/20 rounded-t-lg rounded-b-none p-3">
         <div className="flex items-center gap-2">
           <Clapperboard className="w-4 h-4 text-muted-gray" />
           <span className="text-sm text-muted-gray">
@@ -898,7 +966,7 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
       </div>
 
       {/* Kanban Board */}
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      <div className="flex gap-4 overflow-x-auto pb-4 items-stretch">
         {COLUMNS.map((config) => (
           <BoardColumn
             key={config.status}

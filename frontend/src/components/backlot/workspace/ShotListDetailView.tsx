@@ -68,7 +68,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { useShotList, useShotListShots, useScenes } from '@/hooks/backlot';
+import { useShotList, useShotListShots, useScenes, useProductionDays } from '@/hooks/backlot';
 import {
   BacklotShot,
   ShotInput,
@@ -76,6 +76,8 @@ import {
   ShotCameraHeight,
   ShotMovement,
   ShotTimeOfDay,
+  ShotListType,
+  ShotListInput,
   SHOT_FRAME_SIZE_LABELS,
   SHOT_FRAME_SIZE_SHORT_LABELS,
   SHOT_CAMERA_HEIGHT_LABELS,
@@ -156,6 +158,15 @@ const ShotListDetailView: React.FC<ShotListDetailViewProps> = ({
       if (onBack) onBack();
     } catch (error) {
       console.error('Error archiving shot list:', error);
+    }
+  };
+
+  const handleUpdateShotListInfo = async (data: Partial<ShotListInput>) => {
+    try {
+      await updateShotList.mutateAsync(data);
+      setShowEditListModal(false);
+    } catch (error) {
+      console.error('Error updating shot list:', error);
     }
   };
 
@@ -512,6 +523,22 @@ const ShotListDetailView: React.FC<ShotListDetailViewProps> = ({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Edit Shot List Info Modal */}
+      <EditShotListInfoModal
+        isOpen={showEditListModal}
+        onClose={() => setShowEditListModal(false)}
+        onSubmit={handleUpdateShotListInfo}
+        projectId={projectId}
+        initialData={{
+          title: shotList.title,
+          description: shotList.description,
+          list_type: shotList.list_type,
+          production_day_id: shotList.production_day_id,
+          scene_id: shotList.scene_id,
+        }}
+        isSubmitting={updateShotList.isPending}
+      />
     </div>
   );
 };
@@ -623,6 +650,168 @@ interface ShotEditModalProps {
 }
 
 const NONE_VALUE = '__none__';
+
+// Edit Shot List Info Modal
+interface EditShotListInfoModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (data: Partial<ShotListInput>) => void;
+  projectId: string;
+  initialData: {
+    title: string;
+    description?: string;
+    list_type?: ShotListType;
+    production_day_id?: string;
+    scene_id?: string;
+  };
+  isSubmitting?: boolean;
+}
+
+const EditShotListInfoModal: React.FC<EditShotListInfoModalProps> = ({
+  isOpen,
+  onClose,
+  onSubmit,
+  projectId,
+  initialData,
+  isSubmitting,
+}) => {
+  const [title, setTitle] = useState(initialData.title);
+  const [description, setDescription] = useState(initialData.description || '');
+  const [listType, setListType] = useState<ShotListType | typeof NONE_VALUE>(initialData.list_type || NONE_VALUE);
+  const [productionDayId, setProductionDayId] = useState(initialData.production_day_id || NONE_VALUE);
+  const [sceneId, setSceneId] = useState(initialData.scene_id || NONE_VALUE);
+
+  // Fetch production days and scenes for dropdowns
+  const { data: productionDays } = useProductionDays(projectId);
+  const { scenes } = useScenes({ projectId });
+
+  // Reset form when initialData changes (e.g., when opening modal)
+  React.useEffect(() => {
+    setTitle(initialData.title);
+    setDescription(initialData.description || '');
+    setListType(initialData.list_type || NONE_VALUE);
+    setProductionDayId(initialData.production_day_id || NONE_VALUE);
+    setSceneId(initialData.scene_id || NONE_VALUE);
+  }, [initialData]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+
+    onSubmit({
+      title: title.trim(),
+      description: description.trim() || undefined,
+      list_type: listType && listType !== NONE_VALUE ? listType : undefined,
+      production_day_id: productionDayId && productionDayId !== NONE_VALUE ? productionDayId : undefined,
+      scene_id: sceneId && sceneId !== NONE_VALUE ? sceneId : undefined,
+    });
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="bg-charcoal-black border-muted-gray/20 max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-bone-white">Edit Shot List Info</DialogTitle>
+          <DialogDescription className="text-muted-gray">
+            Update the shot list details below.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Title */}
+          <div className="space-y-2">
+            <Label htmlFor="edit-title" className="text-bone-white">Title *</Label>
+            <Input
+              id="edit-title"
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="e.g., Day 3 - Church Interior"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+              required
+            />
+          </div>
+
+          {/* Description */}
+          <div className="space-y-2">
+            <Label htmlFor="edit-description" className="text-bone-white">Description</Label>
+            <Textarea
+              id="edit-description"
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Notes about this shot list..."
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white min-h-[80px]"
+            />
+          </div>
+
+          {/* List Type */}
+          <div className="space-y-2">
+            <Label className="text-bone-white">List Type</Label>
+            <Select value={listType} onValueChange={(v) => setListType(v as ShotListType)}>
+              <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white">
+                <SelectValue placeholder="Select type (optional)" />
+              </SelectTrigger>
+              <SelectContent className="bg-charcoal-black border-muted-gray/20">
+                <SelectItem value={NONE_VALUE}>None</SelectItem>
+                {Object.entries(SHOT_LIST_TYPE_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>{label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Link to Production Day */}
+          <div className="space-y-2">
+            <Label className="text-bone-white">Link to Production Day</Label>
+            <Select value={productionDayId} onValueChange={setProductionDayId}>
+              <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white">
+                <SelectValue placeholder="Select production day (optional)" />
+              </SelectTrigger>
+              <SelectContent className="bg-charcoal-black border-muted-gray/20">
+                <SelectItem value={NONE_VALUE}>None</SelectItem>
+                {productionDays?.map(day => (
+                  <SelectItem key={day.id} value={day.id}>
+                    {day.label || new Date(day.date).toLocaleDateString()} - Day {day.day_number || '?'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Link to Scene */}
+          <div className="space-y-2">
+            <Label className="text-bone-white">Link to Primary Scene</Label>
+            <Select value={sceneId} onValueChange={setSceneId}>
+              <SelectTrigger className="bg-charcoal-black border-muted-gray/30 text-bone-white">
+                <SelectValue placeholder="Select scene (optional)" />
+              </SelectTrigger>
+              <SelectContent className="bg-charcoal-black border-muted-gray/20 max-h-60">
+                <SelectItem value={NONE_VALUE}>None</SelectItem>
+                {scenes?.map(scene => (
+                  <SelectItem key={scene.id} value={scene.id}>
+                    {scene.scene_number} - {scene.slugline || scene.set_name || 'Untitled'}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={!title.trim() || isSubmitting}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {isSubmitting ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+};
 
 const ShotEditModal: React.FC<ShotEditModalProps> = ({
   isOpen,

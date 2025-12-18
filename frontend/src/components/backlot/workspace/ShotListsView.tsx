@@ -395,7 +395,7 @@ const CreateShotListModal: React.FC<CreateShotListModalProps> = ({
 
   // Fetch production days and scenes for dropdowns
   const { data: productionDays } = useProductionDays(projectId);
-  const { data: scenes } = useScenes(projectId);
+  const { scenes } = useScenes({ projectId });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -500,7 +500,7 @@ const CreateShotListModal: React.FC<CreateShotListModalProps> = ({
                 <SelectItem value={NONE_VALUE}>None</SelectItem>
                 {scenes?.map(scene => (
                   <SelectItem key={scene.id} value={scene.id}>
-                    {scene.scene_number} - {scene.slugline || scene.setting || 'Untitled'}
+                    {scene.scene_number} - {scene.slugline || scene.set_name || 'Untitled'}
                   </SelectItem>
                 ))}
               </SelectContent>

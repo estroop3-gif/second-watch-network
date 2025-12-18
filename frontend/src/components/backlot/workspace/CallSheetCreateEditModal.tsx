@@ -65,8 +65,13 @@ import {
   Clapperboard,
   Sun,
   Moon,
+  Link,
+  RefreshCw,
+  Search,
+  Check,
+  List,
 } from 'lucide-react';
-import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations } from '@/hooks/backlot';
+import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations, useScenesList, useScenes, useCallSheetSceneLinkMutations } from '@/hooks/backlot';
 import { api } from '@/lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -127,17 +132,26 @@ const DEPARTMENT_ICONS: Record<string, React.ReactNode> = {
 interface LocalLocation {
   id?: string;
   location_number: number;
+  location_id?: string;  // FK to backlot_project_locations for syncing
+  library_location_id?: string;  // ID of linked library location (for snapshot tracking)
   name: string;
   address: string;
   parking_instructions: string;
   basecamp_location: string;
   call_time: string;
   notes: string;
+  // Clearance status (for display)
+  clearance_status?: 'pending' | 'approved' | 'denied' | 'none';
+  // Library sync tracking
+  is_from_library?: boolean;  // True if linked from library
+  needs_library_save?: boolean;  // True if should prompt to save to library
 }
 
 // Local scene state type
 interface LocalScene {
   id?: string;
+  linked_scene_id?: string;         // Project scene ID (if linked from project)
+  is_linked: boolean;               // True = linked from project, False = manually created
   scene_number: string;
   segment_label: string;
   page_count: string;
@@ -157,13 +171,30 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 }) => {
   const { toast } = useToast();
   const isEditMode = !!callSheet;
+  const [closeConfirmCount, setCloseConfirmCount] = useState(0);
   const { createCallSheet, updateCallSheet } = useCallSheets(projectId);
   const { days } = useProductionDays(projectId);
-  const { locations: projectLocations, isLoading: projectLocationsLoading } = useProjectLocations(projectId);
+  const { locations: projectLocations, isLoading: projectLocationsLoading, createLocation: createLibraryLocation } = useProjectLocations(projectId);
+
+  // Scene creation and linking hooks
+  const { createScene } = useScenes({ projectId });
+  const { linkScene } = useCallSheetSceneLinkMutations();
 
   // Location picker state
   const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [locationPickerIndex, setLocationPickerIndex] = useState<number | null>(null);
+
+  // Save to Library dialog state
+  const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
+  const [saveToLibraryIndex, setSaveToLibraryIndex] = useState<number | null>(null);
+  const [savingToLibrary, setSavingToLibrary] = useState(false);
+
+  // Scene picker state
+  const [showScenePicker, setShowScenePicker] = useState(false);
+  const [sceneSearch, setSceneSearch] = useState('');
+  const [selectedSceneIds, setSelectedSceneIds] = useState<Set<string>>(new Set());
+  const { data: projectScenesData, isLoading: projectScenesLoading } = useScenesList(projectId, { search: sceneSearch || undefined });
+  const projectScenes = Array.isArray(projectScenesData) ? projectScenesData : [];
 
   // Template selection
   const [templateType, setTemplateType] = useState<BacklotCallSheetTemplate>('feature');
@@ -196,6 +227,11 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
   // Scenes / Segments
   const [scenes, setScenes] = useState<LocalScene[]>([]);
+
+  // Get IDs of scenes already added to call sheet (to disable them in picker)
+  const alreadyAddedSceneIds = new Set(
+    scenes.filter(s => s.linked_scene_id).map(s => s.linked_scene_id!)
+  );
 
   // Legacy single location (for backward compatibility)
   const [locationName, setLocationName] = useState('');
@@ -244,6 +280,78 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const [weatherInfo, setWeatherInfo] = useState('');
   const [hospitalName, setHospitalName] = useState('');
   const [hospitalPhone, setHospitalPhone] = useState('');
+
+  // Check if form has any data filled in
+  const hasFormData = (): boolean => {
+    return !!(
+      title.trim() ||
+      productionTitle.trim() ||
+      productionCompany.trim() ||
+      headerLogoUrl ||
+      shootDayNumber ||
+      totalShootDays ||
+      crewCallTime !== '06:00' ||
+      generalCallTime !== '07:00' ||
+      firstShotTime !== '08:00' ||
+      lunchTime !== '12:30' ||
+      estimatedWrapTime !== '18:00' ||
+      breakfastTime ||
+      dinnerTime ||
+      sunriseTime ||
+      sunsetTime ||
+      locations.some(l => l.name.trim() || l.address.trim()) ||
+      scenes.length > 0 ||
+      scheduleBlocks.some(b => b.time || b.activity) ||
+      productionOfficePhone ||
+      productionEmail ||
+      directorName ||
+      producerName ||
+      firstAdName ||
+      upmName ||
+      customContacts.length > 0 ||
+      Object.values(departmentNotes).some(n => n?.trim()) ||
+      weatherForecast ||
+      nearestHospital ||
+      hospitalAddress ||
+      setMedic ||
+      fireSafetyOfficer ||
+      safetyNotes ||
+      generalNotes ||
+      specialInstructions ||
+      advanceSchedule
+    );
+  };
+
+  // Custom close handler with double confirmation if data exists
+  const handleCloseAttempt = () => {
+    if (hasFormData()) {
+      if (closeConfirmCount === 0) {
+        setCloseConfirmCount(1);
+        toast({
+          title: 'Unsaved Changes',
+          description: 'You have unsaved changes. Click Cancel again to discard them.',
+          variant: 'destructive',
+        });
+        return;
+      } else if (closeConfirmCount === 1) {
+        // Second confirmation
+        if (confirm('Are you sure you want to close? All unsaved changes will be lost.')) {
+          setCloseConfirmCount(0);
+          onClose();
+        }
+        return;
+      }
+    }
+    setCloseConfirmCount(0);
+    onClose();
+  };
+
+  // Reset confirmation count when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setCloseConfirmCount(0);
+    }
+  }, [isOpen]);
 
   // Update template when type changes
   useEffect(() => {
@@ -537,8 +645,12 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       projectLocation.zip,
     ].filter(Boolean).join(', ');
 
+    // Snapshot data from library location
     updated[locationPickerIndex] = {
       ...updated[locationPickerIndex],
+      library_location_id: projectLocation.id,
+      is_from_library: true,
+      needs_library_save: false,
       name: projectLocation.name,
       address: fullAddress || '',
       parking_instructions: projectLocation.parking_notes || '',
@@ -554,12 +666,116 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     });
   };
 
+  // Open Save to Library dialog for a location
+  const handleOpenSaveToLibrary = (index: number) => {
+    setSaveToLibraryIndex(index);
+    setShowSaveToLibrary(true);
+  };
+
+  // Save location to project library
+  const handleSaveToLibrary = async () => {
+    if (saveToLibraryIndex === null) return;
+
+    const location = locations[saveToLibraryIndex];
+    if (!location.name) {
+      toast({
+        title: 'Missing Information',
+        description: 'Please enter a location name before saving to library.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setSavingToLibrary(true);
+    try {
+      // Parse address into components (basic split)
+      const addressParts = location.address.split(',').map(s => s.trim());
+
+      const newLocation = await createLibraryLocation.mutateAsync({
+        name: location.name,
+        address: addressParts[0] || '',
+        city: addressParts[1] || '',
+        state: addressParts[2] || '',
+        parking_notes: location.parking_instructions,
+        load_in_notes: location.notes,
+        visibility: 'private',
+      });
+
+      // Update the local location to mark it as linked
+      const updated = [...locations];
+      updated[saveToLibraryIndex] = {
+        ...updated[saveToLibraryIndex],
+        library_location_id: newLocation.id,
+        is_from_library: true,
+        needs_library_save: false,
+      };
+      setLocations(updated);
+
+      toast({
+        title: 'Saved to Library',
+        description: `"${location.name}" has been added to your project's location library.`,
+      });
+
+      setShowSaveToLibrary(false);
+      setSaveToLibraryIndex(null);
+    } catch (error) {
+      console.error('Failed to save to library:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to save location to library. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingToLibrary(false);
+    }
+  };
+
+  // Sync location data from library (refresh snapshot)
+  const handleSyncFromLibrary = (index: number) => {
+    const location = locations[index];
+    if (!location.library_location_id) return;
+
+    const libraryLocation = projectLocations.find(l => l.id === location.library_location_id);
+    if (!libraryLocation) {
+      toast({
+        title: 'Location Not Found',
+        description: 'The linked library location no longer exists.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const fullAddress = [
+      libraryLocation.address,
+      libraryLocation.city,
+      libraryLocation.state,
+      libraryLocation.zip,
+    ].filter(Boolean).join(', ');
+
+    const updated = [...locations];
+    updated[index] = {
+      ...updated[index],
+      name: libraryLocation.name,
+      address: fullAddress || '',
+      parking_instructions: libraryLocation.parking_notes || '',
+      notes: libraryLocation.load_in_notes || '',
+    };
+    setLocations(updated);
+
+    toast({
+      title: 'Synced from Library',
+      description: `"${libraryLocation.name}" has been updated with library data.`,
+    });
+  };
+
   // Scene / Segment management
+  // Add a new manually created scene
   const handleAddScene = () => {
     const nextOrder = scenes.length > 0
       ? Math.max(...scenes.map(s => s.sort_order)) + 1
       : 1;
     setScenes([...scenes, {
+      is_linked: false,
       scene_number: '',
       segment_label: '',
       page_count: '',
@@ -570,6 +786,73 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       cast_ids: '',
       sort_order: nextOrder,
     }]);
+  };
+
+  // Add scenes from project (linked scenes)
+  const handleAddLinkedScenes = (selectedSceneIds: string[]) => {
+    const newScenes: LocalScene[] = [];
+    let nextOrder = scenes.length > 0
+      ? Math.max(...scenes.map(s => s.sort_order)) + 1
+      : 1;
+
+    for (const sceneId of selectedSceneIds) {
+      // Check if already added
+      if (scenes.some(s => s.linked_scene_id === sceneId)) {
+        continue;
+      }
+
+      const projectScene = projectScenes.find(s => s.id === sceneId);
+      if (projectScene) {
+        newScenes.push({
+          is_linked: true,
+          linked_scene_id: sceneId,
+          scene_number: projectScene.scene_number || '',
+          segment_label: '',
+          page_count: projectScene.page_length?.toString() || '',
+          set_name: projectScene.slugline || '',
+          int_ext: (projectScene.int_ext as BacklotIntExt) || '',
+          time_of_day: (projectScene.day_night as BacklotTimeOfDay) || '',
+          description: '',
+          cast_ids: '',
+          sort_order: nextOrder++,
+        });
+      }
+    }
+
+    if (newScenes.length > 0) {
+      setScenes([...scenes, ...newScenes]);
+      toast({
+        title: 'Scenes Added',
+        description: `Added ${newScenes.length} scene${newScenes.length !== 1 ? 's' : ''} from project.`,
+      });
+    }
+    setShowScenePicker(false);
+    setSceneSearch('');
+    setSelectedSceneIds(new Set());
+  };
+
+  // Sync a linked scene with latest project data
+  const handleSyncScene = (index: number) => {
+    const scene = scenes[index];
+    if (!scene.is_linked || !scene.linked_scene_id) return;
+
+    const projectScene = projectScenes.find(s => s.id === scene.linked_scene_id);
+    if (projectScene) {
+      const updated = [...scenes];
+      updated[index] = {
+        ...updated[index],
+        scene_number: projectScene.scene_number || '',
+        page_count: projectScene.page_length?.toString() || '',
+        set_name: projectScene.slugline || '',
+        int_ext: (projectScene.int_ext as BacklotIntExt) || '',
+        time_of_day: (projectScene.day_night as BacklotTimeOfDay) || '',
+      };
+      setScenes(updated);
+      toast({
+        title: 'Scene Synced',
+        description: `Scene ${projectScene.scene_number} updated from project.`,
+      });
+    }
   };
 
   const handleRemoveScene = (index: number) => {
@@ -809,7 +1092,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   // Helper function to save scenes via API
   const saveScenes = async (callSheetId: string) => {
     const token = await getAuthToken();
-    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
     // Get existing scenes from the call sheet (if edit mode)
     const existingSceneIds = new Set(
@@ -821,21 +1104,21 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
     // Process each local scene
     for (const scene of scenes) {
-      const sceneInput: CallSheetSceneInput = {
-        scene_number: scene.scene_number || undefined,
-        segment_label: scene.segment_label || undefined,
-        page_count: scene.page_count || undefined,
-        set_name: scene.set_name || undefined,
-        int_ext: scene.int_ext || undefined,
-        time_of_day: scene.time_of_day || undefined,
-        description: scene.description || undefined,
-        cast_ids: scene.cast_ids ? scene.cast_ids.split(',').map(s => s.trim()).filter(Boolean) : undefined,
-        sort_order: scene.sort_order,
-      };
-
       if (scene.id && existingSceneIds.has(scene.id)) {
-        // Update existing scene
-        await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes/${scene.id}`, {
+        // UPDATE: Existing scene in call sheet - update it directly
+        const sceneInput: CallSheetSceneInput = {
+          scene_number: scene.scene_number || undefined,
+          segment_label: scene.segment_label || undefined,
+          page_count: scene.page_count || undefined,
+          set_name: scene.set_name || undefined,
+          int_ext: scene.int_ext || undefined,
+          time_of_day: scene.time_of_day || undefined,
+          description: scene.description || undefined,
+          cast_ids: scene.cast_ids ? scene.cast_ids.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+          sort_order: scene.sort_order,
+        };
+
+        await fetch(`${API_BASE_URL}/backlot/call-sheets/${callSheetId}/scenes/${scene.id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -844,15 +1127,32 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
           body: JSON.stringify(sceneInput),
         });
         processedIds.add(scene.id);
+      } else if (scene.is_linked && scene.linked_scene_id) {
+        // CREATE: Linked scene from project - create link to existing project scene
+        await linkScene.mutateAsync({
+          callSheetId,
+          scene_id: scene.linked_scene_id,
+          sequence: scene.sort_order,
+          notes: scene.description || undefined,
+        });
       } else {
-        // Create new scene
-        await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify(sceneInput),
+        // CREATE: New manual scene - create in project first, then link
+        // First create in project's main scenes table
+        const newProjectScene = await createScene.mutateAsync({
+          projectId,
+          scene_number: scene.scene_number || undefined,
+          slugline: scene.set_name || undefined,
+          int_ext: scene.int_ext || undefined,
+          day_night: scene.time_of_day || undefined,
+          page_length: scene.page_count ? parseFloat(scene.page_count) : undefined,
+        });
+
+        // Then link the new scene to the call sheet
+        await linkScene.mutateAsync({
+          callSheetId,
+          scene_id: newProjectScene.id,
+          sequence: scene.sort_order,
+          notes: scene.description || undefined,
         });
       }
     }
@@ -861,7 +1161,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     if (isEditMode) {
       for (const existingId of existingSceneIds) {
         if (!processedIds.has(existingId)) {
-          await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes/${existingId}`, {
+          await fetch(`${API_BASE_URL}/backlot/call-sheets/${callSheetId}/scenes/${existingId}`, {
             method: 'DELETE',
             headers: {
               Authorization: `Bearer ${token}`,
@@ -887,8 +1187,14 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const visibleDepartments = template.departmentNotes.filter(d => d.visible);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] bg-charcoal-black border-muted-gray/30">
+    <Dialog open={isOpen} onOpenChange={() => {}}>
+      <DialogContent
+        className="max-w-4xl max-h-[90vh] bg-charcoal-black border-muted-gray/30"
+        hideCloseButton
+        onInteractOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-bone-white">
             <FileText className="w-5 h-5 text-accent-yellow" />
@@ -1088,7 +1394,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
               {/* Schedule */}
               <div className="space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between sticky top-0 z-10 bg-charcoal-black py-2 -mx-1 px-1">
                   <Label className="text-bone-white flex items-center gap-1">
                     <Clock className="w-4 h-4 text-accent-yellow" />
                     Day Schedule
@@ -1319,34 +1625,80 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
               <div className="space-y-4">
                 {locations.map((location, index) => (
-                  <div key={index} className="border border-muted-gray/30 rounded-lg p-4 space-y-4">
+                  <div key={index} className={cn(
+                    "border rounded-lg p-4 space-y-4",
+                    location.is_from_library
+                      ? "border-accent-yellow/30 bg-accent-yellow/5"
+                      : "border-muted-gray/30"
+                  )}>
                     <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
                           Location {location.location_number}
                         </Badge>
-                        {projectLocations.length > 0 && (
+                        {/* Library link indicator */}
+                        {location.is_from_library ? (
+                          <Badge variant="outline" className="text-green-400 border-green-400/30 text-xs">
+                            <Link className="w-3 h-3 mr-1" />
+                            Linked to Library
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-muted-gray border-muted-gray/30 text-xs">
+                            Not in Library
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {/* Action buttons based on library status */}
+                        {location.is_from_library ? (
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => handleOpenLocationPicker(index)}
+                            onClick={() => handleSyncFromLibrary(index)}
                             className="text-accent-yellow hover:text-bone-white text-xs h-6 px-2"
+                            title="Refresh data from library"
                           >
-                            <Building className="w-3 h-3 mr-1" />
-                            Select from Library
+                            <RefreshCw className="w-3 h-3 mr-1" />
+                            Sync
+                          </Button>
+                        ) : (
+                          <>
+                            {projectLocations.length > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleOpenLocationPicker(index)}
+                                className="text-accent-yellow hover:text-bone-white text-xs h-6 px-2"
+                              >
+                                <Building className="w-3 h-3 mr-1" />
+                                Select from Library
+                              </Button>
+                            )}
+                            {location.name && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleOpenSaveToLibrary(index)}
+                                className="text-green-400 hover:text-green-300 text-xs h-6 px-2"
+                                title="Save this location to your library"
+                              >
+                                <Plus className="w-3 h-3 mr-1" />
+                                Save to Library
+                              </Button>
+                            )}
+                          </>
+                        )}
+                        {locations.length > 1 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRemoveLocation(index)}
+                            className="text-red-400 hover:text-red-300"
+                          >
+                            <Trash2 className="w-4 h-4" />
                           </Button>
                         )}
                       </div>
-                      {locations.length > 1 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRemoveLocation(index)}
-                          className="text-red-400 hover:text-red-300"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      )}
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
@@ -1462,6 +1814,69 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                   </DialogContent>
                 </Dialog>
               )}
+
+              {/* Save to Library Modal */}
+              {showSaveToLibrary && saveToLibraryIndex !== null && (
+                <Dialog open={showSaveToLibrary} onOpenChange={setShowSaveToLibrary}>
+                  <DialogContent className="max-w-md bg-charcoal-black border-muted-gray/30">
+                    <DialogHeader>
+                      <DialogTitle className="text-bone-white flex items-center gap-2">
+                        <Building className="w-5 h-5 text-green-400" />
+                        Save to Location Library
+                      </DialogTitle>
+                      <DialogDescription className="text-muted-gray">
+                        Add this location to your project's location library for reuse in future call sheets.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="bg-muted-gray/10 rounded-lg p-4 space-y-2">
+                        <div className="font-medium text-bone-white">
+                          {locations[saveToLibraryIndex]?.name || 'Unnamed Location'}
+                        </div>
+                        {locations[saveToLibraryIndex]?.address && (
+                          <div className="text-sm text-muted-gray">
+                            {locations[saveToLibraryIndex].address}
+                          </div>
+                        )}
+                        {locations[saveToLibraryIndex]?.parking_instructions && (
+                          <div className="text-xs text-muted-gray/70">
+                            <span className="text-muted-gray">Parking:</span> {locations[saveToLibraryIndex].parking_instructions}
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-gray">
+                        Once saved, this location will appear in your project's location library and can be selected for other call sheets.
+                      </p>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => setShowSaveToLibrary(false)}
+                        className="border-muted-gray/30"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleSaveToLibrary}
+                        disabled={savingToLibrary}
+                        className="bg-green-600 hover:bg-green-700"
+                      >
+                        {savingToLibrary ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-4 h-4 mr-2" />
+                            Save to Library
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              )}
             </TabsContent>
 
             {/* Scenes / Segments Tab */}
@@ -1473,53 +1888,104 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                     Scenes / Segments
                   </Label>
                   <p className="text-sm text-muted-gray mt-1">
-                    Add scenes or segments to shoot on this day
+                    Add scenes from project or create new ones
                   </p>
                 </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleAddScene}
-                  className="border-muted-gray/30"
-                >
-                  <Plus className="w-4 h-4 mr-1" />
-                  Add Scene
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowScenePicker(true)}
+                    className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                  >
+                    <List className="w-4 h-4 mr-1" />
+                    Add from Project
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddScene}
+                    className="border-muted-gray/30"
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Create New
+                  </Button>
+                </div>
               </div>
 
               {scenes.length === 0 ? (
                 <div className="text-center py-8 border border-dashed border-muted-gray/30 rounded-lg">
                   <Clapperboard className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
                   <p className="text-muted-gray text-sm">No scenes added yet</p>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleAddScene}
-                    className="mt-2 text-accent-yellow"
-                  >
-                    <Plus className="w-4 h-4 mr-1" />
-                    Add First Scene
-                  </Button>
+                  <div className="flex items-center justify-center gap-2 mt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowScenePicker(true)}
+                      className="text-accent-yellow border-accent-yellow/30"
+                    >
+                      <List className="w-4 h-4 mr-1" />
+                      Add from Project
+                    </Button>
+                    <span className="text-muted-gray/50 text-sm">or</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleAddScene}
+                      className="text-muted-gray hover:text-bone-white"
+                    >
+                      <Plus className="w-4 h-4 mr-1" />
+                      Create New
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
                   {scenes.map((scene, index) => (
                     <div
                       key={scene.id || index}
-                      className="p-4 border border-muted-gray/30 rounded-lg bg-muted-gray/5"
+                      className={cn(
+                        "p-4 border rounded-lg",
+                        scene.is_linked
+                          ? "border-accent-yellow/30 bg-accent-yellow/5"
+                          : "border-muted-gray/30 bg-muted-gray/5"
+                      )}
                     >
                       <div className="flex justify-between items-start mb-3">
-                        <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
-                          Scene {index + 1}
-                        </Badge>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleRemoveScene(index)}
-                          className="text-red-400 hover:text-red-300 h-6 w-6"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className={cn(
+                            scene.is_linked
+                              ? "text-accent-yellow border-accent-yellow/30"
+                              : "text-bone-white border-muted-gray/30"
+                          )}>
+                            {scene.is_linked && <Link className="w-3 h-3 mr-1" />}
+                            Scene {index + 1}
+                          </Badge>
+                          {scene.is_linked && (
+                            <span className="text-xs text-muted-gray">Linked from project</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {scene.is_linked && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleSyncScene(index)}
+                              className="text-accent-yellow hover:text-bone-white h-6 w-6"
+                              title="Sync from project"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRemoveScene(index)}
+                            className="text-red-400 hover:text-red-300 h-6 w-6"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-4 gap-3">
@@ -1606,6 +2072,176 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* Scene Picker Modal */}
+              {showScenePicker && (
+                <Dialog open={showScenePicker} onOpenChange={(open) => {
+                  setShowScenePicker(open);
+                  if (!open) {
+                    setSceneSearch('');
+                    setSelectedSceneIds(new Set());
+                  }
+                }}>
+                  <DialogContent className="max-w-2xl bg-charcoal-black border-muted-gray/30">
+                    <DialogHeader>
+                      <DialogTitle className="text-bone-white flex items-center gap-2">
+                        <Clapperboard className="w-5 h-5 text-accent-yellow" />
+                        Add Scenes from Project
+                      </DialogTitle>
+                      <DialogDescription className="text-muted-gray">
+                        Select scenes from your project's scene list to add to this call sheet
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {/* Search input */}
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+                      <Input
+                        value={sceneSearch}
+                        onChange={(e) => setSceneSearch(e.target.value)}
+                        placeholder="Search scenes by number or description..."
+                        className="bg-charcoal-black border-muted-gray/30 pl-10"
+                      />
+                    </div>
+
+                    <ScrollArea className="max-h-[400px]">
+                      {projectScenesLoading ? (
+                        <div className="flex items-center justify-center py-8">
+                          <Loader2 className="w-6 h-6 animate-spin text-accent-yellow" />
+                        </div>
+                      ) : projectScenes.length === 0 ? (
+                        <div className="text-center py-8">
+                          <Clapperboard className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
+                          <p className="text-muted-gray text-sm">
+                            {sceneSearch ? 'No scenes match your search' : 'No scenes in project'}
+                          </p>
+                          <p className="text-muted-gray/60 text-xs mt-1">
+                            {sceneSearch ? 'Try a different search term' : 'Import a script or add scenes in the Scenes tab first'}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 p-1">
+                          {projectScenes.map((scene) => {
+                            const isAlreadyAdded = alreadyAddedSceneIds.has(scene.id);
+                            const isSelected = selectedSceneIds.has(scene.id);
+
+                            return (
+                              <button
+                                key={scene.id}
+                                onClick={() => {
+                                  if (isAlreadyAdded) return;
+                                  setSelectedSceneIds(prev => {
+                                    const newSet = new Set(prev);
+                                    if (isSelected) {
+                                      newSet.delete(scene.id);
+                                    } else {
+                                      newSet.add(scene.id);
+                                    }
+                                    return newSet;
+                                  });
+                                }}
+                                disabled={isAlreadyAdded}
+                                className={cn(
+                                  "w-full text-left p-3 rounded-lg border transition-colors",
+                                  isAlreadyAdded
+                                    ? "border-muted-gray/10 bg-muted-gray/5 opacity-50 cursor-not-allowed"
+                                    : isSelected
+                                      ? "border-accent-yellow bg-accent-yellow/10"
+                                      : "border-muted-gray/20 hover:border-accent-yellow/50 hover:bg-accent-yellow/5"
+                                )}
+                              >
+                                <div className="flex items-start gap-3">
+                                  {/* Checkbox indicator */}
+                                  <div className={cn(
+                                    "w-5 h-5 rounded border flex items-center justify-center shrink-0 mt-0.5",
+                                    isAlreadyAdded
+                                      ? "border-muted-gray/30 bg-muted-gray/20"
+                                      : isSelected
+                                        ? "border-accent-yellow bg-accent-yellow"
+                                        : "border-muted-gray/30"
+                                  )}>
+                                    {(isSelected || isAlreadyAdded) && (
+                                      <Check className={cn(
+                                        "w-3 h-3",
+                                        isAlreadyAdded ? "text-muted-gray" : "text-charcoal-black"
+                                      )} />
+                                    )}
+                                  </div>
+
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-mono font-medium text-bone-white">
+                                        {scene.scene_number || '—'}
+                                      </span>
+                                      {scene.int_ext && (
+                                        <Badge variant="outline" className="text-xs border-muted-gray/30">
+                                          {scene.int_ext.toUpperCase()}
+                                        </Badge>
+                                      )}
+                                      {scene.day_night && (
+                                        <Badge variant="outline" className="text-xs border-muted-gray/30 flex items-center gap-1">
+                                          {scene.day_night === 'day' ? (
+                                            <Sun className="w-3 h-3" />
+                                          ) : scene.day_night === 'night' ? (
+                                            <Moon className="w-3 h-3" />
+                                          ) : null}
+                                          {scene.day_night.toUpperCase()}
+                                        </Badge>
+                                      )}
+                                      {isAlreadyAdded && (
+                                        <Badge className="bg-muted-gray/20 text-muted-gray text-xs">
+                                          Already added
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    {scene.slugline && (
+                                      <div className="text-sm text-muted-gray mt-1 truncate">
+                                        {scene.slugline}
+                                      </div>
+                                    )}
+                                    {scene.page_length && (
+                                      <div className="text-xs text-muted-gray/60 mt-1">
+                                        {scene.page_length} pages
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </ScrollArea>
+
+                    <DialogFooter className="gap-2">
+                      <div className="flex-1 text-sm text-muted-gray">
+                        {selectedSceneIds.size > 0 && (
+                          <span>{selectedSceneIds.size} scene{selectedSceneIds.size !== 1 ? 's' : ''} selected</span>
+                        )}
+                      </div>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setShowScenePicker(false);
+                          setSceneSearch('');
+                          setSelectedSceneIds(new Set());
+                        }}
+                        className="border-muted-gray/30"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={() => handleAddLinkedScenes(Array.from(selectedSceneIds))}
+                        disabled={selectedSceneIds.size === 0}
+                        className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Add {selectedSceneIds.size > 0 ? selectedSceneIds.size : ''} Scene{selectedSceneIds.size !== 1 ? 's' : ''}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               )}
             </TabsContent>
 
@@ -1928,7 +2564,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         <DialogFooter className="gap-2">
           <Button
             variant="outline"
-            onClick={onClose}
+            onClick={handleCloseAttempt}
             disabled={isPending}
             className="border-muted-gray/30"
           >

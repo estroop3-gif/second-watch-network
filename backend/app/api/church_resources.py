@@ -229,18 +229,10 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
 
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            return user.get("id") if user else None
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user = supabase.auth.get_user(token)
-            return user.user.id if user and user.user else None
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        return user.get("id") if user else None
     except Exception:
         return None
 

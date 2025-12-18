@@ -88,10 +88,15 @@ export function LocationDetailModal({
                       {location.location_type}
                     </Badge>
                   )}
-                  {location.is_public && (
+                  {(location.visibility === 'public' || (location.is_public && !location.visibility)) && (
                     <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-400">
                       <Globe className="w-3 h-3 mr-1" />
                       Public
+                    </Badge>
+                  )}
+                  {location.visibility === 'unlisted' && (
+                    <Badge variant="outline" className="text-xs border-yellow-500/30 text-yellow-400">
+                      Unlisted
                     </Badge>
                   )}
                   {location.region_tag && (

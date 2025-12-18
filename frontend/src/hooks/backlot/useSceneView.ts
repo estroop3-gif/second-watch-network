@@ -141,7 +141,39 @@ export function useScenesList(projectId: string | null, params?: ScenesListParam
       if (params?.search) queryParams.append('search', params.search);
       const queryString = queryParams.toString();
       const url = `/api/v1/backlot/projects/${projectId}/scenes${queryString ? `?${queryString}` : ''}`;
-      return apiClient.get<SceneListItem[]>(url);
+      const response = await apiClient.get<{ scenes: any[] } | any[]>(url);
+
+      // Handle both formats: { scenes: [...] } and direct array
+      const rawScenes = Array.isArray(response) ? response : (response?.scenes || []);
+
+      // Map to SceneListItem format
+      return rawScenes.map((scene: any) => {
+        // Build slugline from components if not set
+        let slugline = scene.slugline;
+        if (!slugline) {
+          const parts: string[] = [];
+          if (scene.int_ext) parts.push(scene.int_ext.toUpperCase());
+          if (scene.set_name) parts.push(scene.set_name);
+          if (scene.time_of_day) parts.push(`- ${scene.time_of_day.toUpperCase()}`);
+          slugline = parts.length > 0 ? parts.join(' ') : null;
+        }
+
+        return {
+          id: scene.id,
+          scene_number: scene.scene_number || '',
+          slugline,
+          int_ext: scene.int_ext,
+          day_night: scene.time_of_day || scene.day_night, // Handle both field names
+          page_length: scene.page_length || scene.page_count,
+          is_scheduled: scene.is_scheduled || scene.coverage_status === 'scheduled',
+          is_shot: scene.is_shot || scene.coverage_status === 'shot',
+          needs_pickup: scene.needs_pickup || scene.coverage_status === 'needs_pickup',
+          shot_count: scene.shot_count || 0,
+          dailies_clip_count: scene.dailies_clip_count || 0,
+          has_coverage: scene.has_coverage || false,
+          breakdown_item_count: scene.breakdown_item_count || scene.breakdown_count || 0,
+        } as SceneListItem;
+      });
     },
     enabled: !!projectId,
   });

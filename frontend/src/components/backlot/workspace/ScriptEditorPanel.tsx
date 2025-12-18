@@ -344,6 +344,14 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     setHasUnsavedChanges(false);
   }, [hasUnsavedChanges, activeScript]);
 
+  // Get next color in sequence - defined before handleSave which uses it
+  const getNextColor = useCallback(() => {
+    const currentColorCode = (activeScript.color_code || 'white') as BacklotScriptColorCode;
+    const currentIndex = REVISION_COLORS.indexOf(currentColorCode);
+    const nextIndex = (currentIndex + 1) % REVISION_COLORS.length;
+    return REVISION_COLORS[nextIndex];
+  }, [activeScript]);
+
   const handleSave = useCallback(async () => {
     try {
       // Always create a new revision when saving, with the next color in sequence
@@ -446,14 +454,6 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       });
     }
   }, [activeScript, extractText, refetch, toast]);
-
-  // Get next color in sequence
-  const getNextColor = useCallback(() => {
-    const currentColorCode = (activeScript.color_code || 'white') as BacklotScriptColorCode;
-    const currentIndex = REVISION_COLORS.indexOf(currentColorCode);
-    const nextIndex = (currentIndex + 1) % REVISION_COLORS.length;
-    return REVISION_COLORS[nextIndex];
-  }, [activeScript]);
 
   // Set default color for new version
   useEffect(() => {

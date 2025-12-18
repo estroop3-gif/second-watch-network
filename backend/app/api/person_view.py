@@ -99,33 +99,23 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     token = authorization.replace("Bearer ", "")
 
     try:
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
 
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            if not user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user.get("id"), "email": user.get("email")}
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user_response = supabase.auth.get_user(token)
-            if not user_response or not user_response.user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user_response.user.id, "email": user_response.user.email}
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"id": user.get("id"), "email": user.get("email")}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
-async def verify_project_access(supabase, project_id: str, user_id: str) -> Dict[str, Any]:
+async def verify_project_access(client, project_id: str, user_id: str) -> Dict[str, Any]:
     """Verify user has access to project and return access level"""
     # Check owner
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return {"has_access": True, "is_admin": True, "is_owner": True}
 
     # Check membership
@@ -137,14 +127,14 @@ async def verify_project_access(supabase, project_id: str, user_id: str) -> Dict
     return {"has_access": True, "is_admin": role in ["admin", "owner"], "is_owner": False}
 
 
-async def can_view_person(supabase, project_id: str, viewer_id: str, target_user_id: str) -> bool:
+async def can_view_person(client, project_id: str, viewer_id: str, target_user_id: str) -> bool:
     """Check if viewer can see target person's details"""
     # Can always view own profile
     if viewer_id == target_user_id:
         return True
 
     # Check if viewer is admin/showrunner/producer
-    access = await verify_project_access(supabase, project_id, viewer_id)
+    access = await verify_project_access(client, project_id, viewer_id)
     if access.get("is_admin") or access.get("is_owner"):
         return True
 
@@ -175,7 +165,7 @@ async def list_project_people(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    access = await verify_project_access(supabase, project_id, user["id"])
+    access = await verify_project_access(client, project_id, user["id"])
     if not access.get("has_access"):
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -196,7 +186,7 @@ async def list_project_people(
         roles_by_user[uid].append(r)
 
     # Get task counts per user
-    tasks_resp = client.table("backlot_tasks").select("assigned_to").eq("project_id", project_id).not_.is_("assigned_to", "null").execute()
+    tasks_resp = client.table("backlot_tasks").select("assigned_to").eq("project_id", project_id).execute()
     task_counts: Dict[str, int] = {}
     for task in (tasks_resp.data or []):
         aid = task.get("assigned_to")
@@ -281,12 +271,12 @@ async def get_person_overview(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    access = await verify_project_access(supabase, project_id, user["id"])
+    access = await verify_project_access(client, project_id, user["id"])
     if not access.get("has_access"):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Check if user can view this person's details
-    if not await can_view_person(supabase, project_id, user["id"], target_user_id):
+    if not await can_view_person(client, project_id, user["id"], target_user_id):
         raise HTTPException(status_code=403, detail="You don't have permission to view this person's details")
 
     # Get profile

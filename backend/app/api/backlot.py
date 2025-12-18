@@ -412,6 +412,79 @@ async def get_project(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/my-role")
+async def get_my_project_role(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get the current user's role in a project.
+    Returns role info including whether user can edit.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
+
+        # Get project to check ownership
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project = project_response.data[0]
+        is_owner = project["owner_id"] == profile_id
+
+        if is_owner:
+            return {
+                "role": "owner",
+                "is_owner": True,
+                "can_edit": True,
+                "can_view": True,
+                "is_admin": True
+            }
+
+        # Check membership
+        member_response = client.table("backlot_project_members").select(
+            "role, production_role"
+        ).eq("project_id", project_id).eq("user_id", profile_id).execute()
+
+        if not member_response.data:
+            # Not a member - check if project is public
+            project_full = client.table("backlot_projects").select("visibility").eq("id", project_id).execute()
+            if project_full.data and project_full.data[0].get("visibility") == "public":
+                return {
+                    "role": "public_viewer",
+                    "is_owner": False,
+                    "can_edit": False,
+                    "can_view": True,
+                    "is_admin": False
+                }
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        member = member_response.data[0]
+        role = member.get("role", "viewer")
+        can_edit = role in ["owner", "admin", "editor"]
+        is_admin = role in ["owner", "admin"]
+
+        return {
+            "role": role,
+            "production_role": member.get("production_role"),
+            "is_owner": False,
+            "can_edit": can_edit,
+            "can_view": True,
+            "is_admin": is_admin
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting user role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.put("/projects/{project_id}", response_model=ProjectResponse)
 async def update_project(
     project_id: str,
@@ -541,30 +614,18 @@ class CallSheetSendHistory(BaseModel):
 # =====================================================
 
 async def get_current_user_from_token(authorization: str = Header(None)) -> Dict[str, Any]:
-    """Extract and validate user from Bearer token"""
+    """Extract and validate user from Bearer token using AWS Cognito"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
 
     try:
-        # Use Cognito or Supabase based on USE_AWS flag
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
-
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            if not user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user.get("id"), "email": user.get("email")}
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user_response = supabase.auth.get_user(token)
-            if not user_response or not user_response.user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user_response.user.id, "email": user_response.user.email}
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"id": user.get("id"), "email": user.get("email")}
     except HTTPException:
         raise
     except Exception as e:
@@ -1517,7 +1578,7 @@ async def generate_call_sheet_pdf(
         safe_title = "".join(c if c.isalnum() else "_" for c in call_sheet.get("title", "callsheet"))
         filename = f"{safe_title}_{call_date}_{uuid.uuid4().hex[:8]}.pdf"
 
-        # Upload to Supabase Storage
+        # Upload to S3 Storage
         storage_path = f"call-sheets/{project_id}/{filename}"
 
         # Upload the PDF to storage
@@ -1649,16 +1710,16 @@ async def upload_project_logo(
     Upload a logo for project call sheets
 
     Note: This endpoint expects the file to be uploaded via multipart form data.
-    For the current implementation, the frontend will upload directly to Supabase Storage
+    For the current implementation, the frontend will upload directly to S3 Storage
     and then call this endpoint to update the project with the logo URL.
     """
     # This is a placeholder - actual file upload would need FastAPI's File/UploadFile
-    # In the current architecture, we handle file uploads on the frontend via Supabase Storage
+    # In the current architecture, we handle file uploads on the frontend via S3 Storage
     # and just update the database record here
 
     raise HTTPException(
         status_code=501,
-        detail="Logo upload is handled directly via Supabase Storage on the frontend. "
+        detail="Logo upload is handled directly via S3 Storage on the frontend. "
                "Use the /projects/{project_id}/set-logo endpoint to set the logo URL after uploading."
     )
 
@@ -1666,6 +1727,19 @@ async def upload_project_logo(
 class SetLogoRequest(BaseModel):
     """Request to set logo URL"""
     logo_url: str
+    filename: Optional[str] = None
+
+
+class ProjectLogo(BaseModel):
+    """Project logo model"""
+    id: str
+    project_id: str
+    logo_url: str
+    filename: Optional[str] = None
+    is_active: bool = False
+    uploaded_by_user_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 @router.post("/projects/{project_id}/set-logo", response_model=LogoUploadResponse)
@@ -1674,14 +1748,36 @@ async def set_project_logo(
     request: SetLogoRequest,
     authorization: str = Header(None)
 ):
-    """Set the logo URL for a project (after uploading to storage)"""
+    """
+    Set the logo URL for a project (after uploading to storage).
+    Also saves to the logos table and marks it as active.
+    """
     current_user = await get_current_user_from_token(authorization)
-    user_id = current_user["id"]
+    cognito_user_id = current_user["id"]
 
     client = get_client()
 
+    # Get profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
     # Verify access
-    await verify_project_access(client, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, profile_id, require_edit=True)
+
+    # Deactivate all existing logos for this project
+    client.table("backlot_project_logos").update({
+        "is_active": False
+    }).eq("project_id", project_id).execute()
+
+    # Save the new logo to the logos table and mark as active
+    logo_result = client.table("backlot_project_logos").insert({
+        "project_id": project_id,
+        "logo_url": request.logo_url,
+        "filename": request.filename,
+        "is_active": True,
+        "uploaded_by_user_id": profile_id
+    }).execute()
 
     # Update project with logo URL
     result = client.table("backlot_projects").update({
@@ -1696,6 +1792,174 @@ async def set_project_logo(
         logo_url=request.logo_url,
         message="Project logo updated successfully"
     )
+
+
+@router.get("/projects/{project_id}/logos")
+async def get_project_logos(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all logos uploaded for a project"""
+    current_user = await get_current_user_from_token(authorization)
+    cognito_user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Verify access
+    await verify_project_access(client, project_id, profile_id)
+
+    # Get all logos for this project, ordered by most recent first
+    result = client.table("backlot_project_logos").select("*").eq(
+        "project_id", project_id
+    ).order("created_at", desc=True).execute()
+
+    return {"logos": result.data or []}
+
+
+@router.get("/projects/{project_id}/logos/active")
+async def get_active_project_logo(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get the currently active logo for a project"""
+    current_user = await get_current_user_from_token(authorization)
+    cognito_user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Verify access
+    await verify_project_access(client, project_id, profile_id)
+
+    # Get active logo
+    result = client.table("backlot_project_logos").select("*").eq(
+        "project_id", project_id
+    ).eq("is_active", True).execute()
+
+    if result.data:
+        return {"logo": result.data[0]}
+
+    # If no active logo, return the most recent one
+    result = client.table("backlot_project_logos").select("*").eq(
+        "project_id", project_id
+    ).order("created_at", desc=True).limit(1).execute()
+
+    return {"logo": result.data[0] if result.data else None}
+
+
+@router.put("/projects/{project_id}/logos/{logo_id}/activate")
+async def activate_project_logo(
+    project_id: str,
+    logo_id: str,
+    authorization: str = Header(None)
+):
+    """Set a specific logo as the active logo for call sheets"""
+    current_user = await get_current_user_from_token(authorization)
+    cognito_user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Verify access
+    await verify_project_access(client, project_id, profile_id, require_edit=True)
+
+    # Verify the logo belongs to this project
+    logo_result = client.table("backlot_project_logos").select("*").eq(
+        "id", logo_id
+    ).eq("project_id", project_id).execute()
+
+    if not logo_result.data:
+        raise HTTPException(status_code=404, detail="Logo not found")
+
+    logo = logo_result.data[0]
+
+    # Deactivate all logos for this project
+    client.table("backlot_project_logos").update({
+        "is_active": False
+    }).eq("project_id", project_id).execute()
+
+    # Activate the selected logo
+    client.table("backlot_project_logos").update({
+        "is_active": True,
+        "updated_at": datetime.utcnow().isoformat()
+    }).eq("id", logo_id).execute()
+
+    # Update the project header_logo_url
+    client.table("backlot_projects").update({
+        "header_logo_url": logo["logo_url"]
+    }).eq("id", project_id).execute()
+
+    return {"success": True, "logo": logo}
+
+
+@router.delete("/projects/{project_id}/logos/{logo_id}")
+async def delete_project_logo(
+    project_id: str,
+    logo_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a logo from the project's logo library"""
+    current_user = await get_current_user_from_token(authorization)
+    cognito_user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Verify access
+    await verify_project_access(client, project_id, profile_id, require_edit=True)
+
+    # Verify the logo belongs to this project
+    logo_result = client.table("backlot_project_logos").select("*").eq(
+        "id", logo_id
+    ).eq("project_id", project_id).execute()
+
+    if not logo_result.data:
+        raise HTTPException(status_code=404, detail="Logo not found")
+
+    was_active = logo_result.data[0].get("is_active", False)
+
+    # Delete the logo
+    client.table("backlot_project_logos").delete().eq("id", logo_id).execute()
+
+    # If the deleted logo was active, make the most recent remaining logo active
+    if was_active:
+        remaining = client.table("backlot_project_logos").select("*").eq(
+            "project_id", project_id
+        ).order("created_at", desc=True).limit(1).execute()
+
+        if remaining.data:
+            new_active = remaining.data[0]
+            client.table("backlot_project_logos").update({
+                "is_active": True
+            }).eq("id", new_active["id"]).execute()
+
+            client.table("backlot_projects").update({
+                "header_logo_url": new_active["logo_url"]
+            }).eq("id", project_id).execute()
+        else:
+            # No logos left, clear the project's header_logo_url
+            client.table("backlot_projects").update({
+                "header_logo_url": None
+            }).eq("id", project_id).execute()
+
+    return {"success": True, "message": "Logo deleted"}
 
 
 # =====================================================
@@ -4011,11 +4275,16 @@ async def upload_call_sheet_logo(
     from app.core.storage import storage_client
     import io
 
+    print(f"[Logo Upload] Starting upload for project {project_id}")
+    print(f"[Logo Upload] File: {file.filename}, Content-Type: {file.content_type}, Size: {file.size}")
+
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
+    print(f"[Logo Upload] User authenticated: {user_id}")
 
     client = get_client()
     await verify_project_access(client, project_id, user_id, require_edit=True)
+    print(f"[Logo Upload] Project access verified")
 
     # Validate file type - logos should be images
     allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"]
@@ -4028,47 +4297,34 @@ async def upload_call_sheet_logo(
     filename = f"call-sheet-logos/{project_id}/{uuid.uuid4()}.{ext}"
 
     try:
-        # Get current logo URL to delete old file
-        project_result = client.table("backlot_projects").select("header_logo_url").eq("id", project_id).execute()
-        old_logo_url = project_result.data[0].get("header_logo_url") if project_result.data else None
-
-        # Delete old logo if it exists and is in our S3 bucket
-        if old_logo_url and "s3." in old_logo_url and ("swn-backlot-files" in old_logo_url or "swn-backlot" in old_logo_url):
-            try:
-                # Extract path from URL - handle different URL formats
-                url_parts = old_logo_url.split(".com/")
-                if len(url_parts) > 1:
-                    old_path = url_parts[1]
-                    storage_client.from_("backlot-files").remove([old_path])
-            except Exception as e:
-                print(f"Warning: Could not delete old logo: {e}")
-
         # Upload to S3
+        print(f"[Logo Upload] Reading file content...")
         file_content = await file.read()
+        print(f"[Logo Upload] File content size: {len(file_content)} bytes")
         file_obj = io.BytesIO(file_content)
 
+        print(f"[Logo Upload] Uploading to S3: {filename}")
         storage_client.from_("backlot-files").upload(
             filename,
             file_obj,
             {"content_type": file.content_type}
         )
+        print(f"[Logo Upload] S3 upload successful")
 
         # Get public URL
         logo_url = storage_client.from_("backlot-files").get_public_url(filename)
-
-        # Update project with new logo URL
-        client.table("backlot_projects").update({
-            "header_logo_url": logo_url
-        }).eq("id", project_id).execute()
+        print(f"[Logo Upload] Public URL: {logo_url}")
 
         return {
             "success": True,
             "logo_url": logo_url,
-            "message": "Logo uploaded and project updated successfully"
+            "message": "Logo uploaded successfully"
         }
 
     except Exception as e:
-        print(f"Error uploading logo: {e}")
+        import traceback
+        print(f"[Logo Upload] Error: {e}")
+        print(f"[Logo Upload] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to upload logo: {str(e)}")
 
 
@@ -4144,7 +4400,7 @@ async def register_receipt(
     """
     Register an uploaded receipt file and optionally run OCR.
 
-    The file should already be uploaded to Supabase Storage.
+    The file should already be uploaded to S3 Storage.
     This endpoint registers it in the database and processes it.
     """
     current_user = await get_current_user_from_token(authorization)
@@ -6133,7 +6389,8 @@ class LocationInput(BaseModel):
     location_fee: Optional[float] = None
     fee_notes: Optional[str] = None
     images: Optional[List[str]] = None
-    is_public: bool = True
+    is_public: bool = True  # Deprecated: use visibility instead
+    visibility: str = "public"  # "public", "unlisted", or "private"
     region_tag: Optional[str] = None
     location_type: Optional[str] = None
     amenities: Optional[List[str]] = None
@@ -6176,8 +6433,8 @@ async def search_global_locations(
     client = get_client()
 
     try:
-        # Build query for public locations
-        q = client.table("backlot_locations").select("*").eq("is_public", True)
+        # Build query for public locations (visibility = 'public')
+        q = client.table("backlot_locations").select("*").eq("visibility", "public")
 
         # Apply filters
         if query:
@@ -6223,9 +6480,9 @@ async def get_location_regions(authorization: str = Header(None)):
     client = get_client()
 
     try:
-        result = client.table("backlot_locations").select("region_tag").eq("is_public", True).not_.is_("region_tag", "null").execute()
+        result = client.table("backlot_locations").select("region_tag").eq("visibility", "public").execute()
 
-        # Extract unique regions
+        # Extract unique regions (filters out nulls)
         regions = list(set([r["region_tag"] for r in result.data if r.get("region_tag")]))
         regions.sort()
 
@@ -6245,9 +6502,9 @@ async def get_location_types(authorization: str = Header(None)):
     client = get_client()
 
     try:
-        result = client.table("backlot_locations").select("location_type").eq("is_public", True).not_.is_("location_type", "null").execute()
+        result = client.table("backlot_locations").select("location_type").eq("visibility", "public").execute()
 
-        # Extract unique types
+        # Extract unique types (filters out nulls)
         types = list(set([r["location_type"] for r in result.data if r.get("location_type")]))
         types.sort()
 
@@ -6271,28 +6528,27 @@ async def get_project_locations(
     user_id = user["id"]
     client = get_client()
 
-    # Verify project membership (check both owner and members)
-    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    is_owner = project_response.data[0]["owner_id"] == user_id
-
-    if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
-        if not member_response.data:
-            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+    # Verify project access using helper function
+    await verify_project_access(client, project_id, user_id)
 
     try:
-        # Get attached locations with full location data
-        result = client.table("backlot_project_locations").select(
-            "*, location:location_id(*)"
-        ).eq("project_id", project_id).execute()
+        # Get attached locations
+        result = client.table("backlot_project_locations").select("*").eq("project_id", project_id).execute()
 
-        # Flatten the response
+        # Get location IDs
+        location_ids = [pl.get("location_id") for pl in (result.data or []) if pl.get("location_id")]
+
+        # Get location details if we have any locations
+        locations_map = {}
+        if location_ids:
+            locations_result = client.table("backlot_locations").select("*").in_("id", location_ids).execute()
+            locations_map = {str(loc["id"]): loc for loc in (locations_result.data or [])}
+
+        # Combine the data
         locations = []
         for pl in result.data or []:
-            location = pl.get("location", {})
+            location_id = str(pl.get("location_id", ""))
+            location = locations_map.get(location_id, {})
             if location:
                 locations.append({
                     **location,
@@ -6330,7 +6586,7 @@ async def create_project_location(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -6367,7 +6623,8 @@ async def create_project_location(
             "location_fee": location.location_fee,
             "fee_notes": location.fee_notes,
             "images": location.images or [],
-            "is_public": location.is_public,
+            "is_public": location.visibility == "public" if location.visibility else location.is_public,
+            "visibility": location.visibility or ("public" if location.is_public else "private"),
             "region_tag": location.region_tag,
             "location_type": location.location_type,
             "amenities": location.amenities or [],
@@ -6423,7 +6680,7 @@ async def attach_location_to_project(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -6497,7 +6754,7 @@ async def detach_location_from_project(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -6539,9 +6796,12 @@ async def get_location(
 
         location = result.data[0]
 
-        # Check access: must be public or created by the user
-        if not location.get("is_public") and location.get("created_by_user_id") != user_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+        # Check access based on visibility:
+        # - "public" or "unlisted": anyone can view (unlisted = accessible via direct link)
+        # - "private": only creator can view
+        visibility = location.get("visibility", "public" if location.get("is_public") else "private")
+        if visibility == "private" and str(location.get("created_by_user_id")) != str(user_id):
+            raise HTTPException(status_code=403, detail="Access denied - this location is private")
 
         return {"location": location}
 
@@ -6601,7 +6861,8 @@ async def update_location(
             "location_fee": location.location_fee,
             "fee_notes": location.fee_notes,
             "images": location.images or [],
-            "is_public": location.is_public,
+            "is_public": location.visibility == "public" if location.visibility else location.is_public,
+            "visibility": location.visibility or ("public" if location.is_public else "private"),
             "region_tag": location.region_tag,
             "location_type": location.location_type,
             "amenities": location.amenities or []
@@ -6685,7 +6946,7 @@ async def update_project_location_notes(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -7234,6 +7495,7 @@ class SceneInput(BaseModel):
     location_id: Optional[str] = None
     director_notes: Optional[str] = None
     ad_notes: Optional[str] = None
+    coverage_status: Optional[str] = None  # not_scheduled, scheduled, shot, needs_pickup
 
 class SceneCoverageUpdate(BaseModel):
     is_scheduled: Optional[bool] = None
@@ -7628,7 +7890,7 @@ async def update_script(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -7820,7 +8082,7 @@ async def create_script_version(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -7924,7 +8186,7 @@ async def set_current_script_version(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -7965,7 +8227,7 @@ async def lock_script_version(
 
         # Verify edit access (only owners/admins can lock)
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
@@ -8007,7 +8269,7 @@ async def unlock_script_version(
 
         # Verify edit access (only owners/admins can unlock)
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
@@ -8055,7 +8317,7 @@ async def update_script_text(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8192,7 +8454,7 @@ async def extract_text_from_script_pdf(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
@@ -8305,6 +8567,28 @@ async def get_project_scenes(
         result = query.execute()
         scenes = result.data or []
 
+        # Compute coverage_status from boolean fields for each scene
+        for scene in scenes:
+            is_shot = scene.get("is_shot", False)
+            needs_pickup = scene.get("needs_pickup", False)
+            is_scheduled = scene.get("is_scheduled", False)
+
+            if is_shot:
+                scene["coverage_status"] = "shot"
+            elif needs_pickup:
+                scene["coverage_status"] = "needs_pickup"
+            elif is_scheduled:
+                scene["coverage_status"] = "scheduled"
+            else:
+                scene["coverage_status"] = "not_scheduled"
+
+        # Debug: Log scene count and status distribution
+        status_counts = {}
+        for s in scenes:
+            status = s.get("coverage_status", "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        print(f"Scenes endpoint: {len(scenes)} scenes, status distribution: {status_counts}")
+
         # Optionally include breakdown summary for each scene
         if include_breakdown and scenes:
             for scene in scenes:
@@ -8343,7 +8627,7 @@ async def create_scene(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8409,7 +8693,7 @@ async def get_scene(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", scene["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
@@ -8442,8 +8726,11 @@ async def update_scene(
 ):
     """Update a scene"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID for permission checks
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
 
     try:
         # Get scene and verify access
@@ -8454,26 +8741,53 @@ async def update_scene(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit scenes")
 
-        update_data = {
-            "scene_number": scene.scene_number,
-            "slugline": scene.slugline,
-            "description": scene.description,
-            "page_length": scene.page_length,
-            "page_start": scene.page_start,
-            "page_end": scene.page_end,
-            "location_hint": scene.location_hint,
-            "int_ext": scene.int_ext,
-            "time_of_day": scene.time_of_day,
-            "location_id": scene.location_id,
-            "director_notes": scene.director_notes,
-            "ad_notes": scene.ad_notes
-        }
+        # Only include fields that are actually provided (not None)
+        update_data = {}
+        if scene.scene_number is not None:
+            update_data["scene_number"] = scene.scene_number
+        if scene.slugline is not None:
+            update_data["slugline"] = scene.slugline
+        if scene.description is not None:
+            update_data["description"] = scene.description
+        if scene.page_length is not None:
+            update_data["page_length"] = scene.page_length
+        if scene.page_start is not None:
+            update_data["page_start"] = scene.page_start
+        if scene.page_end is not None:
+            update_data["page_end"] = scene.page_end
+        if scene.int_ext is not None:
+            update_data["int_ext"] = scene.int_ext
+        if scene.time_of_day is not None:
+            update_data["time_of_day"] = scene.time_of_day
+        if scene.location_id is not None:
+            update_data["location_id"] = scene.location_id
+        if scene.director_notes is not None:
+            update_data["director_notes"] = scene.director_notes
+        if scene.ad_notes is not None:
+            update_data["ad_notes"] = scene.ad_notes
+
+        # Handle coverage_status -> convert to boolean fields
+        if scene.coverage_status:
+            if scene.coverage_status == "not_scheduled":
+                update_data["is_scheduled"] = False
+                update_data["is_shot"] = False
+                update_data["needs_pickup"] = False
+            elif scene.coverage_status == "scheduled":
+                update_data["is_scheduled"] = True
+                update_data["is_shot"] = False
+                update_data["needs_pickup"] = False
+            elif scene.coverage_status == "shot":
+                update_data["is_shot"] = True
+                update_data["needs_pickup"] = False
+            elif scene.coverage_status == "needs_pickup":
+                update_data["needs_pickup"] = True
+                update_data["is_shot"] = False
 
         result = client.table("backlot_scenes").update(update_data).eq("id", scene_id).execute()
         return {"success": True, "scene": result.data[0] if result.data else None}
@@ -8505,7 +8819,7 @@ async def update_scene_coverage(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8554,7 +8868,7 @@ async def reorder_scenes(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8590,7 +8904,7 @@ async def delete_scene(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8628,7 +8942,7 @@ async def get_scene_breakdown(
             raise HTTPException(status_code=404, detail="Scene not found")
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", scene.data["project_id"]).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", scene.data["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
@@ -8673,7 +8987,7 @@ async def create_breakdown_item(
         project_id = scene.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8726,7 +9040,7 @@ async def update_breakdown_item(
         project_id = scene.data["project_id"]
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8783,7 +9097,7 @@ async def delete_breakdown_item(
         project_id = scene.data["project_id"]
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -8818,7 +9132,7 @@ async def get_project_coverage(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
@@ -8887,7 +9201,7 @@ async def get_location_needs(
 
     try:
         # Get all scenes with location info
-        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, location_hint, int_ext, time_of_day, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
+        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, location_hint, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
 
         # Group by location_hint
         location_groups = {}
@@ -8958,7 +9272,7 @@ async def generate_tasks_from_breakdown(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -9068,7 +9382,7 @@ async def generate_budget_suggestions(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -9159,7 +9473,7 @@ async def get_budget_suggestions(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
@@ -9199,7 +9513,7 @@ async def update_budget_suggestion(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -9240,7 +9554,7 @@ async def get_call_sheet_linked_scenes(
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", cs.data["project_id"]).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", cs.data["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
@@ -9296,7 +9610,7 @@ async def link_scene_to_call_sheet(
         project_id = cs.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -9356,7 +9670,7 @@ async def unlink_scene_from_call_sheet(
         project_id = cs.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -9410,7 +9724,7 @@ async def delete_call_sheet_scene_link(
         project_id = cs.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -11339,7 +11653,7 @@ async def get_project_roles(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
@@ -11394,7 +11708,7 @@ async def create_project_role(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -11468,7 +11782,7 @@ async def get_role(
             raise HTTPException(status_code=404, detail="Project not found")
 
         project = project_response.data[0]
-        is_owner = project["owner_id"] == user_id
+        is_owner = str(project["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", user_id).execute()
@@ -11524,7 +11838,7 @@ async def update_role(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -11589,7 +11903,7 @@ async def delete_role(
 
         # Verify delete access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -11764,7 +12078,7 @@ async def get_role_applications(
         project_id = role_result.data["project_id"]
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -11918,7 +12232,7 @@ async def update_application_status(
         else:
             # Must be project admin
             project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-            is_owner = project_response.data[0]["owner_id"] == user_id
+            is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
 
             if not is_owner:
                 member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -12181,7 +12495,7 @@ async def get_booked_people(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
@@ -12190,13 +12504,14 @@ async def get_booked_people(
     try:
         query = client.table("backlot_project_roles").select(
             "*, profiles!booked_user_id(id, full_name, username, avatar_url, email)"
-        ).eq("project_id", project_id).eq("status", "booked").not_.is_("booked_user_id", "null")
+        ).eq("project_id", project_id).eq("status", "booked")
 
         if type:
             query = query.eq("type", type)
 
         result = query.execute()
-        booked_roles = result.data or []
+        # Filter out roles without booked users
+        booked_roles = [r for r in (result.data or []) if r.get("booked_user_id")]
 
         # Format for call sheet use
         booked_people = []
@@ -12316,16 +12631,8 @@ async def get_project_clearances(
     user_id = user["id"]
     client = get_client()
 
-    # Verify project access
-    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    is_owner = project_response.data[0]["owner_id"] == user_id
-    if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
-        if not member_response.data:
-            raise HTTPException(status_code=403, detail="Access denied")
+    # Verify project access using helper function
+    await verify_project_access(client, project_id, user_id)
 
     try:
         query = client.table("backlot_clearance_items").select("*").eq("project_id", project_id)
@@ -12369,7 +12676,7 @@ async def create_clearance_item(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
@@ -12440,7 +12747,7 @@ async def get_clearance_item(
         # Verify access
         project_id = result.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -12477,7 +12784,7 @@ async def update_clearance_item(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -12542,7 +12849,7 @@ async def delete_clearance_item(
 
         # Verify delete access (admin only)
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -12584,7 +12891,7 @@ async def update_clearance_status(
 
         # Verify edit access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -12782,7 +13089,7 @@ async def generate_clearance_report(
         raise HTTPException(status_code=404, detail="Project not found")
 
     project = project_response.data
-    is_owner = project["owner_id"] == user_id
+    is_owner = str(project["owner_id"]) == str(user_id)
 
     if not is_owner:
         member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
@@ -13396,7 +13703,8 @@ async def get_project_shots(
     client = get_client()
 
     try:
-        query = client.table("backlot_scene_shots").select("*, scene:backlot_scenes(id, scene_number, setting, int_ext, time_of_day, description)").eq("project_id", project_id)
+        # Fetch shots without join syntax (for AWS/SQLAlchemy compatibility)
+        query = client.table("backlot_scene_shots").select("*").eq("project_id", project_id)
 
         if scene_id:
             query = query.eq("scene_id", scene_id)
@@ -13408,6 +13716,15 @@ async def get_project_shots(
         result = query.order("scene_id").order("sort_order").order("shot_number").execute()
 
         shots = result.data or []
+
+        # Fetch scene data separately and join manually
+        if shots:
+            scene_ids = list(set(s["scene_id"] for s in shots if s.get("scene_id")))
+            if scene_ids:
+                scenes_result = client.table("backlot_scenes").select("id, scene_number, slugline, description").in_("id", scene_ids).execute()
+                scenes_map = {s["id"]: s for s in (scenes_result.data or [])}
+                for shot in shots:
+                    shot["scene"] = scenes_map.get(shot.get("scene_id"))
 
         # Get images for all shots
         if shots:
@@ -13493,7 +13810,7 @@ async def get_coverage_by_scene(
 
     try:
         # Get scenes with shot counts
-        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, slugline, description").eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
 
         # Get all shots grouped by scene
@@ -13545,7 +13862,7 @@ async def get_coverage_report(
 
     try:
         # Get scenes
-        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, slugline, description").eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
         scenes_map = {s["id"]: s for s in scenes}
 
@@ -13559,7 +13876,7 @@ async def get_coverage_report(
             scene = scenes_map.get(shot["scene_id"], {})
             report.append({
                 "scene_number": scene.get("scene_number", ""),
-                "scene_setting": scene.get("setting", ""),
+                "scene_setting": scene.get("slugline", ""),
                 "shot_number": shot["shot_number"],
                 "shot_type": shot["shot_type"],
                 "lens": shot.get("lens", ""),
@@ -13737,7 +14054,7 @@ async def get_call_sheet_shots(
             return {"success": True, "scenes_with_shots": []}
 
         # Get scenes
-        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").in_("id", scene_ids).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, slugline, description").in_("id", scene_ids).order("scene_number").execute()
         scenes = scenes_result.data or []
 
         # Get shots for these scenes
@@ -15276,13 +15593,18 @@ class ShotReorderRequest(BaseModel):
 # Helper to check if user can edit shot lists (producer-level roles)
 async def verify_shot_list_edit_access(client, project_id: str, user_id: str) -> bool:
     """Check if user has producer-level access to edit shot lists"""
+    # Convert cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(user_id)
+    if not profile_id:
+        return False
+
     # Check if owner
     project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).single().execute()
-    if project_result.data and project_result.data.get("owner_id") == user_id:
+    if project_result.data and project_result.data.get("owner_id") == profile_id:
         return True
 
     # Check membership role
-    member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+    member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).single().execute()
     if member_result.data:
         role = member_result.data.get("role")
         if role in ["owner", "admin", "editor", "producer", "director", "dp", "first_ad"]:
@@ -15354,6 +15676,11 @@ async def create_shot_list(
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to create shot lists")
 
+        # Convert cognito user ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
         # Create shot list
         shot_list_data = {
             "project_id": project_id,
@@ -15362,7 +15689,7 @@ async def create_shot_list(
             "list_type": request.list_type,
             "production_day_id": request.production_day_id,
             "scene_id": request.scene_id,
-            "created_by_user_id": user["id"],
+            "created_by_user_id": profile_id,
         }
 
         result = client.table("backlot_shot_lists").insert(shot_list_data).execute()
@@ -18558,7 +18885,7 @@ async def export_scene_breakdown_pdf(
 
         project_title = project_response.data[0]["title"]
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
@@ -21389,7 +21716,7 @@ async def get_view_config(
 
         # Check if user is project owner
         project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        if project_result.data and project_result.data[0]["owner_id"] == user_id:
+        if project_result.data and str(project_result.data[0]["owner_id"]) == str(user_id):
             return {"role": "owner", **default_configs["showrunner"]}
 
         # Check user's profile for admin status
@@ -21667,8 +21994,9 @@ async def get_gear_categories(
 
         result = client.table("backlot_gear_items").select("category").eq(
             "project_id", project_id
-        ).not_.is_("category", "null").execute()
+        ).execute()
 
+        # Filter out null categories
         categories = list(set(item["category"] for item in (result.data or []) if item.get("category")))
         categories.sort()
 
@@ -22619,7 +22947,7 @@ async def can_manage_roles(
 
         # Check if project owner
         project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        if project_result.data and project_result.data[0]["owner_id"] == user_id:
+        if project_result.data and str(project_result.data[0]["owner_id"]) == str(user_id):
             return {"can_manage": True}
 
         # Check admin status

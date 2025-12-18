@@ -55,6 +55,7 @@ import {
   ChevronDown,
   StickyNote,
   Download,
+  ClipboardCheck,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -101,6 +102,7 @@ import ScenePageMapper from './ScenePageMapper';
 import ScriptEditorPanel from './ScriptEditorPanel';
 import ScriptBreakdownPanel from './ScriptBreakdownPanel';
 import ScriptNotesPanel from './ScriptNotesPanel';
+import ScriptyWorkspace from './ScriptyWorkspace';
 
 interface ScriptViewProps {
   projectId: string;
@@ -440,7 +442,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   onSceneClick,
 }) => {
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'editor' | 'scenes' | 'breakdown' | 'notes' | 'locations'>('viewer');
+  const [activeTab, setActiveTab] = useState<'viewer' | 'mapper' | 'editor' | 'scenes' | 'breakdown' | 'continuity' | 'notes' | 'locations'>('viewer');
   const [selectedScriptId, setSelectedScriptId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [coverageFilter, setCoverageFilter] = useState<BacklotSceneCoverageStatus | 'all'>('all');
@@ -707,6 +709,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           </TabsTrigger>
           <TabsTrigger value="scenes">Scenes</TabsTrigger>
           <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
+          <TabsTrigger value="continuity" className="flex items-center gap-1">
+            <ClipboardCheck className="w-3 h-3" />
+            Continuity
+          </TabsTrigger>
           <TabsTrigger value="notes" className="flex items-center gap-1">
             <StickyNote className="w-3 h-3" />
             Notes
@@ -887,6 +893,14 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 // The viewer will handle highlighting
               }
             }}
+          />
+        </TabsContent>
+
+        {/* Continuity Tab - Script Supervisor Workspace */}
+        <TabsContent value="continuity" className="mt-6">
+          <ScriptyWorkspace
+            projectId={projectId}
+            canEdit={canEdit}
           />
         </TabsContent>
 

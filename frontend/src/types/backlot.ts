@@ -351,6 +351,7 @@ export interface BacklotLocation {
   images: string[];
   // Global library fields
   is_public: boolean;
+  visibility: 'public' | 'unlisted' | 'private';
   created_by_user_id: string | null;
   created_by_project_id: string | null;
   region_tag: string | null;
@@ -411,6 +412,7 @@ export interface BacklotLocationInput {
   fee_notes?: string | null;
   images?: string[];
   is_public?: boolean;
+  visibility?: 'public' | 'unlisted' | 'private';
   region_tag?: string | null;
   location_type?: BacklotLocationType | string | null;
   amenities?: string[];
@@ -953,6 +955,7 @@ export type BacklotWorkspaceView =
   | 'review'
   | 'dailies'
   | 'camera-continuity'
+  | 'continuity'
   | 'checkin'
   | 'my-space'
   | 'locations'

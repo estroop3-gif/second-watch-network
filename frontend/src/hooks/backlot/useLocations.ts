@@ -339,6 +339,25 @@ export function useProjectLocations(projectId: string | null) {
 }
 
 /**
+ * Get project locations with clearance status
+ * Used by LocationPickerModal to show clearance badges
+ */
+export function useProjectLocationsWithClearances(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project-locations-clearances', projectId],
+    queryFn: async () => {
+      if (!projectId) return { locations: [] };
+
+      const response = await api.get<{ locations: LocationWithClearance[] }>(
+        `/api/v1/backlot/projects/${projectId}/locations/with-clearances`
+      );
+      return response;
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
  * Get a single location by ID (via API)
  */
 export function useLocationById(locationId: string | null) {

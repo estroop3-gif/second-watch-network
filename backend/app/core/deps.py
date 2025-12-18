@@ -43,7 +43,7 @@ async def get_user_profile(user = Depends(get_current_user)) -> Dict[str, Any]:
     Get the current user's profile from the database.
 
     Args:
-        user: The authenticated Supabase user
+        user: The authenticated user from Cognito
 
     Returns:
         Profile dictionary with user data and role flags
@@ -81,7 +81,7 @@ async def get_user_profile_optional(
     Get the current user's profile if authenticated.
 
     Args:
-        user: The authenticated Supabase user (optional)
+        user: The authenticated user from Cognito (optional)
 
     Returns:
         Profile dictionary or None if not authenticated

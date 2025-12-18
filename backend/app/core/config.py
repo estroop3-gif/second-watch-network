@@ -1,7 +1,7 @@
 """
 Application Configuration
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 import os
 from dotenv import load_dotenv
@@ -10,6 +10,11 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore"  # Ignore extra env vars not defined in Settings
+    )
     # App Settings
     APP_NAME: str = "Second Watch Network API"
     APP_VERSION: str = "1.0.0"
@@ -32,11 +37,6 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8080",
         "*",  # Allow all origins in development
     ]
-
-    # Supabase
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
-    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
-    SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
     # AWS Core
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
@@ -64,8 +64,7 @@ class Settings(BaseSettings):
     COGNITO_REGION: str = os.getenv("COGNITO_REGION", "us-east-1")
 
     # Feature Flags
-    USE_AWS: bool = os.getenv("USE_AWS", "false").lower() == "true"
-    USE_SUPABASE: bool = os.getenv("USE_SUPABASE", "true").lower() == "true"
+    USE_AWS: bool = os.getenv("USE_AWS", "true").lower() == "true"
 
     # Superadmin Configuration
     # The email address of the main superadmin user
@@ -97,10 +96,6 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_PREMIUM_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_PRICE_ID", "")
     STRIPE_PREMIUM_YEARLY_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_YEARLY_PRICE_ID", "")
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
 
 
 settings = Settings()

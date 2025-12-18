@@ -38,14 +38,17 @@ interface ScenesViewProps {
 export default function ScenesView({ projectId, canEdit, onSelectScene }: ScenesViewProps) {
   const [search, setSearch] = useState('');
 
-  const { data: scenes, isLoading } = useScenesList(projectId, { search: search || undefined });
+  const { data: scenesData, isLoading } = useScenesList(projectId, { search: search || undefined });
+
+  // Ensure scenes is always an array
+  const scenes = Array.isArray(scenesData) ? scenesData : [];
 
   // Calculate summary stats
-  const totalScenes = scenes?.length || 0;
-  const shotScenes = scenes?.filter(s => s.is_shot).length || 0;
-  const scheduledScenes = scenes?.filter(s => s.is_scheduled && !s.is_shot).length || 0;
-  const needsPickupScenes = scenes?.filter(s => s.needs_pickup).length || 0;
-  const totalPages = scenes?.reduce((sum, s) => sum + (s.page_length || 0), 0) || 0;
+  const totalScenes = scenes.length;
+  const shotScenes = scenes.filter(s => s.is_shot).length;
+  const scheduledScenes = scenes.filter(s => s.is_scheduled && !s.is_shot).length;
+  const needsPickupScenes = scenes.filter(s => s.needs_pickup).length;
+  const totalPages = scenes.reduce((sum, s) => sum + (s.page_length || 0), 0);
 
   if (isLoading) {
     return (

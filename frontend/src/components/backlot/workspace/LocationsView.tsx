@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Dialog,
@@ -110,12 +111,17 @@ const LocationCard: React.FC<{
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h4 className="font-medium text-bone-white truncate">{location.name}</h4>
-              {location.is_public && (
+              {location.visibility === 'public' || (location.is_public && !location.visibility) ? (
                 <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-400 shrink-0">
                   <Globe className="w-3 h-3 mr-1" />
                   Public
                 </Badge>
-              )}
+              ) : location.visibility === 'unlisted' ? (
+                <Badge variant="outline" className="text-xs border-accent-yellow/30 text-accent-yellow shrink-0">
+                  <Link2 className="w-3 h-3 mr-1" />
+                  Unlisted
+                </Badge>
+              ) : null}
             </div>
             {location.scene_description_override || location.scene_description ? (
               <p className="text-sm text-accent-yellow font-mono">
@@ -502,6 +508,7 @@ const CreateLocationModal: React.FC<{
     permit_obtained: false,
     location_fee: undefined,
     is_public: true,
+    visibility: 'public' as 'public' | 'unlisted' | 'private',
     region_tag: '',
     location_type: '',
     amenities: [],
@@ -528,6 +535,7 @@ const CreateLocationModal: React.FC<{
         permit_obtained: editingLocation.permit_obtained,
         location_fee: editingLocation.location_fee || undefined,
         is_public: editingLocation.is_public,
+        visibility: editingLocation.visibility || (editingLocation.is_public ? 'public' : 'private'),
         region_tag: editingLocation.region_tag || '',
         location_type: editingLocation.location_type || '',
         amenities: editingLocation.amenities || [],
@@ -551,6 +559,7 @@ const CreateLocationModal: React.FC<{
         permit_obtained: false,
         location_fee: undefined,
         is_public: true,
+        visibility: 'public' as 'public' | 'unlisted' | 'private',
         region_tag: '',
         location_type: '',
         amenities: [],
@@ -581,34 +590,63 @@ const CreateLocationModal: React.FC<{
               ? 'Update the location details.'
               : 'Add a new location to the global library and attach it to this project.'}
           </DialogDescription>
+          {/* Scroll indicator */}
+          <div className="flex items-center justify-center gap-2 mt-2 text-bone-white/70 text-xs">
+            <svg className="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+            <span>Scroll down for all options</span>
+            <svg className="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto -mx-6 px-6">
-          <form onSubmit={handleSubmit} className="space-y-4 mt-4 pb-4">
-          {/* Visibility Toggle */}
-          <div className="flex items-center justify-between p-3 bg-muted-gray/10 rounded-lg">
-            <div className="flex items-center gap-2">
-              {formData.is_public ? (
-                <Eye className="w-4 h-4 text-blue-400" />
-              ) : (
-                <EyeOff className="w-4 h-4 text-muted-gray" />
-              )}
-              <div>
-                <span className="text-sm font-medium text-bone-white">
-                  {formData.is_public ? 'Public Location' : 'Private Location'}
-                </span>
-                <p className="text-xs text-muted-gray">
-                  {formData.is_public
-                    ? 'Visible in the global library for all users'
-                    : 'Only visible to you and your project members'}
-                </p>
-              </div>
-            </div>
-            <Switch
-              checked={formData.is_public}
-              onCheckedChange={(checked) => setFormData({ ...formData, is_public: checked })}
+        <ScrollArea className="flex-1 -mx-6 px-6">
+          <form onSubmit={handleSubmit} className="space-y-4 mt-4 pb-8">
+          {/* Visibility Selector */}
+          <div className="space-y-2">
+            <Label>Visibility</Label>
+            <Select
+              value={formData.visibility}
+              onValueChange={(value: 'public' | 'unlisted' | 'private') =>
+                setFormData({ ...formData, visibility: value, is_public: value === 'public' })
+              }
               disabled={isSubmitting}
-            />
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="public">
+                  <div className="flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-blue-400" />
+                    <div>
+                      <span className="font-medium">Public</span>
+                      <span className="text-xs text-muted-gray ml-2">Listed in global library</span>
+                    </div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="unlisted">
+                  <div className="flex items-center gap-2">
+                    <Link2 className="w-4 h-4 text-accent-yellow" />
+                    <div>
+                      <span className="font-medium">Unlisted</span>
+                      <span className="text-xs text-muted-gray ml-2">Accessible via link only</span>
+                    </div>
+                  </div>
+                </SelectItem>
+                <SelectItem value="private">
+                  <div className="flex items-center gap-2">
+                    <EyeOff className="w-4 h-4 text-muted-gray" />
+                    <div>
+                      <span className="font-medium">Private</span>
+                      <span className="text-xs text-muted-gray ml-2">Only you can see</span>
+                    </div>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">
@@ -747,48 +785,61 @@ const CreateLocationModal: React.FC<{
           {/* Amenities */}
           <div className="space-y-3">
             <Label>Amenities</Label>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-gray">Power Available</span>
-              <Switch
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="power_available"
                 checked={formData.power_available}
-                onCheckedChange={(checked) => setFormData({ ...formData, power_available: checked })}
+                onCheckedChange={(checked) => setFormData({ ...formData, power_available: checked === true })}
                 disabled={isSubmitting}
               />
+              <label htmlFor="power_available" className="text-sm text-muted-gray cursor-pointer">
+                Power Available
+              </label>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-gray">Restrooms Available</span>
-              <Switch
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="restrooms_available"
                 checked={formData.restrooms_available}
                 onCheckedChange={(checked) =>
-                  setFormData({ ...formData, restrooms_available: checked })
+                  setFormData({ ...formData, restrooms_available: checked === true })
                 }
                 disabled={isSubmitting}
               />
+              <label htmlFor="restrooms_available" className="text-sm text-muted-gray cursor-pointer">
+                Restrooms Available
+              </label>
             </div>
           </div>
 
           {/* Permit */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-gray">Permit Required</span>
-              <Switch
+            <Label>Permits</Label>
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="permit_required"
                 checked={formData.permit_required}
                 onCheckedChange={(checked) =>
-                  setFormData({ ...formData, permit_required: checked })
+                  setFormData({ ...formData, permit_required: checked === true })
                 }
                 disabled={isSubmitting}
               />
+              <label htmlFor="permit_required" className="text-sm text-muted-gray cursor-pointer">
+                Permit Required
+              </label>
             </div>
             {formData.permit_required && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-gray">Permit Obtained</span>
-                <Switch
+              <div className="flex items-center gap-3 ml-6">
+                <Checkbox
+                  id="permit_obtained"
                   checked={formData.permit_obtained}
                   onCheckedChange={(checked) =>
-                    setFormData({ ...formData, permit_obtained: checked })
+                    setFormData({ ...formData, permit_obtained: checked === true })
                   }
                   disabled={isSubmitting}
                 />
+                <label htmlFor="permit_obtained" className="text-sm text-muted-gray cursor-pointer">
+                  Permit Obtained
+                </label>
               </div>
             )}
           </div>
@@ -833,8 +884,8 @@ const CreateLocationModal: React.FC<{
               )}
             </Button>
           </div>
-        </form>
-        </div>
+          </form>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );

@@ -117,7 +117,7 @@ const ReviewDetailView = lazy(() =>
 );
 
 import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church } from 'lucide-react';
+import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -193,6 +193,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'On Set & Dailies',
     items: [
       { id: 'camera-continuity', label: 'Camera & Continuity', icon: Aperture },
+      { id: 'scripty', label: 'Scripty', icon: ClipboardList },
       { id: 'dailies', label: 'Dailies', icon: Video },
       { id: 'checkin', label: 'Check-In', icon: QrCode },
     ],
@@ -651,6 +652,41 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'camera-continuity' && (
             <CameraAndContinuityView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'scripty' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">Scripty</h2>
+                <p className="text-sm text-muted-gray">Script Supervisor's Continuity Workspace</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <ClipboardList className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  The complete Script Supervisor toolkit for on-set continuity management.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">📝 Lined Script</h4>
+                    <p className="text-sm text-muted-gray">Draw coverage lines on your script pages with camera labels and take associations.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">🎬 Take Logger</h4>
+                    <p className="text-sm text-muted-gray">Log takes in real-time with timecode, camera roll, and instant status marking.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">📋 Continuity Notes</h4>
+                    <p className="text-sm text-muted-gray">Track props, wardrobe, hair/makeup, and action continuity per scene.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">📸 Continuity Photos</h4>
+                    <p className="text-sm text-muted-gray">Capture and organize reference photos with tags and scene associations.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
           {activeView === 'checkin' && (
             <CheckInView projectId={project.id} canManage={permission?.isAdmin || false} />

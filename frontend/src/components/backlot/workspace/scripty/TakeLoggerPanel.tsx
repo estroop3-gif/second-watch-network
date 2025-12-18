@@ -1,0 +1,439 @@
+/**
+ * TakeLoggerPanel - Fast take logging for script supervisors
+ *
+ * Features:
+ * - One-tap take status (Print, Circled, Hold, NG, Wild, MOS)
+ * - Timestamped notes per take
+ * - Auto-incrementing take numbers
+ * - Quick scene linking
+ */
+import React, { useState, useEffect, useMemo } from 'react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  Plus,
+  CheckCircle2,
+  Circle,
+  AlertCircle,
+  XCircle,
+  Pause,
+  Volume2,
+  VolumeX,
+  Clock,
+  Film,
+  Edit,
+  Trash2,
+  Save,
+  X,
+} from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
+import { useTakes, useCreateTake, useUpdateTake, useDeleteTake, useTakeNotes, useCreateTakeNote } from '@/hooks/backlot/useContinuity';
+
+interface TakeLoggerPanelProps {
+  projectId: string;
+  sceneId: string | null;
+  productionDayId: string | null;
+  canEdit: boolean;
+  isRecording: boolean;
+  onTakeLogged?: () => void;
+}
+
+// Take status configuration
+const TAKE_STATUSES = [
+  { value: 'ok', label: 'OK', icon: Circle, color: 'text-muted-gray', bgColor: 'bg-muted-gray/20' },
+  { value: 'print', label: 'Print', icon: CheckCircle2, color: 'text-green-400', bgColor: 'bg-green-500/20' },
+  { value: 'circled', label: 'Circled', icon: CheckCircle2, color: 'text-accent-yellow', bgColor: 'bg-accent-yellow/20' },
+  { value: 'hold', label: 'Hold', icon: Pause, color: 'text-blue-400', bgColor: 'bg-blue-500/20' },
+  { value: 'ng', label: 'NG', icon: XCircle, color: 'text-red-400', bgColor: 'bg-red-500/20' },
+  { value: 'wild', label: 'Wild', icon: Volume2, color: 'text-purple-400', bgColor: 'bg-purple-500/20' },
+  { value: 'mos', label: 'MOS', icon: VolumeX, color: 'text-orange-400', bgColor: 'bg-orange-500/20' },
+  { value: 'false_start', label: 'FS', icon: AlertCircle, color: 'text-muted-gray', bgColor: 'bg-muted-gray/10' },
+];
+
+interface Take {
+  id: string;
+  scene_number: string;
+  take_number: number;
+  status: string;
+  timecode_in?: string;
+  timecode_out?: string;
+  notes?: string;
+  camera_label?: string;
+  setup_label?: string;
+  duration_seconds?: number;
+  created_at: string;
+}
+
+const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
+  projectId,
+  sceneId,
+  productionDayId,
+  canEdit,
+  isRecording,
+  onTakeLogged,
+}) => {
+  const { toast } = useToast();
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [editingTake, setEditingTake] = useState<Take | null>(null);
+  const [newTakeData, setNewTakeData] = useState({
+    scene_number: '',
+    take_number: 0, // Will use nextTakeNumber as fallback
+    status: 'ok',
+    timecode_in: '',
+    notes: '',
+    camera_label: 'A',
+    setup_label: '1',
+  });
+  const [noteText, setNoteText] = useState('');
+
+  // Data hooks
+  const { data: takes = [], isLoading: takesLoading, refetch } = useTakes({
+    projectId,
+    sceneId: sceneId || undefined,
+    productionDayId: productionDayId || undefined,
+  });
+
+  const createTake = useCreateTake();
+  const updateTake = useUpdateTake();
+  const deleteTake = useDeleteTake();
+  const createNote = useCreateTakeNote();
+
+  // Calculate next take number directly (no useEffect needed)
+  const nextTakeNumber = useMemo(() => {
+    if (!Array.isArray(takes) || takes.length === 0) return 1;
+    const maxTake = Math.max(...takes.map((t: Take) => t.take_number || 0), 0);
+    return maxTake + 1;
+  }, [takes]);
+
+  // Auto-show add form when recording starts
+  useEffect(() => {
+    if (isRecording && canEdit) {
+      setShowAddForm(true);
+      // Set current time as timecode_in
+      const now = new Date();
+      const timecode = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}:00`;
+      setNewTakeData(d => ({ ...d, timecode_in: timecode }));
+    }
+  }, [isRecording, canEdit]);
+
+  // Quick status update
+  const handleQuickStatus = async (takeId: string, status: string) => {
+    try {
+      await updateTake.mutateAsync({ id: takeId, status });
+      toast({ title: `Take marked as ${status.toUpperCase()}` });
+      refetch();
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to update take',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Create new take
+  const handleCreateTake = async () => {
+    if (!sceneId || !productionDayId) {
+      toast({
+        title: 'Missing selection',
+        description: 'Please select a scene and production day',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const takeNumberToUse = newTakeData.take_number || nextTakeNumber;
+      await createTake.mutateAsync({
+        project_id: projectId,
+        scene_id: sceneId,
+        production_day_id: productionDayId,
+        scene_number: newTakeData.scene_number,
+        take_number: takeNumberToUse,
+        status: newTakeData.status,
+        timecode_in: newTakeData.timecode_in || undefined,
+        camera_label: newTakeData.camera_label || undefined,
+        setup_label: newTakeData.setup_label || undefined,
+        notes: newTakeData.notes || undefined,
+      });
+
+      toast({ title: 'Take logged' });
+      setShowAddForm(false);
+      // Reset form - nextTakeNumber will auto-update from the refetch
+      setNewTakeData(d => ({
+        ...d,
+        take_number: 0, // Will use nextTakeNumber
+        notes: '',
+        timecode_in: '',
+      }));
+      refetch();
+      onTakeLogged?.();
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to log take',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Add note to take
+  const handleAddNote = async (takeId: string) => {
+    if (!noteText.trim()) return;
+
+    try {
+      await createNote.mutateAsync({
+        project_id: projectId,
+        take_id: takeId,
+        note_text: noteText,
+        note_category: 'general',
+      });
+      toast({ title: 'Note added' });
+      setNoteText('');
+      refetch();
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to add note',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Delete take
+  const handleDeleteTake = async (takeId: string) => {
+    if (!confirm('Delete this take?')) return;
+
+    try {
+      await deleteTake.mutateAsync({ id: takeId });
+      toast({ title: 'Take deleted' });
+      refetch();
+    } catch (err: any) {
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to delete take',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Get status config
+  const getStatusConfig = (status: string) => {
+    return TAKE_STATUSES.find(s => s.value === status) || TAKE_STATUSES[0];
+  };
+
+  // No scene selected
+  if (!sceneId) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-4 text-muted-gray">
+        <Film className="w-8 h-8 mb-2 opacity-40" />
+        <p className="text-sm text-center">Select a scene to log takes</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between p-3 border-b border-muted-gray/20 shrink-0">
+        <h4 className="text-sm font-medium text-bone-white">Takes</h4>
+        {canEdit && (
+          <Button
+            size="sm"
+            variant={showAddForm ? 'secondary' : 'default'}
+            className={cn(
+              'h-7 text-xs',
+              !showAddForm && 'bg-accent-yellow text-charcoal-black hover:bg-bone-white'
+            )}
+            onClick={() => setShowAddForm(!showAddForm)}
+          >
+            {showAddForm ? (
+              <>
+                <X className="w-3 h-3 mr-1" />
+                Cancel
+              </>
+            ) : (
+              <>
+                <Plus className="w-3 h-3 mr-1" />
+                New Take
+              </>
+            )}
+          </Button>
+        )}
+      </div>
+
+      {/* Add Take Form */}
+      {showAddForm && canEdit && (
+        <div className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <Input
+                placeholder="Take #"
+                type="number"
+                value={newTakeData.take_number || nextTakeNumber}
+                onChange={(e) => setNewTakeData(d => ({ ...d, take_number: parseInt(e.target.value) || nextTakeNumber }))}
+                className="h-8 text-sm"
+              />
+            </div>
+            <div>
+              <Input
+                placeholder="Cam"
+                value={newTakeData.camera_label}
+                onChange={(e) => setNewTakeData(d => ({ ...d, camera_label: e.target.value }))}
+                className="h-8 text-sm"
+              />
+            </div>
+            <div>
+              <Input
+                placeholder="Setup"
+                value={newTakeData.setup_label}
+                onChange={(e) => setNewTakeData(d => ({ ...d, setup_label: e.target.value }))}
+                className="h-8 text-sm"
+              />
+            </div>
+          </div>
+
+          {/* Quick Status Buttons */}
+          <div className="flex flex-wrap gap-1">
+            {TAKE_STATUSES.filter(s => s.value !== 'false_start').map((status) => (
+              <Button
+                key={status.value}
+                size="sm"
+                variant={newTakeData.status === status.value ? 'secondary' : 'ghost'}
+                className={cn(
+                  'h-7 text-xs px-2',
+                  newTakeData.status === status.value && status.bgColor
+                )}
+                onClick={() => setNewTakeData(d => ({ ...d, status: status.value }))}
+              >
+                <status.icon className={cn('w-3 h-3 mr-1', status.color)} />
+                {status.label}
+              </Button>
+            ))}
+          </div>
+
+          <Textarea
+            placeholder="Notes..."
+            value={newTakeData.notes}
+            onChange={(e) => setNewTakeData(d => ({ ...d, notes: e.target.value }))}
+            className="h-16 text-sm resize-none"
+          />
+
+          <Button
+            className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            onClick={handleCreateTake}
+            disabled={createTake.isPending}
+          >
+            {createTake.isPending ? 'Saving...' : 'Log Take'}
+          </Button>
+        </div>
+      )}
+
+      {/* Takes List */}
+      <ScrollArea className="flex-1">
+        <div className="p-2 space-y-2">
+          {takesLoading ? (
+            Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 bg-muted-gray/10" />
+            ))
+          ) : takes.length === 0 ? (
+            <p className="text-sm text-muted-gray text-center py-4">
+              No takes logged yet
+            </p>
+          ) : (
+            takes.map((take: Take) => {
+              const statusConfig = getStatusConfig(take.status);
+              return (
+                <div
+                  key={take.id}
+                  className={cn(
+                    'bg-soft-black border border-muted-gray/20 rounded-lg p-3',
+                    editingTake?.id === take.id && 'ring-2 ring-accent-yellow'
+                  )}
+                >
+                  {/* Take Header */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-bone-white">
+                        Take {take.take_number}
+                      </span>
+                      <Badge className={cn('text-[10px]', statusConfig.bgColor, statusConfig.color)}>
+                        <statusConfig.icon className="w-3 h-3 mr-1" />
+                        {statusConfig.label}
+                      </Badge>
+                      {take.camera_label && (
+                        <Badge variant="outline" className="text-[10px]">
+                          Cam {take.camera_label}
+                        </Badge>
+                      )}
+                    </div>
+                    {canEdit && (
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-gray hover:text-red-400"
+                          onClick={() => handleDeleteTake(take.id)}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Quick Status Update */}
+                  {canEdit && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {TAKE_STATUSES.slice(0, 5).map((status) => (
+                        <Button
+                          key={status.value}
+                          size="sm"
+                          variant="ghost"
+                          className={cn(
+                            'h-5 text-[10px] px-1.5',
+                            take.status === status.value && status.bgColor
+                          )}
+                          onClick={() => handleQuickStatus(take.id, status.value)}
+                        >
+                          <status.icon className={cn('w-2.5 h-2.5', status.color)} />
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Notes */}
+                  {take.notes && (
+                    <p className="text-xs text-muted-gray mb-2">{take.notes}</p>
+                  )}
+
+                  {/* Timecode */}
+                  {take.timecode_in && (
+                    <div className="flex items-center gap-1 text-[10px] text-muted-gray">
+                      <Clock className="w-3 h-3" />
+                      {take.timecode_in}
+                      {take.duration_seconds && ` (${take.duration_seconds}s)`}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+};
+
+export default TakeLoggerPanel;

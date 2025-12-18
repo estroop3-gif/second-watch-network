@@ -60,6 +60,7 @@ export {
   useLocationRegions,
   useLocationTypes,
   useProjectLocations,
+  useProjectLocationsWithClearances,
   useLocationById,
   useUpdateGlobalLocation,
   useDeleteGlobalLocation,
@@ -396,6 +397,26 @@ export type {
   CoverageSummary,
 } from './useSceneView';
 
+// Scene Hub (Scene Detail Page)
+export {
+  useSceneHub,
+  useSceneLinkMutations,
+  CLEARANCE_TYPES,
+  CLEARANCE_STATUSES,
+  getClearanceTypeLabel,
+  getClearanceStatusInfo,
+} from './useSceneHub';
+export type {
+  SceneHubData,
+  CallSheetLink,
+  BudgetItemSummary,
+  ReceiptSummary,
+  ClearanceSummary,
+  BudgetSummary,
+  ClearanceSummaryStats,
+  TaskSummary,
+} from './useSceneHub';
+
 // Day View (Glue View)
 export {
   useDaysList,
@@ -544,6 +565,41 @@ export type {
   UserNote,
   UserBookmark,
 } from './useUtilities';
+
+// Scripty Workspace (Script Supervisor Continuity)
+export {
+  // Lining Marks
+  useLiningMarks,
+  useCreateLiningMark,
+  useUpdateLiningMark,
+  useDeleteLiningMark,
+  // Takes (enhanced for Scripty)
+  useTakes as useScriptyTakes,
+  useCreateTake as useCreateScriptyTake,
+  useUpdateTake as useUpdateScriptyTake,
+  useDeleteTake as useDeleteScriptyTake,
+  // Take Notes
+  useTakeNotes,
+  useCreateTakeNote,
+  // Continuity Photos
+  useContinuityPhotos,
+  useUploadContinuityPhoto,
+  useUpdateContinuityPhoto,
+  useDeleteContinuityPhoto,
+  // Scene-level Continuity Notes (Scripty workspace)
+  useContinuityNotes as useSceneContinuityNotes,
+  useCreateContinuityNote as useCreateSceneContinuityNote,
+  useUpdateContinuityNote as useUpdateSceneContinuityNote,
+  useDeleteContinuityNote as useDeleteSceneContinuityNote,
+} from './useContinuity';
+export type {
+  LiningMark,
+  TakeNote,
+  ContinuityPhoto,
+  ContinuityPhotoTag,
+  Take as ScriptyTake,
+  ContinuityNote as SceneContinuityNote,
+} from './useContinuity';
 
 // Church Production Tools
 export {

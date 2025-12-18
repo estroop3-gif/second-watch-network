@@ -1378,10 +1378,10 @@ async def get_admin_stats(user = Depends(require_admin)):
         members_by_track[track] = members_by_track.get(track, 0) + 1
 
     # Members by city
-    city_results = client.table("order_member_profiles").select("city").not_.is_("city", "null").execute()
+    city_results = client.table("order_member_profiles").select("city").execute()
     members_by_city = {}
     for member in city_results.data or []:
-        city = member["city"]
+        city = member.get("city")
         if city:
             members_by_city[city] = members_by_city.get(city, 0) + 1
 

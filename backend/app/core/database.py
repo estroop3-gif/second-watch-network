@@ -496,14 +496,10 @@ class UnifiedClient:
 
 def get_client():
     """
-    Get the appropriate database client based on configuration.
-    Returns Supabase client or AWS database client with identical API.
+    Get the AWS database client.
+    Returns database client with Supabase-compatible API for easy migration.
 
-    This allows seamless migration: just change USE_AWS=true in environment.
+    All data is stored in AWS RDS PostgreSQL.
     """
-    if USE_AWS:
-        from app.core.storage import storage_client
-        return UnifiedClient(db_client, storage_client)
-    else:
-        from app.core.supabase import get_supabase_client
-        return get_supabase_client()
+    from app.core.storage import storage_client
+    return UnifiedClient(db_client, storage_client)

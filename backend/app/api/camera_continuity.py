@@ -187,33 +187,23 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     token = authorization.replace("Bearer ", "")
 
     try:
-        import os
-        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
 
-        if USE_AWS:
-            from app.core.cognito import CognitoAuth
-            user = CognitoAuth.verify_token(token)
-            if not user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user.get("id"), "email": user.get("email")}
-        else:
-            from app.core.supabase import get_supabase_client
-            supabase = get_supabase_client()
-            user_response = supabase.auth.get_user(token)
-            if not user_response or not user_response.user:
-                raise HTTPException(status_code=401, detail="Invalid token")
-            return {"id": user_response.user.id, "email": user_response.user.email}
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"id": user.get("id"), "email": user.get("email")}
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
-async def verify_project_member(supabase, project_id: str, user_id: str) -> bool:
+async def verify_project_member(client, project_id: str, user_id: str) -> bool:
     """Verify user is a member of the project"""
     # Check owner
     project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
+    if project_resp.data and str(project_resp.data[0]["owner_id"]) == str(user_id):
         return True
 
     # Check member
@@ -236,7 +226,7 @@ async def get_shot_list(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_shot_lists").select("*").eq("project_id", project_id)
@@ -262,7 +252,7 @@ async def create_shot(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     # Check edit permission
@@ -303,7 +293,7 @@ async def update_shot(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -331,7 +321,7 @@ async def delete_shot(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -357,7 +347,7 @@ async def get_slate_logs(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_slate_logs").select("*").eq("project_id", project_id)
@@ -384,7 +374,7 @@ async def create_slate_log(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -423,7 +413,7 @@ async def update_slate_log(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -451,7 +441,7 @@ async def delete_slate_log(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -473,7 +463,7 @@ async def get_next_take_number(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_slate_logs").select("take_number").eq("project_id", project_id).eq("scene_number", scene_number)
@@ -506,7 +496,7 @@ async def get_camera_media(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_camera_media").select("*").eq("project_id", project_id)
@@ -532,7 +522,7 @@ async def create_camera_media(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -568,7 +558,7 @@ async def update_camera_media(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -596,7 +586,7 @@ async def delete_camera_media(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -623,7 +613,7 @@ async def get_continuity_notes(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_continuity_notes").select("*").eq("project_id", project_id)
@@ -651,7 +641,7 @@ async def create_continuity_note(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -687,7 +677,7 @@ async def update_continuity_note(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
@@ -715,7 +705,7 @@ async def delete_continuity_note(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await verify_project_member(supabase, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
