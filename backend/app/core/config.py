@@ -38,11 +38,34 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
 
-    # AWS
+    # AWS Core
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
     AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+
+    # AWS RDS Database
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
+    DB_HOST: str = os.getenv("DB_HOST", "")
+    DB_PORT: str = os.getenv("DB_PORT", "5432")
+    DB_NAME: str = os.getenv("DB_NAME", "secondwatchnetwork")
+    DB_USER: str = os.getenv("DB_USER", "")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+
+    # AWS S3 Storage
     AWS_S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "")
+    AWS_S3_AVATARS_BUCKET: str = os.getenv("AWS_S3_AVATARS_BUCKET", "")
+    AWS_S3_BACKLOT_BUCKET: str = os.getenv("AWS_S3_BACKLOT_BUCKET", "")
+    AWS_S3_BACKLOT_FILES_BUCKET: str = os.getenv("AWS_S3_BACKLOT_FILES_BUCKET", "")
+
+    # AWS Cognito Authentication
+    COGNITO_USER_POOL_ID: str = os.getenv("COGNITO_USER_POOL_ID", "")
+    COGNITO_CLIENT_ID: str = os.getenv("COGNITO_CLIENT_ID", "")
+    COGNITO_CLIENT_SECRET: str = os.getenv("COGNITO_CLIENT_SECRET", "")
+    COGNITO_REGION: str = os.getenv("COGNITO_REGION", "us-east-1")
+
+    # Feature Flags
+    USE_AWS: bool = os.getenv("USE_AWS", "false").lower() == "true"
+    USE_SUPABASE: bool = os.getenv("USE_SUPABASE", "true").lower() == "true"
 
     # Superadmin Configuration
     # The email address of the main superadmin user
