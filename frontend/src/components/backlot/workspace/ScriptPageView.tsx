@@ -321,34 +321,68 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     }
   }, [content, onContentChange]);
 
+  // Element type cycle order (like Celtx)
+  const ELEMENT_CYCLE: ScriptElementType[] = [
+    'scene_heading',
+    'action',
+    'character',
+    'dialogue',
+    'parenthetical',
+    'transition',
+  ];
+
   // Format current line as specific element type
   const formatAsElement = useCallback((lineIndex: number, elementType: ScriptElementType) => {
     const rawLines = content.split('\n');
-    let lineContent = rawLines[lineIndex]?.trim() || '';
+    let lineContent = rawLines[lineIndex] || '';
+    const trimmedContent = lineContent.trim();
 
     // Apply formatting based on element type
     switch (elementType) {
       case 'scene_heading':
-        if (lineContent && !ELEMENT_PATTERNS.scene_heading.test(lineContent)) {
-          lineContent = 'INT. ' + lineContent.toUpperCase();
-        } else if (lineContent) {
-          lineContent = lineContent.toUpperCase();
+        // Add INT. prefix if not already a scene heading
+        if (trimmedContent && !ELEMENT_PATTERNS.scene_heading.test(trimmedContent)) {
+          lineContent = 'INT. ' + trimmedContent.toUpperCase() + ' - DAY';
+        } else if (trimmedContent) {
+          lineContent = trimmedContent.toUpperCase();
+        } else {
+          lineContent = 'INT. ';
         }
+        break;
+      case 'action':
+        // Action is plain text, just use content as-is
+        lineContent = trimmedContent;
         break;
       case 'character':
-        lineContent = lineContent.toUpperCase();
+        // Character names are uppercase
+        lineContent = trimmedContent.toUpperCase();
         break;
-      case 'transition':
-        if (lineContent && !lineContent.toUpperCase().endsWith(':')) {
-          lineContent = lineContent.toUpperCase() + ':';
-        }
+      case 'dialogue':
+        // Dialogue is plain text
+        lineContent = trimmedContent;
         break;
       case 'parenthetical':
-        if (lineContent && !lineContent.startsWith('(')) {
-          lineContent = '(' + lineContent;
+        // Wrap in parentheses if not already
+        if (trimmedContent) {
+          if (!trimmedContent.startsWith('(')) {
+            lineContent = '(' + trimmedContent;
+          }
+          if (!lineContent.endsWith(')')) {
+            lineContent = lineContent + ')';
+          }
+        } else {
+          lineContent = '()';
         }
-        if (lineContent && !lineContent.endsWith(')')) {
-          lineContent = lineContent + ')';
+        break;
+      case 'transition':
+        // Transitions end with colon and are uppercase
+        if (trimmedContent) {
+          lineContent = trimmedContent.toUpperCase();
+          if (!lineContent.endsWith(':')) {
+            lineContent = lineContent + ':';
+          }
+        } else {
+          lineContent = 'CUT TO:';
         }
         break;
     }
@@ -356,7 +390,24 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     rawLines[lineIndex] = lineContent;
     onContentChange?.(rawLines.join('\n'));
     setCurrentElementType(elementType);
+
+    // Focus back on the input after formatting
+    setTimeout(() => {
+      const input = lineInputRefs.current.get(lineIndex);
+      if (input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    }, 0);
   }, [content, onContentChange]);
+
+  // Cycle to next element type (Tab behavior like Celtx)
+  const cycleElementType = useCallback((lineIndex: number) => {
+    const currentIdx = ELEMENT_CYCLE.indexOf(currentElementType);
+    const nextIdx = (currentIdx + 1) % ELEMENT_CYCLE.length;
+    const nextType = ELEMENT_CYCLE[nextIdx];
+    formatAsElement(lineIndex, nextType);
+  }, [currentElementType, formatAsElement]);
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>, lineIndex: number) => {
@@ -371,16 +422,40 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
       else if (e.key === 's') { e.preventDefault(); onSave?.(); }
     }
 
-    // Enter to create new line
+    // Enter to create new line with smart element type (like Celtx)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const textarea = e.currentTarget;
       const cursorPos = textarea.selectionStart;
       const currentContent = textarea.value;
 
+      // Determine next element type based on current type (Celtx behavior)
+      let nextElementType: ScriptElementType = 'action';
+      switch (currentElementType) {
+        case 'scene_heading':
+          nextElementType = 'action';
+          break;
+        case 'action':
+          nextElementType = 'action';
+          break;
+        case 'character':
+          nextElementType = 'dialogue';
+          break;
+        case 'dialogue':
+          nextElementType = 'character'; // Ready for next speaker
+          break;
+        case 'parenthetical':
+          nextElementType = 'dialogue';
+          break;
+        case 'transition':
+          nextElementType = 'scene_heading';
+          break;
+      }
+
       // If cursor is at end, just create new line
       if (cursorPos === currentContent.length) {
         insertLine(lineIndex, '');
+        setCurrentElementType(nextElementType);
       } else {
         // Split the line at cursor
         const before = currentContent.substring(0, cursorPos);
@@ -415,18 +490,20 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
       setEditingLineIndex(lineIndex + 1);
     }
 
-    // Tab to cycle element types on empty line
-    if (e.key === 'Tab' && !e.shiftKey) {
-      const textarea = e.currentTarget;
-      if (!textarea.value.trim()) {
-        e.preventDefault();
-        const types: ScriptElementType[] = ['action', 'character', 'dialogue', 'parenthetical', 'scene_heading', 'transition'];
-        const currentIdx = types.indexOf(currentElementType);
-        const nextIdx = (currentIdx + 1) % types.length;
-        setCurrentElementType(types[nextIdx]);
+    // Tab to cycle element types (like Celtx)
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        // Shift+Tab goes backwards
+        const currentIdx = ELEMENT_CYCLE.indexOf(currentElementType);
+        const prevIdx = (currentIdx - 1 + ELEMENT_CYCLE.length) % ELEMENT_CYCLE.length;
+        formatAsElement(lineIndex, ELEMENT_CYCLE[prevIdx]);
+      } else {
+        // Tab goes forwards
+        cycleElementType(lineIndex);
       }
     }
-  }, [content, formatAsElement, insertLine, updateLine, onSave, onContentChange, lines.length, currentElementType]);
+  }, [content, formatAsElement, insertLine, updateLine, onSave, onContentChange, lines.length, currentElementType, cycleElementType]);
 
   // Focus on editing line when it changes
   useEffect(() => {
@@ -489,7 +566,13 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                 onClick={() => {
                   if (isEditing) {
                     setEditingLineIndex(globalLineIndex);
-                    setCurrentElementType(line.type);
+                    // Set current element type based on the line's detected type
+                    const detectedType = line.type === 'general' ? 'action' : line.type;
+                    setCurrentElementType(detectedType);
+                  } else if (canEdit && onStartEdit) {
+                    // Start editing if not already editing
+                    onStartEdit();
+                    setTimeout(() => setEditingLineIndex(globalLineIndex), 100);
                   }
                 }}
               >
@@ -803,13 +886,14 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
       {/* Keyboard shortcuts help when editing */}
       {isEditing && (
         <div className={cn(
-          "flex items-center gap-4 bg-charcoal-black/50 border-b border-muted-gray/20 text-muted-gray",
+          "flex items-center gap-4 bg-charcoal-black/50 border-b border-muted-gray/20 text-muted-gray flex-wrap",
           isFullscreen ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"
         )}>
           <span className="font-medium">Shortcuts:</span>
-          <span>Ctrl+1-6: Element types</span>
-          <span>Tab: Cycle types</span>
-          <span>Enter: New line</span>
+          <span>Tab: Cycle element types →</span>
+          <span>Shift+Tab: Cycle ←</span>
+          <span>Ctrl+1-6: Direct element</span>
+          <span>Enter: New line (smart type)</span>
           <span>↑↓: Navigate lines</span>
           <span>Ctrl+S: Save</span>
           {isFullscreen && <span>Esc: Exit fullscreen</span>}
