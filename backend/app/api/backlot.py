@@ -180,6 +180,64 @@ async def verify_project_access(
 
 
 # =====================================================
+# Script Scene Sync Helper
+# =====================================================
+
+async def sync_scenes_from_script(supabase, project_id: str, script_id: str, parsed_scenes: list):
+    """
+    Sync scenes from parsed script content to the database.
+    Updates existing scenes or creates new ones based on scene_number.
+    """
+    from app.utils.script_parser import ParsedScene
+
+    try:
+        # Get existing scenes for this project
+        existing_scenes = supabase.table("backlot_scenes").select(
+            "id, scene_number, slugline"
+        ).eq("project_id", project_id).execute()
+
+        existing_by_number = {s["scene_number"]: s for s in (existing_scenes.data or [])}
+
+        for parsed_scene in parsed_scenes:
+            scene_number = parsed_scene.scene_number
+
+            # Prepare scene data
+            scene_data = {
+                "project_id": project_id,
+                "script_id": script_id,
+                "scene_number": scene_number,
+                "slugline": parsed_scene.slugline,
+                "set_name": parsed_scene.location_hint,
+                "int_ext": parsed_scene.int_ext,
+                "time_of_day": parsed_scene.time_of_day.lower() if parsed_scene.time_of_day else None,
+                "sequence": parsed_scene.sequence,
+                "page_start": parsed_scene.page_start,
+            }
+
+            if scene_number in existing_by_number:
+                # Update existing scene
+                existing_id = existing_by_number[scene_number]["id"]
+                supabase.table("backlot_scenes").update(scene_data).eq("id", existing_id).execute()
+            else:
+                # Create new scene
+                supabase.table("backlot_scenes").insert(scene_data).execute()
+
+        # Optionally: Mark scenes that are no longer in the script as omitted
+        parsed_scene_numbers = {s.scene_number for s in parsed_scenes}
+        for existing_number, existing_scene in existing_by_number.items():
+            if existing_number not in parsed_scene_numbers:
+                # Mark as omitted rather than deleting to preserve any breakdown data
+                supabase.table("backlot_scenes").update({
+                    "is_omitted": True
+                }).eq("id", existing_scene["id"]).execute()
+
+    except Exception as e:
+        print(f"Error syncing scenes from script: {e}")
+        # Don't fail the main operation if scene sync fails
+        pass
+
+
+# =====================================================
 # Call Sheet Send Endpoints
 # =====================================================
 
@@ -6912,6 +6970,12 @@ async def update_script_text(
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit scripts")
 
+        # Parse script text to extract scenes
+        from app.utils.script_parser import parse_fountain
+        parsed_result = parse_fountain(input_data.text_content or "")
+        parsed_scenes = parsed_result.scenes
+        scene_count = len(parsed_scenes)
+
         if input_data.create_new_version:
             # Create a new version with the updated text
             current_version = script_data.get("version_number") or 1
@@ -6934,7 +6998,7 @@ async def update_script_text(
                 "is_locked": False,
                 "text_content": input_data.text_content,
                 "page_count": script_data.get("page_count"),
-                "total_scenes": script_data.get("total_scenes"),
+                "total_scenes": scene_count,
                 "total_pages": script_data.get("total_pages"),
                 "parse_status": "manual",
                 "created_by_user_id": user_id
@@ -6945,24 +7009,36 @@ async def update_script_text(
 
             # Create new version
             result = supabase.table("backlot_scripts").insert(new_script_data).execute()
+            new_script_id = result.data[0]["id"] if result.data else None
+
+            # Sync scenes to the project from the parsed script
+            if new_script_id and parsed_scenes:
+                await sync_scenes_from_script(supabase, project_id, new_script_id, parsed_scenes)
 
             return {
                 "success": True,
                 "script": result.data[0] if result.data else None,
                 "new_version_created": True,
-                "message": f"Created new version {new_script_data['version']}"
+                "scenes_synced": scene_count,
+                "message": f"Created new version {new_script_data['version']} with {scene_count} scenes"
             }
         else:
             # Update text in place
             result = supabase.table("backlot_scripts").update({
-                "text_content": input_data.text_content
+                "text_content": input_data.text_content,
+                "total_scenes": scene_count
             }).eq("id", script_id).execute()
+
+            # Sync scenes to the project from the parsed script
+            if parsed_scenes:
+                await sync_scenes_from_script(supabase, project_id, script_id, parsed_scenes)
 
             return {
                 "success": True,
                 "script": result.data[0] if result.data else None,
                 "new_version_created": False,
-                "message": "Script text updated"
+                "scenes_synced": scene_count,
+                "message": f"Script text updated with {scene_count} scenes"
             }
 
     except HTTPException:

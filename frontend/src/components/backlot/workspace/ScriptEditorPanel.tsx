@@ -64,7 +64,7 @@ import {
 import ScriptPageView from './ScriptPageView';
 import {
   useScript,
-  useScriptMutations,
+  useUpdateScriptText,
   useCreateScriptVersion,
   useLockScriptVersion,
   useExtractScriptText,
@@ -273,7 +273,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
 }) => {
   const { toast } = useToast();
   const { data: currentScript, refetch } = useScript(script.id);
-  const { updateScript } = useScriptMutations();
+  const updateScriptText = useUpdateScriptText();
   const createVersion = useCreateScriptVersion();
   const lockVersion = useLockScriptVersion();
   const extractText = useExtractScriptText();
@@ -346,9 +346,9 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
 
   const handleSave = useCallback(async () => {
     try {
-      await updateScript.mutateAsync({
-        id: activeScript.id,
-        text_content: editContent,
+      await updateScriptText.mutateAsync({
+        scriptId: activeScript.id,
+        textContent: editContent,
       });
       setIsEditing(false);
       setHasUnsavedChanges(false);
@@ -366,7 +366,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
         variant: 'destructive',
       });
     }
-  }, [activeScript, editContent, updateScript, refetch, toast, onScriptUpdated]);
+  }, [activeScript, editContent, updateScriptText, refetch, toast, onScriptUpdated]);
 
   const handleCreateNewVersion = useCallback(async () => {
     try {
@@ -771,10 +771,10 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               <Button
                 size="sm"
                 onClick={handleSave}
-                disabled={updateScript.isPending || !hasUnsavedChanges}
+                disabled={updateScriptText.isPending || !hasUnsavedChanges}
                 className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
               >
-                {updateScript.isPending ? (
+                {updateScriptText.isPending ? (
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                 ) : (
                   <Save className="w-4 h-4 mr-2" />
