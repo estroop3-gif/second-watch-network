@@ -344,14 +344,20 @@ export function useViewConfig(projectId: string | null, viewAsRole?: string | nu
       }
 
       // Check user's profile for global admin status
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_admin, is_superadmin')
-        .eq('id', userData.user.id)
-        .single();
+      // Note: is_admin/is_superadmin may not exist in all profile schemas
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', userData.user.id)
+          .single();
 
-      if (profile?.is_superadmin || profile?.is_admin) {
-        return { role: 'admin', ...DEFAULT_VIEW_CONFIGS.showrunner };
+        // Check if user has admin role
+        if (profile?.role === 'admin' || profile?.role === 'superadmin') {
+          return { role: 'admin', ...DEFAULT_VIEW_CONFIGS.showrunner };
+        }
+      } catch (e) {
+        // Ignore profile check errors
       }
 
       // Get user's primary backlot role
@@ -533,14 +539,18 @@ export function useCanManageRoles(projectId: string | null) {
 
       if (project?.owner_id === userData.user.id) return true;
 
-      // Check global admin status
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_admin, is_superadmin')
-        .eq('id', userData.user.id)
-        .single();
+      // Check global admin status via role field
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', userData.user.id)
+          .single();
 
-      if (profile?.is_superadmin || profile?.is_admin) return true;
+        if (profile?.role === 'admin' || profile?.role === 'superadmin') return true;
+      } catch (e) {
+        // Ignore profile check errors
+      }
 
       // Check if showrunner
       const { data: roles } = await supabase
@@ -566,14 +576,18 @@ export function useCanViewAsRole(projectId: string | null) {
       const { data: userData } = await supabase.auth.getUser();
       if (!userData.user) return false;
 
-      // Check global admin/superadmin
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('is_admin, is_superadmin')
-        .eq('id', userData.user.id)
-        .single();
+      // Check global admin/superadmin via role field
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', userData.user.id)
+          .single();
 
-      if (profile?.is_superadmin || profile?.is_admin) return true;
+        if (profile?.role === 'admin' || profile?.role === 'superadmin') return true;
+      } catch (e) {
+        // Ignore profile check errors
+      }
 
       // Check if project owner
       const { data: project } = await supabase

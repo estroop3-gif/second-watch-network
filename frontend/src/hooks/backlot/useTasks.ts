@@ -314,24 +314,49 @@ export function useTaskStats(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: tasks, error } = await supabase
-        .from('backlot_tasks')
-        .select('status')
-        .eq('project_id', projectId);
+      try {
+        const { data: tasks, error } = await supabase
+          .from('backlot_tasks')
+          .select('status')
+          .eq('project_id', projectId);
 
-      if (error) throw error;
+        if (error) {
+          // Table might not exist or permission denied - return empty stats
+          console.warn('Could not fetch task stats:', error.message);
+          return {
+            total: 0,
+            todo: 0,
+            in_progress: 0,
+            review: 0,
+            completed: 0,
+            blocked: 0,
+          };
+        }
 
-      const stats = {
-        total: tasks?.length || 0,
-        todo: tasks?.filter(t => t.status === 'todo').length || 0,
-        in_progress: tasks?.filter(t => t.status === 'in_progress').length || 0,
-        review: tasks?.filter(t => t.status === 'review').length || 0,
-        completed: tasks?.filter(t => t.status === 'completed').length || 0,
-        blocked: tasks?.filter(t => t.status === 'blocked').length || 0,
-      };
+        const stats = {
+          total: tasks?.length || 0,
+          todo: tasks?.filter(t => t.status === 'todo').length || 0,
+          in_progress: tasks?.filter(t => t.status === 'in_progress').length || 0,
+          review: tasks?.filter(t => t.status === 'review').length || 0,
+          completed: tasks?.filter(t => t.status === 'completed').length || 0,
+          blocked: tasks?.filter(t => t.status === 'blocked').length || 0,
+        };
 
-      return stats;
+        return stats;
+      } catch (e) {
+        // Return empty stats on any error
+        return {
+          total: 0,
+          todo: 0,
+          in_progress: 0,
+          review: 0,
+          completed: 0,
+          blocked: 0,
+        };
+      }
     },
     enabled: !!projectId,
+    // Retry less aggressively since this might be a schema issue
+    retry: 1,
   });
 }
