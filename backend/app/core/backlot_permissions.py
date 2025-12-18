@@ -10,7 +10,6 @@ It implements a layered permission system:
 """
 from typing import Dict, Any, Optional, List, Tuple
 from app.core.database import get_client
-from app.core.supabase import get_supabase_admin_client  # Keep admin client for now
 
 
 # Default view/edit configs per Backlot role
@@ -446,10 +445,10 @@ async def get_user_backlot_role(project_id: str, user_id: str) -> Optional[str]:
     Get the user's primary Backlot role for a project.
     Returns None if user has no role assigned.
     """
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # First check for primary role
-    response = supabase.table("backlot_project_roles").select("backlot_role").eq(
+    response = client.table("backlot_project_roles").select("backlot_role").eq(
         "project_id", project_id
     ).eq(
         "user_id", user_id
@@ -461,7 +460,7 @@ async def get_user_backlot_role(project_id: str, user_id: str) -> Optional[str]:
         return response.data[0]["backlot_role"]
 
     # If no primary, get any role
-    response = supabase.table("backlot_project_roles").select("backlot_role").eq(
+    response = client.table("backlot_project_roles").select("backlot_role").eq(
         "project_id", project_id
     ).eq(
         "user_id", user_id
@@ -478,9 +477,9 @@ async def get_project_view_profile(project_id: str, backlot_role: str) -> Option
     Get the custom view profile for a role in a project.
     Returns None if no custom profile exists.
     """
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_project_view_profiles").select("config").eq(
+    response = client.table("backlot_project_view_profiles").select("config").eq(
         "project_id", project_id
     ).eq(
         "backlot_role", backlot_role
@@ -499,9 +498,9 @@ async def get_user_view_override(project_id: str, user_id: str) -> Optional[Dict
     Get user-specific view permission overrides.
     Returns None if no overrides exist.
     """
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_project_view_overrides").select("config").eq(
+    response = client.table("backlot_project_view_overrides").select("config").eq(
         "project_id", project_id
     ).eq(
         "user_id", user_id
@@ -515,9 +514,9 @@ async def get_user_view_override(project_id: str, user_id: str) -> Optional[Dict
 
 async def is_project_owner(project_id: str, user_id: str) -> bool:
     """Check if user is the project owner."""
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_projects").select("owner_id").eq(
+    response = client.table("backlot_projects").select("owner_id").eq(
         "id", project_id
     ).limit(1).execute()
 
@@ -529,9 +528,9 @@ async def is_project_owner(project_id: str, user_id: str) -> bool:
 
 async def is_project_showrunner(project_id: str, user_id: str) -> bool:
     """Check if user is a showrunner on the project."""
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_project_roles").select("id").eq(
+    response = client.table("backlot_project_roles").select("id").eq(
         "project_id", project_id
     ).eq(
         "user_id", user_id
@@ -544,9 +543,9 @@ async def is_project_showrunner(project_id: str, user_id: str) -> bool:
 
 async def is_project_admin(project_id: str, user_id: str) -> bool:
     """Check if user is an admin member on the project."""
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_project_members").select("id").eq(
+    response = client.table("backlot_project_members").select("id").eq(
         "project_id", project_id
     ).eq(
         "user_id", user_id

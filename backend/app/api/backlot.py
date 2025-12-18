@@ -20,7 +20,6 @@ from app.services.breakdown_pdf_service import (
 from fastapi.responses import Response
 import uuid
 from app.core.database import get_client
-from app.core.supabase import get_supabase_admin_client  # Keep admin client for special operations
 from app.core.config import settings
 
 router = APIRouter()
@@ -135,27 +134,40 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        # Verify the token with Supabase
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        # Use Cognito or Supabase based on USE_AWS flag
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
 async def verify_project_access(
-    supabase,
+    client,
     project_id: str,
     user_id: str,
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to project and return project data"""
     # Get project
-    project_response = supabase.table("backlot_projects").select("*").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
 
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -167,7 +179,7 @@ async def verify_project_access(
         return project
 
     # Check membership
-    member_response = supabase.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_response = client.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
 
     if not member_response.data:
         raise HTTPException(status_code=403, detail="You don't have access to this project")
@@ -184,7 +196,7 @@ async def verify_project_access(
 # Script Scene Sync Helper
 # =====================================================
 
-async def sync_scenes_from_script(supabase, project_id: str, script_id: str, parsed_scenes: list):
+async def sync_scenes_from_script(client, project_id: str, script_id: str, parsed_scenes: list):
     """
     Sync scenes from parsed script content to the database.
     Updates existing scenes or creates new ones based on scene_number.
@@ -193,7 +205,7 @@ async def sync_scenes_from_script(supabase, project_id: str, script_id: str, par
 
     try:
         # Get existing scenes for this project
-        existing_scenes = supabase.table("backlot_scenes").select(
+        existing_scenes = client.table("backlot_scenes").select(
             "id, scene_number, slugline"
         ).eq("project_id", project_id).execute()
 
@@ -218,17 +230,17 @@ async def sync_scenes_from_script(supabase, project_id: str, script_id: str, par
             if scene_number in existing_by_number:
                 # Update existing scene
                 existing_id = existing_by_number[scene_number]["id"]
-                supabase.table("backlot_scenes").update(scene_data).eq("id", existing_id).execute()
+                client.table("backlot_scenes").update(scene_data).eq("id", existing_id).execute()
             else:
                 # Create new scene
-                supabase.table("backlot_scenes").insert(scene_data).execute()
+                client.table("backlot_scenes").insert(scene_data).execute()
 
         # Optionally: Mark scenes that are no longer in the script as omitted
         parsed_scene_numbers = {s.scene_number for s in parsed_scenes}
         for existing_number, existing_scene in existing_by_number.items():
             if existing_number not in parsed_scene_numbers:
                 # Mark as omitted rather than deleting to preserve any breakdown data
-                supabase.table("backlot_scenes").update({
+                client.table("backlot_scenes").update({
                     "is_omitted": True
                 }).eq("id", existing_scene["id"]).execute()
 
@@ -262,10 +274,10 @@ async def send_call_sheet(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()  # Use admin client for full access
+    client = get_client()  # Use admin client for full access
 
     # Get call sheet
-    sheet_response = supabase.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
 
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
@@ -274,10 +286,10 @@ async def send_call_sheet(
     project_id = call_sheet["project_id"]
 
     # Verify access
-    project = await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    project = await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Get call sheet people
-    people_response = supabase.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     call_sheet_people = people_response.data or []
 
     # Determine recipients based on mode
@@ -285,7 +297,7 @@ async def send_call_sheet(
 
     if request.recipient_mode == "all_project_members":
         # Get all project members
-        members_response = supabase.table("backlot_project_members").select("*, profiles(id, email, full_name, display_name)").eq("project_id", project_id).execute()
+        members_response = client.table("backlot_project_members").select("*, profiles(id, email, full_name, display_name)").eq("project_id", project_id).execute()
 
         for member in members_response.data or []:
             profile = member.get("profiles")
@@ -299,7 +311,7 @@ async def send_call_sheet(
                     })
 
         # Also add the project owner
-        owner_response = supabase.table("profiles").select("id, email, full_name, display_name").eq("id", project["owner_id"]).execute()
+        owner_response = client.table("profiles").select("id, email, full_name, display_name").eq("id", project["owner_id"]).execute()
         if owner_response.data:
             owner = owner_response.data[0]
             owner_email = owner.get("email")
@@ -326,7 +338,7 @@ async def send_call_sheet(
         if request.recipient_user_ids:
             for uid in request.recipient_user_ids:
                 # Get user profile
-                profile_response = supabase.table("profiles").select("id, email, full_name, display_name").eq("id", uid).execute()
+                profile_response = client.table("profiles").select("id, email, full_name, display_name").eq("id", uid).execute()
                 if profile_response.data:
                     profile = profile_response.data[0]
                     if profile.get("email"):
@@ -351,7 +363,7 @@ async def send_call_sheet(
         raise HTTPException(status_code=400, detail="No recipients found for this send configuration")
 
     # Get sender info
-    sender_response = supabase.table("profiles").select("full_name, display_name").eq("id", user_id).execute()
+    sender_response = client.table("profiles").select("full_name, display_name").eq("id", user_id).execute()
     sender_name = ""
     if sender_response.data:
         sender = sender_response.data[0]
@@ -440,7 +452,7 @@ async def send_call_sheet(
                         },
                         "status": "unread"
                     }
-                    supabase.table("notifications").insert(notification_data).execute()
+                    client.table("notifications").insert(notification_data).execute()
                     notifications_sent += 1
                 except Exception as e:
                     print(f"Failed to create notification for {recipient['user_id']}: {e}")
@@ -458,12 +470,12 @@ async def send_call_sheet(
         "notifications_sent": notifications_sent
     }
 
-    log_response = supabase.table("backlot_call_sheet_sends").insert(send_log).execute()
+    log_response = client.table("backlot_call_sheet_sends").insert(send_log).execute()
     send_id = log_response.data[0]["id"] if log_response.data else None
 
     # Auto-publish if not already published
     if not call_sheet.get("is_published"):
-        supabase.table("backlot_call_sheets").update({
+        client.table("backlot_call_sheets").update({
             "is_published": True,
             "published_at": datetime.utcnow().isoformat()
         }).eq("id", call_sheet_id).execute()
@@ -488,10 +500,10 @@ async def get_call_sheet_send_history(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
 
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
@@ -499,10 +511,10 @@ async def get_call_sheet_send_history(
     project_id = sheet_response.data[0]["project_id"]
 
     # Verify access
-    await verify_project_access(supabase, project_id, user_id)
+    await verify_project_access(client, project_id, user_id)
 
     # Get send history
-    history_response = supabase.table("backlot_call_sheet_sends").select("*, profiles:sent_by_user_id(full_name, display_name)").eq("call_sheet_id", call_sheet_id).order("sent_at", desc=True).execute()
+    history_response = client.table("backlot_call_sheet_sends").select("*, profiles:sent_by_user_id(full_name, display_name)").eq("call_sheet_id", call_sheet_id).order("sent_at", desc=True).execute()
 
     result = []
     for record in history_response.data or []:
@@ -535,18 +547,18 @@ async def get_project_members_for_send(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify access
-    project = await verify_project_access(supabase, project_id, user_id)
+    project = await verify_project_access(client, project_id, user_id)
 
     # Get all project members with profiles
-    members_response = supabase.table("backlot_project_members").select("*, profiles:user_id(id, email, full_name, display_name, avatar_url)").eq("project_id", project_id).execute()
+    members_response = client.table("backlot_project_members").select("*, profiles:user_id(id, email, full_name, display_name, avatar_url)").eq("project_id", project_id).execute()
 
     result = []
 
     # Add owner
-    owner_response = supabase.table("profiles").select("id, email, full_name, display_name, avatar_url").eq("id", project["owner_id"]).execute()
+    owner_response = client.table("profiles").select("id, email, full_name, display_name, avatar_url").eq("id", project["owner_id"]).execute()
     if owner_response.data:
         owner = owner_response.data[0]
         result.append({
@@ -659,18 +671,18 @@ async def get_call_sheet_scenes(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id)
+    await verify_project_access(client, project_id, user_id)
 
     # Get scenes
-    scenes_response = supabase.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
 
     return scenes_response.data or []
 
@@ -685,18 +697,18 @@ async def create_call_sheet_scene(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Get next sort order
-    max_order_response = supabase.table("backlot_call_sheet_scenes").select("sort_order").eq("call_sheet_id", call_sheet_id).order("sort_order", desc=True).limit(1).execute()
+    max_order_response = client.table("backlot_call_sheet_scenes").select("sort_order").eq("call_sheet_id", call_sheet_id).order("sort_order", desc=True).limit(1).execute()
     next_order = (max_order_response.data[0]["sort_order"] + 1) if max_order_response.data else 0
 
     # Create scene
@@ -705,7 +717,7 @@ async def create_call_sheet_scene(
     if scene_data.get("sort_order") is None:
         scene_data["sort_order"] = next_order
 
-    result = supabase.table("backlot_call_sheet_scenes").insert(scene_data).execute()
+    result = client.table("backlot_call_sheet_scenes").insert(scene_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create scene")
@@ -724,21 +736,21 @@ async def update_call_sheet_scene(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Update scene
     scene_data = scene.model_dump(exclude_unset=True)
     scene_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_call_sheet_scenes").update(scene_data).eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
+    result = client.table("backlot_call_sheet_scenes").update(scene_data).eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Scene not found")
@@ -756,18 +768,18 @@ async def delete_call_sheet_scene(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Delete scene
-    supabase.table("backlot_call_sheet_scenes").delete().eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
+    client.table("backlot_call_sheet_scenes").delete().eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
 
     return {"success": True, "message": "Scene deleted"}
 
@@ -782,19 +794,19 @@ async def reorder_call_sheet_scenes(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Update sort orders
     for index, scene_id in enumerate(scene_ids):
-        supabase.table("backlot_call_sheet_scenes").update({"sort_order": index}).eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
+        client.table("backlot_call_sheet_scenes").update({"sort_order": index}).eq("id", scene_id).eq("call_sheet_id", call_sheet_id).execute()
 
     return {"success": True, "message": "Scenes reordered"}
 
@@ -812,18 +824,18 @@ async def get_call_sheet_locations(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id)
+    await verify_project_access(client, project_id, user_id)
 
     # Get locations
-    locations_response = supabase.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    locations_response = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
 
     return locations_response.data or []
 
@@ -838,18 +850,18 @@ async def create_call_sheet_location(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Get next location number and sort order
-    max_response = supabase.table("backlot_call_sheet_locations").select("location_number, sort_order").eq("call_sheet_id", call_sheet_id).order("location_number", desc=True).limit(1).execute()
+    max_response = client.table("backlot_call_sheet_locations").select("location_number, sort_order").eq("call_sheet_id", call_sheet_id).order("location_number", desc=True).limit(1).execute()
     next_number = (max_response.data[0]["location_number"] + 1) if max_response.data else 1
     next_order = (max_response.data[0]["sort_order"] + 1) if max_response.data else 0
 
@@ -861,7 +873,7 @@ async def create_call_sheet_location(
     if location_data.get("sort_order") is None:
         location_data["sort_order"] = next_order
 
-    result = supabase.table("backlot_call_sheet_locations").insert(location_data).execute()
+    result = client.table("backlot_call_sheet_locations").insert(location_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create location")
@@ -880,21 +892,21 @@ async def update_call_sheet_location(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Update location
     location_data = location.model_dump(exclude_unset=True)
     location_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_call_sheet_locations").update(location_data).eq("id", location_entry_id).eq("call_sheet_id", call_sheet_id).execute()
+    result = client.table("backlot_call_sheet_locations").update(location_data).eq("id", location_entry_id).eq("call_sheet_id", call_sheet_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Location not found")
@@ -912,18 +924,18 @@ async def delete_call_sheet_location(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet to verify access
-    sheet_response = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
     project_id = sheet_response.data[0]["project_id"]
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Delete location
-    supabase.table("backlot_call_sheet_locations").delete().eq("id", location_entry_id).eq("call_sheet_id", call_sheet_id).execute()
+    client.table("backlot_call_sheet_locations").delete().eq("id", location_entry_id).eq("call_sheet_id", call_sheet_id).execute()
 
     return {"success": True, "message": "Location deleted"}
 
@@ -961,10 +973,10 @@ async def generate_call_sheet_pdf(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet with all related data
-    sheet_response = supabase.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
@@ -972,7 +984,7 @@ async def generate_call_sheet_pdf(
     project_id = call_sheet["project_id"]
 
     # Verify access
-    project = await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    project = await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Check if PDF already exists and regenerate not requested
     if call_sheet.get("pdf_url") and not request.regenerate:
@@ -984,15 +996,15 @@ async def generate_call_sheet_pdf(
         )
 
     # Get scenes
-    scenes_response = supabase.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     scenes = scenes_response.data or []
 
     # Get people
-    people_response = supabase.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     people = people_response.data or []
 
     # Get locations
-    locations_response = supabase.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    locations_response = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     locations = locations_response.data or []
 
     # Get logo if requested
@@ -1020,19 +1032,19 @@ async def generate_call_sheet_pdf(
         storage_path = f"call-sheets/{project_id}/{filename}"
 
         # Upload the PDF to storage
-        storage_response = supabase.storage.from_("backlot-files").upload(
+        storage_response = client.storage.from_("backlot-files").upload(
             path=storage_path,
             file=pdf_bytes,
             file_options={"content-type": "application/pdf", "upsert": "true"}
         )
 
         # Get the public URL
-        pdf_url = supabase.storage.from_("backlot-files").get_public_url(storage_path)
+        pdf_url = client.storage.from_("backlot-files").get_public_url(storage_path)
 
         generated_at = datetime.utcnow().isoformat()
 
         # Update the call sheet with the PDF URL
-        supabase.table("backlot_call_sheets").update({
+        client.table("backlot_call_sheets").update({
             "pdf_url": pdf_url,
             "pdf_generated_at": generated_at
         }).eq("id", call_sheet_id).execute()
@@ -1074,10 +1086,10 @@ async def download_call_sheet_pdf(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet
-    sheet_response = supabase.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
@@ -1085,16 +1097,16 @@ async def download_call_sheet_pdf(
     project_id = call_sheet["project_id"]
 
     # Verify access (only need view access for download)
-    project = await verify_project_access(supabase, project_id, user_id, require_edit=False)
+    project = await verify_project_access(client, project_id, user_id, require_edit=False)
 
     # Get related data
-    scenes_response = supabase.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     scenes = scenes_response.data or []
 
-    people_response = supabase.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     people = people_response.data or []
 
-    locations_response = supabase.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+    locations_response = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
     locations = locations_response.data or []
 
     # Get logo
@@ -1177,13 +1189,13 @@ async def set_project_logo(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify access
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     # Update project with logo URL
-    result = supabase.table("backlot_projects").update({
+    result = client.table("backlot_projects").update({
         "header_logo_url": request.logo_url
     }).eq("id", project_id).execute()
 
@@ -1234,10 +1246,10 @@ async def sync_call_sheet_data(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get call sheet with all data
-    sheet_response = supabase.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
     if not sheet_response.data:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
@@ -1245,7 +1257,7 @@ async def sync_call_sheet_data(
     project_id = call_sheet["project_id"]
 
     # Verify access
-    await verify_project_access(supabase, project_id, user_id, require_edit=True)
+    await verify_project_access(client, project_id, user_id, require_edit=True)
 
     production_day_synced = False
     locations_created = 0
@@ -1256,7 +1268,7 @@ async def sync_call_sheet_data(
         production_day_id = call_sheet.get("production_day_id")
 
         # Get primary location from call sheet locations table
-        primary_location = supabase.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).eq("location_number", 1).execute()
+        primary_location = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).eq("location_number", 1).execute()
         primary_loc = primary_location.data[0] if primary_location.data else None
 
         day_data = {
@@ -1277,41 +1289,41 @@ async def sync_call_sheet_data(
 
         if production_day_id:
             # Update existing production day
-            supabase.table("backlot_production_days").update(day_data).eq("id", production_day_id).execute()
+            client.table("backlot_production_days").update(day_data).eq("id", production_day_id).execute()
             production_day_synced = True
         else:
             # Check if a production day exists for this date
-            existing_day = supabase.table("backlot_production_days").select("id").eq("project_id", project_id).eq("date", call_sheet["date"]).execute()
+            existing_day = client.table("backlot_production_days").select("id").eq("project_id", project_id).eq("date", call_sheet["date"]).execute()
 
             if existing_day.data:
                 # Link and update existing day
                 production_day_id = existing_day.data[0]["id"]
-                supabase.table("backlot_production_days").update(day_data).eq("id", production_day_id).execute()
-                supabase.table("backlot_call_sheets").update({"production_day_id": production_day_id}).eq("id", call_sheet_id).execute()
+                client.table("backlot_production_days").update(day_data).eq("id", production_day_id).execute()
+                client.table("backlot_call_sheets").update({"production_day_id": production_day_id}).eq("id", call_sheet_id).execute()
             else:
                 # Get next day number
                 if not day_data.get("day_number"):
-                    max_day = supabase.table("backlot_production_days").select("day_number").eq("project_id", project_id).order("day_number", desc=True).limit(1).execute()
+                    max_day = client.table("backlot_production_days").select("day_number").eq("project_id", project_id).order("day_number", desc=True).limit(1).execute()
                     day_data["day_number"] = (max_day.data[0]["day_number"] + 1) if max_day.data else 1
 
                 # Create new production day
-                result = supabase.table("backlot_production_days").insert(day_data).execute()
+                result = client.table("backlot_production_days").insert(day_data).execute()
                 if result.data:
                     production_day_id = result.data[0]["id"]
-                    supabase.table("backlot_call_sheets").update({"production_day_id": production_day_id}).eq("id", call_sheet_id).execute()
+                    client.table("backlot_call_sheets").update({"production_day_id": production_day_id}).eq("id", call_sheet_id).execute()
 
             production_day_synced = True
 
     # Sync Locations from call sheet locations and scenes
     if request.sync_locations:
         # Sync from call sheet locations table
-        cs_locations = supabase.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).is_("location_id", "null").execute()
+        cs_locations = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).is_("location_id", "null").execute()
 
         for cs_loc in cs_locations.data or []:
             loc_name = cs_loc.get("name")
             if loc_name:
                 # Check if location already exists
-                existing = supabase.table("backlot_locations").select("id").eq("project_id", project_id).eq("name", loc_name).execute()
+                existing = client.table("backlot_locations").select("id").eq("project_id", project_id).eq("name", loc_name).execute()
 
                 if not existing.data:
                     # Create new location
@@ -1321,24 +1333,24 @@ async def sync_call_sheet_data(
                         "address": cs_loc.get("address"),
                         "parking_notes": cs_loc.get("parking_instructions"),
                     }
-                    result = supabase.table("backlot_locations").insert(location_data).execute()
+                    result = client.table("backlot_locations").insert(location_data).execute()
 
                     if result.data:
                         # Link call sheet location to master location
-                        supabase.table("backlot_call_sheet_locations").update({"location_id": result.data[0]["id"]}).eq("id", cs_loc["id"]).execute()
+                        client.table("backlot_call_sheet_locations").update({"location_id": result.data[0]["id"]}).eq("id", cs_loc["id"]).execute()
                         locations_created += 1
                 else:
                     # Link to existing location
-                    supabase.table("backlot_call_sheet_locations").update({"location_id": existing.data[0]["id"]}).eq("id", cs_loc["id"]).execute()
+                    client.table("backlot_call_sheet_locations").update({"location_id": existing.data[0]["id"]}).eq("id", cs_loc["id"]).execute()
 
         # Sync from scenes
-        scenes_response = supabase.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).is_("location_id", "null").execute()
+        scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).is_("location_id", "null").execute()
 
         for scene in scenes_response.data or []:
             set_name = scene.get("set_name")
             if set_name:
                 # Check if location already exists
-                existing = supabase.table("backlot_locations").select("id").eq("project_id", project_id).eq("name", set_name).execute()
+                existing = client.table("backlot_locations").select("id").eq("project_id", project_id).eq("name", set_name).execute()
 
                 if not existing.data:
                     # Create new location
@@ -1347,15 +1359,15 @@ async def sync_call_sheet_data(
                         "name": set_name,
                         "scene_description": scene.get("description"),
                     }
-                    result = supabase.table("backlot_locations").insert(location_data).execute()
+                    result = client.table("backlot_locations").insert(location_data).execute()
 
                     if result.data:
                         # Link scene to location
-                        supabase.table("backlot_call_sheet_scenes").update({"location_id": result.data[0]["id"]}).eq("id", scene["id"]).execute()
+                        client.table("backlot_call_sheet_scenes").update({"location_id": result.data[0]["id"]}).eq("id", scene["id"]).execute()
                         locations_created += 1
                 else:
                     # Link scene to existing location
-                    supabase.table("backlot_call_sheet_scenes").update({"location_id": existing.data[0]["id"]}).eq("id", scene["id"]).execute()
+                    client.table("backlot_call_sheet_scenes").update({"location_id": existing.data[0]["id"]}).eq("id", scene["id"]).execute()
 
     # Sync Tasks from department notes
     if request.sync_tasks:
@@ -1378,7 +1390,7 @@ async def sync_call_sheet_data(
             note_content = call_sheet.get(note_field)
             if note_content and note_content.strip():
                 # Check if task already exists from this call sheet for this department
-                existing_task = supabase.table("backlot_tasks").select("id").eq("source_call_sheet_id", call_sheet_id).eq("department", department).execute()
+                existing_task = client.table("backlot_tasks").select("id").eq("source_call_sheet_id", call_sheet_id).eq("department", department).execute()
 
                 if not existing_task.data:
                     task_data = {
@@ -1394,7 +1406,7 @@ async def sync_call_sheet_data(
                         "source_call_sheet_id": call_sheet_id,
                         "created_by": user_id,
                     }
-                    result = supabase.table("backlot_tasks").insert(task_data).execute()
+                    result = client.table("backlot_tasks").insert(task_data).execute()
                     if result.data:
                         tasks_created += 1
 
@@ -1768,10 +1780,10 @@ class BudgetStats(BaseModel):
 
 
 # Helper function to verify budget access
-async def verify_budget_access(supabase, project_id: str, user_id: str, require_edit: bool = False):
+async def verify_budget_access(client, project_id: str, user_id: str, require_edit: bool = False):
     """Verify user has access to project budgets (producers/admins only)"""
     # Check if project owner
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -1780,7 +1792,7 @@ async def verify_budget_access(supabase, project_id: str, user_id: str, require_
         return True
 
     # Check membership with producer/PM role
-    member_response = supabase.table("backlot_project_members").select(
+    member_response = client.table("backlot_project_members").select(
         "role, production_role"
     ).eq("project_id", project_id).eq("user_id", user_id).execute()
 
@@ -1815,11 +1827,11 @@ async def get_project_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="No budget found for this project")
@@ -1836,11 +1848,11 @@ async def get_budget_summary(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="No budget found for this project")
 
@@ -1848,18 +1860,18 @@ async def get_budget_summary(
     budget_id = budget["id"]
 
     # Get categories
-    categories_response = supabase.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
+    categories_response = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
 
     # Get line item count
-    line_items_response = supabase.table("backlot_budget_line_items").select("id", count="exact").eq("budget_id", budget_id).execute()
+    line_items_response = client.table("backlot_budget_line_items").select("id", count="exact").eq("budget_id", budget_id).execute()
 
     # Get receipt counts
-    receipts_response = supabase.table("backlot_receipts").select("id, is_mapped", count="exact").eq("budget_id", budget_id).execute()
+    receipts_response = client.table("backlot_receipts").select("id, is_mapped", count="exact").eq("budget_id", budget_id).execute()
     total_receipts = receipts_response.count if hasattr(receipts_response, 'count') else len(receipts_response.data or [])
     unmapped_receipts = len([r for r in (receipts_response.data or []) if not r.get("is_mapped")])
 
     # Get daily budgets count
-    daily_response = supabase.table("backlot_daily_budgets").select("id", count="exact").eq("budget_id", budget_id).execute()
+    daily_response = client.table("backlot_daily_budgets").select("id", count="exact").eq("budget_id", budget_id).execute()
     daily_count = daily_response.count if hasattr(daily_response, 'count') else len(daily_response.data or [])
 
     return BudgetSummary(
@@ -1882,11 +1894,11 @@ async def create_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Check if budget already exists
-    existing = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", budget_input.name or "Main Budget").execute()
+    existing = client.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", budget_input.name or "Main Budget").execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="A budget with this name already exists for this project")
 
@@ -1895,7 +1907,7 @@ async def create_budget(
     budget_data["project_id"] = project_id
     budget_data["created_by"] = user_id
 
-    result = supabase.table("backlot_budgets").insert(budget_data).execute()
+    result = client.table("backlot_budgets").insert(budget_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create budget")
 
@@ -1915,7 +1927,7 @@ async def create_budget(
 
     for cat in default_categories:
         cat["budget_id"] = budget["id"]
-        supabase.table("backlot_budget_categories").insert(cat).execute()
+        client.table("backlot_budget_categories").insert(cat).execute()
 
     return budget
 
@@ -1930,11 +1942,11 @@ async def update_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get existing budget
-    existing = supabase.table("backlot_budgets").select("id, status").eq("project_id", project_id).execute()
+    existing = client.table("backlot_budgets").select("id, status").eq("project_id", project_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -1948,7 +1960,7 @@ async def update_budget(
     update_data = budget_input.model_dump(exclude_unset=True)
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_budgets").update(update_data).eq("id", budget["id"]).execute()
+    result = client.table("backlot_budgets").update(update_data).eq("id", budget["id"]).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update budget")
 
@@ -1964,16 +1976,16 @@ async def lock_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    existing = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    existing = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
     # Lock budget
-    result = supabase.table("backlot_budgets").update({
+    result = client.table("backlot_budgets").update({
         "status": "locked",
         "locked_at": datetime.utcnow().isoformat()
     }).eq("id", existing.data[0]["id"]).execute()
@@ -1990,11 +2002,11 @@ async def get_project_budgets(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get all budgets for project
-    response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+    response = client.table("backlot_budgets").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
 
     return response.data or []
 
@@ -2010,17 +2022,17 @@ async def delete_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("id, project_id, name, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("id, project_id, name, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
     budget = budget_response.data[0]
 
     # Verify user has access to the project
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Don't allow deletion of locked budgets
     if budget["status"] == "locked":
@@ -2028,24 +2040,24 @@ async def delete_budget(
 
     # Delete in correct order to respect foreign key constraints:
     # 1. Daily budget items
-    daily_budgets = supabase.table("backlot_daily_budgets").select("id").eq("budget_id", budget_id).execute()
+    daily_budgets = client.table("backlot_daily_budgets").select("id").eq("budget_id", budget_id).execute()
     for db in (daily_budgets.data or []):
-        supabase.table("backlot_daily_budget_items").delete().eq("daily_budget_id", db["id"]).execute()
+        client.table("backlot_daily_budget_items").delete().eq("daily_budget_id", db["id"]).execute()
 
     # 2. Daily budgets
-    supabase.table("backlot_daily_budgets").delete().eq("budget_id", budget_id).execute()
+    client.table("backlot_daily_budgets").delete().eq("budget_id", budget_id).execute()
 
     # 3. Receipts
-    supabase.table("backlot_receipts").delete().eq("budget_id", budget_id).execute()
+    client.table("backlot_receipts").delete().eq("budget_id", budget_id).execute()
 
     # 4. Line items
-    supabase.table("backlot_budget_line_items").delete().eq("budget_id", budget_id).execute()
+    client.table("backlot_budget_line_items").delete().eq("budget_id", budget_id).execute()
 
     # 5. Categories
-    supabase.table("backlot_budget_categories").delete().eq("budget_id", budget_id).execute()
+    client.table("backlot_budget_categories").delete().eq("budget_id", budget_id).execute()
 
     # 6. Finally, the budget itself
-    supabase.table("backlot_budgets").delete().eq("id", budget_id).execute()
+    client.table("backlot_budgets").delete().eq("id", budget_id).execute()
 
     return {"success": True, "message": f"Budget '{budget['name']}' and all associated data has been permanently deleted"}
 
@@ -2059,11 +2071,11 @@ async def get_budget_stats(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2071,17 +2083,17 @@ async def get_budget_stats(
     budget_id = budget["id"]
 
     # Get categories for over/under budget counts
-    categories = supabase.table("backlot_budget_categories").select("estimated_subtotal, actual_subtotal").eq("budget_id", budget_id).execute()
+    categories = client.table("backlot_budget_categories").select("estimated_subtotal, actual_subtotal").eq("budget_id", budget_id).execute()
     categories_over = sum(1 for c in (categories.data or []) if c["actual_subtotal"] > c["estimated_subtotal"])
     categories_under = sum(1 for c in (categories.data or []) if c["actual_subtotal"] < c["estimated_subtotal"])
 
     # Get receipt totals
-    receipts = supabase.table("backlot_receipts").select("amount, is_mapped").eq("budget_id", budget_id).execute()
+    receipts = client.table("backlot_receipts").select("amount, is_mapped").eq("budget_id", budget_id).execute()
     receipt_total = sum(r.get("amount", 0) or 0 for r in (receipts.data or []))
     unmapped_total = sum(r.get("amount", 0) or 0 for r in (receipts.data or []) if not r.get("is_mapped"))
 
     # Get daily budgets over budget
-    daily = supabase.table("backlot_daily_budgets").select("estimated_total, actual_total").eq("budget_id", budget_id).execute()
+    daily = client.table("backlot_daily_budgets").select("estimated_total, actual_total").eq("budget_id", budget_id).execute()
     days_over = sum(1 for d in (daily.data or []) if d["actual_total"] > d["estimated_total"])
 
     estimated = budget["estimated_total"]
@@ -2115,17 +2127,17 @@ async def get_budget_categories(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
-    await verify_budget_access(supabase, budget_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, budget_response.data[0]["project_id"], user_id)
 
     # Get categories
-    response = supabase.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
+    response = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
     return response.data or []
 
 
@@ -2139,10 +2151,10 @@ async def create_budget_category(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2150,13 +2162,13 @@ async def create_budget_category(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Create category
     category_data = category.model_dump()
     category_data["budget_id"] = budget_id
 
-    result = supabase.table("backlot_budget_categories").insert(category_data).execute()
+    result = client.table("backlot_budget_categories").insert(category_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create category")
 
@@ -2174,10 +2186,10 @@ async def update_budget_category(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2185,13 +2197,13 @@ async def update_budget_category(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Update category
     category_data = category.model_dump(exclude_unset=True)
     category_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_budget_categories").update(category_data).eq("id", category_id).eq("budget_id", budget_id).execute()
+    result = client.table("backlot_budget_categories").update(category_data).eq("id", category_id).eq("budget_id", budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Category not found")
 
@@ -2208,10 +2220,10 @@ async def delete_budget_category(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2219,13 +2231,13 @@ async def delete_budget_category(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Unlink line items from this category
-    supabase.table("backlot_budget_line_items").update({"category_id": None}).eq("category_id", category_id).execute()
+    client.table("backlot_budget_line_items").update({"category_id": None}).eq("category_id", category_id).execute()
 
     # Delete category
-    supabase.table("backlot_budget_categories").delete().eq("id", category_id).eq("budget_id", budget_id).execute()
+    client.table("backlot_budget_categories").delete().eq("id", category_id).eq("budget_id", budget_id).execute()
 
     return {"success": True, "message": "Category deleted"}
 
@@ -2244,17 +2256,17 @@ async def get_budget_line_items(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
-    await verify_budget_access(supabase, budget_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, budget_response.data[0]["project_id"], user_id)
 
     # Build query
-    query = supabase.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id)
+    query = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id)
     if category_id:
         query = query.eq("category_id", category_id)
 
@@ -2272,10 +2284,10 @@ async def create_budget_line_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2283,13 +2295,13 @@ async def create_budget_line_item(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Create line item
     item_data = line_item.model_dump(exclude_unset=True)
     item_data["budget_id"] = budget_id
 
-    result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+    result = client.table("backlot_budget_line_items").insert(item_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create line item")
 
@@ -2307,10 +2319,10 @@ async def update_budget_line_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2318,10 +2330,10 @@ async def update_budget_line_item(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Check if line item is locked
-    existing = supabase.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
+    existing = client.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
     if existing.data and existing.data[0].get("is_locked"):
         raise HTTPException(status_code=400, detail="Cannot modify a locked line item")
 
@@ -2329,7 +2341,7 @@ async def update_budget_line_item(
     item_data = line_item.model_dump(exclude_unset=True)
     item_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_budget_line_items").update(item_data).eq("id", line_item_id).eq("budget_id", budget_id).execute()
+    result = client.table("backlot_budget_line_items").update(item_data).eq("id", line_item_id).eq("budget_id", budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Line item not found")
 
@@ -2346,10 +2358,10 @@ async def delete_budget_line_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget to verify access
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -2357,15 +2369,15 @@ async def delete_budget_line_item(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Check if line item is locked
-    existing = supabase.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
+    existing = client.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
     if existing.data and existing.data[0].get("is_locked"):
         raise HTTPException(status_code=400, detail="Cannot delete a locked line item")
 
     # Delete line item (cascades to day links)
-    supabase.table("backlot_budget_line_items").delete().eq("id", line_item_id).eq("budget_id", budget_id).execute()
+    client.table("backlot_budget_line_items").delete().eq("id", line_item_id).eq("budget_id", budget_id).execute()
 
     return {"success": True, "message": "Line item deleted"}
 
@@ -2473,33 +2485,33 @@ async def get_project_daily_budgets(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     if not budget_response.data:
         return []  # No budget yet, no daily budgets
 
     budget_id = budget_response.data[0]["id"]
 
     # Get daily budgets with production day info
-    daily_response = supabase.table("backlot_daily_budgets").select("*").eq("budget_id", budget_id).order("date").execute()
+    daily_response = client.table("backlot_daily_budgets").select("*").eq("budget_id", budget_id).order("date").execute()
 
     summaries = []
     for db in daily_response.data or []:
         # Get production day info
-        prod_day = supabase.table("backlot_production_days").select("day_number, title").eq("id", db["production_day_id"]).execute()
+        prod_day = client.table("backlot_production_days").select("day_number, title").eq("id", db["production_day_id"]).execute()
         prod_day_data = prod_day.data[0] if prod_day.data else {}
 
         # Count items
-        items_count = supabase.table("backlot_daily_budget_items").select("id", count="exact").eq("daily_budget_id", db["id"]).execute()
+        items_count = client.table("backlot_daily_budget_items").select("id", count="exact").eq("daily_budget_id", db["id"]).execute()
 
         # Count receipts
-        receipts_count = supabase.table("backlot_receipts").select("id", count="exact").eq("daily_budget_id", db["id"]).execute()
+        receipts_count = client.table("backlot_receipts").select("id", count="exact").eq("daily_budget_id", db["id"]).execute()
 
         # Check for call sheet
-        call_sheet = supabase.table("backlot_call_sheets").select("id").eq("production_day_id", db["production_day_id"]).limit(1).execute()
+        call_sheet = client.table("backlot_call_sheets").select("id").eq("production_day_id", db["production_day_id"]).limit(1).execute()
 
         summaries.append(DailyBudgetSummary(
             id=db["id"],
@@ -2527,15 +2539,15 @@ async def get_daily_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget
-    response = supabase.table("backlot_daily_budgets").select("*").eq("id", daily_budget_id).execute()
+    response = client.table("backlot_daily_budgets").select("*").eq("id", daily_budget_id).execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
     db = response.data[0]
-    await verify_budget_access(supabase, db["project_id"], user_id)
+    await verify_budget_access(client, db["project_id"], user_id)
 
     return db
 
@@ -2549,27 +2561,27 @@ async def get_daily_budget_for_day(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get production day
-    day_response = supabase.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
+    day_response = client.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
     if not day_response.data:
         raise HTTPException(status_code=404, detail="Production day not found")
 
     prod_day = day_response.data[0]
     project_id = prod_day["project_id"]
 
-    await verify_budget_access(supabase, project_id, user_id)
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="No budget found for this project")
 
     budget_id = budget_response.data[0]["id"]
 
     # Check if daily budget exists
-    existing = supabase.table("backlot_daily_budgets").select("*").eq("production_day_id", production_day_id).execute()
+    existing = client.table("backlot_daily_budgets").select("*").eq("production_day_id", production_day_id).execute()
     if existing.data:
         return existing.data[0]
 
@@ -2581,7 +2593,7 @@ async def get_daily_budget_for_day(
         "date": prod_day["date"],
     }
 
-    result = supabase.table("backlot_daily_budgets").insert(daily_data).execute()
+    result = client.table("backlot_daily_budgets").insert(daily_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create daily budget")
 
@@ -2598,20 +2610,20 @@ async def update_daily_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget to verify access
-    existing = supabase.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
+    existing = client.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
-    await verify_budget_access(supabase, existing.data[0]["project_id"], user_id)
+    await verify_budget_access(client, existing.data[0]["project_id"], user_id)
 
     # Update
     update_data = daily_input.model_dump(exclude_unset=True)
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_daily_budgets").update(update_data).eq("id", daily_budget_id).execute()
+    result = client.table("backlot_daily_budgets").update(update_data).eq("id", daily_budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update daily budget")
 
@@ -2631,17 +2643,17 @@ async def get_daily_budget_items(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget to verify access
-    db_response = supabase.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
+    db_response = client.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
     if not db_response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
-    await verify_budget_access(supabase, db_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, db_response.data[0]["project_id"], user_id)
 
     # Get items
-    response = supabase.table("backlot_daily_budget_items").select("*").eq("daily_budget_id", daily_budget_id).order("sort_order").execute()
+    response = client.table("backlot_daily_budget_items").select("*").eq("daily_budget_id", daily_budget_id).order("sort_order").execute()
     return response.data or []
 
 
@@ -2655,27 +2667,27 @@ async def create_daily_budget_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget to verify access
-    db_response = supabase.table("backlot_daily_budgets").select("project_id, budget_id").eq("id", daily_budget_id).execute()
+    db_response = client.table("backlot_daily_budgets").select("project_id, budget_id").eq("id", daily_budget_id).execute()
     if not db_response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
-    await verify_budget_access(supabase, db_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, db_response.data[0]["project_id"], user_id)
 
     # If linked to a line item, get category name
     item_data = item.model_dump(exclude_unset=True)
     if item_data.get("budget_line_item_id") and not item_data.get("category_name"):
-        line_item = supabase.table("backlot_budget_line_items").select("category_id").eq("id", item_data["budget_line_item_id"]).execute()
+        line_item = client.table("backlot_budget_line_items").select("category_id").eq("id", item_data["budget_line_item_id"]).execute()
         if line_item.data and line_item.data[0].get("category_id"):
-            category = supabase.table("backlot_budget_categories").select("name").eq("id", line_item.data[0]["category_id"]).execute()
+            category = client.table("backlot_budget_categories").select("name").eq("id", line_item.data[0]["category_id"]).execute()
             if category.data:
                 item_data["category_name"] = category.data[0]["name"]
 
     item_data["daily_budget_id"] = daily_budget_id
 
-    result = supabase.table("backlot_daily_budget_items").insert(item_data).execute()
+    result = client.table("backlot_daily_budget_items").insert(item_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create daily budget item")
 
@@ -2693,20 +2705,20 @@ async def update_daily_budget_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget to verify access
-    db_response = supabase.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
+    db_response = client.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
     if not db_response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
-    await verify_budget_access(supabase, db_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, db_response.data[0]["project_id"], user_id)
 
     # Update
     item_data = item.model_dump(exclude_unset=True)
     item_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_daily_budget_items").update(item_data).eq("id", item_id).eq("daily_budget_id", daily_budget_id).execute()
+    result = client.table("backlot_daily_budget_items").update(item_data).eq("id", item_id).eq("daily_budget_id", daily_budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Item not found")
 
@@ -2723,17 +2735,17 @@ async def delete_daily_budget_item(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget to verify access
-    db_response = supabase.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
+    db_response = client.table("backlot_daily_budgets").select("project_id").eq("id", daily_budget_id).execute()
     if not db_response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
-    await verify_budget_access(supabase, db_response.data[0]["project_id"], user_id)
+    await verify_budget_access(client, db_response.data[0]["project_id"], user_id)
 
     # Delete
-    supabase.table("backlot_daily_budget_items").delete().eq("id", item_id).eq("daily_budget_id", daily_budget_id).execute()
+    client.table("backlot_daily_budget_items").delete().eq("id", item_id).eq("daily_budget_id", daily_budget_id).execute()
 
     return {"success": True, "message": "Item deleted"}
 
@@ -2751,36 +2763,36 @@ async def get_suggested_line_items_for_day(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get production day
-    day_response = supabase.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
+    day_response = client.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
     if not day_response.data:
         raise HTTPException(status_code=404, detail="Production day not found")
 
     prod_day = day_response.data[0]
     project_id = prod_day["project_id"]
 
-    await verify_budget_access(supabase, project_id, user_id)
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget and line items
-    budget_response = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     if not budget_response.data:
         return []
 
     budget_id = budget_response.data[0]["id"]
 
-    line_items = supabase.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
+    line_items = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
     if not line_items.data:
         return []
 
     # Get call sheet for this day
-    call_sheet = supabase.table("backlot_call_sheets").select("*").eq("production_day_id", production_day_id).limit(1).execute()
+    call_sheet = client.table("backlot_call_sheets").select("*").eq("production_day_id", production_day_id).limit(1).execute()
 
     # Get call sheet people (crew)
     people = []
     if call_sheet.data:
-        people_response = supabase.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet.data[0]["id"]).execute()
+        people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet.data[0]["id"]).execute()
         people = people_response.data or []
 
     suggestions = []
@@ -2823,7 +2835,7 @@ async def get_suggested_line_items_for_day(
                 suggested_share = item["rate_amount"]  # One day's rate
             else:
                 # Divide total by number of production days
-                days_count = supabase.table("backlot_production_days").select("id", count="exact").eq("project_id", project_id).execute()
+                days_count = client.table("backlot_production_days").select("id", count="exact").eq("project_id", project_id).execute()
                 num_days = days_count.count if hasattr(days_count, 'count') else len(days_count.data or [])
                 num_days = max(num_days, 1)
                 suggested_share = item["estimated_total"] / num_days
@@ -2831,7 +2843,7 @@ async def get_suggested_line_items_for_day(
             # Get category name
             cat_name = None
             if item.get("category_id"):
-                cat_response = supabase.table("backlot_budget_categories").select("name").eq("id", item["category_id"]).execute()
+                cat_response = client.table("backlot_budget_categories").select("name").eq("id", item["category_id"]).execute()
                 if cat_response.data:
                     cat_name = cat_response.data[0]["name"]
 
@@ -2855,35 +2867,35 @@ async def auto_populate_daily_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get daily budget
-    db_response = supabase.table("backlot_daily_budgets").select("*").eq("id", daily_budget_id).execute()
+    db_response = client.table("backlot_daily_budgets").select("*").eq("id", daily_budget_id).execute()
     if not db_response.data:
         raise HTTPException(status_code=404, detail="Daily budget not found")
 
     daily_budget = db_response.data[0]
-    await verify_budget_access(supabase, daily_budget["project_id"], user_id)
+    await verify_budget_access(client, daily_budget["project_id"], user_id)
 
     # Get suggestions
     # We need to call our own endpoint logic here
     production_day_id = daily_budget["production_day_id"]
 
     # Get production day
-    day_response = supabase.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
+    day_response = client.table("backlot_production_days").select("*").eq("id", production_day_id).execute()
     prod_day = day_response.data[0] if day_response.data else {}
 
     # Get budget and line items
     budget_id = daily_budget["budget_id"]
-    line_items = supabase.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
+    line_items = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
 
     # Get call sheet
-    call_sheet = supabase.table("backlot_call_sheets").select("*").eq("production_day_id", production_day_id).limit(1).execute()
+    call_sheet = client.table("backlot_call_sheets").select("*").eq("production_day_id", production_day_id).limit(1).execute()
 
     # Get people
     people = []
     if call_sheet.data:
-        people_response = supabase.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet.data[0]["id"]).execute()
+        people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet.data[0]["id"]).execute()
         people = people_response.data or []
 
     items_created = 0
@@ -2919,19 +2931,19 @@ async def auto_populate_daily_budget(
             if is_daily:
                 estimated = item["rate_amount"]
             else:
-                days_count = supabase.table("backlot_production_days").select("id", count="exact").eq("project_id", daily_budget["project_id"]).execute()
+                days_count = client.table("backlot_production_days").select("id", count="exact").eq("project_id", daily_budget["project_id"]).execute()
                 num_days = max(days_count.count if hasattr(days_count, 'count') else len(days_count.data or []), 1)
                 estimated = item["estimated_total"] / num_days
 
             # Get category name
             cat_name = None
             if item.get("category_id"):
-                cat_response = supabase.table("backlot_budget_categories").select("name").eq("id", item["category_id"]).execute()
+                cat_response = client.table("backlot_budget_categories").select("name").eq("id", item["category_id"]).execute()
                 if cat_response.data:
                     cat_name = cat_response.data[0]["name"]
 
             # Check if already exists
-            existing = supabase.table("backlot_daily_budget_items").select("id").eq("daily_budget_id", daily_budget_id).eq("budget_line_item_id", item["id"]).execute()
+            existing = client.table("backlot_daily_budget_items").select("id").eq("daily_budget_id", daily_budget_id).eq("budget_line_item_id", item["id"]).execute()
             if not existing.data:
                 # Create item
                 new_item = {
@@ -2944,7 +2956,7 @@ async def auto_populate_daily_budget(
                     "is_ad_hoc": False,
                     "sort_order": items_created
                 }
-                supabase.table("backlot_daily_budget_items").insert(new_item).execute()
+                client.table("backlot_daily_budget_items").insert(new_item).execute()
                 items_created += 1
 
     return {"success": True, "items_created": items_created, "message": f"Created {items_created} daily budget items"}
@@ -3061,11 +3073,11 @@ async def get_project_receipts(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Build query
-    query = supabase.table("backlot_receipts").select("*").eq("project_id", project_id)
+    query = client.table("backlot_receipts").select("*").eq("project_id", project_id)
 
     if is_mapped is not None:
         query = query.eq("is_mapped", is_mapped)
@@ -3093,14 +3105,14 @@ async def get_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
+    response = client.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     receipt = response.data[0]
-    await verify_budget_access(supabase, receipt["project_id"], user_id)
+    await verify_budget_access(client, receipt["project_id"], user_id)
 
     return receipt
 
@@ -3120,11 +3132,11 @@ async def register_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget for the project
-    budget_response = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     budget_id = budget_response.data[0]["id"] if budget_response.data else None
 
     # Create receipt record
@@ -3140,7 +3152,7 @@ async def register_receipt(
         "ocr_status": "pending" if data.run_ocr else "succeeded",
     }
 
-    result = supabase.table("backlot_receipts").insert(receipt_data).execute()
+    result = client.table("backlot_receipts").insert(receipt_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create receipt record")
 
@@ -3152,7 +3164,7 @@ async def register_receipt(
         from app.services.ocr_service import process_receipt
 
         # Update status to processing
-        supabase.table("backlot_receipts").update({
+        client.table("backlot_receipts").update({
             "ocr_status": "processing"
         }).eq("id", receipt["id"]).execute()
 
@@ -3178,7 +3190,7 @@ async def register_receipt(
                 if ocr_data.purchase_date:
                     update_data["purchase_date"] = ocr_data.purchase_date
 
-            updated = supabase.table("backlot_receipts").update(update_data).eq("id", receipt["id"]).execute()
+            updated = client.table("backlot_receipts").update(update_data).eq("id", receipt["id"]).execute()
             receipt = updated.data[0] if updated.data else receipt
 
             ocr_result = ReceiptOcrResponse(
@@ -3194,7 +3206,7 @@ async def register_receipt(
             )
 
         except Exception as e:
-            supabase.table("backlot_receipts").update({
+            client.table("backlot_receipts").update({
                 "ocr_status": "failed",
                 "raw_ocr_json": {"error": str(e)}
             }).eq("id", receipt["id"]).execute()
@@ -3219,18 +3231,18 @@ async def reprocess_receipt_ocr(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get receipt
-    response = supabase.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
+    response = client.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     receipt = response.data[0]
-    await verify_budget_access(supabase, receipt["project_id"], user_id)
+    await verify_budget_access(client, receipt["project_id"], user_id)
 
     # Update status to processing
-    supabase.table("backlot_receipts").update({
+    client.table("backlot_receipts").update({
         "ocr_status": "processing"
     }).eq("id", receipt_id).execute()
 
@@ -3260,7 +3272,7 @@ async def reprocess_receipt_ocr(
             if ocr_data.purchase_date:
                 update_data["purchase_date"] = ocr_data.purchase_date
 
-        supabase.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
+        client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
 
         return ReceiptOcrResponse(
             success=ocr_data.success,
@@ -3275,7 +3287,7 @@ async def reprocess_receipt_ocr(
         )
 
     except Exception as e:
-        supabase.table("backlot_receipts").update({
+        client.table("backlot_receipts").update({
             "ocr_status": "failed",
             "raw_ocr_json": {"error": str(e)}
         }).eq("id", receipt_id).execute()
@@ -3296,20 +3308,20 @@ async def update_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get receipt to verify access
-    existing = supabase.table("backlot_receipts").select("project_id").eq("id", receipt_id).execute()
+    existing = client.table("backlot_receipts").select("project_id").eq("id", receipt_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    await verify_budget_access(supabase, existing.data[0]["project_id"], user_id)
+    await verify_budget_access(client, existing.data[0]["project_id"], user_id)
 
     # Update
     update_data = receipt_input.model_dump(exclude_unset=True)
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
+    result = client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update receipt")
 
@@ -3326,15 +3338,15 @@ async def map_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get receipt to verify access
-    existing = supabase.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
+    existing = client.table("backlot_receipts").select("*").eq("id", receipt_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
     receipt = existing.data[0]
-    await verify_budget_access(supabase, receipt["project_id"], user_id)
+    await verify_budget_access(client, receipt["project_id"], user_id)
 
     # Build update data
     update_data = {
@@ -3355,7 +3367,7 @@ async def map_receipt(
     if mapping.is_verified is not None:
         update_data["is_verified"] = mapping.is_verified
 
-    result = supabase.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
+    result = client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to map receipt")
 
@@ -3371,16 +3383,16 @@ async def verify_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get receipt to verify access
-    existing = supabase.table("backlot_receipts").select("project_id").eq("id", receipt_id).execute()
+    existing = client.table("backlot_receipts").select("project_id").eq("id", receipt_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    await verify_budget_access(supabase, existing.data[0]["project_id"], user_id)
+    await verify_budget_access(client, existing.data[0]["project_id"], user_id)
 
-    result = supabase.table("backlot_receipts").update({
+    result = client.table("backlot_receipts").update({
         "is_verified": True,
         "updated_at": datetime.utcnow().isoformat()
     }).eq("id", receipt_id).execute()
@@ -3400,17 +3412,17 @@ async def delete_receipt(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get receipt to verify access
-    existing = supabase.table("backlot_receipts").select("project_id, file_url").eq("id", receipt_id).execute()
+    existing = client.table("backlot_receipts").select("project_id, file_url").eq("id", receipt_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    await verify_budget_access(supabase, existing.data[0]["project_id"], user_id)
+    await verify_budget_access(client, existing.data[0]["project_id"], user_id)
 
     # Delete from database (file cleanup can be done separately)
-    supabase.table("backlot_receipts").delete().eq("id", receipt_id).execute()
+    client.table("backlot_receipts").delete().eq("id", receipt_id).execute()
 
     return {"success": True, "message": "Receipt deleted"}
 
@@ -3426,11 +3438,11 @@ async def export_receipts_csv(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Build query
-    query = supabase.table("backlot_receipts").select("*").eq("project_id", project_id)
+    query = client.table("backlot_receipts").select("*").eq("project_id", project_id)
 
     if date_from:
         query = query.gte("purchase_date", date_from)
@@ -3459,18 +3471,18 @@ async def export_receipts_csv(
         category_name = ""
         line_item_name = ""
         if r.get("budget_line_item_id"):
-            li = supabase.table("backlot_budget_line_items").select("description, category_id").eq("id", r["budget_line_item_id"]).execute()
+            li = client.table("backlot_budget_line_items").select("description, category_id").eq("id", r["budget_line_item_id"]).execute()
             if li.data:
                 line_item_name = li.data[0].get("description", "")
                 if li.data[0].get("category_id"):
-                    cat = supabase.table("backlot_budget_categories").select("name").eq("id", li.data[0]["category_id"]).execute()
+                    cat = client.table("backlot_budget_categories").select("name").eq("id", li.data[0]["category_id"]).execute()
                     if cat.data:
                         category_name = cat.data[0].get("name", "")
 
         # Get production day
         prod_day = ""
         if r.get("daily_budget_id"):
-            db = supabase.table("backlot_daily_budgets").select("date, production_day_id").eq("id", r["daily_budget_id"]).execute()
+            db = client.table("backlot_daily_budgets").select("date, production_day_id").eq("id", r["daily_budget_id"]).execute()
             if db.data:
                 prod_day = db.data[0].get("date", "")
 
@@ -3521,10 +3533,10 @@ async def get_budget_template_accounts(
     """Get account templates for a specific project type"""
     await get_current_user_from_token(authorization)
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get template accounts
-    query = supabase.table("backlot_budget_accounts").select("*").eq("project_type", project_type)
+    query = client.table("backlot_budget_accounts").select("*").eq("project_type", project_type)
     if not include_all:
         query = query.eq("is_common", True)
 
@@ -3541,10 +3553,10 @@ async def preview_budget_template(
     """Preview what a budget template will create"""
     await get_current_user_from_token(authorization)
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get template accounts
-    query = supabase.table("backlot_budget_accounts").select("*").eq("project_type", project_type)
+    query = client.table("backlot_budget_accounts").select("*").eq("project_type", project_type)
     if include_common_only:
         query = query.eq("is_common", True)
 
@@ -3585,16 +3597,16 @@ async def create_budget_from_template(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Check if budget already exists
-    existing = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", template_input.name or "Main Budget").execute()
+    existing = client.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", template_input.name or "Main Budget").execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="A budget with this name already exists for this project")
 
     # Get template accounts
-    query = supabase.table("backlot_budget_accounts").select("*").eq("project_type", template_input.project_type)
+    query = client.table("backlot_budget_accounts").select("*").eq("project_type", template_input.project_type)
     if template_input.include_common_only:
         query = query.eq("is_common", True)
 
@@ -3619,7 +3631,7 @@ async def create_budget_from_template(
         "status": "draft"
     }
 
-    budget_result = supabase.table("backlot_budgets").insert(budget_data).execute()
+    budget_result = client.table("backlot_budgets").insert(budget_data).execute()
     if not budget_result.data:
         raise HTTPException(status_code=500, detail="Failed to create budget")
 
@@ -3649,7 +3661,7 @@ async def create_budget_from_template(
             "is_above_the_line": cat_info["category_type"] == "above_the_line",
             "sort_order": cat_info["sort_order"]
         }
-        cat_result = supabase.table("backlot_budget_categories").insert(cat_data).execute()
+        cat_result = client.table("backlot_budget_categories").insert(cat_data).execute()
         if cat_result.data:
             category_map[cat_name] = cat_result.data[0]["id"]
 
@@ -3672,7 +3684,7 @@ async def create_budget_from_template(
                 "source_id": account["id"],
                 "sort_order": line_item_order
             }
-            supabase.table("backlot_budget_line_items").insert(line_item_data).execute()
+            client.table("backlot_budget_line_items").insert(line_item_data).execute()
             line_item_order += 1
 
     # Return the created budget
@@ -3689,11 +3701,11 @@ async def get_budget_top_sheet(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -3701,15 +3713,15 @@ async def get_budget_top_sheet(
     budget_id = budget["id"]
 
     # Get project for title
-    project_response = supabase.table("backlot_projects").select("title").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("title").eq("id", project_id).execute()
     project_title = project_response.data[0]["title"] if project_response.data else "Untitled"
 
     # Get categories with their line item totals
-    categories_response = supabase.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
+    categories_response = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
     categories = categories_response.data or []
 
     # Get all line items
-    line_items_response = supabase.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
+    line_items_response = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).execute()
     line_items = line_items_response.data or []
 
     # Build sections by category type
@@ -3774,7 +3786,7 @@ async def get_budget_top_sheet(
     grand_total = subtotal + contingency_amount
 
     # Update budget grand total
-    supabase.table("backlot_budgets").update({
+    client.table("backlot_budgets").update({
         "grand_total": grand_total,
         "fringes_total": fringes_total,
         "has_top_sheet": True
@@ -3885,11 +3897,11 @@ async def sync_budget_to_daily_budgets(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -3897,7 +3909,7 @@ async def sync_budget_to_daily_budgets(
     budget_id = budget["id"]
 
     # Get production days
-    days_query = supabase.table("backlot_production_days").select("*").eq("project_id", project_id)
+    days_query = client.table("backlot_production_days").select("*").eq("project_id", project_id)
     if sync_input.production_day_ids:
         days_query = days_query.in_("id", sync_input.production_day_ids)
 
@@ -3911,7 +3923,7 @@ async def sync_budget_to_daily_budgets(
     total_days = len(production_days)
 
     # Get line items with categories
-    line_items_response = supabase.table("backlot_budget_line_items").select(
+    line_items_response = client.table("backlot_budget_line_items").select(
         "*, category:backlot_budget_categories(id, name, category_type, phase)"
     ).eq("budget_id", budget_id).execute()
     line_items = line_items_response.data or []
@@ -3949,7 +3961,7 @@ async def sync_budget_to_daily_budgets(
         day_type = prod_day.get("type", "shoot")
 
         # Get or create daily budget for this day
-        daily_budget_response = supabase.table("backlot_daily_budgets").select("*").eq(
+        daily_budget_response = client.table("backlot_daily_budgets").select("*").eq(
             "production_day_id", day_id
         ).execute()
 
@@ -3963,7 +3975,7 @@ async def sync_budget_to_daily_budgets(
                 "production_day_id": day_id,
                 "date": day_date
             }
-            create_response = supabase.table("backlot_daily_budgets").insert(daily_budget_data).execute()
+            create_response = client.table("backlot_daily_budgets").insert(daily_budget_data).execute()
             if not create_response.data:
                 warnings.append(f"Failed to create daily budget for {day_date}")
                 continue
@@ -3972,7 +3984,7 @@ async def sync_budget_to_daily_budgets(
         daily_budget_id = daily_budget["id"]
 
         # Get existing items for this daily budget (for update/remove)
-        existing_items_response = supabase.table("backlot_daily_budget_items").select("*").eq(
+        existing_items_response = client.table("backlot_daily_budget_items").select("*").eq(
             "daily_budget_id", daily_budget_id
         ).execute()
         existing_items = {
@@ -4039,7 +4051,7 @@ async def sync_budget_to_daily_budgets(
             if li_id in existing_items:
                 # Update existing item
                 existing = existing_items[li_id]
-                supabase.table("backlot_daily_budget_items").update({
+                client.table("backlot_daily_budget_items").update({
                     "estimated_amount": allocation,
                     "label": item_data["label"],
                     "category_name": item_data["category_name"],
@@ -4048,20 +4060,20 @@ async def sync_budget_to_daily_budgets(
                 items_updated += 1
             else:
                 # Create new item
-                supabase.table("backlot_daily_budget_items").insert(item_data).execute()
+                client.table("backlot_daily_budget_items").insert(item_data).execute()
                 items_created += 1
 
         # Remove items that are no longer applicable (if full sync)
         if sync_input.sync_mode == "full":
             for li_id, existing_item in existing_items.items():
                 if li_id not in processed_item_ids and not existing_item.get("is_ad_hoc"):
-                    supabase.table("backlot_daily_budget_items").delete().eq(
+                    client.table("backlot_daily_budget_items").delete().eq(
                         "id", existing_item["id"]
                     ).execute()
                     items_removed += 1
 
         # Update daily budget totals
-        supabase.table("backlot_daily_budgets").update({
+        client.table("backlot_daily_budgets").update({
             "estimated_total": day_total,
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", daily_budget_id).execute()
@@ -4513,36 +4525,36 @@ async def export_budget_pdf(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
     budget = budget_response.data[0]
     budget_id = budget["id"]
 
     # Get project
-    project_response = supabase.table("backlot_projects").select("*").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
     project = project_response.data[0]
 
     # Get categories
-    categories_response = supabase.table("backlot_budget_categories").select("*").eq(
+    categories_response = client.table("backlot_budget_categories").select("*").eq(
         "budget_id", budget_id
     ).order("sort_order").execute()
     categories = categories_response.data or []
 
     # Get line items
-    line_items_response = supabase.table("backlot_budget_line_items").select("*").eq(
+    line_items_response = client.table("backlot_budget_line_items").select("*").eq(
         "budget_id", budget_id
     ).order("sort_order").execute()
     line_items = line_items_response.data or []
 
     # Get top sheet cache if available, or compute it dynamically
     top_sheet = None
-    top_sheet_response = supabase.table("backlot_budget_top_sheet_cache").select("*").eq(
+    top_sheet_response = client.table("backlot_budget_top_sheet_cache").select("*").eq(
         "budget_id", budget_id
     ).execute()
     if top_sheet_response.data:
@@ -4767,11 +4779,11 @@ async def create_budget_from_bundles(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
-    await verify_budget_access(supabase, project_id, user_id)
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
 
     # Check if budget already exists
-    existing = supabase.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", options.name).execute()
+    existing = client.table("backlot_budgets").select("id").eq("project_id", project_id).eq("name", options.name).execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="A budget with this name already exists for this project")
 
@@ -4815,7 +4827,7 @@ async def create_budget_from_bundles(
         "union_type": options.union_type
     }
 
-    result = supabase.table("backlot_budgets").insert(budget_data).execute()
+    result = client.table("backlot_budgets").insert(budget_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create budget")
 
@@ -4888,7 +4900,7 @@ async def create_budget_from_bundles(
             "is_above_the_line": cat.category_type.value == "above_the_line"
         }
 
-        cat_result = supabase.table("backlot_budget_categories").insert(cat_data).execute()
+        cat_result = client.table("backlot_budget_categories").insert(cat_data).execute()
         if cat_result.data:
             categories_created += 1
             cat_id = cat_result.data[0]["id"]
@@ -4920,7 +4932,7 @@ async def create_budget_from_bundles(
                     "phase": item.phase.value if item.phase else None
                 }
 
-                item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                item_result = client.table("backlot_budget_line_items").insert(item_data).execute()
                 if item_result.data:
                     line_items_created += 1
 
@@ -4949,10 +4961,10 @@ async def add_bundle_to_budget(
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get budget
-    budget_response = supabase.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
+    budget_response = client.table("backlot_budgets").select("project_id, status").eq("id", budget_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
 
@@ -4960,7 +4972,7 @@ async def add_bundle_to_budget(
     if budget["status"] == "locked":
         raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
 
-    await verify_budget_access(supabase, budget["project_id"], user_id)
+    await verify_budget_access(client, budget["project_id"], user_id)
 
     # Get the bundle
     from app.services.budget_templates import get_bundle_by_id as get_bundle, filter_essential_items
@@ -4974,7 +4986,7 @@ async def add_bundle_to_budget(
         bundle = filter_essential_items(bundle)
 
     # Get existing categories for this budget
-    existing_cats = supabase.table("backlot_budget_categories").select("code").eq("budget_id", budget_id).execute()
+    existing_cats = client.table("backlot_budget_categories").select("code").eq("budget_id", budget_id).execute()
     existing_codes = {c["code"] for c in (existing_cats.data or [])}
 
     categories_created = 0
@@ -4984,13 +4996,13 @@ async def add_bundle_to_budget(
         # Check if category already exists
         if cat.code in existing_codes:
             # Get existing category ID
-            cat_lookup = supabase.table("backlot_budget_categories").select("id").eq("budget_id", budget_id).eq("code", cat.code).execute()
+            cat_lookup = client.table("backlot_budget_categories").select("id").eq("budget_id", budget_id).eq("code", cat.code).execute()
             if cat_lookup.data:
                 cat_id = cat_lookup.data[0]["id"]
                 # Add line items to existing category
                 for idx, item in enumerate(cat.line_items):
                     # Check if line item already exists
-                    existing_item = supabase.table("backlot_budget_line_items").select("id").eq("budget_id", budget_id).eq("account_code", item.account_code).execute()
+                    existing_item = client.table("backlot_budget_line_items").select("id").eq("budget_id", budget_id).eq("account_code", item.account_code).execute()
                     if not existing_item.data:
                         # Note: estimated_total and variance are GENERATED columns
                         item_data = {
@@ -5013,7 +5025,7 @@ async def add_bundle_to_budget(
                             "department": item.department,
                             "phase": item.phase.value if item.phase else None
                         }
-                        item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                        item_result = client.table("backlot_budget_line_items").insert(item_data).execute()
                         if item_result.data:
                             line_items_created += 1
         else:
@@ -5031,7 +5043,7 @@ async def add_bundle_to_budget(
                 "is_above_the_line": cat.category_type.value == "above_the_line"
             }
 
-            cat_result = supabase.table("backlot_budget_categories").insert(cat_data).execute()
+            cat_result = client.table("backlot_budget_categories").insert(cat_data).execute()
             if cat_result.data:
                 categories_created += 1
                 cat_id = cat_result.data[0]["id"]
@@ -5061,7 +5073,7 @@ async def add_bundle_to_budget(
                         "phase": item.phase.value if item.phase else None
                     }
 
-                    item_result = supabase.table("backlot_budget_line_items").insert(item_data).execute()
+                    item_result = client.table("backlot_budget_line_items").insert(item_data).execute()
                     if item_result.data:
                         line_items_created += 1
 
@@ -5143,11 +5155,11 @@ async def search_global_locations(
     Returns public locations matching the search criteria.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Build query for public locations
-        q = supabase.table("backlot_locations").select("*").eq("is_public", True)
+        q = client.table("backlot_locations").select("*").eq("is_public", True)
 
         # Apply filters
         if query:
@@ -5190,10 +5202,10 @@ async def get_location_regions(authorization: str = Header(None)):
     Useful for populating a region filter dropdown.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_locations").select("region_tag").eq("is_public", True).not_.is_("region_tag", "null").execute()
+        result = client.table("backlot_locations").select("region_tag").eq("is_public", True).not_.is_("region_tag", "null").execute()
 
         # Extract unique regions
         regions = list(set([r["region_tag"] for r in result.data if r.get("region_tag")]))
@@ -5212,10 +5224,10 @@ async def get_location_types(authorization: str = Header(None)):
     Get a list of distinct location types from the library.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_locations").select("location_type").eq("is_public", True).not_.is_("location_type", "null").execute()
+        result = client.table("backlot_locations").select("location_type").eq("is_public", True).not_.is_("location_type", "null").execute()
 
         # Extract unique types
         types = list(set([r["location_type"] for r in result.data if r.get("location_type")]))
@@ -5239,23 +5251,23 @@ async def get_project_locations(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project membership (check both owner and members)
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get attached locations with full location data
-        result = supabase.table("backlot_project_locations").select(
+        result = client.table("backlot_project_locations").select(
             "*, location:location_id(*)"
         ).eq("project_id", project_id).execute()
 
@@ -5293,17 +5305,17 @@ async def create_project_location(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project membership with edit permissions (check both owner and members)
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -5346,7 +5358,7 @@ async def create_project_location(
             "project_id": None  # Global location, not project-specific
         }
 
-        loc_result = supabase.table("backlot_locations").insert(location_data).execute()
+        loc_result = client.table("backlot_locations").insert(location_data).execute()
 
         if not loc_result.data:
             raise HTTPException(status_code=500, detail="Failed to create location")
@@ -5360,7 +5372,7 @@ async def create_project_location(
             "attached_by_user_id": user_id
         }
 
-        supabase.table("backlot_project_locations").insert(attachment_data).execute()
+        client.table("backlot_project_locations").insert(attachment_data).execute()
 
         return {
             "success": True,
@@ -5386,23 +5398,23 @@ async def attach_location_to_project(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project membership (check both owner and members)
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Verify the location exists and is accessible
-        loc_result = supabase.table("backlot_locations").select("id, name, is_public").eq("id", attachment.location_id).execute()
+        loc_result = client.table("backlot_locations").select("id, name, is_public").eq("id", attachment.location_id).execute()
 
         if not loc_result.data:
             raise HTTPException(status_code=404, detail="Location not found")
@@ -5412,7 +5424,7 @@ async def attach_location_to_project(
             raise HTTPException(status_code=403, detail="Cannot attach a private location")
 
         # Check if already attached
-        existing = supabase.table("backlot_project_locations").select("id").eq("project_id", project_id).eq("location_id", attachment.location_id).execute()
+        existing = client.table("backlot_project_locations").select("id").eq("project_id", project_id).eq("location_id", attachment.location_id).execute()
 
         if existing.data:
             return {
@@ -5430,7 +5442,7 @@ async def attach_location_to_project(
             "attached_by_user_id": user_id
         }
 
-        result = supabase.table("backlot_project_locations").insert(attachment_data).execute()
+        result = client.table("backlot_project_locations").insert(attachment_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to attach location")
@@ -5460,23 +5472,23 @@ async def detach_location_from_project(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project membership (check both owner and members)
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Delete the attachment
-        result = supabase.table("backlot_project_locations").delete().eq("project_id", project_id).eq("location_id", location_id).execute()
+        result = client.table("backlot_project_locations").delete().eq("project_id", project_id).eq("location_id", location_id).execute()
 
         return {
             "success": True,
@@ -5499,10 +5511,10 @@ async def get_location(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_locations").select("*").eq("id", location_id).execute()
+        result = client.table("backlot_locations").select("*").eq("id", location_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Location not found")
@@ -5534,11 +5546,11 @@ async def update_location(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify ownership
-        existing = supabase.table("backlot_locations").select("id, created_by_user_id").eq("id", location_id).execute()
+        existing = client.table("backlot_locations").select("id, created_by_user_id").eq("id", location_id).execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Location not found")
@@ -5577,7 +5589,7 @@ async def update_location(
             "amenities": location.amenities or []
         }
 
-        result = supabase.table("backlot_locations").update(update_data).eq("id", location_id).execute()
+        result = client.table("backlot_locations").update(update_data).eq("id", location_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update location")
@@ -5606,11 +5618,11 @@ async def delete_location(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify ownership
-        existing = supabase.table("backlot_locations").select("id, created_by_user_id, name").eq("id", location_id).execute()
+        existing = client.table("backlot_locations").select("id, created_by_user_id, name").eq("id", location_id).execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Location not found")
@@ -5621,7 +5633,7 @@ async def delete_location(
         location_name = existing.data[0].get("name", "Unknown")
 
         # Delete the location (cascade will remove attachments)
-        supabase.table("backlot_locations").delete().eq("id", location_id).execute()
+        client.table("backlot_locations").delete().eq("id", location_id).execute()
 
         return {
             "success": True,
@@ -5648,23 +5660,23 @@ async def update_project_location_notes(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project membership (check both owner and members)
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Find the attachment
-        existing = supabase.table("backlot_project_locations").select("id").eq("project_id", project_id).eq("location_id", location_id).execute()
+        existing = client.table("backlot_project_locations").select("id").eq("project_id", project_id).eq("location_id", location_id).execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Location not attached to this project")
@@ -5677,7 +5689,7 @@ async def update_project_location_notes(
             update_data["scene_description"] = scene_description
 
         if update_data:
-            result = supabase.table("backlot_project_locations").update(update_data).eq("id", existing.data[0]["id"]).execute()
+            result = client.table("backlot_project_locations").update(update_data).eq("id", existing.data[0]["id"]).execute()
 
             return {
                 "success": True,
@@ -5745,10 +5757,10 @@ class ScoutPhotoUpdateInput(BaseModel):
     interior_exterior: Optional[str] = None
 
 
-async def can_user_edit_location(supabase, user_id: str, location_id: str) -> bool:
+async def can_user_edit_location(client, user_id: str, location_id: str) -> bool:
     """Check if user has permission to edit a location (for adding/editing scout photos)"""
     # Check if user is the location creator
-    location = supabase.table("backlot_locations").select("created_by_user_id, project_id").eq("id", location_id).execute()
+    location = client.table("backlot_locations").select("created_by_user_id, project_id").eq("id", location_id).execute()
     if not location.data:
         return False
 
@@ -5760,20 +5772,20 @@ async def can_user_edit_location(supabase, user_id: str, location_id: str) -> bo
 
     # User is member of the project that owns the location
     if loc_data.get("project_id"):
-        member = supabase.table("backlot_project_members").select("role").eq("project_id", loc_data["project_id"]).eq("user_id", user_id).execute()
+        member = client.table("backlot_project_members").select("role").eq("project_id", loc_data["project_id"]).eq("user_id", user_id).execute()
         if member.data:
             return True
 
     # User is member of a project that has attached this location
-    attachments = supabase.table("backlot_project_locations").select("project_id").eq("location_id", location_id).execute()
+    attachments = client.table("backlot_project_locations").select("project_id").eq("location_id", location_id).execute()
     if attachments.data:
         for att in attachments.data:
-            member = supabase.table("backlot_project_members").select("role").eq("project_id", att["project_id"]).eq("user_id", user_id).execute()
+            member = client.table("backlot_project_members").select("role").eq("project_id", att["project_id"]).eq("user_id", user_id).execute()
             if member.data:
                 return True
 
     # Check if user is admin/superadmin
-    user_data = supabase.table("users").select("is_admin, is_superadmin").eq("id", user_id).execute()
+    user_data = client.table("users").select("is_admin, is_superadmin").eq("id", user_id).execute()
     if user_data.data:
         if user_data.data[0].get("is_admin") or user_data.data[0].get("is_superadmin"):
             return True
@@ -5781,9 +5793,9 @@ async def can_user_edit_location(supabase, user_id: str, location_id: str) -> bo
     return False
 
 
-async def can_user_view_location(supabase, user_id: str, location_id: str) -> bool:
+async def can_user_view_location(client, user_id: str, location_id: str) -> bool:
     """Check if user can view a location and its scout photos"""
-    location = supabase.table("backlot_locations").select("is_public, created_by_user_id, project_id").eq("id", location_id).execute()
+    location = client.table("backlot_locations").select("is_public, created_by_user_id, project_id").eq("id", location_id).execute()
     if not location.data:
         return False
 
@@ -5799,20 +5811,20 @@ async def can_user_view_location(supabase, user_id: str, location_id: str) -> bo
 
     # User is member of owning project
     if loc_data.get("project_id"):
-        member = supabase.table("backlot_project_members").select("role").eq("project_id", loc_data["project_id"]).eq("user_id", user_id).execute()
+        member = client.table("backlot_project_members").select("role").eq("project_id", loc_data["project_id"]).eq("user_id", user_id).execute()
         if member.data:
             return True
 
     # User is member of a project that has attached this location
-    attachments = supabase.table("backlot_project_locations").select("project_id").eq("location_id", location_id).execute()
+    attachments = client.table("backlot_project_locations").select("project_id").eq("location_id", location_id).execute()
     if attachments.data:
         for att in attachments.data:
-            member = supabase.table("backlot_project_members").select("role").eq("project_id", att["project_id"]).eq("user_id", user_id).execute()
+            member = client.table("backlot_project_members").select("role").eq("project_id", att["project_id"]).eq("user_id", user_id).execute()
             if member.data:
                 return True
 
     # Check if user is admin/superadmin
-    user_data = supabase.table("users").select("is_admin, is_superadmin").eq("id", user_id).execute()
+    user_data = client.table("users").select("is_admin, is_superadmin").eq("id", user_id).execute()
     if user_data.data:
         if user_data.data[0].get("is_admin") or user_data.data[0].get("is_superadmin"):
             return True
@@ -5833,14 +5845,14 @@ async def get_location_scout_photos(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify user can view this location
-    if not await can_user_view_location(supabase, user_id, location_id):
+    if not await can_user_view_location(client, user_id, location_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        query = supabase.table("backlot_location_scout_photos").select("*").eq("location_id", location_id)
+        query = client.table("backlot_location_scout_photos").select("*").eq("location_id", location_id)
 
         if vantage_type:
             query = query.eq("vantage_type", vantage_type)
@@ -5874,16 +5886,16 @@ async def create_scout_photo(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify user can edit this location
-    if not await can_user_edit_location(supabase, user_id, location_id):
+    if not await can_user_edit_location(client, user_id, location_id):
         raise HTTPException(status_code=403, detail="Access denied - cannot edit this location")
 
     try:
         # If this is set as primary, unset any existing primary photos
         if photo.is_primary:
-            supabase.table("backlot_location_scout_photos").update({"is_primary": False}).eq("location_id", location_id).eq("is_primary", True).execute()
+            client.table("backlot_location_scout_photos").update({"is_primary": False}).eq("location_id", location_id).eq("is_primary", True).execute()
 
         insert_data = {
             "location_id": location_id,
@@ -5908,7 +5920,7 @@ async def create_scout_photo(
             "uploaded_by_user_id": user_id,
         }
 
-        result = supabase.table("backlot_location_scout_photos").insert(insert_data).execute()
+        result = client.table("backlot_location_scout_photos").insert(insert_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create scout photo")
@@ -5935,10 +5947,10 @@ async def get_scout_photo(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
+        result = client.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Scout photo not found")
@@ -5946,7 +5958,7 @@ async def get_scout_photo(
         photo = result.data[0]
 
         # Verify user can view the location
-        if not await can_user_view_location(supabase, user_id, photo["location_id"]):
+        if not await can_user_view_location(client, user_id, photo["location_id"]):
             raise HTTPException(status_code=403, detail="Access denied")
 
         return {
@@ -5972,11 +5984,11 @@ async def update_scout_photo(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing photo
-        existing = supabase.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
+        existing = client.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Scout photo not found")
@@ -5985,14 +5997,14 @@ async def update_scout_photo(
 
         # Check if user is uploader or can edit location
         is_uploader = existing_photo.get("uploaded_by_user_id") == user_id
-        can_edit = await can_user_edit_location(supabase, user_id, existing_photo["location_id"])
+        can_edit = await can_user_edit_location(client, user_id, existing_photo["location_id"])
 
         if not is_uploader and not can_edit:
             raise HTTPException(status_code=403, detail="Access denied - cannot edit this photo")
 
         # If setting as primary, unset others first
         if photo.is_primary:
-            supabase.table("backlot_location_scout_photos").update({"is_primary": False}).eq("location_id", existing_photo["location_id"]).eq("is_primary", True).neq("id", photo_id).execute()
+            client.table("backlot_location_scout_photos").update({"is_primary": False}).eq("location_id", existing_photo["location_id"]).eq("is_primary", True).neq("id", photo_id).execute()
 
         # Build update data (only include non-None fields)
         update_data = {}
@@ -6001,7 +6013,7 @@ async def update_scout_photo(
                 update_data[field] = value
 
         if update_data:
-            result = supabase.table("backlot_location_scout_photos").update(update_data).eq("id", photo_id).execute()
+            result = client.table("backlot_location_scout_photos").update(update_data).eq("id", photo_id).execute()
             return {
                 "success": True,
                 "photo": result.data[0] if result.data else None
@@ -6026,11 +6038,11 @@ async def delete_scout_photo(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing photo
-        existing = supabase.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
+        existing = client.table("backlot_location_scout_photos").select("*").eq("id", photo_id).execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Scout photo not found")
@@ -6039,12 +6051,12 @@ async def delete_scout_photo(
 
         # Check if user is uploader or can edit location
         is_uploader = existing_photo.get("uploaded_by_user_id") == user_id
-        can_edit = await can_user_edit_location(supabase, user_id, existing_photo["location_id"])
+        can_edit = await can_user_edit_location(client, user_id, existing_photo["location_id"])
 
         if not is_uploader and not can_edit:
             raise HTTPException(status_code=403, detail="Access denied - cannot delete this photo")
 
-        supabase.table("backlot_location_scout_photos").delete().eq("id", photo_id).execute()
+        client.table("backlot_location_scout_photos").delete().eq("id", photo_id).execute()
 
         return {"success": True}
 
@@ -6066,15 +6078,15 @@ async def get_location_scout_summary(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify user can view this location
-    if not await can_user_view_location(supabase, user_id, location_id):
+    if not await can_user_view_location(client, user_id, location_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
         # Get all scout photos for this location
-        photos = supabase.table("backlot_location_scout_photos").select("*").eq("location_id", location_id).order("is_primary", desc=True).order("created_at", desc=True).execute()
+        photos = client.table("backlot_location_scout_photos").select("*").eq("location_id", location_id).order("is_primary", desc=True).order("created_at", desc=True).execute()
 
         if not photos.data:
             return {
@@ -6242,21 +6254,21 @@ async def get_project_scripts(
     """Get all scripts for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
-        result = supabase.table("backlot_scripts").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
+        result = client.table("backlot_scripts").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
         return {"scripts": result.data or []}
     except Exception as e:
         print(f"Error fetching scripts: {e}")
@@ -6272,16 +6284,16 @@ async def create_script(
     """Create a new script for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
         if member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -6298,7 +6310,7 @@ async def create_script(
             "created_by_user_id": user_id
         }
 
-        result = supabase.table("backlot_scripts").insert(script_data).execute()
+        result = client.table("backlot_scripts").insert(script_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create script")
@@ -6322,16 +6334,16 @@ async def import_script(
     """Import a script file (PDF or FDX) and parse scenes"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
         if member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
@@ -6417,10 +6429,10 @@ async def import_script(
 
         # Upload to storage
         storage_path = f"scripts/{project_id}/{uuid.uuid4()}.{ext}"
-        upload_result = supabase.storage.from_("backlot").upload(storage_path, content, {"content-type": file.content_type or "application/octet-stream"})
+        upload_result = client.storage.from_("backlot").upload(storage_path, content, {"content-type": file.content_type or "application/octet-stream"})
 
         # Get public URL
-        file_url = supabase.storage.from_("backlot").get_public_url(storage_path)
+        file_url = client.storage.from_("backlot").get_public_url(storage_path)
 
         # Create script record with text_content for the editor
         script_data = {
@@ -6440,7 +6452,7 @@ async def import_script(
             "text_content": text_content  # For the script editor
         }
 
-        script_result = supabase.table("backlot_scripts").insert(script_data).execute()
+        script_result = client.table("backlot_scripts").insert(script_data).execute()
 
         if not script_result.data:
             raise HTTPException(status_code=500, detail="Failed to create script record")
@@ -6453,7 +6465,7 @@ async def import_script(
                 scene_data["project_id"] = project_id
                 scene_data["script_id"] = script["id"]
 
-            supabase.table("backlot_scenes").insert(parsed_scenes).execute()
+            client.table("backlot_scenes").insert(parsed_scenes).execute()
 
         # Build response message
         text_extracted = bool(text_content)
@@ -6493,10 +6505,10 @@ async def get_script(
     """Get a single script with scene count"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        result = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Script not found")
@@ -6504,18 +6516,18 @@ async def get_script(
         script = result.data
 
         # Verify access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", script["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", script["project_id"]).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", script["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", script["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get scene count
-        scene_result = supabase.table("backlot_scenes").select("id", count="exact").eq("script_id", script_id).execute()
+        scene_result = client.table("backlot_scenes").select("id", count="exact").eq("script_id", script_id).execute()
         script["scene_count"] = scene_result.count or 0
 
         return {"script": script}
@@ -6535,20 +6547,20 @@ async def update_script(
     """Update a script"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        existing = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        existing = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit scripts")
 
@@ -6561,7 +6573,7 @@ async def update_script(
         if script.format:
             update_data["format"] = script.format
 
-        result = supabase.table("backlot_scripts").update(update_data).eq("id", script_id).execute()
+        result = client.table("backlot_scripts").update(update_data).eq("id", script_id).execute()
         return {"success": True, "script": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -6579,25 +6591,25 @@ async def delete_script(
     """Delete a script and all its scenes"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        existing = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        existing = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="Only admins can delete scripts")
 
         # Delete script (cascades to scenes and breakdown items)
-        supabase.table("backlot_scripts").delete().eq("id", script_id).execute()
+        client.table("backlot_scripts").delete().eq("id", script_id).execute()
         return {"success": True, "message": "Script deleted"}
 
     except HTTPException:
@@ -6636,30 +6648,30 @@ async def get_script_version_history(
     """Get the version history for a script"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script.data["project_id"]
 
         # Verify project access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Use database function to get version history
         try:
-            result = supabase.rpc("get_script_version_history", {"p_script_id": script_id}).execute()
+            result = client.rpc("get_script_version_history", {"p_script_id": script_id}).execute()
             versions = result.data or []
         except Exception as rpc_err:
             # Fallback: find root and traverse manually
@@ -6672,7 +6684,7 @@ async def get_script_version_history(
                 if current_id in visited:
                     break
                 visited.add(current_id)
-                current_script = supabase.table("backlot_scripts").select("id, parent_version_id").eq("id", current_id).single().execute()
+                current_script = client.table("backlot_scripts").select("id, parent_version_id").eq("id", current_id).single().execute()
                 if not current_script.data or not current_script.data.get("parent_version_id"):
                     break
                 current_id = current_script.data["parent_version_id"]
@@ -6680,7 +6692,7 @@ async def get_script_version_history(
             root_id = current_id
 
             # Get all versions descending from root
-            versions_result = supabase.table("backlot_scripts").select(
+            versions_result = client.table("backlot_scripts").select(
                 "id, version, version_number, color_code, is_current, is_locked, revision_notes, created_at, created_by_user_id, parent_version_id"
             ).eq("project_id", project_id).order("version_number").execute()
 
@@ -6717,11 +6729,11 @@ async def create_script_version(
     """Create a new version from an existing script"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get the source script
-        source_script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        source_script = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
         if not source_script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
@@ -6729,10 +6741,10 @@ async def create_script_version(
         project_id = source["project_id"]
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to create script versions")
 
@@ -6766,10 +6778,10 @@ async def create_script_version(
         }
 
         # Mark old versions as not current
-        supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+        client.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
 
         # Create new version
-        new_script_result = supabase.table("backlot_scripts").insert(new_script_data).execute()
+        new_script_result = client.table("backlot_scripts").insert(new_script_data).execute()
         if not new_script_result.data:
             raise HTTPException(status_code=500, detail="Failed to create new version")
 
@@ -6778,7 +6790,7 @@ async def create_script_version(
         # Optionally copy scenes to new version
         scenes_copied = 0
         if input_data.carry_over_scenes:
-            source_scenes = supabase.table("backlot_scenes").select("*").eq("script_id", script_id).execute()
+            source_scenes = client.table("backlot_scenes").select("*").eq("script_id", script_id).execute()
             if source_scenes.data:
                 for scene in source_scenes.data:
                     new_scene_data = {
@@ -6797,7 +6809,7 @@ async def create_script_version(
                         "coverage_status": scene.get("coverage_status", "not_scheduled"),
                         "is_omitted": scene.get("is_omitted", False)
                     }
-                    supabase.table("backlot_scenes").insert(new_scene_data).execute()
+                    client.table("backlot_scenes").insert(new_scene_data).execute()
                     scenes_copied += 1
 
         return {
@@ -6822,29 +6834,29 @@ async def set_current_script_version(
     """Set a script version as the current active version"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("project_id, is_locked").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("project_id, is_locked").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script.data["project_id"]
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to change script versions")
 
         # Mark all versions in this project as not current
-        supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+        client.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
 
         # Set this version as current
-        result = supabase.table("backlot_scripts").update({"is_current": True}).eq("id", script_id).execute()
+        result = client.table("backlot_scripts").update({"is_current": True}).eq("id", script_id).execute()
 
         return {"success": True, "script": result.data[0] if result.data else None}
 
@@ -6863,26 +6875,26 @@ async def lock_script_version(
     """Lock a script version to prevent editing"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script.data["project_id"]
 
         # Verify edit access (only owners/admins can lock)
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="Only admins can lock script versions")
 
         # Lock the version
-        result = supabase.table("backlot_scripts").update({
+        result = client.table("backlot_scripts").update({
             "is_locked": True,
             "locked_by_user_id": user_id,
             "locked_at": "now()"
@@ -6905,26 +6917,26 @@ async def unlock_script_version(
     """Unlock a script version to allow editing"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script.data["project_id"]
 
         # Verify edit access (only owners/admins can unlock)
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="Only admins can unlock script versions")
 
         # Unlock the version
-        result = supabase.table("backlot_scripts").update({
+        result = client.table("backlot_scripts").update({
             "is_locked": False,
             "locked_by_user_id": None,
             "locked_at": None
@@ -6948,11 +6960,11 @@ async def update_script_text(
     """Update the text content of a script (for the editor)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
@@ -6964,10 +6976,10 @@ async def update_script_text(
             raise HTTPException(status_code=403, detail="This script version is locked and cannot be edited")
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit scripts")
 
@@ -7006,15 +7018,15 @@ async def update_script_text(
             }
 
             # Mark old versions as not current
-            supabase.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
+            client.table("backlot_scripts").update({"is_current": False}).eq("project_id", project_id).execute()
 
             # Create new version
-            result = supabase.table("backlot_scripts").insert(new_script_data).execute()
+            result = client.table("backlot_scripts").insert(new_script_data).execute()
             new_script_id = result.data[0]["id"] if result.data else None
 
             # Sync scenes to the project from the parsed script
             if new_script_id and parsed_scenes:
-                await sync_scenes_from_script(supabase, project_id, new_script_id, parsed_scenes)
+                await sync_scenes_from_script(client, project_id, new_script_id, parsed_scenes)
 
             return {
                 "success": True,
@@ -7025,14 +7037,14 @@ async def update_script_text(
             }
         else:
             # Update text in place
-            result = supabase.table("backlot_scripts").update({
+            result = client.table("backlot_scripts").update({
                 "text_content": input_data.text_content,
                 "total_scenes": scene_count
             }).eq("id", script_id).execute()
 
             # Sync scenes to the project from the parsed script
             if parsed_scenes:
-                await sync_scenes_from_script(supabase, project_id, script_id, parsed_scenes)
+                await sync_scenes_from_script(client, project_id, script_id, parsed_scenes)
 
             return {
                 "success": True,
@@ -7057,11 +7069,11 @@ async def extract_text_from_script_pdf(
     """Extract text content from a script's PDF file for editing"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get script and verify access
-        script = supabase.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        script = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
@@ -7069,13 +7081,13 @@ async def extract_text_from_script_pdf(
         project_id = script_data["project_id"]
 
         # Verify project edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
                 raise HTTPException(status_code=403, detail="Edit access required")
 
@@ -7125,7 +7137,7 @@ async def extract_text_from_script_pdf(
             raise HTTPException(status_code=500, detail=f"Failed to extract text from PDF: {str(pdf_err)}")
 
         # Update the script with extracted text
-        result = supabase.table("backlot_scripts").update({
+        result = client.table("backlot_scripts").update({
             "text_content": text_content,
             "total_pages": page_count
         }).eq("id", script_id).execute()
@@ -7159,21 +7171,21 @@ async def get_project_scenes(
     """Get all scenes for a project, optionally filtered by script"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
-        query = supabase.table("backlot_scenes").select("*").eq("project_id", project_id).order("sequence")
+        query = client.table("backlot_scenes").select("*").eq("project_id", project_id).order("sequence")
 
         if script_id:
             query = query.eq("script_id", script_id)
@@ -7184,7 +7196,7 @@ async def get_project_scenes(
         # Optionally include breakdown summary for each scene
         if include_breakdown and scenes:
             for scene in scenes:
-                breakdown_result = supabase.table("backlot_scene_breakdown_items").select("type, label").eq("scene_id", scene["id"]).execute()
+                breakdown_result = client.table("backlot_scene_breakdown_items").select("type, label").eq("scene_id", scene["id"]).execute()
 
                 # Group by type
                 breakdown_summary = {}
@@ -7212,22 +7224,22 @@ async def create_scene(
     """Create a new scene"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to create scenes")
 
     try:
         # Get next sequence number
-        seq_result = supabase.table("backlot_scenes").select("sequence").eq("project_id", project_id).order("sequence", desc=True).limit(1).execute()
+        seq_result = client.table("backlot_scenes").select("sequence").eq("project_id", project_id).order("sequence", desc=True).limit(1).execute()
         next_sequence = (seq_result.data[0]["sequence"] + 1) if seq_result.data else 1
 
         scene_data = {
@@ -7247,7 +7259,7 @@ async def create_scene(
             "sequence": next_sequence
         }
 
-        result = supabase.table("backlot_scenes").insert(scene_data).execute()
+        result = client.table("backlot_scenes").insert(scene_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create scene")
@@ -7270,10 +7282,10 @@ async def get_scene(
     """Get a single scene with optional breakdown items"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scenes").select("*").eq("id", scene_id).single().execute()
+        result = client.table("backlot_scenes").select("*").eq("id", scene_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Scene not found")
@@ -7281,24 +7293,24 @@ async def get_scene(
         scene = result.data
 
         # Verify access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", scene["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", scene["project_id"]).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", scene["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", scene["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get breakdown items
         if include_breakdown:
-            breakdown_result = supabase.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
+            breakdown_result = client.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
             scene["breakdown_items"] = breakdown_result.data or []
 
         # Get linked location if any
         if scene.get("location_id"):
-            loc_result = supabase.table("backlot_locations").select("id, name, address, city, state").eq("id", scene["location_id"]).execute()
+            loc_result = client.table("backlot_locations").select("id, name, address, city, state").eq("id", scene["location_id"]).execute()
             scene["location"] = loc_result.data[0] if loc_result.data else None
 
         return {"scene": scene}
@@ -7319,20 +7331,20 @@ async def update_scene(
     """Update a scene"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scene and verify access
-        existing = supabase.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
+        existing = client.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Scene not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit scenes")
 
@@ -7351,7 +7363,7 @@ async def update_scene(
             "ad_notes": scene.ad_notes
         }
 
-        result = supabase.table("backlot_scenes").update(update_data).eq("id", scene_id).execute()
+        result = client.table("backlot_scenes").update(update_data).eq("id", scene_id).execute()
         return {"success": True, "scene": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -7370,20 +7382,20 @@ async def update_scene_coverage(
     """Update scene coverage status (scheduled, shot, pickup needed)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scene and verify access
-        existing = supabase.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
+        existing = client.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Scene not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to update coverage")
 
@@ -7402,7 +7414,7 @@ async def update_scene_coverage(
             update_data["shot_day_id"] = coverage.shot_day_id
 
         if update_data:
-            result = supabase.table("backlot_scenes").update(update_data).eq("id", scene_id).execute()
+            result = client.table("backlot_scenes").update(update_data).eq("id", scene_id).execute()
             return {"success": True, "scene": result.data[0] if result.data else None}
 
         return {"success": True, "message": "No changes made"}
@@ -7423,22 +7435,22 @@ async def reorder_scenes(
     """Reorder scenes by providing new sequence"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to reorder scenes")
 
     try:
         for idx, scene_id in enumerate(scene_ids):
-            supabase.table("backlot_scenes").update({"sequence": idx + 1}).eq("id", scene_id).eq("project_id", project_id).execute()
+            client.table("backlot_scenes").update({"sequence": idx + 1}).eq("id", scene_id).eq("project_id", project_id).execute()
 
         return {"success": True, "message": f"Reordered {len(scene_ids)} scenes"}
 
@@ -7455,25 +7467,25 @@ async def delete_scene(
     """Delete a scene and its breakdown items"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scene and verify access
-        existing = supabase.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
+        existing = client.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Scene not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete scenes")
 
         # Delete scene (cascades to breakdown items)
-        supabase.table("backlot_scenes").delete().eq("id", scene_id).execute()
+        client.table("backlot_scenes").delete().eq("id", scene_id).execute()
         return {"success": True, "message": "Scene deleted"}
 
     except HTTPException:
@@ -7495,22 +7507,22 @@ async def get_scene_breakdown(
     """Get all breakdown items for a scene"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify access via scene
-        scene = supabase.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
+        scene = client.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
         if not scene.data:
             raise HTTPException(status_code=404, detail="Scene not found")
 
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", scene.data["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", scene.data["project_id"]).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", scene.data["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", scene.data["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
-        result = supabase.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
+        result = client.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
 
         # Group by type
         grouped = {}
@@ -7538,20 +7550,20 @@ async def create_breakdown_item(
     """Create a breakdown item for a scene"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify access via scene
-        scene = supabase.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
+        scene = client.table("backlot_scenes").select("project_id").eq("id", scene_id).single().execute()
         if not scene.data:
             raise HTTPException(status_code=404, detail="Scene not found")
 
         project_id = scene.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to add breakdown items")
 
@@ -7567,7 +7579,7 @@ async def create_breakdown_item(
             "stripboard_day": item.stripboard_day
         }
 
-        result = supabase.table("backlot_scene_breakdown_items").insert(item_data).execute()
+        result = client.table("backlot_scene_breakdown_items").insert(item_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create breakdown item")
@@ -7590,21 +7602,21 @@ async def update_breakdown_item(
     """Update a breakdown item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get item and verify access
-        existing = supabase.table("backlot_scene_breakdown_items").select("scene_id").eq("id", item_id).single().execute()
+        existing = client.table("backlot_scene_breakdown_items").select("scene_id").eq("id", item_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Breakdown item not found")
 
-        scene = supabase.table("backlot_scenes").select("project_id").eq("id", existing.data["scene_id"]).single().execute()
+        scene = client.table("backlot_scenes").select("project_id").eq("id", existing.data["scene_id"]).single().execute()
         project_id = scene.data["project_id"]
 
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit breakdown items")
 
@@ -7619,7 +7631,7 @@ async def update_breakdown_item(
             "stripboard_day": item.stripboard_day
         }
 
-        result = supabase.table("backlot_scene_breakdown_items").update(update_data).eq("id", item_id).execute()
+        result = client.table("backlot_scene_breakdown_items").update(update_data).eq("id", item_id).execute()
         return {"success": True, "item": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -7637,25 +7649,25 @@ async def delete_breakdown_item(
     """Delete a breakdown item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get item and verify access
-        existing = supabase.table("backlot_scene_breakdown_items").select("scene_id").eq("id", item_id).single().execute()
+        existing = client.table("backlot_scene_breakdown_items").select("scene_id").eq("id", item_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Breakdown item not found")
 
-        scene = supabase.table("backlot_scenes").select("project_id").eq("id", existing.data["scene_id"]).single().execute()
+        scene = client.table("backlot_scenes").select("project_id").eq("id", existing.data["scene_id"]).single().execute()
         project_id = scene.data["project_id"]
 
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete breakdown items")
 
-        supabase.table("backlot_scene_breakdown_items").delete().eq("id", item_id).execute()
+        client.table("backlot_scene_breakdown_items").delete().eq("id", item_id).execute()
         return {"success": True, "message": "Breakdown item deleted"}
 
     except HTTPException:
@@ -7677,22 +7689,22 @@ async def get_project_coverage(
     """Get scene coverage statistics for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all scenes
-        scenes = supabase.table("backlot_scenes").select("id, scene_number, slugline, page_length, is_scheduled, is_shot, needs_pickup").eq("project_id", project_id).execute()
+        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, page_length, is_scheduled, is_shot, needs_pickup").eq("project_id", project_id).execute()
 
         all_scenes = scenes.data or []
 
@@ -7733,22 +7745,22 @@ async def get_location_needs(
     """Get location needs grouped by location hint"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all scenes with location info
-        scenes = supabase.table("backlot_scenes").select("id, scene_number, slugline, location_hint, int_ext, day_night, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
+        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, location_hint, int_ext, day_night, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
 
         # Group by location_hint
         location_groups = {}
@@ -7782,7 +7794,7 @@ async def get_location_needs(
 
             # Get linked location name if any
             if group["linked_location_id"]:
-                loc = supabase.table("backlot_locations").select("name, address, city").eq("id", group["linked_location_id"]).execute()
+                loc = client.table("backlot_locations").select("name, address, city").eq("id", group["linked_location_id"]).execute()
                 if loc.data:
                     group["linked_location"] = loc.data[0]
 
@@ -7812,16 +7824,16 @@ async def generate_tasks_from_breakdown(
     """Generate departmental tasks from breakdown items"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to generate tasks")
 
@@ -7847,7 +7859,7 @@ async def generate_tasks_from_breakdown(
 
     try:
         # Get scenes (all or filtered)
-        query = supabase.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id)
+        query = client.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id)
         if scene_ids:
             query = query.in_("id", scene_ids)
         scenes = query.execute()
@@ -7859,7 +7871,7 @@ async def generate_tasks_from_breakdown(
         scene_id_list = list(scene_map.keys())
 
         # Get breakdown items
-        breakdown_query = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list)
+        breakdown_query = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list)
         if not regenerate:
             breakdown_query = breakdown_query.eq("task_generated", False)
 
@@ -7887,11 +7899,11 @@ async def generate_tasks_from_breakdown(
                 "created_by_user_id": user_id
             }
 
-            task_result = supabase.table("backlot_tasks").insert(task_data).execute()
+            task_result = client.table("backlot_tasks").insert(task_data).execute()
 
             if task_result.data:
                 # Mark breakdown item as having task generated
-                supabase.table("backlot_scene_breakdown_items").update({
+                client.table("backlot_scene_breakdown_items").update({
                     "task_generated": True,
                     "task_id": task_result.data[0]["id"]
                 }).eq("id", item["id"]).execute()
@@ -7922,16 +7934,16 @@ async def generate_budget_suggestions(
     """Generate budget suggestions from breakdown items"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to generate budget suggestions")
 
@@ -7952,7 +7964,7 @@ async def generate_budget_suggestions(
 
     try:
         # Get scenes
-        query = supabase.table("backlot_scenes").select("id, scene_number").eq("project_id", project_id)
+        query = client.table("backlot_scenes").select("id, scene_number").eq("project_id", project_id)
         if scene_ids:
             query = query.in_("id", scene_ids)
         scenes = query.execute()
@@ -7964,7 +7976,7 @@ async def generate_budget_suggestions(
         scene_id_list = list(scene_map.keys())
 
         # Get breakdown items that map to budget items
-        items = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list).in_("type", list(type_mapping.keys())).execute()
+        items = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list).in_("type", list(type_mapping.keys())).execute()
 
         suggestions_created = 0
         for item in items.data or []:
@@ -7974,7 +7986,7 @@ async def generate_budget_suggestions(
                 continue
 
             # Check if suggestion already exists
-            existing = supabase.table("backlot_budget_suggestions").select("id").eq("breakdown_item_id", item["id"]).execute()
+            existing = client.table("backlot_budget_suggestions").select("id").eq("breakdown_item_id", item["id"]).execute()
             if existing.data:
                 continue
 
@@ -7990,7 +8002,7 @@ async def generate_budget_suggestions(
                 "created_by_user_id": user_id
             }
 
-            supabase.table("backlot_budget_suggestions").insert(suggestion_data).execute()
+            client.table("backlot_budget_suggestions").insert(suggestion_data).execute()
             suggestions_created += 1
 
         return {
@@ -8013,21 +8025,21 @@ async def get_budget_suggestions(
     """Get budget suggestions for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
-        query = supabase.table("backlot_budget_suggestions").select("*").eq("project_id", project_id).order("created_at", desc=True)
+        query = client.table("backlot_budget_suggestions").select("*").eq("project_id", project_id).order("created_at", desc=True)
         if status:
             query = query.eq("status", status)
 
@@ -8049,20 +8061,20 @@ async def update_budget_suggestion(
     """Update a budget suggestion status"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get suggestion and verify access
-        existing = supabase.table("backlot_budget_suggestions").select("project_id").eq("id", suggestion_id).single().execute()
+        existing = client.table("backlot_budget_suggestions").select("project_id").eq("id", suggestion_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Suggestion not found")
 
         project_id = existing.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to update suggestions")
 
@@ -8070,7 +8082,7 @@ async def update_budget_suggestion(
         if linked_budget_line_id:
             update_data["linked_budget_line_id"] = linked_budget_line_id
 
-        result = supabase.table("backlot_budget_suggestions").update(update_data).eq("id", suggestion_id).execute()
+        result = client.table("backlot_budget_suggestions").update(update_data).eq("id", suggestion_id).execute()
         return {"success": True, "suggestion": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -8092,29 +8104,29 @@ async def get_call_sheet_linked_scenes(
     """Get scenes linked to a call sheet"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify access via call sheet
-        cs = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
         if not cs.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", cs.data["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", cs.data["project_id"]).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", cs.data["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", cs.data["project_id"]).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get linked scenes with full scene data
-        links = supabase.table("backlot_call_sheet_scene_links").select("*").eq("call_sheet_id", call_sheet_id).order("sequence").execute()
+        links = client.table("backlot_call_sheet_scene_links").select("*").eq("call_sheet_id", call_sheet_id).order("sequence").execute()
 
         if not links.data:
             return {"linked_scenes": [], "total_pages": 0}
 
         scene_ids = [l["scene_id"] for l in links.data]
-        scenes = supabase.table("backlot_scenes").select("*").in_("id", scene_ids).execute()
+        scenes = client.table("backlot_scenes").select("*").in_("id", scene_ids).execute()
         scene_map = {s["id"]: s for s in scenes.data or []}
 
         result = []
@@ -8146,30 +8158,30 @@ async def link_scene_to_call_sheet(
     """Link a scene to a call sheet"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify access
-        cs = supabase.table("backlot_call_sheets").select("project_id, production_day_id").eq("id", call_sheet_id).single().execute()
+        cs = client.table("backlot_call_sheets").select("project_id, production_day_id").eq("id", call_sheet_id).single().execute()
         if not cs.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_id = cs.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to link scenes")
 
         # Check if already linked
-        existing = supabase.table("backlot_call_sheet_scene_links").select("id").eq("call_sheet_id", call_sheet_id).eq("scene_id", link.scene_id).execute()
+        existing = client.table("backlot_call_sheet_scene_links").select("id").eq("call_sheet_id", call_sheet_id).eq("scene_id", link.scene_id).execute()
         if existing.data:
             return {"success": True, "message": "Scene already linked", "link": existing.data[0]}
 
         # Get next sequence
-        seq_result = supabase.table("backlot_call_sheet_scene_links").select("sequence").eq("call_sheet_id", call_sheet_id).order("sequence", desc=True).limit(1).execute()
+        seq_result = client.table("backlot_call_sheet_scene_links").select("sequence").eq("call_sheet_id", call_sheet_id).order("sequence", desc=True).limit(1).execute()
         next_seq = (seq_result.data[0]["sequence"] + 1) if seq_result.data else 1
 
         link_data = {
@@ -8180,10 +8192,10 @@ async def link_scene_to_call_sheet(
             "notes": link.notes
         }
 
-        result = supabase.table("backlot_call_sheet_scene_links").insert(link_data).execute()
+        result = client.table("backlot_call_sheet_scene_links").insert(link_data).execute()
 
         # Mark scene as scheduled
-        supabase.table("backlot_scenes").update({
+        client.table("backlot_scenes").update({
             "is_scheduled": True,
             "scheduled_day_id": cs.data.get("production_day_id")
         }).eq("id", link.scene_id).execute()
@@ -8206,31 +8218,31 @@ async def unlink_scene_from_call_sheet(
     """Unlink a scene from a call sheet"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify access
-        cs = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
         if not cs.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_id = cs.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to unlink scenes")
 
         # Delete link
-        supabase.table("backlot_call_sheet_scene_links").delete().eq("call_sheet_id", call_sheet_id).eq("scene_id", scene_id).execute()
+        client.table("backlot_call_sheet_scene_links").delete().eq("call_sheet_id", call_sheet_id).eq("scene_id", scene_id).execute()
 
         # Check if scene is linked to any other call sheets
-        other_links = supabase.table("backlot_call_sheet_scene_links").select("id").eq("scene_id", scene_id).execute()
+        other_links = client.table("backlot_call_sheet_scene_links").select("id").eq("scene_id", scene_id).execute()
         if not other_links.data:
             # Unmark scene as scheduled
-            supabase.table("backlot_scenes").update({
+            client.table("backlot_scenes").update({
                 "is_scheduled": False,
                 "scheduled_day_id": None
             }).eq("id", scene_id).execute()
@@ -8252,11 +8264,11 @@ async def delete_call_sheet_scene_link(
     """Delete a call sheet scene link by its ID"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get the link to find associated call sheet and scene
-        link = supabase.table("backlot_call_sheet_scene_links").select("*").eq("id", link_id).single().execute()
+        link = client.table("backlot_call_sheet_scene_links").select("*").eq("id", link_id).single().execute()
         if not link.data:
             raise HTTPException(status_code=404, detail="Scene link not found")
 
@@ -8264,27 +8276,27 @@ async def delete_call_sheet_scene_link(
         scene_id = link.data["scene_id"]
 
         # Verify access via call sheet
-        cs = supabase.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
         if not cs.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_id = cs.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete scene links")
 
         # Delete link
-        supabase.table("backlot_call_sheet_scene_links").delete().eq("id", link_id).execute()
+        client.table("backlot_call_sheet_scene_links").delete().eq("id", link_id).execute()
 
         # Check if scene is linked to any other call sheets
-        other_links = supabase.table("backlot_call_sheet_scene_links").select("id").eq("scene_id", scene_id).execute()
+        other_links = client.table("backlot_call_sheet_scene_links").select("id").eq("scene_id", scene_id).execute()
         if not other_links.data:
             # Unmark scene as scheduled
-            supabase.table("backlot_scenes").update({
+            client.table("backlot_scenes").update({
                 "is_scheduled": False,
                 "scheduled_day_id": None
             }).eq("id", scene_id).execute()
@@ -8330,29 +8342,29 @@ async def get_script_page_notes(
     """Get all notes for a script, optionally filtered by page, type, or resolved status"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script_result.data["project_id"]
 
         # Verify project access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Build query - don't use relationship, just select the base columns
-        query = supabase.table("backlot_script_page_notes").select("*").eq("script_id", script_id)
+        query = client.table("backlot_script_page_notes").select("*").eq("script_id", script_id)
 
         if page_number is not None:
             query = query.eq("page_number", page_number)
@@ -8381,11 +8393,11 @@ async def get_script_notes_summary(
     """Get summary of notes per page for a script"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access - page_count might not exist, use total_pages instead
-        script_result = supabase.table("backlot_scripts").select("project_id, total_pages").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id, total_pages").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
@@ -8393,18 +8405,18 @@ async def get_script_notes_summary(
         page_count = script_result.data.get("total_pages")
 
         # Verify project access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get notes grouped by page
-        notes_result = supabase.table("backlot_script_page_notes").select("page_number, note_type, resolved").eq("script_id", script_id).execute()
+        notes_result = client.table("backlot_script_page_notes").select("page_number, note_type, resolved").eq("script_id", script_id).execute()
 
         # Build summary
         page_summary = {}
@@ -8444,24 +8456,24 @@ async def create_script_page_note(
     """Create a new note on a script page"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script_result.data["project_id"]
 
         # Verify project membership (any member can add notes)
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8484,7 +8496,7 @@ async def create_script_page_note(
             "resolved": False
         }
 
-        result = supabase.table("backlot_script_page_notes").insert(note_data).execute()
+        result = client.table("backlot_script_page_notes").insert(note_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create note")
@@ -8494,7 +8506,7 @@ async def create_script_page_note(
 
         # Try to fetch author profile
         try:
-            author_profile = supabase.table("profiles").select("id, full_name, avatar_url").eq("id", user_id).single().execute()
+            author_profile = client.table("profiles").select("id, full_name, avatar_url").eq("id", user_id).single().execute()
             if author_profile.data:
                 created_note["author"] = author_profile.data
         except Exception:
@@ -8519,11 +8531,11 @@ async def update_script_page_note(
     """Update a script page note"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get note and verify ownership/permissions
-        note_result = supabase.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+        note_result = client.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
@@ -8535,12 +8547,12 @@ async def update_script_page_note(
         # Check if user can edit (author or editor role)
         can_edit = is_author
         if not can_edit:
-            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
             is_owner = project_response.data[0]["owner_id"] == user_id
             if is_owner:
                 can_edit = True
             else:
-                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
                 if member_response.data and member_response.data[0]["role"] in ["owner", "admin", "editor"]:
                     can_edit = True
 
@@ -8574,16 +8586,16 @@ async def update_script_page_note(
         if not update_data:
             raise HTTPException(status_code=400, detail="No update data provided")
 
-        result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
+        result = client.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
 
         # Fetch updated note
-        updated_note = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).single().execute()
+        updated_note = client.table("backlot_script_page_notes").select("*").eq("id", note_id).single().execute()
         note_data = updated_note.data
 
         # Try to fetch author profile separately
         if note_data and note_data.get("author_user_id"):
             try:
-                author_profile = supabase.table("profiles").select("id, full_name, avatar_url").eq("id", note_data["author_user_id"]).single().execute()
+                author_profile = client.table("profiles").select("id, full_name, avatar_url").eq("id", note_data["author_user_id"]).single().execute()
                 if author_profile.data:
                     note_data["author"] = author_profile.data
             except Exception:
@@ -8607,11 +8619,11 @@ async def delete_script_page_note(
     """Delete a script page note"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get note and verify ownership/permissions
-        note_result = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
+        note_result = client.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
@@ -8619,7 +8631,7 @@ async def delete_script_page_note(
         note_data = note_result.data
 
         # Fetch script to get project_id
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
         project_id = script_result.data["project_id"]
@@ -8629,12 +8641,12 @@ async def delete_script_page_note(
         # Check if user can delete (author or editor role)
         can_delete = is_author
         if not can_delete:
-            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
             is_owner = project_response.data[0]["owner_id"] == user_id
             if is_owner:
                 can_delete = True
             else:
-                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
                 if member_response.data and member_response.data[0]["role"] in ["owner", "admin"]:
                     can_delete = True
 
@@ -8642,7 +8654,7 @@ async def delete_script_page_note(
             raise HTTPException(status_code=403, detail="You don't have permission to delete this note")
 
         # Delete note
-        supabase.table("backlot_script_page_notes").delete().eq("id", note_id).execute()
+        client.table("backlot_script_page_notes").delete().eq("id", note_id).execute()
 
         return {"success": True, "message": "Note deleted"}
 
@@ -8668,26 +8680,26 @@ async def toggle_note_resolved(
     """Toggle the resolved status of a note"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get note and verify access
-        note_result = supabase.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
+        note_result = client.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         # Fetch script to get project_id
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
         project_id = script_result.data["project_id"]
 
         # Any project member can resolve/unresolve
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8700,7 +8712,7 @@ async def toggle_note_resolved(
             update_data["resolved_at"] = None
             update_data["resolved_by_user_id"] = None
 
-        result = supabase.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
+        result = client.table("backlot_script_page_notes").update(update_data).eq("id", note_id).execute()
 
         return {"success": True, "resolved": body.resolved}
 
@@ -8753,26 +8765,26 @@ async def get_script_highlights(
     """Get highlights for a script with optional filtering"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script_result.data["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Build query - don't use nested relationships that don't exist
-        query = supabase.table("backlot_script_highlight_breakdowns").select("*").eq("script_id", script_id)
+        query = client.table("backlot_script_highlight_breakdowns").select("*").eq("script_id", script_id)
 
         if page_number is not None:
             query = query.eq("page_number", page_number)
@@ -8802,26 +8814,26 @@ async def get_script_highlight_summary(
     """Get summary of highlights by category"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script_result.data["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get all highlights for this script
-        result = supabase.table("backlot_script_highlight_breakdowns").select(
+        result = client.table("backlot_script_highlight_breakdowns").select(
             "category, status, suggested_label"
         ).eq("script_id", script_id).execute()
 
@@ -8869,21 +8881,21 @@ async def create_script_highlight(
     """Create a new highlight (text selection for breakdown)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify script access and get project_id
-        script_result = supabase.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
         project_id = script_result.data["project_id"]
 
         # Check project membership - need edit rights
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
             role = member_response.data[0]["role"]
@@ -8935,7 +8947,7 @@ async def create_script_highlight(
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-        result = supabase.table("backlot_script_highlight_breakdowns").insert(highlight_data).execute()
+        result = client.table("backlot_script_highlight_breakdowns").insert(highlight_data).execute()
 
         return {"success": True, "highlight": result.data[0] if result.data else highlight_data}
 
@@ -8956,11 +8968,11 @@ async def update_script_highlight(
     """Update a highlight"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify highlight exists and access
-        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
@@ -8970,10 +8982,10 @@ async def update_script_highlight(
         project_id = highlight_result.data["backlot_scripts"]["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
             role = member_response.data[0]["role"]
@@ -8995,7 +9007,7 @@ async def update_script_highlight(
         if input.status is not None:
             update_data["status"] = input.status
 
-        result = supabase.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
+        result = client.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
 
         return {"success": True, "highlight": result.data[0] if result.data else None}
 
@@ -9016,11 +9028,11 @@ async def confirm_script_highlight(
     """Confirm a highlight and optionally create a breakdown item from it"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify highlight exists and access
-        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
@@ -9031,10 +9043,10 @@ async def confirm_script_highlight(
         project_id = highlight["backlot_scripts"]["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -9051,7 +9063,7 @@ async def confirm_script_highlight(
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            breakdown_result = supabase.table("backlot_scene_breakdown_items").insert(breakdown_data).execute()
+            breakdown_result = client.table("backlot_scene_breakdown_items").insert(breakdown_data).execute()
             if breakdown_result.data:
                 breakdown_item_id = breakdown_result.data[0]["id"]
 
@@ -9063,7 +9075,7 @@ async def confirm_script_highlight(
         if breakdown_item_id:
             update_data["breakdown_item_id"] = breakdown_item_id
 
-        supabase.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
+        client.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
 
         return {
             "success": True,
@@ -9087,11 +9099,11 @@ async def reject_script_highlight(
     """Reject/dismiss a highlight"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify highlight exists and access
-        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
@@ -9101,15 +9113,15 @@ async def reject_script_highlight(
         project_id = highlight_result.data["backlot_scripts"]["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Update highlight status
-        supabase.table("backlot_script_highlight_breakdowns").update({
+        client.table("backlot_script_highlight_breakdowns").update({
             "status": "rejected",
             "updated_at": datetime.utcnow().isoformat(),
         }).eq("id", highlight_id).execute()
@@ -9132,11 +9144,11 @@ async def delete_script_highlight(
     """Delete a highlight"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify highlight exists and access
-        highlight_result = supabase.table("backlot_script_highlight_breakdowns").select(
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
@@ -9146,10 +9158,10 @@ async def delete_script_highlight(
         project_id = highlight_result.data["backlot_scripts"]["project_id"]
 
         # Check project membership
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
             role = member_response.data[0]["role"]
@@ -9157,7 +9169,7 @@ async def delete_script_highlight(
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
 
         # Delete highlight
-        supabase.table("backlot_script_highlight_breakdowns").delete().eq("id", highlight_id).execute()
+        client.table("backlot_script_highlight_breakdowns").delete().eq("id", highlight_id).execute()
 
         return {"success": True, "message": "Highlight deleted"}
 
@@ -9240,10 +9252,10 @@ class BulkAvailabilityInput(BaseModel):
 # Helper: Check Order Membership
 # =====================================================
 
-async def check_is_order_member(supabase, user_id: str) -> bool:
+async def check_is_order_member(client, user_id: str) -> bool:
     """Check if a user is an active Order member"""
     try:
-        result = supabase.table("order_member_profiles").select("status").eq("user_id", user_id).execute()
+        result = client.table("order_member_profiles").select("status").eq("user_id", user_id).execute()
         if result.data:
             return result.data[0]["status"] in ("active", "probationary")
         return False
@@ -9251,27 +9263,27 @@ async def check_is_order_member(supabase, user_id: str) -> bool:
         return False
 
 
-async def get_user_profile_snapshot(supabase, user_id: str) -> Dict[str, Any]:
+async def get_user_profile_snapshot(client, user_id: str) -> Dict[str, Any]:
     """Get a snapshot of user profile for application"""
     try:
         # Get base profile
-        profile_result = supabase.table("profiles").select("full_name, username, avatar_url").eq("id", user_id).execute()
+        profile_result = client.table("profiles").select("full_name, username, avatar_url").eq("id", user_id).execute()
         profile = profile_result.data[0] if profile_result.data else {}
 
         # Get filmmaker profile if exists
-        filmmaker_result = supabase.table("filmmaker_profiles").select(
+        filmmaker_result = client.table("filmmaker_profiles").select(
             "department, location, portfolio_url, reel_url"
         ).eq("user_id", user_id).execute()
         filmmaker = filmmaker_result.data[0] if filmmaker_result.data else {}
 
         # Get order profile if exists
-        order_result = supabase.table("order_member_profiles").select(
+        order_result = client.table("order_member_profiles").select(
             "primary_track, city, portfolio_url, years_experience, status"
         ).eq("user_id", user_id).execute()
         order_profile = order_result.data[0] if order_result.data else {}
 
         # Get recent credits count
-        credits_result = supabase.table("backlot_project_credits").select("id").eq("user_id", user_id).limit(10).execute()
+        credits_result = client.table("backlot_project_credits").select("id").eq("user_id", user_id).limit(10).execute()
         credits_count = len(credits_result.data) if credits_result.data else 0
 
         return {
@@ -9306,21 +9318,21 @@ async def get_project_roles(
     """Get all roles for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
-        query = supabase.table("backlot_project_roles").select("*").eq("project_id", project_id).order("created_at", desc=True)
+        query = client.table("backlot_project_roles").select("*").eq("project_id", project_id).order("created_at", desc=True)
 
         if type:
             query = query.eq("type", type)
@@ -9333,7 +9345,7 @@ async def get_project_roles(
         # Optionally include application counts
         if include_applications and roles:
             for role in roles:
-                app_result = supabase.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).execute()
+                app_result = client.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).execute()
                 apps = app_result.data or []
                 role["application_count"] = len(apps)
                 role["shortlisted_count"] = len([a for a in apps if a["status"] == "shortlisted"])
@@ -9342,7 +9354,7 @@ async def get_project_roles(
         # Get booked user info if any
         for role in roles:
             if role.get("booked_user_id"):
-                user_result = supabase.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
+                user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
                 role["booked_user"] = user_result.data[0] if user_result.data else None
 
         return {"success": True, "roles": roles, "count": len(roles)}
@@ -9361,16 +9373,16 @@ async def create_project_role(
     """Create a new role posting for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to create roles")
 
@@ -9403,7 +9415,7 @@ async def create_project_role(
             "max_applications": role_input.max_applications,
         }
 
-        result = supabase.table("backlot_project_roles").insert(role_data).execute()
+        result = client.table("backlot_project_roles").insert(role_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create role")
@@ -9426,10 +9438,10 @@ async def get_role(
     """Get a single role with optional applications"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+        result = client.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Role not found")
@@ -9437,7 +9449,7 @@ async def get_role(
         role = result.data
 
         # Check access
-        project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", role["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id, title").eq("id", role["project_id"]).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
@@ -9445,12 +9457,12 @@ async def get_role(
         is_owner = project["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", user_id).execute()
             is_member = bool(member_response.data)
 
             # Check if role is Order-only and user is not an Order member
             if role["is_order_only"] and not is_member:
-                is_order_member = await check_is_order_member(supabase, user_id)
+                is_order_member = await check_is_order_member(client, user_id)
                 if not is_order_member:
                     raise HTTPException(status_code=403, detail="This role is only visible to Order members")
             elif role["status"] != "open" and not is_member:
@@ -9460,12 +9472,12 @@ async def get_role(
 
         # Get booked user info
         if role.get("booked_user_id"):
-            user_result = supabase.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
+            user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", role["booked_user_id"]).execute()
             role["booked_user"] = user_result.data[0] if user_result.data else None
 
         # Include applications for project admins
         if include_applications and (is_owner or (member_response.data and member_response.data[0]["role"] in ["owner", "admin", "editor"])):
-            app_result = supabase.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True).execute()
+            app_result = client.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True).execute()
             role["applications"] = app_result.data or []
 
         return {"success": True, "role": role}
@@ -9486,22 +9498,22 @@ async def update_role(
     """Update a role"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing role
-        existing = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        existing = client.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         project_id = existing.data["project_id"]
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit roles")
 
@@ -9532,7 +9544,7 @@ async def update_role(
             "updated_at": datetime.utcnow().isoformat(),
         }
 
-        result = supabase.table("backlot_project_roles").update(update_data).eq("id", role_id).execute()
+        result = client.table("backlot_project_roles").update(update_data).eq("id", role_id).execute()
 
         return {"success": True, "role": result.data[0] if result.data else None, "message": "Role updated"}
 
@@ -9551,26 +9563,26 @@ async def delete_role(
     """Delete a role"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing role
-        existing = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        existing = client.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         project_id = existing.data["project_id"]
 
         # Verify delete access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete roles")
 
-        supabase.table("backlot_project_roles").delete().eq("id", role_id).execute()
+        client.table("backlot_project_roles").delete().eq("id", role_id).execute()
 
         return {"success": True, "message": "Role deleted"}
 
@@ -9590,27 +9602,27 @@ async def book_role(
     """Book a user for a role (from shortlist or directly)"""
     user = await get_current_user_from_token(authorization)
     current_user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get role
-        role_result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+        role_result = client.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
         if not role_result.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         role = role_result.data
 
         # Verify admin access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", role["project_id"]).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", role["project_id"]).execute()
         is_owner = project_response.data[0]["owner_id"] == current_user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", current_user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", role["project_id"]).eq("user_id", current_user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to book roles")
 
         # Update role
-        supabase.table("backlot_project_roles").update({
+        client.table("backlot_project_roles").update({
             "status": "booked",
             "booked_user_id": user_id_to_book,
             "booked_at": datetime.utcnow().isoformat(),
@@ -9618,7 +9630,7 @@ async def book_role(
         }).eq("id", role_id).execute()
 
         # Update application status if exists
-        supabase.table("backlot_project_role_applications").update({
+        client.table("backlot_project_role_applications").update({
             "status": "booked",
             "status_changed_at": datetime.utcnow().isoformat(),
             "status_changed_by_user_id": current_user_id,
@@ -9626,14 +9638,14 @@ async def book_role(
         }).eq("role_id", role_id).eq("applicant_user_id", user_id_to_book).execute()
 
         # Optionally add as project member if not already
-        existing_member = supabase.table("backlot_project_members").select("id").eq("project_id", role["project_id"]).eq("user_id", user_id_to_book).execute()
+        existing_member = client.table("backlot_project_members").select("id").eq("project_id", role["project_id"]).eq("user_id", user_id_to_book).execute()
 
         if not existing_member.data:
             # Get user profile for name/email
-            profile = supabase.table("profiles").select("full_name, email").eq("id", user_id_to_book).execute()
+            profile = client.table("profiles").select("full_name, email").eq("id", user_id_to_book).execute()
             profile_data = profile.data[0] if profile.data else {}
 
-            supabase.table("backlot_project_members").insert({
+            client.table("backlot_project_members").insert({
                 "project_id": role["project_id"],
                 "user_id": user_id_to_book,
                 "role": "viewer",  # Basic access
@@ -9668,14 +9680,14 @@ async def get_open_roles(
     """Get all open roles (public listing for job board)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check if user is Order member
-        is_order_member = await check_is_order_member(supabase, user_id)
+        is_order_member = await check_is_order_member(client, user_id)
 
         # Base query for open roles
-        query = supabase.table("backlot_project_roles").select(
+        query = client.table("backlot_project_roles").select(
             "*, backlot_projects(id, title, slug, cover_image_url, owner_id)"
         ).eq("status", "open")
 
@@ -9699,11 +9711,11 @@ async def get_open_roles(
 
         # Get application counts
         for role in roles:
-            app_count = supabase.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role["id"]).execute()
+            app_count = client.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role["id"]).execute()
             role["application_count"] = app_count.count if app_count.count else 0
 
             # Check if current user has applied
-            user_app = supabase.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).eq("applicant_user_id", user_id).execute()
+            user_app = client.table("backlot_project_role_applications").select("id, status").eq("role_id", role["id"]).eq("applicant_user_id", user_id).execute()
             role["user_has_applied"] = bool(user_app.data)
             role["user_application_status"] = user_app.data[0]["status"] if user_app.data else None
 
@@ -9727,25 +9739,25 @@ async def get_role_applications(
     """Get all applications for a role (project admin only)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get role and verify admin access
-        role_result = supabase.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
+        role_result = client.table("backlot_project_roles").select("project_id").eq("id", role_id).single().execute()
         if not role_result.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         project_id = role_result.data["project_id"]
 
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="Access denied")
 
-        query = supabase.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True)
+        query = client.table("backlot_project_role_applications").select("*").eq("role_id", role_id).order("created_at", desc=True)
 
         if status:
             query = query.eq("status", status)
@@ -9792,11 +9804,11 @@ async def apply_to_role(
     """Apply to a role"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get role
-        role_result = supabase.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
+        role_result = client.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
         if not role_result.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
@@ -9808,7 +9820,7 @@ async def apply_to_role(
 
         # Check if Order-only
         if role["is_order_only"]:
-            is_order_member = await check_is_order_member(supabase, user_id)
+            is_order_member = await check_is_order_member(client, user_id)
             if not is_order_member:
                 raise HTTPException(status_code=403, detail="This role is only open to Order members")
 
@@ -9820,17 +9832,17 @@ async def apply_to_role(
 
         # Check max applications
         if role.get("max_applications"):
-            current_count = supabase.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role_id).execute()
+            current_count = client.table("backlot_project_role_applications").select("id", count="exact").eq("role_id", role_id).execute()
             if current_count.count and current_count.count >= role["max_applications"]:
                 raise HTTPException(status_code=400, detail="Maximum applications reached for this role")
 
         # Check for existing application
-        existing = supabase.table("backlot_project_role_applications").select("id").eq("role_id", role_id).eq("applicant_user_id", user_id).execute()
+        existing = client.table("backlot_project_role_applications").select("id").eq("role_id", role_id).eq("applicant_user_id", user_id).execute()
         if existing.data:
             raise HTTPException(status_code=400, detail="You have already applied to this role")
 
         # Get profile snapshot
-        profile_snapshot = await get_user_profile_snapshot(supabase, user_id)
+        profile_snapshot = await get_user_profile_snapshot(client, user_id)
 
         application_data = {
             "role_id": role_id,
@@ -9845,7 +9857,7 @@ async def apply_to_role(
             "status": "applied",
         }
 
-        result = supabase.table("backlot_project_role_applications").insert(application_data).execute()
+        result = client.table("backlot_project_role_applications").insert(application_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit application")
@@ -9868,11 +9880,11 @@ async def update_application_status(
     """Update application status (project admin) or withdraw (applicant)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get application
-        app_result = supabase.table("backlot_project_role_applications").select(
+        app_result = client.table("backlot_project_role_applications").select(
             "*, backlot_project_roles(project_id)"
         ).eq("id", application_id).single().execute()
 
@@ -9891,11 +9903,11 @@ async def update_application_status(
                 raise HTTPException(status_code=403, detail="You can only withdraw your application")
         else:
             # Must be project admin
-            project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
             is_owner = project_response.data[0]["owner_id"] == user_id
 
             if not is_owner:
-                member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
                 if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                     raise HTTPException(status_code=403, detail="Access denied")
 
@@ -9911,11 +9923,11 @@ async def update_application_status(
         if status_update.rating is not None:
             update_data["rating"] = status_update.rating
 
-        result = supabase.table("backlot_project_role_applications").update(update_data).eq("id", application_id).execute()
+        result = client.table("backlot_project_role_applications").update(update_data).eq("id", application_id).execute()
 
         # If booking, also update the role
         if status_update.status == "booked":
-            supabase.table("backlot_project_roles").update({
+            client.table("backlot_project_roles").update({
                 "status": "booked",
                 "booked_user_id": application["applicant_user_id"],
                 "booked_at": datetime.utcnow().isoformat(),
@@ -9939,10 +9951,10 @@ async def get_my_applications(
     """Get current user's applications"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_project_role_applications").select(
+        query = client.table("backlot_project_role_applications").select(
             "*, backlot_project_roles(*, backlot_projects(id, title, slug, cover_image_url))"
         ).eq("applicant_user_id", user_id).order("created_at", desc=True)
 
@@ -9973,7 +9985,7 @@ async def get_user_availability(
     """Get user's availability (own or project members)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Users can view their own availability or project members' availability
@@ -9981,11 +9993,11 @@ async def get_user_availability(
 
         if not is_self:
             # Check if they share any project
-            shared_projects = supabase.rpc("shared_projects", {"user_a": user_id, "user_b": target_user_id}).execute()
+            shared_projects = client.rpc("shared_projects", {"user_a": user_id, "user_b": target_user_id}).execute()
             # For now, allow viewing if they're authenticated (simplified)
             pass
 
-        query = supabase.table("backlot_user_availability").select(
+        query = client.table("backlot_user_availability").select(
             "*, backlot_projects(id, title)"
         ).eq("user_id", target_user_id).order("date")
 
@@ -10013,10 +10025,10 @@ async def get_my_availability(
     """Get current user's availability"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_user_availability").select(
+        query = client.table("backlot_user_availability").select(
             "*, backlot_projects(id, title), backlot_project_roles(id, title, type)"
         ).eq("user_id", user_id).order("date")
 
@@ -10043,7 +10055,7 @@ async def set_my_availability(
     """Set availability for a single date"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         data = {
@@ -10055,7 +10067,7 @@ async def set_my_availability(
         }
 
         # Upsert (insert or update)
-        result = supabase.table("backlot_user_availability").upsert(
+        result = client.table("backlot_user_availability").upsert(
             data,
             on_conflict="user_id,date"
         ).execute()
@@ -10075,7 +10087,7 @@ async def set_bulk_availability(
     """Set availability for a date range"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         from datetime import datetime, timedelta
@@ -10101,7 +10113,7 @@ async def set_bulk_availability(
             current += timedelta(days=1)
 
         # Upsert all entries
-        result = supabase.table("backlot_user_availability").upsert(
+        result = client.table("backlot_user_availability").upsert(
             entries,
             on_conflict="user_id,date"
         ).execute()
@@ -10123,10 +10135,10 @@ async def delete_my_availability(
     """Remove availability entry for a date"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        supabase.table("backlot_user_availability").delete().eq("user_id", user_id).eq("date", date).execute()
+        client.table("backlot_user_availability").delete().eq("user_id", user_id).eq("date", date).execute()
 
         return {"success": True, "message": "Availability entry removed"}
 
@@ -10148,21 +10160,21 @@ async def get_booked_people(
     """Get all booked cast/crew for a project (for call sheet integration)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        query = supabase.table("backlot_project_roles").select(
+        query = client.table("backlot_project_roles").select(
             "*, profiles!booked_user_id(id, full_name, username, avatar_url, email)"
         ).eq("project_id", project_id).eq("status", "booked").not_.is_("booked_user_id", "null")
 
@@ -10210,13 +10222,13 @@ async def check_availability_conflicts(
 ):
     """Check for availability conflicts for multiple users"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         conflicts = {}
 
         for uid in user_ids:
-            result = supabase.table("backlot_user_availability").select(
+            result = client.table("backlot_user_availability").select(
                 "date, status, notes, backlot_projects(title)"
             ).eq("user_id", uid).gte("date", start_date).lte("date", end_date).in_("status", ["unavailable", "booked"]).execute()
 
@@ -10288,21 +10300,21 @@ async def get_project_clearances(
     """Get all clearance items for a project with optional filtering"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        query = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id)
+        query = client.table("backlot_clearance_items").select("*").eq("project_id", project_id)
 
         if type:
             query = query.eq("type", type)
@@ -10312,7 +10324,7 @@ async def get_project_clearances(
         result = query.order("created_at", desc=True).execute()
 
         # Get summary statistics
-        summary_result = supabase.rpc("get_project_clearance_summary", {"p_project_id": project_id}).execute()
+        summary_result = client.rpc("get_project_clearance_summary", {"p_project_id": project_id}).execute()
         summary = summary_result.data if summary_result.data else {}
 
         return {
@@ -10336,16 +10348,16 @@ async def create_clearance_item(
     """Create a new clearance item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project edit access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
             raise HTTPException(status_code=403, detail="You don't have permission to create clearances")
 
@@ -10381,7 +10393,7 @@ async def create_clearance_item(
             "created_by_user_id": user_id,
         }
 
-        result = supabase.table("backlot_clearance_items").insert(clearance_data).execute()
+        result = client.table("backlot_clearance_items").insert(clearance_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create clearance item")
@@ -10403,21 +10415,21 @@ async def get_clearance_item(
     """Get a single clearance item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_clearance_items").select("*").eq("id", clearance_id).single().execute()
+        result = client.table("backlot_clearance_items").select("*").eq("id", clearance_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Clearance item not found")
 
         # Verify access
         project_id = result.data["project_id"]
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied")
 
@@ -10439,22 +10451,22 @@ async def update_clearance_item(
     """Update a clearance item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing clearance
-        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Clearance item not found")
 
         project_id = existing.data["project_id"]
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to update clearances")
 
@@ -10485,7 +10497,7 @@ async def update_clearance_item(
             "contact_phone": item.contact_phone,
         }
 
-        result = supabase.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+        result = client.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
 
         return {"success": True, "clearance": result.data[0] if result.data else None, "message": "Clearance updated"}
 
@@ -10504,26 +10516,26 @@ async def delete_clearance_item(
     """Delete a clearance item"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing clearance
-        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Clearance item not found")
 
         project_id = existing.data["project_id"]
 
         # Verify delete access (admin only)
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] != "admin":
                 raise HTTPException(status_code=403, detail="Only admins can delete clearances")
 
-        supabase.table("backlot_clearance_items").delete().eq("id", clearance_id).execute()
+        client.table("backlot_clearance_items").delete().eq("id", clearance_id).execute()
 
         return {"success": True, "message": "Clearance deleted"}
 
@@ -10543,25 +10555,25 @@ async def update_clearance_status(
     """Quick update of clearance status"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if status not in CLEARANCE_STATUSES:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {CLEARANCE_STATUSES}")
 
     try:
         # Get existing clearance
-        existing = supabase.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Clearance item not found")
 
         project_id = existing.data["project_id"]
 
         # Verify edit access
-        project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
 
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to update clearances")
 
@@ -10571,7 +10583,7 @@ async def update_clearance_status(
         if status == "signed":
             update_data["signed_date"] = datetime.utcnow().strftime("%Y-%m-%d")
 
-        result = supabase.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+        result = client.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
 
         return {"success": True, "clearance": result.data[0] if result.data else None}
 
@@ -10594,10 +10606,10 @@ async def get_location_clearances(
 ):
     """Get all clearances for a specific location"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{location_id},related_project_location_id.eq.{location_id}").execute()
+        result = client.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{location_id},related_project_location_id.eq.{location_id}").execute()
 
         # Get the best status
         status = "missing"
@@ -10635,10 +10647,10 @@ async def get_person_clearances(
 ):
     """Get all clearances for a specific person"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("related_person_id", person_id)
+        query = client.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("related_person_id", person_id)
 
         if release_type:
             query = query.eq("type", release_type)
@@ -10680,7 +10692,7 @@ async def get_bulk_clearance_status(
 ):
     """Get clearance status for multiple locations and people at once (for call sheets)"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         result = {
@@ -10691,7 +10703,7 @@ async def get_bulk_clearance_status(
         # Get location clearances
         if location_ids:
             for loc_id in location_ids:
-                loc_result = supabase.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{loc_id},related_project_location_id.eq.{loc_id}").execute()
+                loc_result = client.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("type", "location_release").or_(f"related_location_id.eq.{loc_id},related_project_location_id.eq.{loc_id}").execute()
 
                 status = "missing"
                 if loc_result.data:
@@ -10711,7 +10723,7 @@ async def get_bulk_clearance_status(
         # Get person clearances (talent releases)
         if person_ids:
             for person_id in person_ids:
-                person_result = supabase.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("related_person_id", person_id).in_("type", ["talent_release", "appearance_release"]).execute()
+                person_result = client.table("backlot_clearance_items").select("status, expiration_date").eq("project_id", project_id).eq("related_person_id", person_id).in_("type", ["talent_release", "appearance_release"]).execute()
 
                 status = "missing"
                 if person_result.data:
@@ -10748,10 +10760,10 @@ async def generate_clearance_report(
     """Generate a comprehensive clearance report for delivery/sales"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify access
-    project_response = supabase.table("backlot_projects").select("*").eq("id", project_id).single().execute()
+    project_response = client.table("backlot_projects").select("*").eq("id", project_id).single().execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -10759,13 +10771,13 @@ async def generate_clearance_report(
     is_owner = project["owner_id"] == user_id
 
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
         # Get all clearances
-        clearances_result = supabase.table("backlot_clearance_items").select("*").eq("project_id", project_id).order("type").order("status").execute()
+        clearances_result = client.table("backlot_clearance_items").select("*").eq("project_id", project_id).order("type").order("status").execute()
         clearances = clearances_result.data or []
 
         # Organize by type
@@ -10889,10 +10901,10 @@ async def get_clearance_templates(
     """Get available clearance templates (system + user's own)"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_clearance_templates").select("*").or_(f"owner_user_id.is.null,owner_user_id.eq.{user_id}").eq("is_active", True)
+        query = client.table("backlot_clearance_templates").select("*").or_(f"owner_user_id.is.null,owner_user_id.eq.{user_id}").eq("is_active", True)
 
         if type:
             query = query.eq("type", type)
@@ -10955,23 +10967,23 @@ async def get_scene_shots(
 ):
     """Get all shots for a scene"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify scene belongs to project
-        scene_check = supabase.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
+        scene_check = client.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
         if not scene_check.data:
             raise HTTPException(status_code=404, detail="Scene not found in project")
 
         # Get shots with images
-        shots_result = supabase.table("backlot_scene_shots").select("*").eq("scene_id", scene_id).order("sort_order").order("shot_number").execute()
+        shots_result = client.table("backlot_scene_shots").select("*").eq("scene_id", scene_id).order("sort_order").order("shot_number").execute()
 
         shots = shots_result.data or []
 
         # Get images for all shots
         if shots:
             shot_ids = [s["id"] for s in shots]
-            images_result = supabase.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
+            images_result = client.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
             images_by_shot = {}
             for img in (images_result.data or []):
                 shot_id = img["scene_shot_id"]
@@ -11001,21 +11013,21 @@ async def create_scene_shot(
     """Create a new shot for a scene"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify scene belongs to project
-        scene_check = supabase.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
+        scene_check = client.table("backlot_scenes").select("id").eq("id", scene_id).eq("project_id", project_id).execute()
         if not scene_check.data:
             raise HTTPException(status_code=404, detail="Scene not found in project")
 
         # Check for duplicate shot number
-        existing = supabase.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).execute()
+        existing = client.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).execute()
         if existing.data:
             raise HTTPException(status_code=400, detail=f"Shot number {shot.shot_number} already exists in this scene")
 
         # Create shot
-        result = supabase.table("backlot_scene_shots").insert({
+        result = client.table("backlot_scene_shots").insert({
             "project_id": project_id,
             "scene_id": scene_id,
             "shot_number": shot.shot_number,
@@ -11047,17 +11059,17 @@ async def get_shot(
 ):
     """Get a single shot by ID"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scene_shots").select("*").eq("id", shot_id).execute()
+        result = client.table("backlot_scene_shots").select("*").eq("id", shot_id).execute()
         if not result.data:
             raise HTTPException(status_code=404, detail="Shot not found")
 
         shot = result.data[0]
 
         # Get images
-        images_result = supabase.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
+        images_result = client.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
         shot["images"] = images_result.data or []
 
         return {"success": True, "shot": shot}
@@ -11077,18 +11089,18 @@ async def update_shot(
 ):
     """Update a shot"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check shot exists
-        existing = supabase.table("backlot_scene_shots").select("id, scene_id").eq("id", shot_id).execute()
+        existing = client.table("backlot_scene_shots").select("id, scene_id").eq("id", shot_id).execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Shot not found")
 
         scene_id = existing.data[0]["scene_id"]
 
         # Check for duplicate shot number (if changed)
-        dupe_check = supabase.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).neq("id", shot_id).execute()
+        dupe_check = client.table("backlot_scene_shots").select("id").eq("scene_id", scene_id).eq("shot_number", shot.shot_number).neq("id", shot_id).execute()
         if dupe_check.data:
             raise HTTPException(status_code=400, detail=f"Shot number {shot.shot_number} already exists in this scene")
 
@@ -11108,7 +11120,7 @@ async def update_shot(
         if shot.coverage_status:
             update_data["coverage_status"] = shot.coverage_status
 
-        result = supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
+        result = client.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
 
         return {"success": True, "shot": result.data[0] if result.data else None}
 
@@ -11126,16 +11138,16 @@ async def delete_shot(
 ):
     """Delete a shot"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check shot exists
-        existing = supabase.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
+        existing = client.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Shot not found")
 
         # Delete (images will cascade)
-        supabase.table("backlot_scene_shots").delete().eq("id", shot_id).execute()
+        client.table("backlot_scene_shots").delete().eq("id", shot_id).execute()
 
         return {"success": True}
 
@@ -11154,10 +11166,10 @@ async def reorder_shot(
 ):
     """Update shot sort order"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scene_shots").update({"sort_order": new_sort_order}).eq("id", shot_id).select().execute()
+        result = client.table("backlot_scene_shots").update({"sort_order": new_sort_order}).eq("id", shot_id).select().execute()
         if not result.data:
             raise HTTPException(status_code=404, detail="Shot not found")
 
@@ -11181,10 +11193,10 @@ async def get_shot_images(
 ):
     """Get all images for a shot"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
+        result = client.table("backlot_scene_shot_images").select("*").eq("scene_shot_id", shot_id).order("sort_order").execute()
 
         return {"success": True, "images": result.data or []}
 
@@ -11201,15 +11213,15 @@ async def add_shot_image(
 ):
     """Add an image to a shot"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify shot exists
-        shot_check = supabase.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
+        shot_check = client.table("backlot_scene_shots").select("id").eq("id", shot_id).execute()
         if not shot_check.data:
             raise HTTPException(status_code=404, detail="Shot not found")
 
-        result = supabase.table("backlot_scene_shot_images").insert({
+        result = client.table("backlot_scene_shot_images").insert({
             "scene_shot_id": shot_id,
             "image_url": image.image_url,
             "thumbnail_url": image.thumbnail_url,
@@ -11234,10 +11246,10 @@ async def update_shot_image(
 ):
     """Update a shot image"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_scene_shot_images").update({
+        result = client.table("backlot_scene_shot_images").update({
             "image_url": image.image_url,
             "thumbnail_url": image.thumbnail_url,
             "description": image.description,
@@ -11263,14 +11275,14 @@ async def delete_shot_image(
 ):
     """Delete a shot image"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        existing = supabase.table("backlot_scene_shot_images").select("id").eq("id", image_id).execute()
+        existing = client.table("backlot_scene_shot_images").select("id").eq("id", image_id).execute()
         if not existing.data:
             raise HTTPException(status_code=404, detail="Image not found")
 
-        supabase.table("backlot_scene_shot_images").delete().eq("id", image_id).execute()
+        client.table("backlot_scene_shot_images").delete().eq("id", image_id).execute()
 
         return {"success": True}
 
@@ -11294,7 +11306,7 @@ async def update_shot_coverage(
     """Update coverage status for a shot"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         update_data = {
@@ -11309,7 +11321,7 @@ async def update_shot_coverage(
             update_data["covered_at"] = None
             update_data["covered_by_user_id"] = None
 
-        result = supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
+        result = client.table("backlot_scene_shots").update(update_data).eq("id", shot_id).select().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Shot not found")
@@ -11332,7 +11344,7 @@ async def bulk_update_coverage(
     """Bulk update coverage status for multiple shots"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         update_data = {
@@ -11348,7 +11360,7 @@ async def bulk_update_coverage(
 
         # Update all shots
         for shot_id in bulk_input.shot_ids:
-            supabase.table("backlot_scene_shots").update(update_data).eq("id", shot_id).eq("project_id", project_id).execute()
+            client.table("backlot_scene_shots").update(update_data).eq("id", shot_id).eq("project_id", project_id).execute()
 
         return {"success": True, "updated_count": len(bulk_input.shot_ids)}
 
@@ -11367,10 +11379,10 @@ async def get_project_shots(
 ):
     """Get all shots for a project, optionally filtered"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_scene_shots").select("*, scene:backlot_scenes(id, scene_number, setting, int_ext, time_of_day, description)").eq("project_id", project_id)
+        query = client.table("backlot_scene_shots").select("*, scene:backlot_scenes(id, scene_number, setting, int_ext, time_of_day, description)").eq("project_id", project_id)
 
         if scene_id:
             query = query.eq("scene_id", scene_id)
@@ -11386,7 +11398,7 @@ async def get_project_shots(
         # Get images for all shots
         if shots:
             shot_ids = [s["id"] for s in shots]
-            images_result = supabase.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
+            images_result = client.table("backlot_scene_shot_images").select("*").in_("scene_shot_id", shot_ids).order("sort_order").execute()
             images_by_shot = {}
             for img in (images_result.data or []):
                 shot_id = img["scene_shot_id"]
@@ -11411,11 +11423,11 @@ async def get_coverage_summary(
 ):
     """Get coverage summary for a project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get all shots
-        shots_result = supabase.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority, est_time_minutes").eq("project_id", project_id).execute()
+        shots_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority, est_time_minutes").eq("project_id", project_id).execute()
         shots = shots_result.data or []
 
         # Calculate summary
@@ -11463,15 +11475,15 @@ async def get_coverage_by_scene(
 ):
     """Get coverage breakdown by scene"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scenes with shot counts
-        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
 
         # Get all shots grouped by scene
-        shots_result = supabase.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority").eq("project_id", project_id).execute()
+        shots_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority").eq("project_id", project_id).execute()
         shots = shots_result.data or []
 
         # Group shots by scene
@@ -11515,16 +11527,16 @@ async def get_coverage_report(
 ):
     """Generate a coverage report for the project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scenes
-        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
         scenes_map = {s["id"]: s for s in scenes}
 
         # Get all shots
-        shots_result = supabase.table("backlot_scene_shots").select("*").eq("project_id", project_id).order("scene_id").order("sort_order").execute()
+        shots_result = client.table("backlot_scene_shots").select("*").eq("project_id", project_id).order("scene_id").order("sort_order").execute()
         shots = shots_result.data or []
 
         # Build report
@@ -11581,21 +11593,21 @@ async def get_coverage_summary_for_ai(
     Returns scenes, shot coverage status, and notes for editing strategy suggestions.
     """
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get project info
-        project_result = supabase.table("backlot_projects").select("id, title, logline, status").eq("id", project_id).execute()
+        project_result = client.table("backlot_projects").select("id, title, logline, status").eq("id", project_id).execute()
         project = project_result.data[0] if project_result.data else None
 
         # Get scenes with descriptions
-        scenes_result = supabase.table("backlot_scenes").select(
+        scenes_result = client.table("backlot_scenes").select(
             "id, scene_number, setting, int_ext, time_of_day, description, page_count"
         ).eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
 
         # Get all shots
-        shots_result = supabase.table("backlot_scene_shots").select(
+        shots_result = client.table("backlot_scene_shots").select(
             "id, scene_id, shot_number, shot_type, description, coverage_status, priority, notes"
         ).eq("project_id", project_id).execute()
         shots = shots_result.data or []
@@ -11693,29 +11705,29 @@ async def get_call_sheet_shots(
 ):
     """Get all shots for scenes linked to a call sheet"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get call sheet
-        cs_result = supabase.table("backlot_call_sheets").select("id, project_id").eq("id", call_sheet_id).execute()
+        cs_result = client.table("backlot_call_sheets").select("id, project_id").eq("id", call_sheet_id).execute()
         if not cs_result.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_id = cs_result.data[0]["project_id"]
 
         # Get scene links for this call sheet
-        links_result = supabase.table("backlot_call_sheet_scene_links").select("scene_id").eq("call_sheet_id", call_sheet_id).execute()
+        links_result = client.table("backlot_call_sheet_scene_links").select("scene_id").eq("call_sheet_id", call_sheet_id).execute()
         scene_ids = [l["scene_id"] for l in (links_result.data or [])]
 
         if not scene_ids:
             return {"success": True, "scenes_with_shots": []}
 
         # Get scenes
-        scenes_result = supabase.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").in_("id", scene_ids).order("scene_number").execute()
+        scenes_result = client.table("backlot_scenes").select("id, scene_number, setting, int_ext, time_of_day, description").in_("id", scene_ids).order("scene_number").execute()
         scenes = scenes_result.data or []
 
         # Get shots for these scenes
-        shots_result = supabase.table("backlot_scene_shots").select("*").in_("scene_id", scene_ids).order("sort_order").order("shot_number").execute()
+        shots_result = client.table("backlot_scene_shots").select("*").in_("scene_id", scene_ids).order("sort_order").order("shot_number").execute()
         shots = shots_result.data or []
 
         # Group shots by scene
@@ -11758,11 +11770,11 @@ async def get_next_shot_number(
 ):
     """Get suggested next shot number for a scene"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get existing shot numbers
-        shots_result = supabase.table("backlot_scene_shots").select("shot_number").eq("scene_id", scene_id).execute()
+        shots_result = client.table("backlot_scene_shots").select("shot_number").eq("scene_id", scene_id).execute()
         shots = shots_result.data or []
 
         if not shots:
@@ -11833,10 +11845,10 @@ async def get_project_assets(
 ):
     """Get all assets for a project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_assets").select("*").eq("project_id", project_id).order("sort_order", desc=False).order("created_at", desc=True)
+        query = client.table("backlot_assets").select("*").eq("project_id", project_id).order("sort_order", desc=False).order("created_at", desc=True)
 
         if asset_type:
             query = query.eq("asset_type", asset_type)
@@ -11860,7 +11872,7 @@ async def create_asset(
 ):
     """Create a new asset"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Validate asset_type
@@ -11876,7 +11888,7 @@ async def create_asset(
         # Get next sort order
         sort_order = asset_input.sort_order
         if sort_order is None:
-            max_result = supabase.table("backlot_assets").select("sort_order").eq("project_id", project_id).order("sort_order", desc=True).limit(1).execute()
+            max_result = client.table("backlot_assets").select("sort_order").eq("project_id", project_id).order("sort_order", desc=True).limit(1).execute()
             if max_result.data:
                 sort_order = (max_result.data[0].get("sort_order") or 0) + 1
             else:
@@ -11895,7 +11907,7 @@ async def create_asset(
             "created_by_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_assets").insert(insert_data).execute()
+        result = client.table("backlot_assets").insert(insert_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create asset")
@@ -11916,10 +11928,10 @@ async def get_asset(
 ):
     """Get a single asset"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_assets").select("*").eq("id", asset_id).single().execute()
+        result = client.table("backlot_assets").select("*").eq("id", asset_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -11941,7 +11953,7 @@ async def update_asset(
 ):
     """Update an asset"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Validate asset_type
@@ -11967,7 +11979,7 @@ async def update_asset(
         if asset_input.sort_order is not None:
             update_data["sort_order"] = asset_input.sort_order
 
-        result = supabase.table("backlot_assets").update(update_data).eq("id", asset_id).execute()
+        result = client.table("backlot_assets").update(update_data).eq("id", asset_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -11989,14 +12001,14 @@ async def update_asset_status(
 ):
     """Update asset status only"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
         if status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 
-        result = supabase.table("backlot_assets").update({"status": status}).eq("id", asset_id).execute()
+        result = client.table("backlot_assets").update({"status": status}).eq("id", asset_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Asset not found")
@@ -12017,14 +12029,14 @@ async def delete_asset(
 ):
     """Delete an asset"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Delete associated deliverables first
-        supabase.table("backlot_project_deliverables").delete().eq("asset_id", asset_id).execute()
+        client.table("backlot_project_deliverables").delete().eq("asset_id", asset_id).execute()
 
         # Delete the asset
-        result = supabase.table("backlot_assets").delete().eq("id", asset_id).execute()
+        result = client.table("backlot_assets").delete().eq("id", asset_id).execute()
 
         return {"success": True, "deleted": True}
 
@@ -12040,10 +12052,10 @@ async def get_assets_summary(
 ):
     """Get assets summary for a project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_assets").select("asset_type, status").eq("project_id", project_id).execute()
+        result = client.table("backlot_assets").select("asset_type, status").eq("project_id", project_id).execute()
         assets = result.data or []
 
         summary = {
@@ -12082,11 +12094,11 @@ async def get_deliverable_templates(
 ):
     """Get all deliverable templates (system + user's own)"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get system templates and user's own templates
-        query = supabase.table("backlot_deliverable_templates").select("*").eq("is_active", True).or_(f"is_system_template.eq.true,owner_user_id.eq.{user['id']},owner_user_id.is.null").order("target_platform", desc=False).order("name", desc=False)
+        query = client.table("backlot_deliverable_templates").select("*").eq("is_active", True).or_(f"is_system_template.eq.true,owner_user_id.eq.{user['id']},owner_user_id.is.null").order("target_platform", desc=False).order("name", desc=False)
 
         if platform:
             query = query.eq("target_platform", platform)
@@ -12107,7 +12119,7 @@ async def create_deliverable_template(
 ):
     """Create a custom deliverable template"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         insert_data = {
@@ -12119,7 +12131,7 @@ async def create_deliverable_template(
             "owner_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_deliverable_templates").insert(insert_data).execute()
+        result = client.table("backlot_deliverable_templates").insert(insert_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create template")
@@ -12138,10 +12150,10 @@ async def get_deliverable_template(
 ):
     """Get a single deliverable template"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_deliverable_templates").select("*").eq("id", template_id).single().execute()
+        result = client.table("backlot_deliverable_templates").select("*").eq("id", template_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Template not found")
@@ -12163,11 +12175,11 @@ async def update_deliverable_template(
 ):
     """Update a custom deliverable template"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check ownership
-        existing = supabase.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
+        existing = client.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Template not found")
@@ -12185,7 +12197,7 @@ async def update_deliverable_template(
             "specs": template_input.specs or {},
         }
 
-        result = supabase.table("backlot_deliverable_templates").update(update_data).eq("id", template_id).execute()
+        result = client.table("backlot_deliverable_templates").update(update_data).eq("id", template_id).execute()
 
         return {"success": True, "template": result.data[0]}
 
@@ -12203,11 +12215,11 @@ async def delete_deliverable_template(
 ):
     """Delete a custom deliverable template"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check ownership
-        existing = supabase.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
+        existing = client.table("backlot_deliverable_templates").select("owner_user_id, is_system_template").eq("id", template_id).single().execute()
 
         if not existing.data:
             raise HTTPException(status_code=404, detail="Template not found")
@@ -12219,7 +12231,7 @@ async def delete_deliverable_template(
             raise HTTPException(status_code=403, detail="Not authorized to delete this template")
 
         # Soft delete - just mark as inactive
-        result = supabase.table("backlot_deliverable_templates").update({"is_active": False}).eq("id", template_id).execute()
+        result = client.table("backlot_deliverable_templates").update({"is_active": False}).eq("id", template_id).execute()
 
         return {"success": True, "deleted": True}
 
@@ -12236,10 +12248,10 @@ async def get_platforms_list(
 ):
     """Get list of unique platforms from templates"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_deliverable_templates").select("target_platform").eq("is_active", True).execute()
+        result = client.table("backlot_deliverable_templates").select("target_platform").eq("is_active", True).execute()
 
         platforms = list(set([t["target_platform"] for t in (result.data or [])]))
         platforms.sort()
@@ -12264,10 +12276,10 @@ async def get_project_deliverables(
 ):
     """Get all deliverables for a project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        query = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("project_id", project_id).order("due_date", desc=False, nullsfirst=False).order("created_at", desc=True)
+        query = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("project_id", project_id).order("due_date", desc=False, nullsfirst=False).order("created_at", desc=True)
 
         if asset_id:
             query = query.eq("asset_id", asset_id)
@@ -12291,7 +12303,7 @@ async def create_project_deliverable(
 ):
     """Create a new deliverable for an asset"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Validate status
@@ -12300,12 +12312,12 @@ async def create_project_deliverable(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
 
         # Verify asset belongs to project
-        asset_check = supabase.table("backlot_assets").select("id").eq("id", deliverable_input.asset_id).eq("project_id", project_id).execute()
+        asset_check = client.table("backlot_assets").select("id").eq("id", deliverable_input.asset_id).eq("project_id", project_id).execute()
         if not asset_check.data:
             raise HTTPException(status_code=400, detail="Asset not found in project")
 
         # Verify template exists
-        template_check = supabase.table("backlot_deliverable_templates").select("id").eq("id", deliverable_input.template_id).execute()
+        template_check = client.table("backlot_deliverable_templates").select("id").eq("id", deliverable_input.template_id).execute()
         if not template_check.data:
             raise HTTPException(status_code=400, detail="Template not found")
 
@@ -12322,13 +12334,13 @@ async def create_project_deliverable(
             "created_by_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_project_deliverables").insert(insert_data).execute()
+        result = client.table("backlot_project_deliverables").insert(insert_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create deliverable")
 
         # Fetch with relations
-        full_result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", result.data[0]["id"]).single().execute()
+        full_result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", result.data[0]["id"]).single().execute()
 
         return {"success": True, "deliverable": full_result.data}
 
@@ -12346,10 +12358,10 @@ async def get_deliverable(
 ):
     """Get a single deliverable"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+        result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Deliverable not found")
@@ -12371,7 +12383,7 @@ async def update_deliverable(
 ):
     """Update a deliverable"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Validate status
@@ -12388,13 +12400,13 @@ async def update_deliverable(
             "custom_specs": deliverable_input.custom_specs,
         }
 
-        result = supabase.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
+        result = client.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Deliverable not found")
 
         # Fetch with relations
-        full_result = supabase.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+        full_result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
 
         return {"success": True, "deliverable": full_result.data}
 
@@ -12414,7 +12426,7 @@ async def update_deliverable_status(
 ):
     """Update deliverable status"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         valid_statuses = ["not_started", "in_progress", "in_review", "approved", "delivered"]
@@ -12431,7 +12443,7 @@ async def update_deliverable_status(
                 from datetime import date
                 update_data["delivered_date"] = date.today().isoformat()
 
-        result = supabase.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
+        result = client.table("backlot_project_deliverables").update(update_data).eq("id", deliverable_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Deliverable not found")
@@ -12452,10 +12464,10 @@ async def delete_deliverable(
 ):
     """Delete a deliverable"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        result = supabase.table("backlot_project_deliverables").delete().eq("id", deliverable_id).execute()
+        result = client.table("backlot_project_deliverables").delete().eq("id", deliverable_id).execute()
 
         return {"success": True, "deleted": True}
 
@@ -12471,17 +12483,17 @@ async def get_deliverables_summary(
 ):
     """Get deliverables summary for a project"""
     await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         from datetime import date
 
         # Get all deliverables
-        result = supabase.table("backlot_project_deliverables").select("id, status, due_date, asset:backlot_assets(title), template:backlot_deliverable_templates(name)").eq("project_id", project_id).execute()
+        result = client.table("backlot_project_deliverables").select("id, status, due_date, asset:backlot_assets(title), template:backlot_deliverable_templates(name)").eq("project_id", project_id).execute()
         deliverables = result.data or []
 
         # Get asset count
-        assets_result = supabase.table("backlot_assets").select("id").eq("project_id", project_id).execute()
+        assets_result = client.table("backlot_assets").select("id").eq("project_id", project_id).execute()
 
         summary = {
             "total_assets": len(assets_result.data or []),
@@ -12537,11 +12549,11 @@ async def bulk_create_deliverables(
 ):
     """Bulk create deliverables for an asset from multiple templates"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get asset to verify it exists and get project_id
-        asset_result = supabase.table("backlot_assets").select("id, project_id").eq("id", asset_id).single().execute()
+        asset_result = client.table("backlot_assets").select("id, project_id").eq("id", asset_id).single().execute()
         if not asset_result.data:
             raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -12558,7 +12570,7 @@ async def bulk_create_deliverables(
                     "status": "not_started",
                     "created_by_user_id": user["id"],
                 }
-                result = supabase.table("backlot_project_deliverables").insert(insert_data).execute()
+                result = client.table("backlot_project_deliverables").insert(insert_data).execute()
                 if result.data:
                     created.append(result.data[0])
             except Exception as e:
@@ -12589,20 +12601,20 @@ async def get_cost_by_department_analytics(
     Reads from budget categories and line items - no modifications.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify user has access to project (producer/admin only)
-        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
         if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
             raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
 
         # Get the active budget for the project
-        budget_result = supabase.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).eq("status", "approved").limit(1).execute()
+        budget_result = client.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).eq("status", "approved").limit(1).execute()
 
         if not budget_result.data:
             # Try to get any budget if no approved one
-            budget_result = supabase.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).order("created_at", desc=True).limit(1).execute()
+            budget_result = client.table("backlot_budgets").select("id, name, estimated_total, actual_total, variance").eq("project_id", project_id).order("created_at", desc=True).limit(1).execute()
 
         if not budget_result.data:
             return {
@@ -12616,14 +12628,14 @@ async def get_cost_by_department_analytics(
         budget_id = budget["id"]
 
         # Get categories with their line items aggregated
-        categories_result = supabase.table("backlot_budget_categories").select(
+        categories_result = client.table("backlot_budget_categories").select(
             "id, name, category_type, account_code_prefix, estimated_total, actual_total"
         ).eq("budget_id", budget_id).order("sort_order").execute()
 
         departments = []
         for cat in (categories_result.data or []):
             # Get line items for this category to sum by department
-            items_result = supabase.table("backlot_budget_line_items").select(
+            items_result = client.table("backlot_budget_line_items").select(
                 "department, estimated_total, actual_total"
             ).eq("category_id", cat["id"]).execute()
 
@@ -12685,16 +12697,16 @@ async def get_time_schedule_analytics(
     Reads from scenes, call sheets, and production days - no modifications.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify user has access to project
-        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
         if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
             raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
 
         # Get all scenes with page counts and coverage status
-        scenes_result = supabase.table("backlot_scenes").select(
+        scenes_result = client.table("backlot_scenes").select(
             "id, scene_number, page_count, coverage_status, is_omitted"
         ).eq("project_id", project_id).eq("is_omitted", False).execute()
 
@@ -12715,7 +12727,7 @@ async def get_time_schedule_analytics(
                 pages_by_status[status] += page_count
 
         # Get production days with dates
-        prod_days_result = supabase.table("backlot_production_days").select(
+        prod_days_result = client.table("backlot_production_days").select(
             "id, day_number, date, is_completed"
         ).eq("project_id", project_id).order("day_number").execute()
 
@@ -12730,7 +12742,7 @@ async def get_time_schedule_analytics(
 
         for day in production_days:
             # Get scenes linked to this day's call sheet
-            cs_result = supabase.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
+            cs_result = client.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
 
             pages_planned = 0
             pages_shot = 0
@@ -12739,7 +12751,7 @@ async def get_time_schedule_analytics(
                 call_sheet_id = cs_result.data[0]["id"]
 
                 # Get scene links for this call sheet
-                links_result = supabase.table("backlot_call_sheet_scene_links").select(
+                links_result = client.table("backlot_call_sheet_scene_links").select(
                     "scene_id, status"
                 ).eq("call_sheet_id", call_sheet_id).execute()
 
@@ -12832,16 +12844,16 @@ async def get_utilization_analytics(
     Reads from production days, call sheets, locations, and bookings - no modifications.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify user has access to project
-        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
         if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
             raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
 
         # Get all production days
-        prod_days_result = supabase.table("backlot_production_days").select(
+        prod_days_result = client.table("backlot_production_days").select(
             "id, day_number, date, location_id, location_name, is_completed"
         ).eq("project_id", project_id).execute()
 
@@ -12858,7 +12870,7 @@ async def get_utilization_analytics(
             if loc_id:
                 if loc_id not in location_usage:
                     # Get location name
-                    loc_result = supabase.table("backlot_locations").select("name").eq("id", loc_id).single().execute()
+                    loc_result = client.table("backlot_locations").select("name").eq("id", loc_id).single().execute()
                     location_usage[loc_id] = {
                         "location_id": loc_id,
                         "name": loc_result.data["name"] if loc_result.data else loc_name,
@@ -12888,13 +12900,13 @@ async def get_utilization_analytics(
 
         for day in production_days:
             # Get call sheet for this day
-            cs_result = supabase.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
+            cs_result = client.table("backlot_call_sheets").select("id").eq("production_day_id", day["id"]).limit(1).execute()
 
             if cs_result.data:
                 call_sheet_id = cs_result.data[0]["id"]
 
                 # Get people on this call sheet
-                people_result = supabase.table("backlot_call_sheet_people").select(
+                people_result = client.table("backlot_call_sheet_people").select(
                     "id, name, role, department, is_cast, character_name"
                 ).eq("call_sheet_id", call_sheet_id).execute()
 
@@ -12922,7 +12934,7 @@ async def get_utilization_analytics(
         crew_usage.sort(key=lambda x: x["days_scheduled"], reverse=True)
 
         # Get booked roles for additional context
-        roles_result = supabase.table("backlot_project_roles").select(
+        roles_result = client.table("backlot_project_roles").select(
             "id, title, type, department, status, days_estimated, booked_user_id"
         ).eq("project_id", project_id).execute()
 
@@ -12970,20 +12982,20 @@ async def get_analytics_overview(
     Aggregates key metrics from cost, schedule, and utilization.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify user has access to project (producer/admin only)
-        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
         if not member_result.data or member_result.data["role"] not in ["owner", "producer", "admin"]:
             raise HTTPException(status_code=403, detail="Analytics access requires producer or admin role")
 
         # Get project info
-        project_result = supabase.table("backlot_projects").select("title, status").eq("id", project_id).single().execute()
+        project_result = client.table("backlot_projects").select("title, status").eq("id", project_id).single().execute()
         project = project_result.data if project_result.data else {"title": "Unknown", "status": "unknown"}
 
         # Budget summary
-        budget_result = supabase.table("backlot_budgets").select(
+        budget_result = client.table("backlot_budgets").select(
             "estimated_total, actual_total, variance"
         ).eq("project_id", project_id).order("created_at", desc=True).limit(1).execute()
 
@@ -13003,7 +13015,7 @@ async def get_analytics_overview(
                 budget_summary["budget_status"] = "under_budget"
 
         # Schedule summary
-        scenes_result = supabase.table("backlot_scenes").select("page_count, coverage_status").eq("project_id", project_id).eq("is_omitted", False).execute()
+        scenes_result = client.table("backlot_scenes").select("page_count, coverage_status").eq("project_id", project_id).eq("is_omitted", False).execute()
 
         total_pages = 0
         pages_shot = 0
@@ -13016,7 +13028,7 @@ async def get_analytics_overview(
             if scene.get("coverage_status") == "shot":
                 pages_shot += pc
 
-        prod_days_result = supabase.table("backlot_production_days").select("id, is_completed").eq("project_id", project_id).execute()
+        prod_days_result = client.table("backlot_production_days").select("id, is_completed").eq("project_id", project_id).execute()
         total_days = len(prod_days_result.data or [])
         completed_days = sum(1 for d in (prod_days_result.data or []) if d.get("is_completed"))
 
@@ -13038,8 +13050,8 @@ async def get_analytics_overview(
                 schedule_summary["schedule_status"] = "behind"
 
         # Team summary
-        members_result = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).execute()
-        roles_result = supabase.table("backlot_project_roles").select("status").eq("project_id", project_id).execute()
+        members_result = client.table("backlot_project_members").select("id").eq("project_id", project_id).execute()
+        roles_result = client.table("backlot_project_roles").select("status").eq("project_id", project_id).execute()
 
         team_summary = {
             "total_members": len(members_result.data or []),
@@ -13138,15 +13150,15 @@ class ShotReorderRequest(BaseModel):
 
 
 # Helper to check if user can edit shot lists (producer-level roles)
-async def verify_shot_list_edit_access(supabase, project_id: str, user_id: str) -> bool:
+async def verify_shot_list_edit_access(client, project_id: str, user_id: str) -> bool:
     """Check if user has producer-level access to edit shot lists"""
     # Check if owner
-    project_result = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).single().execute()
+    project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).single().execute()
     if project_result.data and project_result.data.get("owner_id") == user_id:
         return True
 
     # Check membership role
-    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+    member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
     if member_result.data:
         role = member_result.data.get("role")
         if role in ["owner", "admin", "editor", "producer", "director", "dp", "first_ad"]:
@@ -13165,14 +13177,14 @@ async def list_shot_lists(
     Get all shot lists for a project.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify project access
-        await verify_project_access(supabase, project_id, user["id"])
+        await verify_project_access(client, project_id, user["id"])
 
         # Build query - simple select without joins to avoid schema issues
-        query = supabase.table("backlot_shot_lists").select("*").eq("project_id", project_id)
+        query = client.table("backlot_shot_lists").select("*").eq("project_id", project_id)
 
         if not include_archived:
             query = query.eq("is_archived", False)
@@ -13184,11 +13196,11 @@ async def list_shot_lists(
 
         # Get shot counts for each list
         for shot_list in shot_lists:
-            count_result = supabase.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).execute()
+            count_result = client.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).execute()
             shot_list["shot_count"] = count_result.count or 0
 
             # Get completion stats
-            completed_result = supabase.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).eq("is_completed", True).execute()
+            completed_result = client.table("backlot_shots").select("id", count="exact").eq("shot_list_id", shot_list["id"]).eq("is_completed", True).execute()
             shot_list["completed_count"] = completed_result.count or 0
 
         return {"success": True, "shot_lists": shot_lists}
@@ -13210,11 +13222,11 @@ async def create_shot_list(
     Create a new shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to create shot lists")
 
@@ -13229,7 +13241,7 @@ async def create_shot_list(
             "created_by_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_shot_lists").insert(shot_list_data).execute()
+        result = client.table("backlot_shot_lists").insert(shot_list_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create shot list")
@@ -13252,11 +13264,11 @@ async def get_shot_list(
     Get a single shot list with all its shots.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list - simple select without joins to avoid schema issues
-        shot_list_result = supabase.table("backlot_shot_lists").select("*").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("*").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13264,10 +13276,10 @@ async def get_shot_list(
         shot_list = shot_list_result.data
 
         # Verify project access
-        await verify_project_access(supabase, shot_list["project_id"], user["id"])
+        await verify_project_access(client, shot_list["project_id"], user["id"])
 
         # Get shots - simple select without joins to avoid schema issues
-        shots_result = supabase.table("backlot_shots").select("*").eq("shot_list_id", shot_list_id).order("sort_order").order("created_at").execute()
+        shots_result = client.table("backlot_shots").select("*").eq("shot_list_id", shot_list_id).order("sort_order").order("created_at").execute()
 
         shot_list["shots"] = shots_result.data or []
 
@@ -13290,11 +13302,11 @@ async def update_shot_list(
     Update a shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list to verify access
-        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13302,7 +13314,7 @@ async def update_shot_list(
         project_id = shot_list_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to edit shot lists")
 
@@ -13322,7 +13334,7 @@ async def update_shot_list(
             update_data["is_archived"] = request.is_archived
 
         if update_data:
-            result = supabase.table("backlot_shot_lists").update(update_data).eq("id", shot_list_id).execute()
+            result = client.table("backlot_shot_lists").update(update_data).eq("id", shot_list_id).execute()
             return {"success": True, "shot_list": result.data[0] if result.data else None}
 
         return {"success": True, "shot_list": shot_list_result.data}
@@ -13344,11 +13356,11 @@ async def delete_shot_list(
     Delete (archive) a shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list to verify access
-        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13356,16 +13368,16 @@ async def delete_shot_list(
         project_id = shot_list_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to delete shot lists")
 
         if hard_delete:
             # Hard delete - will cascade to shots
-            supabase.table("backlot_shot_lists").delete().eq("id", shot_list_id).execute()
+            client.table("backlot_shot_lists").delete().eq("id", shot_list_id).execute()
         else:
             # Soft delete - archive
-            supabase.table("backlot_shot_lists").update({"is_archived": True}).eq("id", shot_list_id).execute()
+            client.table("backlot_shot_lists").update({"is_archived": True}).eq("id", shot_list_id).execute()
 
         return {"success": True}
 
@@ -13390,11 +13402,11 @@ async def create_shot(
     Create a new shot in a shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list to verify access and get project_id
-        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13402,18 +13414,18 @@ async def create_shot(
         project_id = shot_list_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to add shots")
 
         # Get next sort order
-        max_order_result = supabase.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
+        max_order_result = client.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
         next_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
 
         # Get next shot number if not provided
         shot_number = request.shot_number
         if not shot_number:
-            max_num_result = supabase.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
+            max_num_result = client.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
             if max_num_result.data:
                 # Extract max numeric part
                 max_num = 0
@@ -13451,7 +13463,7 @@ async def create_shot(
             "created_by_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_shots").insert(shot_data).execute()
+        result = client.table("backlot_shots").insert(shot_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create shot")
@@ -13475,11 +13487,11 @@ async def update_shot(
     Update a shot.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot to verify access
-        shot_result = supabase.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
+        shot_result = client.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
 
         if not shot_result.data:
             raise HTTPException(status_code=404, detail="Shot not found")
@@ -13487,7 +13499,7 @@ async def update_shot(
         project_id = shot_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to edit shots")
 
@@ -13506,7 +13518,7 @@ async def update_shot(
                 update_data[field] = value
 
         if update_data:
-            result = supabase.table("backlot_shots").update(update_data).eq("id", shot_id).execute()
+            result = client.table("backlot_shots").update(update_data).eq("id", shot_id).execute()
             return {"success": True, "shot": result.data[0] if result.data else None}
 
         return {"success": True, "shot": shot_result.data}
@@ -13527,11 +13539,11 @@ async def delete_shot(
     Delete a shot.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot to verify access
-        shot_result = supabase.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
+        shot_result = client.table("backlot_shots").select("project_id").eq("id", shot_id).single().execute()
 
         if not shot_result.data:
             raise HTTPException(status_code=404, detail="Shot not found")
@@ -13539,12 +13551,12 @@ async def delete_shot(
         project_id = shot_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to delete shots")
 
         # Delete
-        supabase.table("backlot_shots").delete().eq("id", shot_id).execute()
+        client.table("backlot_shots").delete().eq("id", shot_id).execute()
 
         return {"success": True}
 
@@ -13565,11 +13577,11 @@ async def reorder_shots(
     Reorder shots within a shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list to verify access
-        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13577,20 +13589,20 @@ async def reorder_shots(
         project_id = shot_list_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to reorder shots")
 
         # Verify all shots belong to this shot list
         shot_ids = [s.id for s in request.shots]
-        verify_result = supabase.table("backlot_shots").select("id").eq("shot_list_id", shot_list_id).in_("id", shot_ids).execute()
+        verify_result = client.table("backlot_shots").select("id").eq("shot_list_id", shot_list_id).in_("id", shot_ids).execute()
 
         if len(verify_result.data or []) != len(shot_ids):
             raise HTTPException(status_code=400, detail="Some shots don't belong to this shot list")
 
         # Update sort orders
         for shot_item in request.shots:
-            supabase.table("backlot_shots").update({"sort_order": shot_item.sort_order}).eq("id", shot_item.id).execute()
+            client.table("backlot_shots").update({"sort_order": shot_item.sort_order}).eq("id", shot_item.id).execute()
 
         return {"success": True}
 
@@ -13611,11 +13623,11 @@ async def bulk_create_shots(
     Bulk create multiple shots in a shot list.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get shot list to verify access and get project_id
-        shot_list_result = supabase.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
+        shot_list_result = client.table("backlot_shot_lists").select("project_id").eq("id", shot_list_id).single().execute()
 
         if not shot_list_result.data:
             raise HTTPException(status_code=404, detail="Shot list not found")
@@ -13623,16 +13635,16 @@ async def bulk_create_shots(
         project_id = shot_list_result.data["project_id"]
 
         # Verify edit access
-        has_access = await verify_shot_list_edit_access(supabase, project_id, user["id"])
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
         if not has_access:
             raise HTTPException(status_code=403, detail="You don't have permission to add shots")
 
         # Get starting sort order
-        max_order_result = supabase.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
+        max_order_result = client.table("backlot_shots").select("sort_order").eq("shot_list_id", shot_list_id).order("sort_order", desc=True).limit(1).execute()
         next_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
 
         # Get max shot number
-        max_num_result = supabase.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
+        max_num_result = client.table("backlot_shots").select("shot_number").eq("shot_list_id", shot_list_id).execute()
         max_num = 0
         if max_num_result.data:
             for s in max_num_result.data:
@@ -13670,7 +13682,7 @@ async def bulk_create_shots(
                 "created_by_user_id": user["id"],
             }
 
-            result = supabase.table("backlot_shots").insert(shot_data).execute()
+            result = client.table("backlot_shots").insert(shot_data).execute()
             if result.data:
                 created_shots.append(result.data[0])
 
@@ -13773,10 +13785,10 @@ class TaskViewUpdate(BaseModel):
 # TASK SYSTEM - Helper Functions
 # =====================================================
 
-async def verify_task_list_access(supabase, task_list_id: str, user_id: str, require_edit: bool = False) -> Dict[str, Any]:
+async def verify_task_list_access(client, task_list_id: str, user_id: str, require_edit: bool = False) -> Dict[str, Any]:
     """Verify user has access to a task list and return task list data"""
     # Get task list
-    result = supabase.table("backlot_task_lists").select("*").eq("id", task_list_id).single().execute()
+    result = client.table("backlot_task_lists").select("*").eq("id", task_list_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Task list not found")
@@ -13785,7 +13797,7 @@ async def verify_task_list_access(supabase, task_list_id: str, user_id: str, req
     project_id = task_list["project_id"]
 
     # Check if project admin
-    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+    member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
 
     if member_result.data and member_result.data["role"] == "admin":
         return task_list
@@ -13800,7 +13812,7 @@ async def verify_task_list_access(supabase, task_list_id: str, user_id: str, req
         return task_list
     else:
         # Selected sharing mode - check task list members
-        list_member_result = supabase.table("backlot_task_list_members").select("can_edit").eq("task_list_id", task_list_id).eq("user_id", user_id).single().execute()
+        list_member_result = client.table("backlot_task_list_members").select("can_edit").eq("task_list_id", task_list_id).eq("user_id", user_id).single().execute()
 
         if not list_member_result.data:
             raise HTTPException(status_code=403, detail="You don't have access to this task list")
@@ -13811,9 +13823,9 @@ async def verify_task_list_access(supabase, task_list_id: str, user_id: str, req
         return task_list
 
 
-async def can_manage_task_list(supabase, task_list_id: str, user_id: str) -> bool:
+async def can_manage_task_list(client, task_list_id: str, user_id: str) -> bool:
     """Check if user can manage task list (owner, project admin)"""
-    result = supabase.table("backlot_task_lists").select("project_id, created_by_user_id").eq("id", task_list_id).single().execute()
+    result = client.table("backlot_task_lists").select("project_id, created_by_user_id").eq("id", task_list_id).single().execute()
 
     if not result.data:
         return False
@@ -13823,7 +13835,7 @@ async def can_manage_task_list(supabase, task_list_id: str, user_id: str) -> boo
         return True
 
     # Check if project admin
-    member_result = supabase.table("backlot_project_members").select("role").eq("project_id", result.data["project_id"]).eq("user_id", user_id).single().execute()
+    member_result = client.table("backlot_project_members").select("role").eq("project_id", result.data["project_id"]).eq("user_id", user_id).single().execute()
 
     return member_result.data and member_result.data["role"] == "admin"
 
@@ -13840,18 +13852,18 @@ async def get_project_task_lists(
 ):
     """Get all task lists for a project that the user can access"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify project access
-        await verify_project_access(supabase, project_id, user["id"])
+        await verify_project_access(client, project_id, user["id"])
 
         # Check if user is project admin
-        member_result = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+        member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
         is_admin = member_result.data and member_result.data["role"] == "admin"
 
         # Build query
-        query = supabase.table("backlot_task_lists").select("*").eq("project_id", project_id)
+        query = client.table("backlot_task_lists").select("*").eq("project_id", project_id)
 
         if not include_archived:
             query = query.eq("is_archived", False)
@@ -13862,7 +13874,7 @@ async def get_project_task_lists(
         # Filter by sharing if not admin
         if not is_admin:
             # Get list memberships for user
-            memberships_result = supabase.table("backlot_task_list_members").select("task_list_id").eq("user_id", user["id"]).execute()
+            memberships_result = client.table("backlot_task_list_members").select("task_list_id").eq("user_id", user["id"]).execute()
             user_list_ids = set(m["task_list_id"] for m in (memberships_result.data or []))
 
             task_lists = [
@@ -13873,7 +13885,7 @@ async def get_project_task_lists(
         # Get task counts for each list
         for task_list in task_lists:
             # Get status counts
-            count_result = supabase.table("backlot_tasks").select("status").eq("task_list_id", task_list["id"]).execute()
+            count_result = client.table("backlot_tasks").select("status").eq("task_list_id", task_list["id"]).execute()
             tasks = count_result.data or []
 
             status_counts = {}
@@ -13901,11 +13913,11 @@ async def create_task_list(
 ):
     """Create a new task list for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify edit access to project
-        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
 
         # Create task list
         task_list_data = {
@@ -13918,7 +13930,7 @@ async def create_task_list(
             "created_by_user_id": user["id"],
         }
 
-        result = supabase.table("backlot_task_lists").insert(task_list_data).execute()
+        result = client.table("backlot_task_lists").insert(task_list_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create task list")
@@ -13953,11 +13965,11 @@ async def create_task_list(
             },
         ]
 
-        supabase.table("backlot_task_views").insert(default_views).execute()
+        client.table("backlot_task_views").insert(default_views).execute()
 
         # If selective sharing mode, add creator as member
         if request.sharing_mode == "selective":
-            supabase.table("backlot_task_list_members").insert({
+            client.table("backlot_task_list_members").insert({
                 "task_list_id": task_list["id"],
                 "user_id": user["id"],
                 "can_edit": True,
@@ -13979,24 +13991,24 @@ async def get_task_list(
 ):
     """Get a task list with its views, sharing info, and tasks"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+        task_list = await verify_task_list_access(client, task_list_id, user["id"])
 
         # Get views
-        views_result = supabase.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
+        views_result = client.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
         task_list["views"] = views_result.data or []
 
         # Get members if selective sharing mode
         if task_list["sharing_mode"] == "selective":
-            members_result = supabase.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
+            members_result = client.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
             task_list["members"] = members_result.data or []
         else:
             task_list["members"] = []
 
         # Get all tasks for this task list
-        tasks_result = supabase.table("backlot_tasks").select("*").eq("task_list_id", task_list_id).order("sort_index").order("created_at").execute()
+        tasks_result = client.table("backlot_tasks").select("*").eq("task_list_id", task_list_id).order("sort_index").order("created_at").execute()
         tasks = tasks_result.data or []
 
         # Get assignees and labels for all tasks
@@ -14004,7 +14016,7 @@ async def get_task_list(
             task_ids = [t["id"] for t in tasks]
 
             # Get assignees
-            assignees_result = supabase.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
+            assignees_result = client.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
             assignees_by_task = {}
             for a in (assignees_result.data or []):
                 task_id = a["task_id"]
@@ -14013,7 +14025,7 @@ async def get_task_list(
                 assignees_by_task[task_id].append(a)
 
             # Get labels
-            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
             labels_by_task = {}
             for l in (labels_result.data or []):
                 task_id = l["task_id"]
@@ -14055,10 +14067,10 @@ async def update_task_list(
 ):
     """Update a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        task_list = await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+        task_list = await verify_task_list_access(client, task_list_id, user["id"], require_edit=True)
 
         # Build update data
         update_data = {}
@@ -14076,14 +14088,14 @@ async def update_task_list(
             update_data["is_archived"] = request.is_archived
 
         if update_data:
-            result = supabase.table("backlot_task_lists").update(update_data).eq("id", task_list_id).execute()
+            result = client.table("backlot_task_lists").update(update_data).eq("id", task_list_id).execute()
 
             # If switching to selective mode, ensure creator is a member
             if request.sharing_mode == "selective":
-                existing_member = supabase.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", task_list["created_by_user_id"]).single().execute()
+                existing_member = client.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", task_list["created_by_user_id"]).single().execute()
 
                 if not existing_member.data:
-                    supabase.table("backlot_task_list_members").insert({
+                    client.table("backlot_task_list_members").insert({
                         "task_list_id": task_list_id,
                         "user_id": task_list["created_by_user_id"],
                         "can_edit": True,
@@ -14108,17 +14120,17 @@ async def delete_task_list(
 ):
     """Delete (archive) a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        can_manage = await can_manage_task_list(client, task_list_id, user["id"])
         if not can_manage:
             raise HTTPException(status_code=403, detail="You don't have permission to delete this task list")
 
         if hard_delete:
-            supabase.table("backlot_task_lists").delete().eq("id", task_list_id).execute()
+            client.table("backlot_task_lists").delete().eq("id", task_list_id).execute()
         else:
-            supabase.table("backlot_task_lists").update({"is_archived": True}).eq("id", task_list_id).execute()
+            client.table("backlot_task_lists").update({"is_archived": True}).eq("id", task_list_id).execute()
 
         return {"success": True}
 
@@ -14140,12 +14152,12 @@ async def get_task_list_members(
 ):
     """Get members of a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+        task_list = await verify_task_list_access(client, task_list_id, user["id"])
 
-        result = supabase.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
+        result = client.table("backlot_task_list_members").select("*").eq("task_list_id", task_list_id).execute()
 
         return {"success": True, "members": result.data or []}
 
@@ -14164,22 +14176,22 @@ async def add_task_list_member(
 ):
     """Add a member to a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        can_manage = await can_manage_task_list(client, task_list_id, user["id"])
         if not can_manage:
             raise HTTPException(status_code=403, detail="You don't have permission to manage this task list")
 
         # Check if already a member
-        existing = supabase.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", request.user_id).single().execute()
+        existing = client.table("backlot_task_list_members").select("id").eq("task_list_id", task_list_id).eq("user_id", request.user_id).single().execute()
 
         if existing.data:
             # Update existing
-            result = supabase.table("backlot_task_list_members").update({"can_edit": request.can_edit}).eq("id", existing.data["id"]).execute()
+            result = client.table("backlot_task_list_members").update({"can_edit": request.can_edit}).eq("id", existing.data["id"]).execute()
         else:
             # Create new
-            result = supabase.table("backlot_task_list_members").insert({
+            result = client.table("backlot_task_list_members").insert({
                 "task_list_id": task_list_id,
                 "user_id": request.user_id,
                 "can_edit": request.can_edit if request.can_edit is not None else True,
@@ -14201,22 +14213,22 @@ async def remove_task_list_member(
 ):
     """Remove a member from a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get member to find task list
-        member_result = supabase.table("backlot_task_list_members").select("task_list_id").eq("id", member_id).single().execute()
+        member_result = client.table("backlot_task_list_members").select("task_list_id").eq("id", member_id).single().execute()
 
         if not member_result.data:
             raise HTTPException(status_code=404, detail="Member not found")
 
         task_list_id = member_result.data["task_list_id"]
 
-        can_manage = await can_manage_task_list(supabase, task_list_id, user["id"])
+        can_manage = await can_manage_task_list(client, task_list_id, user["id"])
         if not can_manage:
             raise HTTPException(status_code=403, detail="You don't have permission to manage this task list")
 
-        supabase.table("backlot_task_list_members").delete().eq("id", member_id).execute()
+        client.table("backlot_task_list_members").delete().eq("id", member_id).execute()
 
         return {"success": True}
 
@@ -14243,17 +14255,17 @@ async def get_task_list_tasks(
 ):
     """Get tasks in a task list, optionally filtered by view"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        task_list = await verify_task_list_access(supabase, task_list_id, user["id"])
+        task_list = await verify_task_list_access(client, task_list_id, user["id"])
 
         # Build query
-        query = supabase.table("backlot_tasks").select("*").eq("task_list_id", task_list_id)
+        query = client.table("backlot_tasks").select("*").eq("task_list_id", task_list_id)
 
         # Apply view filters if provided
         if view_id:
-            view_result = supabase.table("backlot_task_views").select("config").eq("id", view_id).single().execute()
+            view_result = client.table("backlot_task_views").select("config").eq("id", view_id).single().execute()
             if view_result.data and view_result.data.get("config"):
                 config = view_result.data["config"]
 
@@ -14287,7 +14299,7 @@ async def get_task_list_tasks(
         # Get assignees for all tasks
         if tasks:
             task_ids = [t["id"] for t in tasks]
-            assignees_result = supabase.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
+            assignees_result = client.table("backlot_task_assignees").select("*").in_("task_id", task_ids).execute()
 
             # Group assignees by task
             assignees_by_task = {}
@@ -14298,7 +14310,7 @@ async def get_task_list_tasks(
                 assignees_by_task[task_id].append(a)
 
             # Get labels for all tasks
-            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
 
             # Group labels by task
             labels_by_task = {}
@@ -14335,13 +14347,13 @@ async def create_task(
 ):
     """Create a new task in a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        task_list = await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+        task_list = await verify_task_list_access(client, task_list_id, user["id"], require_edit=True)
 
         # Get next sort index
-        max_sort_result = supabase.table("backlot_tasks").select("sort_index").eq("task_list_id", task_list_id).order("sort_index", desc=True).limit(1).execute()
+        max_sort_result = client.table("backlot_tasks").select("sort_index").eq("task_list_id", task_list_id).order("sort_index", desc=True).limit(1).execute()
         next_sort_index = (max_sort_result.data[0]["sort_index"] + 1) if max_sort_result.data else 0
 
         # Create task
@@ -14364,7 +14376,7 @@ async def create_task(
             "is_completed": request.status == "done",
         }
 
-        result = supabase.table("backlot_tasks").insert(task_data).execute()
+        result = client.table("backlot_tasks").insert(task_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create task")
@@ -14374,23 +14386,23 @@ async def create_task(
         # Add assignees if provided
         if request.assignee_ids:
             assignee_data = [{"task_id": task["id"], "user_id": uid} for uid in request.assignee_ids]
-            supabase.table("backlot_task_assignees").insert(assignee_data).execute()
+            client.table("backlot_task_assignees").insert(assignee_data).execute()
 
         # Add labels if provided
         if request.label_ids:
             label_data = [{"task_id": task["id"], "label_id": lid} for lid in request.label_ids]
-            supabase.table("backlot_task_label_links").insert(label_data).execute()
+            client.table("backlot_task_label_links").insert(label_data).execute()
 
         # Fetch complete task with relations
         task["assignees"] = []
         task["labels"] = []
 
         if request.assignee_ids:
-            assignees_result = supabase.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
+            assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
             task["assignees"] = assignees_result.data or []
 
         if request.label_ids:
-            labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task["id"]).execute()
+            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task["id"]).execute()
             task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
 
         return {"success": True, "task": task}
@@ -14409,11 +14421,11 @@ async def get_task(
 ):
     """Get a single task with all details"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("*").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("*").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -14421,22 +14433,22 @@ async def get_task(
         task = task_result.data
 
         # Verify access to task list
-        await verify_task_list_access(supabase, task["task_list_id"], user["id"])
+        await verify_task_list_access(client, task["task_list_id"], user["id"])
 
         # Get assignees
-        assignees_result = supabase.table("backlot_task_assignees").select("*").eq("task_id", task_id).execute()
+        assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task_id).execute()
         task["assignees"] = assignees_result.data or []
 
         # Get watchers
-        watchers_result = supabase.table("backlot_task_watchers").select("*").eq("task_id", task_id).execute()
+        watchers_result = client.table("backlot_task_watchers").select("*").eq("task_id", task_id).execute()
         task["watchers"] = watchers_result.data or []
 
         # Get labels
-        labels_result = supabase.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task_id).execute()
+        labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task_id).execute()
         task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
 
         # Get comment count
-        comments_result = supabase.table("backlot_task_comments").select("id", count="exact").eq("task_id", task_id).execute()
+        comments_result = client.table("backlot_task_comments").select("id", count="exact").eq("task_id", task_id).execute()
         task["comment_count"] = comments_result.count or 0
 
         return {"success": True, "task": task}
@@ -14456,17 +14468,17 @@ async def update_task(
 ):
     """Update a task"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify edit access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"], require_edit=True)
+        await verify_task_list_access(client, task_result.data["task_list_id"], user["id"], require_edit=True)
 
         # Build update data
         update_data = {"last_updated_by_user_id": user["id"]}
@@ -14503,7 +14515,7 @@ async def update_task(
         if request.sort_index is not None:
             update_data["sort_index"] = request.sort_index
 
-        result = supabase.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
+        result = client.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
 
         return {"success": True, "task": result.data[0] if result.data else None}
 
@@ -14521,11 +14533,11 @@ async def delete_task(
 ):
     """Delete a task"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id, created_by_user_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id, created_by_user_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -14534,12 +14546,12 @@ async def delete_task(
 
         # Check if creator or can manage list
         if task["created_by_user_id"] != user["id"]:
-            can_manage = await can_manage_task_list(supabase, task["task_list_id"], user["id"])
+            can_manage = await can_manage_task_list(client, task["task_list_id"], user["id"])
             if not can_manage:
                 # Also check if user has edit access
-                await verify_task_list_access(supabase, task["task_list_id"], user["id"], require_edit=True)
+                await verify_task_list_access(client, task["task_list_id"], user["id"], require_edit=True)
 
-        supabase.table("backlot_tasks").delete().eq("id", task_id).execute()
+        client.table("backlot_tasks").delete().eq("id", task_id).execute()
 
         return {"success": True}
 
@@ -14562,25 +14574,25 @@ async def add_task_assignee(
 ):
     """Add an assignee to a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify edit access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+        await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"], require_edit=True)
 
         # Check if already assigned
-        existing = supabase.table("backlot_task_assignees").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
+        existing = client.table("backlot_task_assignees").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
 
         if existing.data:
             return {"success": True, "assignee": existing.data}
 
-        result = supabase.table("backlot_task_assignees").insert({
+        result = client.table("backlot_task_assignees").insert({
             "task_id": task_id,
             "user_id": user_id,
         }).execute()
@@ -14602,19 +14614,19 @@ async def remove_task_assignee(
 ):
     """Remove an assignee from a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify edit access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+        await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"], require_edit=True)
 
-        supabase.table("backlot_task_assignees").delete().eq("id", assignee_id).execute()
+        client.table("backlot_task_assignees").delete().eq("id", assignee_id).execute()
 
         return {"success": True}
 
@@ -14633,25 +14645,25 @@ async def add_task_watcher(
 ):
     """Add a watcher to a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify view access (anyone who can view can watch)
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"])
+        await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"])
 
         # Check if already watching
-        existing = supabase.table("backlot_task_watchers").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
+        existing = client.table("backlot_task_watchers").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
 
         if existing.data:
             return {"success": True, "watcher": existing.data}
 
-        result = supabase.table("backlot_task_watchers").insert({
+        result = client.table("backlot_task_watchers").insert({
             "task_id": task_id,
             "user_id": user_id,
         }).execute()
@@ -14673,28 +14685,28 @@ async def remove_task_watcher(
 ):
     """Remove a watcher from a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get watcher to check ownership
-        watcher_result = supabase.table("backlot_task_watchers").select("user_id, task_id").eq("id", watcher_id).single().execute()
+        watcher_result = client.table("backlot_task_watchers").select("user_id, task_id").eq("id", watcher_id).single().execute()
 
         if not watcher_result.data:
             raise HTTPException(status_code=404, detail="Watcher not found")
 
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", watcher_result.data["task_id"]).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", watcher_result.data["task_id"]).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # User can remove themselves or admins can remove anyone
         if watcher_result.data["user_id"] != current_user["id"]:
-            can_manage = await can_manage_task_list(supabase, task_result.data["task_list_id"], current_user["id"])
+            can_manage = await can_manage_task_list(client, task_result.data["task_list_id"], current_user["id"])
             if not can_manage:
                 raise HTTPException(status_code=403, detail="You can only remove yourself as a watcher")
 
-        supabase.table("backlot_task_watchers").delete().eq("id", watcher_id).execute()
+        client.table("backlot_task_watchers").delete().eq("id", watcher_id).execute()
 
         return {"success": True}
 
@@ -14716,12 +14728,12 @@ async def get_project_task_labels(
 ):
     """Get all task labels for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_project_access(supabase, project_id, user["id"])
+        await verify_project_access(client, project_id, user["id"])
 
-        result = supabase.table("backlot_task_labels").select("*").eq("project_id", project_id).order("name").execute()
+        result = client.table("backlot_task_labels").select("*").eq("project_id", project_id).order("name").execute()
 
         return {"success": True, "labels": result.data or []}
 
@@ -14740,12 +14752,12 @@ async def create_task_label(
 ):
     """Create a new task label for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
 
-        result = supabase.table("backlot_task_labels").insert({
+        result = client.table("backlot_task_labels").insert({
             "project_id": project_id,
             "name": request.name,
             "color": request.color,
@@ -14767,19 +14779,19 @@ async def delete_task_label(
 ):
     """Delete a task label"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get label to find project
-        label_result = supabase.table("backlot_task_labels").select("project_id").eq("id", label_id).single().execute()
+        label_result = client.table("backlot_task_labels").select("project_id").eq("id", label_id).single().execute()
 
         if not label_result.data:
             raise HTTPException(status_code=404, detail="Label not found")
 
         # Verify edit access
-        await verify_project_access(supabase, label_result.data["project_id"], user["id"], require_edit=True)
+        await verify_project_access(client, label_result.data["project_id"], user["id"], require_edit=True)
 
-        supabase.table("backlot_task_labels").delete().eq("id", label_id).execute()
+        client.table("backlot_task_labels").delete().eq("id", label_id).execute()
 
         return {"success": True}
 
@@ -14798,25 +14810,25 @@ async def add_task_label(
 ):
     """Add a label to a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify edit access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+        await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"], require_edit=True)
 
         # Check if already linked
-        existing = supabase.table("backlot_task_label_links").select("id").eq("task_id", task_id).eq("label_id", label_id).single().execute()
+        existing = client.table("backlot_task_label_links").select("id").eq("task_id", task_id).eq("label_id", label_id).single().execute()
 
         if existing.data:
             return {"success": True, "label_link": existing.data}
 
-        result = supabase.table("backlot_task_label_links").insert({
+        result = client.table("backlot_task_label_links").insert({
             "task_id": task_id,
             "label_id": label_id,
         }).execute()
@@ -14838,19 +14850,19 @@ async def remove_task_label(
 ):
     """Remove a label from a task"""
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify edit access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], current_user["id"], require_edit=True)
+        await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"], require_edit=True)
 
-        supabase.table("backlot_task_label_links").delete().eq("id", label_link_id).execute()
+        client.table("backlot_task_label_links").delete().eq("id", label_link_id).execute()
 
         return {"success": True}
 
@@ -14872,19 +14884,19 @@ async def get_task_comments(
 ):
     """Get comments for a task"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify view access
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"])
+        await verify_task_list_access(client, task_result.data["task_list_id"], user["id"])
 
-        result = supabase.table("backlot_task_comments").select("*").eq("task_id", task_id).order("created_at").execute()
+        result = client.table("backlot_task_comments").select("*").eq("task_id", task_id).order("created_at").execute()
 
         return {"success": True, "comments": result.data or []}
 
@@ -14903,19 +14915,19 @@ async def create_task_comment(
 ):
     """Add a comment to a task"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get task
-        task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
+        task_result = client.table("backlot_tasks").select("task_list_id").eq("id", task_id).single().execute()
 
         if not task_result.data:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # Verify view access (anyone who can view can comment)
-        await verify_task_list_access(supabase, task_result.data["task_list_id"], user["id"])
+        await verify_task_list_access(client, task_result.data["task_list_id"], user["id"])
 
-        result = supabase.table("backlot_task_comments").insert({
+        result = client.table("backlot_task_comments").insert({
             "task_id": task_id,
             "author_user_id": user["id"],
             "body": request.body,
@@ -14938,11 +14950,11 @@ async def update_task_comment(
 ):
     """Update a comment"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get comment
-        comment_result = supabase.table("backlot_task_comments").select("author_user_id").eq("id", comment_id).single().execute()
+        comment_result = client.table("backlot_task_comments").select("author_user_id").eq("id", comment_id).single().execute()
 
         if not comment_result.data:
             raise HTTPException(status_code=404, detail="Comment not found")
@@ -14951,7 +14963,7 @@ async def update_task_comment(
         if comment_result.data["author_user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="You can only edit your own comments")
 
-        result = supabase.table("backlot_task_comments").update({
+        result = client.table("backlot_task_comments").update({
             "body": request.body,
         }).eq("id", comment_id).execute()
 
@@ -14971,11 +14983,11 @@ async def delete_task_comment(
 ):
     """Delete a comment"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get comment
-        comment_result = supabase.table("backlot_task_comments").select("author_user_id, task_id").eq("id", comment_id).single().execute()
+        comment_result = client.table("backlot_task_comments").select("author_user_id, task_id").eq("id", comment_id).single().execute()
 
         if not comment_result.data:
             raise HTTPException(status_code=404, detail="Comment not found")
@@ -14985,14 +14997,14 @@ async def delete_task_comment(
         # Author can delete, or admins
         if comment["author_user_id"] != user["id"]:
             # Get task to check permissions
-            task_result = supabase.table("backlot_tasks").select("task_list_id").eq("id", comment["task_id"]).single().execute()
+            task_result = client.table("backlot_tasks").select("task_list_id").eq("id", comment["task_id"]).single().execute()
 
             if task_result.data:
-                can_manage = await can_manage_task_list(supabase, task_result.data["task_list_id"], user["id"])
+                can_manage = await can_manage_task_list(client, task_result.data["task_list_id"], user["id"])
                 if not can_manage:
                     raise HTTPException(status_code=403, detail="You can only delete your own comments")
 
-        supabase.table("backlot_task_comments").delete().eq("id", comment_id).execute()
+        client.table("backlot_task_comments").delete().eq("id", comment_id).execute()
 
         return {"success": True}
 
@@ -15014,12 +15026,12 @@ async def get_task_list_views(
 ):
     """Get views for a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_task_list_access(supabase, task_list_id, user["id"])
+        await verify_task_list_access(client, task_list_id, user["id"])
 
-        result = supabase.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
+        result = client.table("backlot_task_views").select("*").eq("task_list_id", task_list_id).order("created_at").execute()
 
         return {"success": True, "views": result.data or []}
 
@@ -15038,16 +15050,16 @@ async def create_task_view(
 ):
     """Create a new view for a task list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+        await verify_task_list_access(client, task_list_id, user["id"], require_edit=True)
 
         # If setting as default, unset other defaults
         if request.is_default:
-            supabase.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", task_list_id).execute()
+            client.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", task_list_id).execute()
 
-        result = supabase.table("backlot_task_views").insert({
+        result = client.table("backlot_task_views").insert({
             "task_list_id": task_list_id,
             "name": request.name,
             "view_type": request.view_type,
@@ -15073,11 +15085,11 @@ async def update_task_view(
 ):
     """Update a task view"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get view
-        view_result = supabase.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
+        view_result = client.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
 
         if not view_result.data:
             raise HTTPException(status_code=404, detail="View not found")
@@ -15086,7 +15098,7 @@ async def update_task_view(
 
         # Check if creator or can manage list
         if view["created_by_user_id"] != user["id"]:
-            can_manage = await can_manage_task_list(supabase, view["task_list_id"], user["id"])
+            can_manage = await can_manage_task_list(client, view["task_list_id"], user["id"])
             if not can_manage:
                 raise HTTPException(status_code=403, detail="You don't have permission to edit this view")
 
@@ -15101,11 +15113,11 @@ async def update_task_view(
         if request.is_default is not None:
             # If setting as default, unset other defaults
             if request.is_default:
-                supabase.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", view["task_list_id"]).execute()
+                client.table("backlot_task_views").update({"is_default": False}).eq("task_list_id", view["task_list_id"]).execute()
             update_data["is_default"] = request.is_default
 
         if update_data:
-            result = supabase.table("backlot_task_views").update(update_data).eq("id", view_id).execute()
+            result = client.table("backlot_task_views").update(update_data).eq("id", view_id).execute()
             return {"success": True, "view": result.data[0] if result.data else None}
 
         return {"success": True, "view": view}
@@ -15124,11 +15136,11 @@ async def delete_task_view(
 ):
     """Delete a task view"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get view
-        view_result = supabase.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
+        view_result = client.table("backlot_task_views").select("task_list_id, created_by_user_id").eq("id", view_id).single().execute()
 
         if not view_result.data:
             raise HTTPException(status_code=404, detail="View not found")
@@ -15137,11 +15149,11 @@ async def delete_task_view(
 
         # Check if creator or can manage list
         if view["created_by_user_id"] != user["id"]:
-            can_manage = await can_manage_task_list(supabase, view["task_list_id"], user["id"])
+            can_manage = await can_manage_task_list(client, view["task_list_id"], user["id"])
             if not can_manage:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete this view")
 
-        supabase.table("backlot_task_views").delete().eq("id", view_id).execute()
+        client.table("backlot_task_views").delete().eq("id", view_id).execute()
 
         return {"success": True}
 
@@ -15175,14 +15187,14 @@ async def reorder_tasks(
 ):
     """Reorder tasks (for drag-and-drop) and optionally update status/section"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_task_list_access(supabase, task_list_id, user["id"], require_edit=True)
+        await verify_task_list_access(client, task_list_id, user["id"], require_edit=True)
 
         # Verify all tasks belong to this list
         task_ids = [t.id for t in request.tasks]
-        verify_result = supabase.table("backlot_tasks").select("id").eq("task_list_id", task_list_id).in_("id", task_ids).execute()
+        verify_result = client.table("backlot_tasks").select("id").eq("task_list_id", task_list_id).in_("id", task_ids).execute()
 
         if len(verify_result.data or []) != len(task_ids):
             raise HTTPException(status_code=400, detail="Some tasks don't belong to this task list")
@@ -15201,7 +15213,7 @@ async def reorder_tasks(
             if task_item.section is not None:
                 update_data["section"] = task_item.section
 
-            supabase.table("backlot_tasks").update(update_data).eq("id", task_item.id).execute()
+            client.table("backlot_tasks").update(update_data).eq("id", task_item.id).execute()
 
         return {"success": True}
 
@@ -15344,13 +15356,13 @@ class CreateTaskFromNoteRequest(BaseModel):
 # =====================================================
 
 async def verify_review_asset_access(
-    supabase,
+    client,
     asset_id: str,
     user_id: str,
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review asset and return asset data"""
-    asset_response = supabase.table("backlot_review_assets").select("*, backlot_projects(*)").eq("id", asset_id).execute()
+    asset_response = client.table("backlot_review_assets").select("*, backlot_projects(*)").eq("id", asset_id).execute()
 
     if not asset_response.data:
         raise HTTPException(status_code=404, detail="Review asset not found")
@@ -15359,19 +15371,19 @@ async def verify_review_asset_access(
     project_id = asset["project_id"]
 
     # Verify project access
-    await verify_project_access(supabase, project_id, user_id, require_edit)
+    await verify_project_access(client, project_id, user_id, require_edit)
 
     return asset
 
 
 async def verify_review_version_access(
-    supabase,
+    client,
     version_id: str,
     user_id: str,
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review version and return version data"""
-    version_response = supabase.table("backlot_review_versions").select("*, backlot_review_assets(project_id)").eq("id", version_id).execute()
+    version_response = client.table("backlot_review_versions").select("*, backlot_review_assets(project_id)").eq("id", version_id).execute()
 
     if not version_response.data:
         raise HTTPException(status_code=404, detail="Review version not found")
@@ -15380,19 +15392,19 @@ async def verify_review_version_access(
     project_id = version["backlot_review_assets"]["project_id"]
 
     # Verify project access
-    await verify_project_access(supabase, project_id, user_id, require_edit)
+    await verify_project_access(client, project_id, user_id, require_edit)
 
     return version
 
 
 async def verify_review_note_access(
-    supabase,
+    client,
     note_id: str,
     user_id: str,
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review note and return note data"""
-    note_response = supabase.table("backlot_review_notes").select(
+    note_response = client.table("backlot_review_notes").select(
         "*, backlot_review_versions(asset_id, backlot_review_assets(project_id))"
     ).eq("id", note_id).execute()
 
@@ -15403,20 +15415,20 @@ async def verify_review_note_access(
     project_id = note["backlot_review_versions"]["backlot_review_assets"]["project_id"]
 
     # Verify project access
-    await verify_project_access(supabase, project_id, user_id, require_edit)
+    await verify_project_access(client, project_id, user_id, require_edit)
 
     # If editing, user must own the note or have edit permission
     if require_edit and note["created_by_user_id"] != user_id:
         # Check if user has edit permission on project
-        await verify_project_access(supabase, project_id, user_id, require_edit=True)
+        await verify_project_access(client, project_id, user_id, require_edit=True)
 
     return note
 
 
-def enrich_user_data(supabase, user_id: str) -> Optional[Dict[str, Any]]:
+def enrich_user_data(client, user_id: str) -> Optional[Dict[str, Any]]:
     """Get basic user info for display"""
     try:
-        profile = supabase.table("profiles").select("id, display_name, avatar_url").eq("id", user_id).execute()
+        profile = client.table("profiles").select("id, display_name, avatar_url").eq("id", user_id).execute()
         if profile.data:
             return profile.data[0]
     except:
@@ -15435,13 +15447,13 @@ async def list_review_assets(
 ):
     """List all review assets for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_project_access(supabase, project_id, user["id"])
+        await verify_project_access(client, project_id, user["id"])
 
         # Get assets with version and note counts
-        assets_response = supabase.table("backlot_review_assets").select(
+        assets_response = client.table("backlot_review_assets").select(
             "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
         ).eq("project_id", project_id).order("created_at", desc=True).execute()
 
@@ -15450,15 +15462,15 @@ async def list_review_assets(
         # Get counts for each asset
         for asset in assets:
             # Get version count
-            versions_count = supabase.table("backlot_review_versions").select("id", count="exact").eq("asset_id", asset["id"]).execute()
+            versions_count = client.table("backlot_review_versions").select("id", count="exact").eq("asset_id", asset["id"]).execute()
             asset["version_count"] = versions_count.count or 0
 
             # Get note count across all versions
             if asset["version_count"] > 0:
-                versions = supabase.table("backlot_review_versions").select("id").eq("asset_id", asset["id"]).execute()
+                versions = client.table("backlot_review_versions").select("id").eq("asset_id", asset["id"]).execute()
                 version_ids = [v["id"] for v in (versions.data or [])]
                 if version_ids:
-                    notes_count = supabase.table("backlot_review_notes").select("id", count="exact").in_("version_id", version_ids).execute()
+                    notes_count = client.table("backlot_review_notes").select("id", count="exact").in_("version_id", version_ids).execute()
                     asset["note_count"] = notes_count.count or 0
                 else:
                     asset["note_count"] = 0
@@ -15482,10 +15494,10 @@ async def create_review_asset(
 ):
     """Create a new review asset with initial version"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_project_access(supabase, project_id, user["id"], require_edit=True)
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
 
         asset_id = str(uuid.uuid4())
         version_id = str(uuid.uuid4())
@@ -15503,7 +15515,7 @@ async def create_review_asset(
             "active_version_id": version_id,  # Will point to the first version
         }
 
-        supabase.table("backlot_review_assets").insert(asset_data).execute()
+        client.table("backlot_review_assets").insert(asset_data).execute()
 
         # Create the initial version (V1)
         version_data = {
@@ -15519,10 +15531,10 @@ async def create_review_asset(
             "created_by_user_id": user["id"],
         }
 
-        supabase.table("backlot_review_versions").insert(version_data).execute()
+        client.table("backlot_review_versions").insert(version_data).execute()
 
         # Return the created asset with version
-        result = supabase.table("backlot_review_assets").select(
+        result = client.table("backlot_review_assets").select(
             "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
         ).eq("id", asset_id).execute()
 
@@ -15542,18 +15554,18 @@ async def get_review_asset(
 ):
     """Get a single review asset with all versions"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        asset = await verify_review_asset_access(supabase, asset_id, user["id"])
+        asset = await verify_review_asset_access(client, asset_id, user["id"])
 
         # Get all versions
-        versions_response = supabase.table("backlot_review_versions").select("*").eq("asset_id", asset_id).order("version_number", desc=True).execute()
+        versions_response = client.table("backlot_review_versions").select("*").eq("asset_id", asset_id).order("version_number", desc=True).execute()
         asset["versions"] = versions_response.data or []
 
         # Get note counts per version
         for version in asset["versions"]:
-            notes_count = supabase.table("backlot_review_notes").select("id", count="exact").eq("version_id", version["id"]).execute()
+            notes_count = client.table("backlot_review_notes").select("id", count="exact").eq("version_id", version["id"]).execute()
             version["note_count"] = notes_count.count or 0
 
         return {"asset": asset}
@@ -15573,10 +15585,10 @@ async def update_review_asset(
 ):
     """Update a review asset"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+        await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
 
         update_data = {}
         if request.name is not None:
@@ -15591,9 +15603,9 @@ async def update_review_asset(
             update_data["linked_shot_list_id"] = request.linked_shot_list_id
 
         if update_data:
-            supabase.table("backlot_review_assets").update(update_data).eq("id", asset_id).execute()
+            client.table("backlot_review_assets").update(update_data).eq("id", asset_id).execute()
 
-        result = supabase.table("backlot_review_assets").select(
+        result = client.table("backlot_review_assets").select(
             "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
         ).eq("id", asset_id).execute()
 
@@ -15613,13 +15625,13 @@ async def delete_review_asset(
 ):
     """Delete a review asset and all its versions/notes"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+        await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
 
         # Delete is cascaded via foreign keys
-        supabase.table("backlot_review_assets").delete().eq("id", asset_id).execute()
+        client.table("backlot_review_assets").delete().eq("id", asset_id).execute()
 
         return {"success": True}
 
@@ -15642,13 +15654,13 @@ async def create_review_version(
 ):
     """Create a new version for a review asset"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        asset = await verify_review_asset_access(supabase, asset_id, user["id"], require_edit=True)
+        asset = await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
 
         # Get current highest version number
-        versions = supabase.table("backlot_review_versions").select("version_number").eq("asset_id", asset_id).order("version_number", desc=True).limit(1).execute()
+        versions = client.table("backlot_review_versions").select("version_number").eq("asset_id", asset_id).order("version_number", desc=True).limit(1).execute()
         next_version_number = (versions.data[0]["version_number"] + 1) if versions.data else 1
 
         version_id = str(uuid.uuid4())
@@ -15665,12 +15677,12 @@ async def create_review_version(
             "created_by_user_id": user["id"],
         }
 
-        supabase.table("backlot_review_versions").insert(version_data).execute()
+        client.table("backlot_review_versions").insert(version_data).execute()
 
         # Automatically set as active version
-        supabase.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", asset_id).execute()
+        client.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", asset_id).execute()
 
-        result = supabase.table("backlot_review_versions").select("*").eq("id", version_id).execute()
+        result = client.table("backlot_review_versions").select("*").eq("id", version_id).execute()
 
         return {"version": result.data[0] if result.data else None}
 
@@ -15688,12 +15700,12 @@ async def make_version_active(
 ):
     """Set a version as the active version for its asset"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        version = await verify_review_version_access(supabase, version_id, user["id"], require_edit=True)
+        version = await verify_review_version_access(client, version_id, user["id"], require_edit=True)
 
-        supabase.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", version["asset_id"]).execute()
+        client.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", version["asset_id"]).execute()
 
         return {"success": True}
 
@@ -15711,25 +15723,25 @@ async def delete_review_version(
 ):
     """Delete a review version"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        version = await verify_review_version_access(supabase, version_id, user["id"], require_edit=True)
+        version = await verify_review_version_access(client, version_id, user["id"], require_edit=True)
 
         # Check if this is the only version
-        versions_count = supabase.table("backlot_review_versions").select("id", count="exact").eq("asset_id", version["asset_id"]).execute()
+        versions_count = client.table("backlot_review_versions").select("id", count="exact").eq("asset_id", version["asset_id"]).execute()
         if versions_count.count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the only version. Delete the asset instead.")
 
         # Check if this is the active version
-        asset = supabase.table("backlot_review_assets").select("active_version_id").eq("id", version["asset_id"]).execute()
+        asset = client.table("backlot_review_assets").select("active_version_id").eq("id", version["asset_id"]).execute()
         if asset.data and asset.data[0]["active_version_id"] == version_id:
             # Set another version as active
-            other_version = supabase.table("backlot_review_versions").select("id").eq("asset_id", version["asset_id"]).neq("id", version_id).order("version_number", desc=True).limit(1).execute()
+            other_version = client.table("backlot_review_versions").select("id").eq("asset_id", version["asset_id"]).neq("id", version_id).order("version_number", desc=True).limit(1).execute()
             if other_version.data:
-                supabase.table("backlot_review_assets").update({"active_version_id": other_version.data[0]["id"]}).eq("id", version["asset_id"]).execute()
+                client.table("backlot_review_assets").update({"active_version_id": other_version.data[0]["id"]}).eq("id", version["asset_id"]).execute()
 
-        supabase.table("backlot_review_versions").delete().eq("id", version_id).execute()
+        client.table("backlot_review_versions").delete().eq("id", version_id).execute()
 
         return {"success": True}
 
@@ -15751,25 +15763,25 @@ async def list_version_notes(
 ):
     """List all notes for a version"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_version_access(supabase, version_id, user["id"])
+        await verify_review_version_access(client, version_id, user["id"])
 
-        notes_response = supabase.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False, nullsfirst=False).execute()
+        notes_response = client.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False, nullsfirst=False).execute()
 
         notes = notes_response.data or []
 
         # Enrich with user data and replies
         for note in notes:
-            note["created_by_user"] = enrich_user_data(supabase, note["created_by_user_id"])
+            note["created_by_user"] = enrich_user_data(client, note["created_by_user_id"])
 
             # Get replies
-            replies_response = supabase.table("backlot_review_note_replies").select("*").eq("note_id", note["id"]).order("created_at", desc=False).execute()
+            replies_response = client.table("backlot_review_note_replies").select("*").eq("note_id", note["id"]).order("created_at", desc=False).execute()
             note["replies"] = replies_response.data or []
 
             for reply in note["replies"]:
-                reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+                reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
 
         return {"notes": notes}
 
@@ -15788,10 +15800,10 @@ async def create_review_note(
 ):
     """Create a new note on a version"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_version_access(supabase, version_id, user["id"])
+        await verify_review_version_access(client, version_id, user["id"])
 
         note_id = str(uuid.uuid4())
         note_data = {
@@ -15804,13 +15816,13 @@ async def create_review_note(
             "created_by_user_id": user["id"],
         }
 
-        supabase.table("backlot_review_notes").insert(note_data).execute()
+        client.table("backlot_review_notes").insert(note_data).execute()
 
-        result = supabase.table("backlot_review_notes").select("*").eq("id", note_id).execute()
+        result = client.table("backlot_review_notes").select("*").eq("id", note_id).execute()
         note = result.data[0] if result.data else None
 
         if note:
-            note["created_by_user"] = enrich_user_data(supabase, note["created_by_user_id"])
+            note["created_by_user"] = enrich_user_data(client, note["created_by_user_id"])
             note["replies"] = []
 
         return {"note": note}
@@ -15830,10 +15842,10 @@ async def update_review_note(
 ):
     """Update a review note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        note = await verify_review_note_access(supabase, note_id, user["id"], require_edit=True)
+        note = await verify_review_note_access(client, note_id, user["id"], require_edit=True)
 
         update_data = {}
         if request.content is not None:
@@ -15844,18 +15856,18 @@ async def update_review_note(
             update_data["is_resolved"] = request.is_resolved
 
         if update_data:
-            supabase.table("backlot_review_notes").update(update_data).eq("id", note_id).execute()
+            client.table("backlot_review_notes").update(update_data).eq("id", note_id).execute()
 
-        result = supabase.table("backlot_review_notes").select("*").eq("id", note_id).execute()
+        result = client.table("backlot_review_notes").select("*").eq("id", note_id).execute()
         updated_note = result.data[0] if result.data else None
 
         if updated_note:
-            updated_note["created_by_user"] = enrich_user_data(supabase, updated_note["created_by_user_id"])
+            updated_note["created_by_user"] = enrich_user_data(client, updated_note["created_by_user_id"])
             # Get replies
-            replies_response = supabase.table("backlot_review_note_replies").select("*").eq("note_id", note_id).order("created_at", desc=False).execute()
+            replies_response = client.table("backlot_review_note_replies").select("*").eq("note_id", note_id).order("created_at", desc=False).execute()
             updated_note["replies"] = replies_response.data or []
             for reply in updated_note["replies"]:
-                reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+                reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
 
         return {"note": updated_note}
 
@@ -15873,12 +15885,12 @@ async def delete_review_note(
 ):
     """Delete a review note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_note_access(supabase, note_id, user["id"], require_edit=True)
+        await verify_review_note_access(client, note_id, user["id"], require_edit=True)
 
-        supabase.table("backlot_review_notes").delete().eq("id", note_id).execute()
+        client.table("backlot_review_notes").delete().eq("id", note_id).execute()
 
         return {"success": True}
 
@@ -15901,10 +15913,10 @@ async def create_note_reply(
 ):
     """Create a reply to a note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        await verify_review_note_access(supabase, note_id, user["id"])
+        await verify_review_note_access(client, note_id, user["id"])
 
         reply_id = str(uuid.uuid4())
         reply_data = {
@@ -15914,13 +15926,13 @@ async def create_note_reply(
             "created_by_user_id": user["id"],
         }
 
-        supabase.table("backlot_review_note_replies").insert(reply_data).execute()
+        client.table("backlot_review_note_replies").insert(reply_data).execute()
 
-        result = supabase.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
+        result = client.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
         reply = result.data[0] if result.data else None
 
         if reply:
-            reply["created_by_user"] = enrich_user_data(supabase, reply["created_by_user_id"])
+            reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
 
         return {"reply": reply}
 
@@ -15938,11 +15950,11 @@ async def delete_note_reply(
 ):
     """Delete a reply (only owner can delete)"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get reply and verify ownership
-        reply_response = supabase.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
+        reply_response = client.table("backlot_review_note_replies").select("*").eq("id", reply_id).execute()
         if not reply_response.data:
             raise HTTPException(status_code=404, detail="Reply not found")
 
@@ -15950,7 +15962,7 @@ async def delete_note_reply(
         if reply["created_by_user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="You can only delete your own replies")
 
-        supabase.table("backlot_review_note_replies").delete().eq("id", reply_id).execute()
+        client.table("backlot_review_note_replies").delete().eq("id", reply_id).execute()
 
         return {"success": True}
 
@@ -15973,16 +15985,16 @@ async def create_task_from_note(
 ):
     """Create a task from a review note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
-        note = await verify_review_note_access(supabase, note_id, user["id"])
+        note = await verify_review_note_access(client, note_id, user["id"])
 
         # Verify task list access
-        await verify_task_list_access(supabase, request.task_list_id, user["id"], require_edit=True)
+        await verify_task_list_access(client, request.task_list_id, user["id"], require_edit=True)
 
         # Get note details for task description
-        version_response = supabase.table("backlot_review_versions").select(
+        version_response = client.table("backlot_review_versions").select(
             "*, backlot_review_assets(id, name, project_id)"
         ).eq("id", note["version_id"]).execute()
 
@@ -16013,13 +16025,13 @@ async def create_task_from_note(
             "assignee_user_id": request.assignee_user_id,
         }
 
-        supabase.table("backlot_tasks").insert(task_data).execute()
+        client.table("backlot_tasks").insert(task_data).execute()
 
         # Update note with linked task ID
-        supabase.table("backlot_review_notes").update({"linked_task_id": task_id}).eq("id", note_id).execute()
+        client.table("backlot_review_notes").update({"linked_task_id": task_id}).eq("id", note_id).execute()
 
         # Get the created task
-        task_result = supabase.table("backlot_tasks").select("*").eq("id", task_id).execute()
+        task_result = client.table("backlot_tasks").select("*").eq("id", task_id).execute()
 
         return {"task": task_result.data[0] if task_result.data else None}
 
@@ -16053,22 +16065,22 @@ async def get_project_breakdown(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all scenes for project
-        scenes_response = supabase.table("backlot_scenes").select(
+        scenes_response = client.table("backlot_scenes").select(
             "id, scene_number, slugline, page_length, int_ext, day_night, sequence"
         ).eq("project_id", project_id).order("sequence").execute()
 
@@ -16085,7 +16097,7 @@ async def get_project_breakdown(
             }
 
         # Build breakdown query
-        query = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
+        query = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
 
         if scene_id:
             query = query.eq("scene_id", scene_id)
@@ -16107,7 +16119,7 @@ async def get_project_breakdown(
         # Get related highlights for each breakdown item
         item_ids = [item["id"] for item in breakdown_items]
         if item_ids:
-            highlights_response = supabase.table("backlot_script_highlight_breakdowns").select(
+            highlights_response = client.table("backlot_script_highlight_breakdowns").select(
                 "breakdown_item_id, highlight_id"
             ).in_("breakdown_item_id", item_ids).execute()
 
@@ -16172,22 +16184,22 @@ async def get_project_breakdown_summary(
     """Get breakdown summary stats for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get scene IDs
-        scenes_response = supabase.table("backlot_scenes").select("id").eq("project_id", project_id).execute()
+        scenes_response = client.table("backlot_scenes").select("id").eq("project_id", project_id).execute()
         scene_ids = [s["id"] for s in (scenes_response.data or [])]
 
         if not scene_ids:
@@ -16199,7 +16211,7 @@ async def get_project_breakdown_summary(
             }
 
         # Get all breakdown items
-        breakdown_response = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids).execute()
+        breakdown_response = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids).execute()
         items = breakdown_response.data or []
 
         # Count by type
@@ -16251,10 +16263,10 @@ async def export_project_breakdown_pdf(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -16262,13 +16274,13 @@ async def export_project_breakdown_pdf(
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get scenes
-        scenes_response = supabase.table("backlot_scenes").select(
+        scenes_response = client.table("backlot_scenes").select(
             "id, scene_number, slugline, page_length, int_ext, day_night, description, sequence"
         ).eq("project_id", project_id).order("sequence").execute()
 
@@ -16279,7 +16291,7 @@ async def export_project_breakdown_pdf(
             raise HTTPException(status_code=404, detail="No scenes found for this project")
 
         # Build breakdown query
-        query = supabase.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
+        query = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_ids)
 
         if scene_id:
             query = query.eq("scene_id", scene_id)
@@ -16386,11 +16398,11 @@ async def export_scene_breakdown_pdf(
     """Export a single scene's breakdown as PDF"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Get scene and verify access
-        scene_response = supabase.table("backlot_scenes").select(
+        scene_response = client.table("backlot_scenes").select(
             "id, scene_number, slugline, page_length, int_ext, day_night, description, project_id"
         ).eq("id", scene_id).single().execute()
 
@@ -16401,7 +16413,7 @@ async def export_scene_breakdown_pdf(
         project_id = scene["project_id"]
 
         # Check access
-        project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+        project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
@@ -16409,12 +16421,12 @@ async def export_scene_breakdown_pdf(
 
         is_owner = project_response.data[0]["owner_id"] == user_id
         if not is_owner:
-            member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get breakdown items for this scene
-        breakdown_response = supabase.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
+        breakdown_response = client.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).order("type").execute()
         breakdown_items = breakdown_response.data or []
 
         if not breakdown_items:
@@ -16471,22 +16483,22 @@ async def get_project_script_notes(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Build query
-        query = supabase.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
+        query = client.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
 
         if script_id:
             query = query.eq("script_id", script_id)
@@ -16506,18 +16518,18 @@ async def get_project_script_notes(
         notes = notes_result.data or []
 
         # Get scripts for this project
-        scripts_response = supabase.table("backlot_scripts").select("id, title, version").eq("project_id", project_id).execute()
+        scripts_response = client.table("backlot_scripts").select("id, title, version").eq("project_id", project_id).execute()
         scripts = {s["id"]: s for s in (scripts_response.data or [])}
 
         # Get scenes for linking
-        scenes_response = supabase.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
+        scenes_response = client.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
         scenes = {s["id"]: s for s in (scenes_response.data or [])}
 
         # Get author profiles
         author_ids = list(set(n.get("author_user_id") for n in notes if n.get("author_user_id")))
         authors = {}
         if author_ids:
-            authors_response = supabase.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
+            authors_response = client.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
             authors = {a["id"]: a for a in (authors_response.data or [])}
 
         # Enrich notes with joined data
@@ -16584,22 +16596,22 @@ async def get_project_notes_summary(
     """Get notes summary stats for a project"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all notes for project
-        notes_response = supabase.table("backlot_script_page_notes").select(
+        notes_response = client.table("backlot_script_page_notes").select(
             "page_number, note_type, resolved, scene_id, author_user_id"
         ).eq("project_id", project_id).execute()
         notes = notes_response.data or []
@@ -16686,10 +16698,10 @@ async def export_project_notes_pdf(
     """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify project access
-    project_response = supabase.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+    project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -16697,13 +16709,13 @@ async def export_project_notes_pdf(
 
     is_owner = project_response.data[0]["owner_id"] == user_id
     if not is_owner:
-        member_response = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Build query
-        query = supabase.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
+        query = client.table("backlot_script_page_notes").select("*").eq("project_id", project_id)
 
         if script_id:
             query = query.eq("script_id", script_id)
@@ -16726,21 +16738,21 @@ async def export_project_notes_pdf(
         # Get script info for title
         script_title = "All Scripts"
         if script_id:
-            script_response = supabase.table("backlot_scripts").select("title, version").eq("id", script_id).single().execute()
+            script_response = client.table("backlot_scripts").select("title, version").eq("id", script_id).single().execute()
             if script_response.data:
                 script_title = script_response.data.get("title", "Script")
                 if script_response.data.get("version"):
                     script_title += f" ({script_response.data['version']})"
 
         # Get scenes
-        scenes_response = supabase.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
+        scenes_response = client.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id).execute()
         scenes_by_id = {s["id"]: s for s in (scenes_response.data or [])}
 
         # Get author profiles
         author_ids = list(set(n.get("author_user_id") for n in notes if n.get("author_user_id")))
         authors_by_id = {}
         if author_ids:
-            authors_response = supabase.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
+            authors_response = client.table("profiles").select("id, full_name, avatar_url").in_("id", author_ids).execute()
             authors_by_id = {a["id"]: a for a in (authors_response.data or [])}
 
         # Build filter info string
@@ -16856,14 +16868,14 @@ async def ingest_local_dailies(
         Ingest result with created counts
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify project access
-        await verify_project_access(supabase, request.project_id, user["id"], require_edit=True)
+        await verify_project_access(client, request.project_id, user["id"], require_edit=True)
 
         # Check if day exists for this date
-        existing_day = supabase.table("backlot_dailies_days").select("id").eq(
+        existing_day = client.table("backlot_dailies_days").select("id").eq(
             "project_id", request.project_id
         ).eq("shoot_date", request.shoot_date).execute()
 
@@ -16872,7 +16884,7 @@ async def ingest_local_dailies(
             day_id = existing_day.data[0]["id"]
         else:
             # Create new day
-            new_day = supabase.table("backlot_dailies_days").insert({
+            new_day = client.table("backlot_dailies_days").insert({
                 "project_id": request.project_id,
                 "shoot_date": request.shoot_date,
                 "label": request.day_label,
@@ -16890,7 +16902,7 @@ async def ingest_local_dailies(
         # Process each card
         for card_input in request.cards:
             # Create card
-            new_card = supabase.table("backlot_dailies_cards").insert({
+            new_card = client.table("backlot_dailies_cards").insert({
                 "dailies_day_id": day_id,
                 "project_id": request.project_id,
                 "camera_label": card_input.camera_label,
@@ -16929,7 +16941,7 @@ async def ingest_local_dailies(
                     })
 
                 if clip_inserts:
-                    result = supabase.table("backlot_dailies_clips").insert(clip_inserts).execute()
+                    result = client.table("backlot_dailies_clips").insert(clip_inserts).execute()
                     clips_created += len(result.data) if result.data else 0
 
         return DailiesLocalIngestResponse(
@@ -16962,26 +16974,26 @@ async def get_dailies_summary(
         Summary with counts for days, cards, clips, notes
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Verify project access
-        await verify_project_access(supabase, project_id, user["id"])
+        await verify_project_access(client, project_id, user["id"])
 
         # Count days
-        days_result = supabase.table("backlot_dailies_days").select(
+        days_result = client.table("backlot_dailies_days").select(
             "id", count="exact"
         ).eq("project_id", project_id).execute()
         total_days = days_result.count or 0
 
         # Count cards
-        cards_result = supabase.table("backlot_dailies_cards").select(
+        cards_result = client.table("backlot_dailies_cards").select(
             "id", count="exact"
         ).eq("project_id", project_id).execute()
         total_cards = cards_result.count or 0
 
         # Get clips with details
-        clips_result = supabase.table("backlot_dailies_clips").select(
+        clips_result = client.table("backlot_dailies_clips").select(
             "id, is_circle_take, storage_mode"
         ).eq("project_id", project_id).execute()
 
@@ -16996,7 +17008,7 @@ async def get_dailies_summary(
         unresolved_notes = 0
 
         if clip_ids:
-            notes_result = supabase.table("backlot_dailies_clip_notes").select(
+            notes_result = client.table("backlot_dailies_clip_notes").select(
                 "is_resolved"
             ).in_("dailies_clip_id", clip_ids).execute()
 
