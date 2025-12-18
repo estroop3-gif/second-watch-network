@@ -631,6 +631,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   // Refresh the scripts list when a new version is created
                   refetchScripts();
                 }}
+                onScriptUpdated={() => {
+                  // Refresh scripts when content is saved so viewer shows updated content
+                  refetchScripts();
+                }}
               />
             </div>
           ) : (

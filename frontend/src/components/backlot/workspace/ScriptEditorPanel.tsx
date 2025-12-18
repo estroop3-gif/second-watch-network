@@ -245,6 +245,7 @@ interface ScriptEditorPanelProps {
   canEdit: boolean;
   onBack?: () => void;
   onVersionCreated?: (newScript: BacklotScript) => void;
+  onScriptUpdated?: () => void;
 }
 
 // Industry-standard revision colors
@@ -268,6 +269,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   canEdit,
   onBack,
   onVersionCreated,
+  onScriptUpdated,
 }) => {
   const { toast } = useToast();
   const { data: currentScript, refetch } = useScript(script.id);
@@ -351,6 +353,8 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       setIsEditing(false);
       setHasUnsavedChanges(false);
       await refetch();
+      // Notify parent to refresh script data
+      onScriptUpdated?.();
       toast({
         title: 'Script Saved',
         description: 'Your changes have been saved.',
@@ -362,7 +366,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
         variant: 'destructive',
       });
     }
-  }, [activeScript, editContent, updateScript, refetch, toast]);
+  }, [activeScript, editContent, updateScript, refetch, toast, onScriptUpdated]);
 
   const handleCreateNewVersion = useCallback(async () => {
     try {
