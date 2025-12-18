@@ -3,9 +3,9 @@ Profiles API Routes
 """
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.schemas.profiles import (
-    Profile, ProfileUpdate, 
+    Profile, ProfileUpdate,
     FilmmakerProfile, FilmmakerProfileCreate, FilmmakerProfileUpdate
 )
 
@@ -16,8 +16,8 @@ router = APIRouter()
 async def get_profile(user_id: str):
     """Get user profile by ID"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+        client = get_client()
+        response = client.table("profiles").select("*").eq("id", user_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Profile not found")
@@ -31,8 +31,8 @@ async def get_profile(user_id: str):
 async def update_profile(user_id: str, profile: ProfileUpdate):
     """Update user profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("profiles").update(
+        client = get_client()
+        response = client.table("profiles").update(
             profile.model_dump(exclude_unset=True)
         ).eq("id", user_id).execute()
         
@@ -45,8 +45,8 @@ async def update_profile(user_id: str, profile: ProfileUpdate):
 async def get_profile_by_username(username: str):
     """Get profile by username"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("profiles").select("*").eq("username", username).execute()
+        client = get_client()
+        response = client.table("profiles").select("*").eq("username", username).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Profile not found")
@@ -61,8 +61,8 @@ async def get_profile_by_username(username: str):
 async def get_filmmaker_profile(user_id: str):
     """Get filmmaker profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmaker_profiles").select("*").eq("user_id", user_id).execute()
+        client = get_client()
+        response = client.table("filmmaker_profiles").select("*").eq("user_id", user_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Filmmaker profile not found")
@@ -76,8 +76,8 @@ async def get_filmmaker_profile(user_id: str):
 async def create_filmmaker_profile(profile: FilmmakerProfileCreate):
     """Create filmmaker profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmaker_profiles").insert(
+        client = get_client()
+        response = client.table("filmmaker_profiles").insert(
             profile.model_dump()
         ).execute()
         return response.data[0]
@@ -89,8 +89,8 @@ async def create_filmmaker_profile(profile: FilmmakerProfileCreate):
 async def update_filmmaker_profile(user_id: str, profile: FilmmakerProfileUpdate):
     """Update filmmaker profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmaker_profiles").update(
+        client = get_client()
+        response = client.table("filmmaker_profiles").update(
             profile.model_dump(exclude_unset=True)
         ).eq("user_id", user_id).execute()
         return response.data[0]
@@ -107,8 +107,8 @@ async def list_filmmaker_profiles(
 ):
     """List all filmmaker profiles"""
     try:
-        supabase = get_supabase_client()
-        query = supabase.table("filmmaker_profiles").select("*")
+        client = get_client()
+        query = client.table("filmmaker_profiles").select("*")
         
         if department:
             query = query.eq("department", department)

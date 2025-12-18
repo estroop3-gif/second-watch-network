@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.core.auth import get_current_user, get_current_user_optional
 from app.core.deps import (
     get_user_profile,
@@ -111,8 +111,8 @@ def is_partner(user) -> bool:
 
 async def get_order_member_profile(user_id: str) -> Optional[dict]:
     """Get Order member profile from database"""
-    supabase = get_supabase_client()
-    result = supabase.table("order_member_profiles").select("*").eq("user_id", user_id).execute()
+    client = get_client()
+    result = client.table("order_member_profiles").select("*").eq("user_id", user_id).execute()
     # Return first result or None (don't use .single() which throws on 0 rows)
     return result.data[0] if result.data and len(result.data) > 0 else None
 
@@ -155,10 +155,10 @@ async def submit_application(
 ):
     """Submit application to join The Order"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Check if user already has a pending or approved application
-    existing = supabase.table("order_applications").select("*").eq("user_id", user_id).in_("status", ["pending", "approved"]).execute()
+    existing = client.table("order_applications").select("*").eq("user_id", user_id).in_("status", ["pending", "approved"]).execute()
 
     if existing.data:
         existing_status = existing.data[0].get("status")
@@ -195,7 +195,7 @@ async def submit_application(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("order_applications").insert(app_data).execute()
+    result = client.table("order_applications").insert(app_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create application")
@@ -211,9 +211,9 @@ async def submit_application(
 async def get_my_application(user = Depends(get_current_user)):
     """Get current user's application"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_applications").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
+    result = client.table("order_applications").select("*").eq("user_id", user_id).order("created_at", desc=True).limit(1).execute()
 
     if not result.data:
         return None
@@ -233,9 +233,9 @@ async def list_applications(
     user = Depends(require_admin)
 ):
     """List all applications (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
-    query = supabase.table("order_applications").select("*", count="exact")
+    query = client.table("order_applications").select("*", count="exact")
 
     if status:
         query = query.eq("status", status.value)
@@ -265,11 +265,11 @@ async def approve_application(
     user = Depends(require_admin)
 ):
     """Approve an application (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
     admin_id = get_user_id(user)
 
     # Get the application
-    app_result = supabase.table("order_applications").select("*").eq("id", application_id).single().execute()
+    app_result = client.table("order_applications").select("*").eq("id", application_id).single().execute()
 
     if not app_result.data:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -284,7 +284,7 @@ async def approve_application(
 
     # Update application status
     now = datetime.utcnow().isoformat()
-    update_result = supabase.table("order_applications").update({
+    update_result = client.table("order_applications").update({
         "status": OrderApplicationStatus.APPROVED.value,
         "reviewed_by_id": admin_id,
         "reviewed_at": now,
@@ -295,7 +295,7 @@ async def approve_application(
     applicant_user_id = application["user_id"]
 
     # Check if profile already exists (shouldn't, but be safe)
-    existing_profile = supabase.table("order_member_profiles").select("id").eq("user_id", applicant_user_id).execute()
+    existing_profile = client.table("order_member_profiles").select("id").eq("user_id", applicant_user_id).execute()
 
     if not existing_profile.data:
         profile_data = {
@@ -310,7 +310,7 @@ async def approve_application(
             "created_at": now,
             "updated_at": now,
         }
-        supabase.table("order_member_profiles").insert(profile_data).execute()
+        client.table("order_member_profiles").insert(profile_data).execute()
 
     # TODO: Send notification email to applicant
     # TODO: Initiate Stripe subscription for dues
@@ -325,11 +325,11 @@ async def reject_application(
     user = Depends(require_admin)
 ):
     """Reject an application (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
     admin_id = get_user_id(user)
 
     # Get the application
-    app_result = supabase.table("order_applications").select("*").eq("id", application_id).single().execute()
+    app_result = client.table("order_applications").select("*").eq("id", application_id).single().execute()
 
     if not app_result.data:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -342,7 +342,7 @@ async def reject_application(
 
     # Update application status
     now = datetime.utcnow().isoformat()
-    update_result = supabase.table("order_applications").update({
+    update_result = client.table("order_applications").update({
         "status": OrderApplicationStatus.REJECTED.value,
         "reviewed_by_id": admin_id,
         "reviewed_at": now,
@@ -372,8 +372,8 @@ async def get_my_profile(user = Depends(get_current_user)):
 
     # Get lodge info if member of one
     if profile.get("lodge_id"):
-        supabase = get_supabase_client()
-        lodge_result = supabase.table("order_lodges").select("name, city").eq("id", profile["lodge_id"]).single().execute()
+        client = get_client()
+        lodge_result = client.table("order_lodges").select("name, city").eq("id", profile["lodge_id"]).single().execute()
         if lodge_result.data:
             profile["lodge_name"] = lodge_result.data["name"]
             profile["lodge_city"] = lodge_result.data["city"]
@@ -388,14 +388,14 @@ async def create_or_update_profile(
 ):
     """Create or update Order member profile"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Check if user has an approved application or existing profile
     existing_profile = await get_order_member_profile(user_id)
 
     if not existing_profile:
         # Check for approved application
-        app_result = supabase.table("order_applications").select("id").eq("user_id", user_id).eq("status", "approved").execute()
+        app_result = client.table("order_applications").select("id").eq("user_id", user_id).eq("status", "approved").execute()
 
         if not app_result.data:
             raise HTTPException(
@@ -424,7 +424,7 @@ async def create_or_update_profile(
 
     if existing_profile:
         # Update existing
-        result = supabase.table("order_member_profiles").update(data).eq("user_id", user_id).execute()
+        result = client.table("order_member_profiles").update(data).eq("user_id", user_id).execute()
     else:
         # Create new
         data["user_id"] = user_id
@@ -432,7 +432,7 @@ async def create_or_update_profile(
         data["joined_at"] = now
         data["dues_status"] = "pending"
         data["created_at"] = now
-        result = supabase.table("order_member_profiles").insert(data).execute()
+        result = client.table("order_member_profiles").insert(data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to save profile")
@@ -451,7 +451,7 @@ async def update_profile(
 ):
     """Update Order member profile fields"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Build update dict with only provided fields
     update_data = {}
@@ -469,7 +469,7 @@ async def update_profile(
 
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("order_member_profiles").update(update_data).eq("user_id", user_id).execute()
+    result = client.table("order_member_profiles").update(update_data).eq("user_id", user_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update profile")
@@ -492,9 +492,9 @@ async def list_members(
     user = Depends(require_admin)
 ):
     """List all Order members (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
-    query = supabase.table("order_member_profiles").select("*", count="exact")
+    query = client.table("order_member_profiles").select("*", count="exact")
 
     if track:
         query = query.eq("primary_track", track.value)
@@ -525,10 +525,10 @@ async def admin_update_member(
     admin = Depends(require_admin)
 ):
     """Update member status (admin only) - suspend, expel, etc."""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify member exists
-    existing = supabase.table("order_member_profiles").select("*").eq("user_id", user_id).single().execute()
+    existing = client.table("order_member_profiles").select("*").eq("user_id", user_id).single().execute()
 
     if not existing.data:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -539,7 +539,7 @@ async def admin_update_member(
         "updated_at": now,
     }
 
-    result = supabase.table("order_member_profiles").update(update_data).eq("user_id", user_id).execute()
+    result = client.table("order_member_profiles").update(update_data).eq("user_id", user_id).execute()
 
     # TODO: Send notification email about status change
     # TODO: Handle Stripe subscription cancellation if expelled
@@ -559,10 +559,10 @@ async def get_member_directory(
     user = Depends(require_order_member)
 ):
     """Get searchable directory of Order members (Order members only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Only show active/probationary members in directory
-    query = supabase.table("order_member_profiles").select("*").in_("status", ["active", "probationary"])
+    query = client.table("order_member_profiles").select("*").in_("status", ["active", "probationary"])
 
     if track:
         query = query.eq("primary_track", track.value)
@@ -604,9 +604,9 @@ async def get_member_profile(
     current_user = Depends(require_order_member)
 ):
     """Get a specific Order member's profile (Order members only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_member_profiles").select("*").eq("user_id", user_id).single().execute()
+    result = client.table("order_member_profiles").select("*").eq("user_id", user_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Member not found")
@@ -619,7 +619,7 @@ async def get_member_profile(
 
     # Get lodge info
     if profile.get("lodge_id"):
-        lodge_result = supabase.table("order_lodges").select("name, city").eq("id", profile["lodge_id"]).single().execute()
+        lodge_result = client.table("order_lodges").select("name, city").eq("id", profile["lodge_id"]).single().execute()
         if lodge_result.data:
             profile["lodge_name"] = lodge_result.data["name"]
             profile["lodge_city"] = lodge_result.data["city"]
@@ -638,9 +638,9 @@ async def list_lodges(
     user = Depends(get_current_user_optional)
 ):
     """List all lodges (public for forming/active)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
-    query = supabase.table("order_lodges").select("*", count="exact")
+    query = client.table("order_lodges").select("*", count="exact")
 
     # Non-admins only see forming/active lodges
     if not (user and is_admin(user)):
@@ -657,7 +657,7 @@ async def list_lodges(
     lodges = []
     for lodge in result.data or []:
         # Get member count
-        member_count_result = supabase.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge["id"]).eq("status", "active").execute()
+        member_count_result = client.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge["id"]).eq("status", "active").execute()
         lodge["member_count"] = member_count_result.count or 0
 
         lodges.append(LodgeResponse(**lodge))
@@ -669,9 +669,9 @@ async def list_lodges(
 async def get_my_lodge_memberships(user = Depends(require_order_member)):
     """Get current user's lodge memberships"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_lodge_memberships").select("*, order_lodges(name, city)").eq("user_id", user_id).execute()
+    result = client.table("order_lodge_memberships").select("*, order_lodges(name, city)").eq("user_id", user_id).execute()
 
     memberships = []
     for m in result.data or []:
@@ -692,9 +692,9 @@ async def get_lodge(
     user = Depends(get_current_user_optional)
 ):
     """Get lodge details"""
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
+    result = client.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Lodge not found")
@@ -706,7 +706,7 @@ async def get_lodge(
         raise HTTPException(status_code=404, detail="Lodge not found")
 
     # Get member count
-    member_count_result = supabase.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge_id).eq("status", "active").execute()
+    member_count_result = client.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge_id).eq("status", "active").execute()
     lodge["member_count"] = member_count_result.count or 0
 
     return LodgeResponse(**lodge)
@@ -719,10 +719,10 @@ async def join_lodge(
 ):
     """Join a lodge (Order members only)"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify lodge exists and is joinable
-    lodge_result = supabase.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
+    lodge_result = client.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
 
     if not lodge_result.data:
         raise HTTPException(status_code=404, detail="Lodge not found")
@@ -732,7 +732,7 @@ async def join_lodge(
         raise HTTPException(status_code=400, detail="This lodge is not accepting members")
 
     # Check if already a member
-    existing = supabase.table("order_lodge_memberships").select("*").eq("user_id", user_id).eq("lodge_id", lodge_id).execute()
+    existing = client.table("order_lodge_memberships").select("*").eq("user_id", user_id).eq("lodge_id", lodge_id).execute()
 
     if existing.data:
         membership = existing.data[0]
@@ -753,13 +753,13 @@ async def join_lodge(
         "updated_at": now,
     }
 
-    result = supabase.table("order_lodge_memberships").insert(membership_data).execute()
+    result = client.table("order_lodge_memberships").insert(membership_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to join lodge")
 
     # Update member profile with lodge_id
-    supabase.table("order_member_profiles").update({
+    client.table("order_member_profiles").update({
         "lodge_id": lodge_id,
         "updated_at": now,
     }).eq("user_id", user_id).execute()
@@ -779,10 +779,10 @@ async def create_lodge(
     user = Depends(require_admin)
 ):
     """Create a new lodge (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Check slug is unique
-    existing = supabase.table("order_lodges").select("id").eq("slug", lodge.slug).execute()
+    existing = client.table("order_lodges").select("id").eq("slug", lodge.slug).execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="Lodge slug already exists")
 
@@ -801,7 +801,7 @@ async def create_lodge(
         "updated_at": now,
     }
 
-    result = supabase.table("order_lodges").insert(lodge_data).execute()
+    result = client.table("order_lodges").insert(lodge_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create lodge")
@@ -819,10 +819,10 @@ async def update_lodge(
     user = Depends(require_admin)
 ):
     """Update a lodge (admin only)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify lodge exists
-    existing = supabase.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
+    existing = client.table("order_lodges").select("*").eq("id", lodge_id).single().execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Lodge not found")
 
@@ -839,12 +839,12 @@ async def update_lodge(
 
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("order_lodges").update(update_data).eq("id", lodge_id).execute()
+    result = client.table("order_lodges").update(update_data).eq("id", lodge_id).execute()
 
     response_data = result.data[0]
 
     # Get member count
-    member_count_result = supabase.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge_id).eq("status", "active").execute()
+    member_count_result = client.table("order_lodge_memberships").select("id", count="exact").eq("lodge_id", lodge_id).eq("status", "active").execute()
     response_data["member_count"] = member_count_result.count or 0
 
     return LodgeResponse(**response_data)
@@ -863,11 +863,11 @@ async def list_jobs(
     user = Depends(get_current_user_optional)
 ):
     """List jobs (visibility-aware)"""
-    supabase = get_supabase_client()
+    client = get_client()
     user_id = get_user_id(user) if user else None
     is_member = await is_order_member(user_id) if user_id else False
 
-    query = supabase.table("order_jobs").select("*", count="exact")
+    query = client.table("order_jobs").select("*", count="exact")
 
     if active_only:
         query = query.eq("is_active", True)
@@ -893,13 +893,13 @@ async def list_jobs(
     for job in result.data or []:
         # Check if current user has applied
         if user_id:
-            app_check = supabase.table("order_job_applications").select("id").eq("job_id", job["id"]).eq("user_id", user_id).execute()
+            app_check = client.table("order_job_applications").select("id").eq("job_id", job["id"]).eq("user_id", user_id).execute()
             job["user_has_applied"] = bool(app_check.data)
         else:
             job["user_has_applied"] = False
 
         # Get application count
-        app_count = supabase.table("order_job_applications").select("id", count="exact").eq("job_id", job["id"]).execute()
+        app_count = client.table("order_job_applications").select("id", count="exact").eq("job_id", job["id"]).execute()
         job["application_count"] = app_count.count or 0
 
         jobs.append(OrderJobResponse(**job))
@@ -918,11 +918,11 @@ async def get_job(
     user = Depends(get_current_user_optional)
 ):
     """Get job details"""
-    supabase = get_supabase_client()
+    client = get_client()
     user_id = get_user_id(user) if user else None
     is_member = await is_order_member(user_id) if user_id else False
 
-    result = supabase.table("order_jobs").select("*").eq("id", job_id).single().execute()
+    result = client.table("order_jobs").select("*").eq("id", job_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -935,13 +935,13 @@ async def get_job(
 
     # Check if current user has applied
     if user_id:
-        app_check = supabase.table("order_job_applications").select("id").eq("job_id", job_id).eq("user_id", user_id).execute()
+        app_check = client.table("order_job_applications").select("id").eq("job_id", job_id).eq("user_id", user_id).execute()
         job["user_has_applied"] = bool(app_check.data)
     else:
         job["user_has_applied"] = False
 
     # Get application count
-    app_count = supabase.table("order_job_applications").select("id", count="exact").eq("job_id", job_id).execute()
+    app_count = client.table("order_job_applications").select("id", count="exact").eq("job_id", job_id).execute()
     job["application_count"] = app_count.count or 0
 
     return OrderJobResponse(**job)
@@ -960,7 +960,7 @@ async def create_job(
         )
 
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     now = datetime.utcnow().isoformat()
     job_data = {
@@ -983,7 +983,7 @@ async def create_job(
         "updated_at": now,
     }
 
-    result = supabase.table("order_jobs").insert(job_data).execute()
+    result = client.table("order_jobs").insert(job_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create job")
@@ -1002,11 +1002,11 @@ async def update_job(
     user = Depends(get_current_user)
 ):
     """Update a job posting"""
-    supabase = get_supabase_client()
+    client = get_client()
     user_id = get_user_id(user)
 
     # Get existing job
-    existing = supabase.table("order_jobs").select("*").eq("id", job_id).single().execute()
+    existing = client.table("order_jobs").select("*").eq("id", job_id).single().execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -1029,12 +1029,12 @@ async def update_job(
 
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("order_jobs").update(update_data).eq("id", job_id).execute()
+    result = client.table("order_jobs").update(update_data).eq("id", job_id).execute()
 
     response_data = result.data[0]
 
     # Get application count
-    app_count = supabase.table("order_job_applications").select("id", count="exact").eq("job_id", job_id).execute()
+    app_count = client.table("order_job_applications").select("id", count="exact").eq("job_id", job_id).execute()
     response_data["application_count"] = app_count.count or 0
 
     return OrderJobResponse(**response_data)
@@ -1048,10 +1048,10 @@ async def apply_to_job(
 ):
     """Apply to a job (Order members only)"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify job exists and is active
-    job_result = supabase.table("order_jobs").select("*").eq("id", job_id).single().execute()
+    job_result = client.table("order_jobs").select("*").eq("id", job_id).single().execute()
     if not job_result.data:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -1066,7 +1066,7 @@ async def apply_to_job(
             raise HTTPException(status_code=400, detail="Application deadline has passed")
 
     # Check if already applied
-    existing = supabase.table("order_job_applications").select("id").eq("job_id", job_id).eq("user_id", user_id).execute()
+    existing = client.table("order_job_applications").select("id").eq("job_id", job_id).eq("user_id", user_id).execute()
     if existing.data:
         raise HTTPException(status_code=400, detail="You have already applied to this job")
 
@@ -1081,7 +1081,7 @@ async def apply_to_job(
         "updated_at": now,
     }
 
-    result = supabase.table("order_job_applications").insert(app_data).execute()
+    result = client.table("order_job_applications").insert(app_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to submit application")
@@ -1101,9 +1101,9 @@ async def get_my_job_applications(
 ):
     """Get current user's job applications"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_job_applications").select("*, order_jobs(title)").eq("user_id", user_id).order("created_at", desc=True).execute()
+    result = client.table("order_job_applications").select("*, order_jobs(title)").eq("user_id", user_id).order("created_at", desc=True).execute()
 
     applications = []
     for app in result.data or []:
@@ -1125,7 +1125,7 @@ async def create_booking_request(
     user = Depends(get_current_user_optional)
 ):
     """Create a booking request for an Order member (public endpoint)"""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify target user is an Order member
     target_profile = await get_order_member_profile(request.target_user_id)
@@ -1154,7 +1154,7 @@ async def create_booking_request(
         "updated_at": now,
     }
 
-    result = supabase.table("order_booking_requests").insert(booking_data).execute()
+    result = client.table("order_booking_requests").insert(booking_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create booking request")
@@ -1171,9 +1171,9 @@ async def get_my_booking_requests(
 ):
     """Get booking requests for current user (as target)"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
-    result = supabase.table("order_booking_requests").select("*").eq("target_user_id", user_id).order("created_at", desc=True).execute()
+    result = client.table("order_booking_requests").select("*").eq("target_user_id", user_id).order("created_at", desc=True).execute()
 
     return [OrderBookingRequestResponse(**r) for r in (result.data or [])]
 
@@ -1186,10 +1186,10 @@ async def update_booking_request(
 ):
     """Update booking request status (by target member)"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Verify request exists and belongs to user
-    existing = supabase.table("order_booking_requests").select("*").eq("id", request_id).single().execute()
+    existing = client.table("order_booking_requests").select("*").eq("id", request_id).single().execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Booking request not found")
 
@@ -1202,7 +1202,7 @@ async def update_booking_request(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("order_booking_requests").update(update_data).eq("id", request_id).execute()
+    result = client.table("order_booking_requests").update(update_data).eq("id", request_id).execute()
 
     # TODO: Send email notification to requester about status change
 
@@ -1215,7 +1215,7 @@ async def update_booking_request(
 async def get_order_dashboard(user = Depends(get_current_user)):
     """Get Order dashboard stats for current user"""
     user_id = get_user_id(user)
-    supabase = get_supabase_client()
+    client = get_client()
 
     profile = await get_order_member_profile(user_id)
 
@@ -1227,15 +1227,15 @@ async def get_order_dashboard(user = Depends(get_current_user)):
         )
 
     # Get pending booking requests count
-    booking_count = supabase.table("order_booking_requests").select("id", count="exact").eq("target_user_id", user_id).eq("status", "pending").execute()
+    booking_count = client.table("order_booking_requests").select("id", count="exact").eq("target_user_id", user_id).eq("status", "pending").execute()
 
     # Get active job applications count
-    job_app_count = supabase.table("order_job_applications").select("id", count="exact").eq("user_id", user_id).in_("status", ["submitted", "reviewed"]).execute()
+    job_app_count = client.table("order_job_applications").select("id", count="exact").eq("user_id", user_id).in_("status", ["submitted", "reviewed"]).execute()
 
     # Get lodge name if member
     lodge_name = None
     if profile.get("lodge_id"):
-        lodge_result = supabase.table("order_lodges").select("name").eq("id", profile["lodge_id"]).single().execute()
+        lodge_result = client.table("order_lodges").select("name").eq("id", profile["lodge_id"]).single().execute()
         if lodge_result.data:
             lodge_name = lodge_result.data["name"]
 
@@ -1255,33 +1255,33 @@ async def get_order_dashboard(user = Depends(get_current_user)):
 @router.get("/admin/stats", response_model=OrderAdminStats)
 async def get_admin_stats(user = Depends(require_admin)):
     """Get Order admin statistics"""
-    supabase = get_supabase_client()
+    client = get_client()
 
     # Member counts by status
-    total_members = supabase.table("order_member_profiles").select("id", count="exact").execute()
-    active_members = supabase.table("order_member_profiles").select("id", count="exact").eq("status", "active").execute()
-    probationary_members = supabase.table("order_member_profiles").select("id", count="exact").eq("status", "probationary").execute()
-    suspended_members = supabase.table("order_member_profiles").select("id", count="exact").eq("status", "suspended").execute()
+    total_members = client.table("order_member_profiles").select("id", count="exact").execute()
+    active_members = client.table("order_member_profiles").select("id", count="exact").eq("status", "active").execute()
+    probationary_members = client.table("order_member_profiles").select("id", count="exact").eq("status", "probationary").execute()
+    suspended_members = client.table("order_member_profiles").select("id", count="exact").eq("status", "suspended").execute()
 
     # Pending applications
-    pending_apps = supabase.table("order_applications").select("id", count="exact").eq("status", "pending").execute()
+    pending_apps = client.table("order_applications").select("id", count="exact").eq("status", "pending").execute()
 
     # Lodge counts
-    total_lodges = supabase.table("order_lodges").select("id", count="exact").execute()
-    active_lodges = supabase.table("order_lodges").select("id", count="exact").eq("status", "active").execute()
+    total_lodges = client.table("order_lodges").select("id", count="exact").execute()
+    active_lodges = client.table("order_lodges").select("id", count="exact").eq("status", "active").execute()
 
     # Active jobs
-    active_jobs = supabase.table("order_jobs").select("id", count="exact").eq("is_active", True).execute()
+    active_jobs = client.table("order_jobs").select("id", count="exact").eq("is_active", True).execute()
 
     # Members by track
-    track_results = supabase.table("order_member_profiles").select("primary_track").execute()
+    track_results = client.table("order_member_profiles").select("primary_track").execute()
     members_by_track = {}
     for member in track_results.data or []:
         track = member["primary_track"]
         members_by_track[track] = members_by_track.get(track, 0) + 1
 
     # Members by city
-    city_results = supabase.table("order_member_profiles").select("city").not_.is_("city", "null").execute()
+    city_results = client.table("order_member_profiles").select("city").not_.is_("city", "null").execute()
     members_by_city = {}
     for member in city_results.data or []:
         city = member["city"]

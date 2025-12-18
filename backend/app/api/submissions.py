@@ -3,7 +3,7 @@ Submissions API Routes
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.schemas.submissions import Submission, SubmissionCreate, SubmissionUpdate
 
 router = APIRouter()
@@ -13,12 +13,12 @@ router = APIRouter()
 async def create_submission(submission: SubmissionCreate, user_id: str):
     """Create new submission"""
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         data = submission.model_dump()
         data["user_id"] = user_id
         data["status"] = "pending"
         
-        response = supabase.table("submissions").insert(data).execute()
+        response = client.table("submissions").insert(data).execute()
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -28,8 +28,8 @@ async def create_submission(submission: SubmissionCreate, user_id: str):
 async def get_submission(submission_id: str):
     """Get submission by ID"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("submissions").select("*").eq("id", submission_id).execute()
+        client = get_client()
+        response = client.table("submissions").select("*").eq("id", submission_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Submission not found")
@@ -48,8 +48,8 @@ async def list_submissions(
 ):
     """List submissions"""
     try:
-        supabase = get_supabase_client()
-        query = supabase.table("submissions").select("*")
+        client = get_client()
+        query = client.table("submissions").select("*")
         
         if status:
             query = query.eq("status", status)
@@ -66,8 +66,8 @@ async def list_submissions(
 async def update_submission(submission_id: str, submission: SubmissionUpdate):
     """Update submission"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("submissions").update(
+        client = get_client()
+        response = client.table("submissions").update(
             submission.model_dump(exclude_unset=True)
         ).eq("id", submission_id).execute()
         return response.data[0]
@@ -79,8 +79,8 @@ async def update_submission(submission_id: str, submission: SubmissionUpdate):
 async def delete_submission(submission_id: str):
     """Delete submission"""
     try:
-        supabase = get_supabase_client()
-        supabase.table("submissions").delete().eq("id", submission_id).execute()
+        client = get_client()
+        client.table("submissions").delete().eq("id", submission_id).execute()
         return {"message": "Submission deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -3,7 +3,7 @@ Community/Search API Routes
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -17,10 +17,10 @@ async def search_filmmakers(
 ):
     """Search and list filmmakers with pagination"""
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         
         # Join profiles and filmmaker_profiles
-        db_query = supabase.table("filmmaker_profiles").select(
+        db_query = client.table("filmmaker_profiles").select(
             "*, profiles(*)"
         )
         
@@ -44,7 +44,7 @@ async def search_filmmakers(
 async def global_search(query: str, type: Optional[str] = None):
     """Global search across multiple entities"""
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         results = {
             "filmmakers": [],
             "threads": [],
@@ -52,19 +52,19 @@ async def global_search(query: str, type: Optional[str] = None):
         }
         
         if not type or type == "filmmakers":
-            filmmakers = supabase.table("profiles").select("*").ilike(
+            filmmakers = client.table("profiles").select("*").ilike(
                 "full_name", f"%{query}%"
             ).limit(10).execute()
             results["filmmakers"] = filmmakers.data
         
         if not type or type == "threads":
-            threads = supabase.table("forum_threads").select("*").ilike(
+            threads = client.table("forum_threads").select("*").ilike(
                 "title", f"%{query}%"
             ).limit(10).execute()
             results["threads"] = threads.data
         
         if not type or type == "content":
-            content = supabase.table("content").select("*").ilike(
+            content = client.table("content").select("*").ilike(
                 "title", f"%{query}%"
             ).limit(10).execute()
             results["content"] = content.data

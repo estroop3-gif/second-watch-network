@@ -3,7 +3,7 @@ Connections API Routes
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.schemas.connections import Connection, ConnectionCreate, ConnectionUpdate
 
 router = APIRouter()
@@ -13,12 +13,12 @@ router = APIRouter()
 async def create_connection_request(connection: ConnectionCreate, requester_id: str):
     """Send connection request"""
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         data = connection.model_dump()
         data["requester_id"] = requester_id
         data["status"] = "pending"
         
-        response = supabase.table("connections").insert(data).execute()
+        response = client.table("connections").insert(data).execute()
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -33,8 +33,8 @@ async def list_connections(
 ):
     """List user's connections"""
     try:
-        supabase = get_supabase_client()
-        query = supabase.table("connections").select("*").or_(
+        client = get_client()
+        query = client.table("connections").select("*").or_(
             f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
         )
         
@@ -51,8 +51,8 @@ async def list_connections(
 async def update_connection(connection_id: str, update: ConnectionUpdate):
     """Update connection status (accept/deny)"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("connections").update(
+        client = get_client()
+        response = client.table("connections").update(
             update.model_dump()
         ).eq("id", connection_id).execute()
         return response.data[0]

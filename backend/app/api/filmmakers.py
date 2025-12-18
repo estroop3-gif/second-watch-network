@@ -4,7 +4,7 @@ Filmmakers API Routes
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -25,8 +25,8 @@ class FilmmakerProfile(BaseModel):
 async def list_filmmakers(skip: int = 0, limit: int = 20, specialty: str | None = None):
     """List all filmmakers"""
     try:
-        supabase = get_supabase_client()
-        query = supabase.table("filmmakers").select("*")
+        client = get_client()
+        query = client.table("filmmakers").select("*")
         
         if specialty:
             query = query.eq("specialty", specialty)
@@ -41,8 +41,8 @@ async def list_filmmakers(skip: int = 0, limit: int = 20, specialty: str | None 
 async def get_filmmaker(filmmaker_id: str):
     """Get filmmaker profile by ID"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmakers").select("*").eq("id", filmmaker_id).execute()
+        client = get_client()
+        response = client.table("filmmakers").select("*").eq("id", filmmaker_id).execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail="Filmmaker not found")
@@ -56,8 +56,8 @@ async def get_filmmaker(filmmaker_id: str):
 async def create_filmmaker_profile(profile: FilmmakerProfile):
     """Create filmmaker profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmakers").insert(profile.model_dump(exclude={"id"})).execute()
+        client = get_client()
+        response = client.table("filmmakers").insert(profile.model_dump(exclude={"id"})).execute()
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -67,8 +67,8 @@ async def create_filmmaker_profile(profile: FilmmakerProfile):
 async def update_filmmaker_profile(filmmaker_id: str, profile: FilmmakerProfile):
     """Update filmmaker profile"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("filmmakers").update(
+        client = get_client()
+        response = client.table("filmmakers").update(
             profile.model_dump(exclude={"id"})
         ).eq("id", filmmaker_id).execute()
         return response.data[0]

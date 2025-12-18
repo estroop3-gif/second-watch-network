@@ -19,7 +19,8 @@ from app.services.breakdown_pdf_service import (
 )
 from fastapi.responses import Response
 import uuid
-from app.core.supabase import get_supabase_client, get_supabase_admin_client
+from app.core.database import get_client
+from app.core.supabase import get_supabase_admin_client  # Keep admin client for special operations
 from app.core.config import settings
 
 router = APIRouter()

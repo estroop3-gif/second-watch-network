@@ -9,7 +9,8 @@ It implements a layered permission system:
 4. Per-user overrides can customize permissions for specific users
 """
 from typing import Dict, Any, Optional, List, Tuple
-from app.core.supabase import get_supabase_client, get_supabase_admin_client
+from app.core.database import get_client
+from app.core.supabase import get_supabase_admin_client  # Keep admin client for now
 
 
 # Default view/edit configs per Backlot role

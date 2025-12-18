@@ -244,14 +244,169 @@ class DatabaseTable:
         result = execute_single(query, params)
         return type('Response', (), {'data': result, 'error': None})()
 
+    def range(self, start: int, end: int):
+        """Supabase-style range pagination (0-indexed, inclusive)."""
+        self._offset = start
+        self._limit = end - start + 1
+        return self
+
+
+class DatabaseInsertBuilder:
+    """Handles INSERT operations with Supabase-compatible API."""
+
+    def __init__(self, table_name: str, data: dict | list):
+        self.table_name = table_name
+        self.data = data if isinstance(data, list) else [data]
+        self._returning = "*"
+
+    def execute(self):
+        results = []
+        for row in self.data:
+            columns = ", ".join(row.keys())
+            placeholders = ", ".join([f":{k}" for k in row.keys()])
+            query = f"INSERT INTO {self.table_name} ({columns}) VALUES ({placeholders}) RETURNING {self._returning}"
+            result = execute_insert(query, row)
+            if result:
+                results.append(result)
+        return type('Response', (), {'data': results, 'error': None})()
+
+
+class DatabaseUpdateBuilder:
+    """Handles UPDATE operations with Supabase-compatible API."""
+
+    def __init__(self, table_name: str, data: dict):
+        self.table_name = table_name
+        self.data = data
+        self._filters = []
+        self._returning = "*"
+
+    def eq(self, column: str, value):
+        self._filters.append((column, "=", value))
+        return self
+
+    def neq(self, column: str, value):
+        self._filters.append((column, "!=", value))
+        return self
+
+    def execute(self):
+        if not self._filters:
+            raise ValueError("UPDATE requires at least one filter (eq, neq, etc.)")
+
+        set_clause = ", ".join([f"{k} = :set_{k}" for k in self.data.keys()])
+        params = {f"set_{k}": v for k, v in self.data.items()}
+
+        conditions = []
+        for i, (col, op, val) in enumerate(self._filters):
+            param_name = f"where_{i}"
+            params[param_name] = val
+            conditions.append(f"{col} {op} :{param_name}")
+
+        where_clause = " AND ".join(conditions)
+        query = f"UPDATE {self.table_name} SET {set_clause} WHERE {where_clause} RETURNING {self._returning}"
+
+        with get_db_session() as db:
+            result = db.execute(text(query), params)
+            db.commit()
+            rows = [dict(row._mapping) for row in result.fetchall()]
+            return type('Response', (), {'data': rows, 'error': None})()
+
+
+class DatabaseDeleteBuilder:
+    """Handles DELETE operations with Supabase-compatible API."""
+
+    def __init__(self, table_name: str):
+        self.table_name = table_name
+        self._filters = []
+
+    def eq(self, column: str, value):
+        self._filters.append((column, "=", value))
+        return self
+
+    def neq(self, column: str, value):
+        self._filters.append((column, "!=", value))
+        return self
+
+    def in_(self, column: str, values: list):
+        self._filters.append((column, "IN", values))
+        return self
+
+    def execute(self):
+        if not self._filters:
+            raise ValueError("DELETE requires at least one filter (eq, neq, etc.)")
+
+        params = {}
+        conditions = []
+        for i, (col, op, val) in enumerate(self._filters):
+            param_name = f"p{i}"
+            if op == "IN":
+                params[param_name] = tuple(val)
+                conditions.append(f"{col} IN :{param_name}")
+            else:
+                params[param_name] = val
+                conditions.append(f"{col} {op} :{param_name}")
+
+        where_clause = " AND ".join(conditions)
+        query = f"DELETE FROM {self.table_name} WHERE {where_clause}"
+
+        affected = execute_delete(query, params)
+        return type('Response', (), {'data': None, 'count': affected, 'error': None})()
+
+
+class DatabaseUpsertBuilder:
+    """Handles UPSERT operations with Supabase-compatible API."""
+
+    def __init__(self, table_name: str, data: dict | list, on_conflict: str = None):
+        self.table_name = table_name
+        self.data = data if isinstance(data, list) else [data]
+        self.on_conflict = on_conflict
+        self._returning = "*"
+
+    def execute(self):
+        results = []
+        for row in self.data:
+            columns = ", ".join(row.keys())
+            placeholders = ", ".join([f":{k}" for k in row.keys()])
+
+            if self.on_conflict:
+                update_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in row.keys() if k != self.on_conflict])
+                query = f"""
+                    INSERT INTO {self.table_name} ({columns})
+                    VALUES ({placeholders})
+                    ON CONFLICT ({self.on_conflict}) DO UPDATE SET {update_clause}
+                    RETURNING {self._returning}
+                """
+            else:
+                query = f"INSERT INTO {self.table_name} ({columns}) VALUES ({placeholders}) RETURNING {self._returning}"
+
+            result = execute_insert(query, row)
+            if result:
+                results.append(result)
+        return type('Response', (), {'data': results, 'error': None})()
+
+
+class DatabaseTableWithMutations(DatabaseTable):
+    """Extended table class that supports insert, update, delete operations."""
+
+    def insert(self, data: dict | list):
+        return DatabaseInsertBuilder(self.table_name, data)
+
+    def update(self, data: dict):
+        return DatabaseUpdateBuilder(self.table_name, data)
+
+    def delete(self):
+        return DatabaseDeleteBuilder(self.table_name)
+
+    def upsert(self, data: dict | list, on_conflict: str = None):
+        return DatabaseUpsertBuilder(self.table_name, data, on_conflict)
+
 
 class DatabaseClient:
     """
     Supabase-compatible database client for easier migration.
     """
 
-    def table(self, table_name: str) -> DatabaseTable:
-        return DatabaseTable(table_name)
+    def table(self, table_name: str) -> DatabaseTableWithMutations:
+        return DatabaseTableWithMutations(table_name)
 
     def rpc(self, function_name: str, params: dict = None):
         """
@@ -272,3 +427,55 @@ def get_database_client() -> DatabaseClient:
     Get the database client (Supabase-compatible interface).
     """
     return db_client
+
+
+# ============================================================================
+# Unified Client - Abstracts Supabase vs AWS
+# ============================================================================
+
+USE_AWS = getattr(settings, 'USE_AWS', False) or os.getenv('USE_AWS', 'false').lower() == 'true'
+
+
+class UnifiedClient:
+    """
+    Unified client that provides both database and storage access.
+    Compatible with both Supabase and AWS backends.
+    """
+
+    def __init__(self, db, storage=None, auth=None):
+        self._db = db
+        self._storage = storage
+        self._auth = auth
+
+    def table(self, table_name: str):
+        return self._db.table(table_name)
+
+    def rpc(self, function_name: str, params: dict = None):
+        return self._db.rpc(function_name, params)
+
+    @property
+    def storage(self):
+        if self._storage:
+            return self._storage
+        # Import S3 storage lazily
+        from app.core.storage import storage_client
+        return storage_client
+
+    @property
+    def auth(self):
+        return self._auth
+
+
+def get_client():
+    """
+    Get the appropriate database client based on configuration.
+    Returns Supabase client or AWS database client with identical API.
+
+    This allows seamless migration: just change USE_AWS=true in environment.
+    """
+    if USE_AWS:
+        from app.core.storage import storage_client
+        return UnifiedClient(db_client, storage_client)
+    else:
+        from app.core.supabase import get_supabase_client
+        return get_supabase_client()

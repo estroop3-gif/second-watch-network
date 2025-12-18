@@ -3,7 +3,7 @@ Notifications API Routes
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.schemas.notifications import Notification, NotificationCreate, NotificationCounts
 
 router = APIRouter()
@@ -19,8 +19,8 @@ async def list_notifications(
 ):
     """List user notifications"""
     try:
-        supabase = get_supabase_client()
-        query = supabase.table("notifications").select("*").eq("user_id", user_id)
+        client = get_client()
+        query = client.table("notifications").select("*").eq("user_id", user_id)
         
         if status:
             query = query.eq("status", status)
@@ -37,15 +37,15 @@ async def list_notifications(
 async def get_notification_counts(user_id: str):
     """Get notification counts by type"""
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         
         # Get total unread
-        total_response = supabase.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").execute()
+        total_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").execute()
         
         # Get counts by type
-        messages_response = supabase.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "message").execute()
-        requests_response = supabase.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "connection_request").execute()
-        submissions_response = supabase.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "submission_update").execute()
+        messages_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "message").execute()
+        requests_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "connection_request").execute()
+        submissions_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "submission_update").execute()
         
         return {
             "total": total_response.count or 0,
@@ -61,8 +61,8 @@ async def get_notification_counts(user_id: str):
 async def mark_notifications_read(notification_ids: List[str]):
     """Mark notifications as read"""
     try:
-        supabase = get_supabase_client()
-        supabase.table("notifications").update({"status": "read"}).in_("id", notification_ids).execute()
+        client = get_client()
+        client.table("notifications").update({"status": "read"}).in_("id", notification_ids).execute()
         return {"message": "Notifications marked as read"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -72,8 +72,8 @@ async def mark_notifications_read(notification_ids: List[str]):
 async def create_notification(notification: NotificationCreate):
     """Create notification"""
     try:
-        supabase = get_supabase_client()
-        response = supabase.table("notifications").insert(notification.model_dump()).execute()
+        client = get_client()
+        response = client.table("notifications").insert(notification.model_dump()).execute()
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, status
 from typing import Optional, List, Dict, Any
 
 from app.core.auth import get_current_user, get_current_user_optional
-from app.core.supabase import get_supabase_client
+from app.core.database import get_client
 from app.core.roles import (
     RoleType,
     get_active_roles_from_profile,
@@ -52,10 +52,10 @@ async def get_user_profile(user = Depends(get_current_user)) -> Dict[str, Any]:
         HTTPException: If profile not found or database error
     """
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         user_id = user.id
 
-        response = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+        response = client.table("profiles").select("*").eq("id", user_id).single().execute()
 
         if not response.data:
             raise HTTPException(
@@ -90,10 +90,10 @@ async def get_user_profile_optional(
         return None
 
     try:
-        supabase = get_supabase_client()
+        client = get_client()
         user_id = user.id
 
-        response = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+        response = client.table("profiles").select("*").eq("id", user_id).single().execute()
         return response.data
 
     except Exception:
