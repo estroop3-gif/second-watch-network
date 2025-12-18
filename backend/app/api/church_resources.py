@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -229,9 +229,18 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        supabase = get_supabase_admin_client()
-        user = supabase.auth.get_user(token)
-        return user.user.id if user and user.user else None
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            return user.get("id") if user else None
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user = supabase.auth.get_user(token)
+            return user.user.id if user and user.user else None
     except Exception:
         return None
 
@@ -255,8 +264,8 @@ async def list_rooms(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_rooms").select("*")
+    client = get_client()
+    query = client.table("church_rooms").select("*")
 
     if room_type:
         query = query.eq("room_type", room_type)
@@ -281,8 +290,8 @@ async def get_room(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_rooms").select("*").eq("id", room_id).single().execute()
+    client = get_client()
+    result = client.table("church_rooms").select("*").eq("id", room_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -303,7 +312,7 @@ async def create_room(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -317,7 +326,7 @@ async def create_room(
         "is_active": True,
     }
 
-    result = supabase.table("church_rooms").insert(insert_data).execute()
+    result = client.table("church_rooms").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create room")
@@ -336,12 +345,12 @@ async def update_room(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_rooms").update(update_data).eq("id", room_id).execute()
+    result = client.table("church_rooms").update(update_data).eq("id", room_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Room not found")
@@ -367,8 +376,8 @@ async def list_gear(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_gear").select("*")
+    client = get_client()
+    query = client.table("church_gear").select("*")
 
     if category:
         query = query.eq("category", category)
@@ -395,8 +404,8 @@ async def get_gear_item(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_gear").select("*").eq("id", gear_id).single().execute()
+    client = get_client()
+    result = client.table("church_gear").select("*").eq("id", gear_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Gear item not found")
@@ -417,7 +426,7 @@ async def create_gear_item(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -437,7 +446,7 @@ async def create_gear_item(
         "specs": request.specs,
     }
 
-    result = supabase.table("church_gear").insert(insert_data).execute()
+    result = client.table("church_gear").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create gear item")
@@ -456,12 +465,12 @@ async def update_gear_item(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_gear").update(update_data).eq("id", gear_id).execute()
+    result = client.table("church_gear").update(update_data).eq("id", gear_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Gear item not found")
@@ -478,8 +487,8 @@ async def list_gear_categories(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_gear").select("category").execute()
+    client = get_client()
+    result = client.table("church_gear").select("category").execute()
 
     categories = list(set([item["category"] for item in result.data if item.get("category")]))
     return sorted(categories)
@@ -504,8 +513,8 @@ async def list_reservations(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_reservations").select("*")
+    client = get_client()
+    query = client.table("church_reservations").select("*")
 
     if resource_type:
         query = query.eq("resource_type", resource_type)
@@ -533,8 +542,8 @@ async def list_my_reservations(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_reservations").select("*").eq("reserved_by_user_id", user_id).order("start_datetime", desc=False).execute()
+    client = get_client()
+    result = client.table("church_reservations").select("*").eq("reserved_by_user_id", user_id).order("start_datetime", desc=False).execute()
 
     return result.data or []
 
@@ -552,7 +561,7 @@ async def create_reservation(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "resource_type": request.resource_type,
@@ -566,7 +575,7 @@ async def create_reservation(
         "notes": request.notes,
     }
 
-    result = supabase.table("church_reservations").insert(insert_data).execute()
+    result = client.table("church_reservations").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create reservation")
@@ -585,12 +594,12 @@ async def update_reservation(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
+    result = client.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Reservation not found")
@@ -611,7 +620,7 @@ async def approve_reservation(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "approved",
@@ -620,7 +629,7 @@ async def approve_reservation(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
+    result = client.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Reservation not found")
@@ -638,14 +647,14 @@ async def cancel_reservation(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "cancelled",
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
+    result = client.table("church_reservations").update(update_data).eq("id", reservation_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Reservation not found")
@@ -667,8 +676,8 @@ async def list_patch_matrices(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_patch_matrices").select("*")
+    client = get_client()
+    query = client.table("church_patch_matrices").select("*")
 
     if room_id:
         query = query.eq("room_id", room_id)
@@ -689,8 +698,8 @@ async def get_patch_matrix(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_patch_matrices").select("*").eq("id", matrix_id).single().execute()
+    client = get_client()
+    result = client.table("church_patch_matrices").select("*").eq("id", matrix_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Patch matrix not found")
@@ -711,7 +720,7 @@ async def create_patch_matrix(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -725,7 +734,7 @@ async def create_patch_matrix(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_patch_matrices").insert(insert_data).execute()
+    result = client.table("church_patch_matrices").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create patch matrix")
@@ -744,12 +753,12 @@ async def update_patch_matrix(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_patch_matrices").update(update_data).eq("id", matrix_id).execute()
+    result = client.table("church_patch_matrices").update(update_data).eq("id", matrix_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Patch matrix not found")
@@ -772,8 +781,8 @@ async def list_camera_plots(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_camera_plots").select("*")
+    client = get_client()
+    query = client.table("church_camera_plots").select("*")
 
     if venue:
         query = query.eq("venue", venue)
@@ -796,8 +805,8 @@ async def get_camera_plot(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_camera_plots").select("*").eq("id", plot_id).single().execute()
+    client = get_client()
+    result = client.table("church_camera_plots").select("*").eq("id", plot_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Camera plot not found")
@@ -818,7 +827,7 @@ async def create_camera_plot(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -832,7 +841,7 @@ async def create_camera_plot(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_camera_plots").insert(insert_data).execute()
+    result = client.table("church_camera_plots").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create camera plot")
@@ -851,12 +860,12 @@ async def update_camera_plot(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_camera_plots").update(update_data).eq("id", plot_id).execute()
+    result = client.table("church_camera_plots").update(update_data).eq("id", plot_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Camera plot not found")

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -180,9 +180,18 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        supabase = get_supabase_admin_client()
-        user = supabase.auth.get_user(token)
-        return user.user.id if user and user.user else None
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            return user.get("id") if user else None
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user = supabase.auth.get_user(token)
+            return user.user.id if user and user.user else None
     except Exception:
         return None
 
@@ -210,8 +219,8 @@ async def list_events(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_events").select("*")
+    client = get_client()
+    query = client.table("church_events").select("*")
 
     if event_type:
         query = query.eq("event_type", event_type)
@@ -242,8 +251,8 @@ async def get_event(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_events").select("*").eq("id", event_id).single().execute()
+    client = get_client()
+    result = client.table("church_events").select("*").eq("id", event_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -264,7 +273,7 @@ async def create_event(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "title": request.title,
@@ -282,7 +291,7 @@ async def create_event(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_events").insert(insert_data).execute()
+    result = client.table("church_events").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create event")
@@ -301,12 +310,12 @@ async def update_event(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_events").update(update_data).eq("id", event_id).execute()
+    result = client.table("church_events").update(update_data).eq("id", event_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -324,8 +333,8 @@ async def delete_event(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_events").delete().eq("id", event_id).execute()
+    client = get_client()
+    result = client.table("church_events").delete().eq("id", event_id).execute()
 
     return {"success": True, "deleted_id": event_id}
 
@@ -346,8 +355,8 @@ async def list_creative_briefs(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_creative_briefs").select("*")
+    client = get_client()
+    query = client.table("church_creative_briefs").select("*")
 
     if status:
         query = query.eq("status", status)
@@ -370,8 +379,8 @@ async def get_creative_brief(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_creative_briefs").select("*").eq("id", brief_id).single().execute()
+    client = get_client()
+    result = client.table("church_creative_briefs").select("*").eq("id", brief_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Creative brief not found")
@@ -392,7 +401,7 @@ async def create_creative_brief(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "title": request.title,
@@ -411,7 +420,7 @@ async def create_creative_brief(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_creative_briefs").insert(insert_data).execute()
+    result = client.table("church_creative_briefs").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create creative brief")
@@ -430,12 +439,12 @@ async def update_creative_brief(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_creative_briefs").update(update_data).eq("id", brief_id).execute()
+    result = client.table("church_creative_briefs").update(update_data).eq("id", brief_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Creative brief not found")
@@ -456,7 +465,7 @@ async def approve_creative_brief(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "approved",
@@ -465,7 +474,7 @@ async def approve_creative_brief(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_creative_briefs").update(update_data).eq("id", brief_id).execute()
+    result = client.table("church_creative_briefs").update(update_data).eq("id", brief_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Creative brief not found")
@@ -493,8 +502,8 @@ async def list_licenses(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_licenses").select("*")
+    client = get_client()
+    query = client.table("church_licenses").select("*")
 
     if license_type:
         query = query.eq("license_type", license_type)
@@ -519,8 +528,8 @@ async def get_license(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_licenses").select("*").eq("id", license_id).single().execute()
+    client = get_client()
+    result = client.table("church_licenses").select("*").eq("id", license_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="License not found")
@@ -541,7 +550,7 @@ async def create_license(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "license_type": request.license_type,
@@ -561,7 +570,7 @@ async def create_license(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_licenses").insert(insert_data).execute()
+    result = client.table("church_licenses").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create license")
@@ -580,12 +589,12 @@ async def update_license(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_licenses").update(update_data).eq("id", license_id).execute()
+    result = client.table("church_licenses").update(update_data).eq("id", license_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="License not found")
@@ -606,7 +615,7 @@ async def get_expiring_licenses(
     from datetime import timedelta
     future_date = (datetime.utcnow() + timedelta(days=days)).strftime("%Y-%m-%d")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_licenses").select("*").eq("status", "active").lte("expiration_date", future_date).gte("expiration_date", datetime.utcnow().strftime("%Y-%m-%d")).order("expiration_date").execute()
+    client = get_client()
+    result = client.table("church_licenses").select("*").eq("status", "active").lte("expiration_date", future_date).gte("expiration_date", datetime.utcnow().strftime("%Y-%m-%d")).order("expiration_date").execute()
 
     return result.data or []

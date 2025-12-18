@@ -4,7 +4,7 @@ Directory API Routes - Site-wide user search for adding members to projects
 from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -33,13 +33,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -61,12 +74,12 @@ async def search_directory_users(
     Used by the Backlot "Add from Network" feature to find users to add to projects.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Build the base query - select from profiles
         # Include users who are community visible or have filmmaker profiles
-        base_query = supabase.table("profiles").select(
+        base_query = client.table("profiles").select(
             "id, username, full_name, display_name, avatar_url, created_at, community_visible"
         )
 
@@ -74,7 +87,7 @@ async def search_directory_users(
         excluded_user_ids = set()
         if exclude_project:
             # Get existing project members
-            members_resp = supabase.table("backlot_project_members").select(
+            members_resp = client.table("backlot_project_members").select(
                 "user_id"
             ).eq("project_id", exclude_project).execute()
 
@@ -82,7 +95,7 @@ async def search_directory_users(
                 excluded_user_ids = {m["user_id"] for m in members_resp.data}
 
             # Also exclude the project owner
-            project_resp = supabase.table("backlot_projects").select(
+            project_resp = client.table("backlot_projects").select(
                 "owner_id"
             ).eq("id", exclude_project).execute()
 
@@ -90,7 +103,7 @@ async def search_directory_users(
                 excluded_user_ids.add(project_resp.data[0]["owner_id"])
 
         # Get filmmaker user IDs (they should always be visible in directory)
-        filmmaker_resp = supabase.table("filmmaker_profiles").select("user_id").execute()
+        filmmaker_resp = client.table("filmmaker_profiles").select("user_id").execute()
         filmmaker_user_ids = {f["user_id"] for f in (filmmaker_resp.data or [])}
 
         # Execute the query with search filter if provided
@@ -162,11 +175,11 @@ async def check_project_membership(
     Returns membership status and role if member.
     """
     current_user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     try:
         # Check if user is project owner
-        project_resp = supabase.table("backlot_projects").select(
+        project_resp = client.table("backlot_projects").select(
             "owner_id"
         ).eq("id", project_id).execute()
 
@@ -181,7 +194,7 @@ async def check_project_membership(
             }
 
         # Check project members
-        member_resp = supabase.table("backlot_project_members").select(
+        member_resp = client.table("backlot_project_members").select(
             "id, role, production_role"
         ).eq("project_id", project_id).eq("user_id", user_id).execute()
 

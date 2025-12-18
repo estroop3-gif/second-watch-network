@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -154,9 +154,18 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        supabase = get_supabase_admin_client()
-        user = supabase.auth.get_user(token)
-        return user.user.id if user and user.user else None
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            return user.get("id") if user else None
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user = supabase.auth.get_user(token)
+            return user.user.id if user and user.user else None
     except Exception:
         return None
 
@@ -182,8 +191,8 @@ async def list_preflight_checklists(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_preflight_checklists").select("*")
+    client = get_client()
+    query = client.table("church_preflight_checklists").select("*")
 
     if checklist_type:
         query = query.eq("checklist_type", checklist_type)
@@ -210,8 +219,8 @@ async def list_checklist_templates(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_preflight_checklists").select("*").eq("is_template", True)
+    client = get_client()
+    query = client.table("church_preflight_checklists").select("*").eq("is_template", True)
 
     if checklist_type:
         query = query.eq("checklist_type", checklist_type)
@@ -232,8 +241,8 @@ async def get_preflight_checklist(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_preflight_checklists").select("*").eq("id", checklist_id).single().execute()
+    client = get_client()
+    result = client.table("church_preflight_checklists").select("*").eq("id", checklist_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Preflight checklist not found")
@@ -254,7 +263,7 @@ async def create_preflight_checklist(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -268,7 +277,7 @@ async def create_preflight_checklist(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_preflight_checklists").insert(insert_data).execute()
+    result = client.table("church_preflight_checklists").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create preflight checklist")
@@ -291,10 +300,10 @@ async def instantiate_checklist_template(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get template
-    template = supabase.table("church_preflight_checklists").select("*").eq("id", template_id).eq("is_template", True).single().execute()
+    template = client.table("church_preflight_checklists").select("*").eq("id", template_id).eq("is_template", True).single().execute()
     if not template.data:
         raise HTTPException(status_code=404, detail="Template not found")
 
@@ -311,7 +320,7 @@ async def instantiate_checklist_template(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_preflight_checklists").insert(insert_data).execute()
+    result = client.table("church_preflight_checklists").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to instantiate checklist")
@@ -330,12 +339,12 @@ async def update_preflight_checklist(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_preflight_checklists").update(update_data).eq("id", checklist_id).execute()
+    result = client.table("church_preflight_checklists").update(update_data).eq("id", checklist_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Preflight checklist not found")
@@ -353,7 +362,7 @@ async def complete_preflight_checklist(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "completed",
@@ -362,7 +371,7 @@ async def complete_preflight_checklist(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_preflight_checklists").update(update_data).eq("id", checklist_id).execute()
+    result = client.table("church_preflight_checklists").update(update_data).eq("id", checklist_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Preflight checklist not found")
@@ -388,8 +397,8 @@ async def list_stream_qc_sessions(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_stream_qc").select("*")
+    client = get_client()
+    query = client.table("church_stream_qc").select("*")
 
     if status:
         query = query.eq("status", status)
@@ -416,8 +425,8 @@ async def get_stream_qc_session(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_stream_qc").select("*").eq("id", session_id).single().execute()
+    client = get_client()
+    result = client.table("church_stream_qc").select("*").eq("id", session_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Stream QC session not found")
@@ -438,7 +447,7 @@ async def create_stream_qc_session(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "service_plan_id": request.service_plan_id,
@@ -450,7 +459,7 @@ async def create_stream_qc_session(
         "issues_found": [],
     }
 
-    result = supabase.table("church_stream_qc").insert(insert_data).execute()
+    result = client.table("church_stream_qc").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create stream QC session")
@@ -469,12 +478,12 @@ async def update_stream_qc_session(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
+    result = client.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Stream QC session not found")
@@ -492,7 +501,7 @@ async def start_stream_qc_session(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "in_progress",
@@ -501,7 +510,7 @@ async def start_stream_qc_session(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
+    result = client.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Stream QC session not found")
@@ -520,7 +529,7 @@ async def complete_stream_qc_session(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "status": "completed",
@@ -530,7 +539,7 @@ async def complete_stream_qc_session(
     if overall_rating:
         update_data["overall_rating"] = overall_rating
 
-    result = supabase.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
+    result = client.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Stream QC session not found")
@@ -551,10 +560,10 @@ async def add_stream_issue(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get current session
-    session = supabase.table("church_stream_qc").select("*").eq("id", session_id).single().execute()
+    session = client.table("church_stream_qc").select("*").eq("id", session_id).single().execute()
     if not session.data:
         raise HTTPException(status_code=404, detail="Stream QC session not found")
 
@@ -574,7 +583,7 @@ async def add_stream_issue(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
+    result = client.table("church_stream_qc").update(update_data).eq("id", session_id).execute()
 
     return result.data[0]
 
@@ -599,8 +608,8 @@ async def list_macro_commands(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_macro_library").select("*")
+    client = get_client()
+    query = client.table("church_macro_library").select("*")
 
     if category:
         query = query.eq("category", category)
@@ -626,8 +635,8 @@ async def list_macro_categories(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_macro_library").select("category").execute()
+    client = get_client()
+    result = client.table("church_macro_library").select("category").execute()
 
     categories = list(set([item["category"] for item in result.data if item.get("category")]))
     return sorted(categories)
@@ -643,8 +652,8 @@ async def get_macro_command(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_macro_library").select("*").eq("id", macro_id).single().execute()
+    client = get_client()
+    result = client.table("church_macro_library").select("*").eq("id", macro_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Macro command not found")
@@ -665,7 +674,7 @@ async def create_macro_command(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "name": request.name,
@@ -680,7 +689,7 @@ async def create_macro_command(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_macro_library").insert(insert_data).execute()
+    result = client.table("church_macro_library").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create macro command")
@@ -699,12 +708,12 @@ async def update_macro_command(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_macro_library").update(update_data).eq("id", macro_id).execute()
+    result = client.table("church_macro_library").update(update_data).eq("id", macro_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Macro command not found")
@@ -722,8 +731,8 @@ async def delete_macro_command(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_macro_library").delete().eq("id", macro_id).execute()
+    client = get_client()
+    result = client.table("church_macro_library").delete().eq("id", macro_id).execute()
 
     return {"success": True, "deleted_id": macro_id}
 
@@ -739,10 +748,10 @@ async def duplicate_macro_command(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get original macro
-    original = supabase.table("church_macro_library").select("*").eq("id", macro_id).single().execute()
+    original = client.table("church_macro_library").select("*").eq("id", macro_id).single().execute()
     if not original.data:
         raise HTTPException(status_code=404, detail="Original macro not found")
 
@@ -760,7 +769,7 @@ async def duplicate_macro_command(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_macro_library").insert(insert_data).execute()
+    result = client.table("church_macro_library").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to duplicate macro")

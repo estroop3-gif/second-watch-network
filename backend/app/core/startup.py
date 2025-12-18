@@ -4,7 +4,7 @@ Handles initialization tasks like superadmin setup.
 """
 import logging
 from app.core.config import settings
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +25,10 @@ async def initialize_superadmin():
         return
 
     try:
-        supabase = get_supabase_admin_client()
+        client = get_client()
 
         # Check if user exists
-        response = supabase.table("profiles").select("id, email, is_superadmin").eq("email", superadmin_email).execute()
+        response = client.table("profiles").select("id, email, is_superadmin").eq("email", superadmin_email).execute()
 
         if not response.data:
             logger.warning(f"Superadmin user with email {superadmin_email} not found in database")
@@ -43,7 +43,7 @@ async def initialize_superadmin():
             return
 
         # Grant superadmin privileges
-        update_response = supabase.table("profiles").update({
+        update_response = client.table("profiles").update({
             "is_superadmin": True,
             "is_admin": True,  # Superadmins should also have admin flag
         }).eq("id", user_id).execute()

@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -136,38 +136,51 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
 async def verify_project_access(supabase, project_id: str, user_id: str) -> bool:
     """Verify user has access to project"""
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
-    member_resp = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
 async def get_user_view_config(supabase, project_id: str, user_id: str) -> Dict[str, Any]:
     """Get user's view config to check budget visibility"""
     # Check if owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return {"can_view_budget": True}
 
     # Get user's role
-    role_resp = supabase.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).eq("is_primary", True).execute()
+    role_resp = client.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).eq("is_primary", True).execute()
     if not role_resp.data:
-        role_resp = supabase.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        role_resp = client.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).execute()
 
     role = role_resp.data[0]["backlot_role"] if role_resp.data else "crew"
 
@@ -191,13 +204,13 @@ async def list_production_days(
     List all production days for a project with summary data
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_access(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get production days
-    query = supabase.table("backlot_production_days").select("*").eq("project_id", project_id)
+    query = client.table("backlot_production_days").select("*").eq("project_id", project_id)
 
     if start_date:
         query = query.gte("date", start_date)
@@ -213,7 +226,7 @@ async def list_production_days(
     # Get call sheet counts
     call_sheet_days = set()
     if day_ids:
-        cs_resp = supabase.table("backlot_call_sheets").select("production_day_id").eq("project_id", project_id).in_("production_day_id", day_ids).execute()
+        cs_resp = client.table("backlot_call_sheets").select("production_day_id").eq("project_id", project_id).in_("production_day_id", day_ids).execute()
         for cs in (cs_resp.data or []):
             if cs.get("production_day_id"):
                 call_sheet_days.add(cs["production_day_id"])
@@ -221,7 +234,7 @@ async def list_production_days(
     # Get dailies days
     dailies_days = set()
     if day_dates:
-        dd_resp = supabase.table("backlot_dailies_days").select("shoot_date").eq("project_id", project_id).in_("shoot_date", day_dates).execute()
+        dd_resp = client.table("backlot_dailies_days").select("shoot_date").eq("project_id", project_id).in_("shoot_date", day_dates).execute()
         for dd in (dd_resp.data or []):
             if dd.get("shoot_date"):
                 dailies_days.add(dd["shoot_date"])
@@ -229,7 +242,7 @@ async def list_production_days(
     # Get task counts by due date
     task_counts = {}
     if day_dates:
-        tasks_resp = supabase.table("backlot_tasks").select("due_date").eq("project_id", project_id).in_("due_date", day_dates).execute()
+        tasks_resp = client.table("backlot_tasks").select("due_date").eq("project_id", project_id).in_("due_date", day_dates).execute()
         for task in (tasks_resp.data or []):
             due = task.get("due_date")
             if due:
@@ -239,7 +252,7 @@ async def list_production_days(
     crew_counts = {}
     if day_ids:
         for day_id in day_ids:
-            csp_resp = supabase.table("backlot_call_sheet_people").select("id, call_sheet_id").execute()
+            csp_resp = client.table("backlot_call_sheet_people").select("id, call_sheet_id").execute()
             # This is simplified - would need join in real implementation
 
     result = []
@@ -274,7 +287,7 @@ async def get_day_overview(
     Get comprehensive overview of a production day with all related data
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_access(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -282,7 +295,7 @@ async def get_day_overview(
     view_config = await get_user_view_config(supabase, project_id, user["id"])
 
     # Get day metadata
-    day_resp = supabase.table("backlot_production_days").select("*").eq("id", day_id).eq("project_id", project_id).execute()
+    day_resp = client.table("backlot_production_days").select("*").eq("id", day_id).eq("project_id", project_id).execute()
     if not day_resp.data:
         raise HTTPException(status_code=404, detail="Production day not found")
 
@@ -292,16 +305,16 @@ async def get_day_overview(
 
     # Get call sheets for this day
     call_sheets = []
-    cs_resp = supabase.table("backlot_call_sheets").select("*").eq("production_day_id", day_id).execute()
+    cs_resp = client.table("backlot_call_sheets").select("*").eq("production_day_id", day_id).execute()
     for cs in (cs_resp.data or []):
         # Get people counts
-        people_resp = supabase.table("backlot_call_sheet_people").select("id, department").eq("call_sheet_id", cs["id"]).execute()
+        people_resp = client.table("backlot_call_sheet_people").select("id, department").eq("call_sheet_id", cs["id"]).execute()
         people = people_resp.data or []
         crew_count = len([p for p in people if p.get("department") != "Cast"])
         cast_count = len([p for p in people if p.get("department") == "Cast"])
 
         # Get scene count
-        scenes_resp = supabase.table("backlot_call_sheet_scenes").select("id").eq("call_sheet_id", cs["id"]).execute()
+        scenes_resp = client.table("backlot_call_sheet_scenes").select("id").eq("call_sheet_id", cs["id"]).execute()
         scene_count = len(scenes_resp.data or [])
 
         call_sheets.append(CallSheetSummary(
@@ -319,11 +332,11 @@ async def get_day_overview(
     # Get daily budget (if user can view)
     daily_budget = None
     if view_config.get("can_view_budget") and day_date:
-        db_resp = supabase.table("backlot_daily_budgets").select("*").eq("project_id", project_id).eq("date", day_date).execute()
+        db_resp = client.table("backlot_daily_budgets").select("*").eq("project_id", project_id).eq("date", day_date).execute()
         if db_resp.data:
             db = db_resp.data[0]
             # Get items
-            items_resp = supabase.table("backlot_daily_budget_items").select("*").eq("daily_budget_id", db["id"]).execute()
+            items_resp = client.table("backlot_daily_budget_items").select("*").eq("daily_budget_id", db["id"]).execute()
             items = items_resp.data or []
             total_planned = sum(i.get("planned_amount", 0) or 0 for i in items)
             total_actual = sum(i.get("actual_amount", 0) or 0 for i in items)
@@ -339,18 +352,18 @@ async def get_day_overview(
     # Get dailies summary
     dailies = None
     if day_date:
-        dd_resp = supabase.table("backlot_dailies_days").select("*").eq("project_id", project_id).eq("shoot_date", day_date).execute()
+        dd_resp = client.table("backlot_dailies_days").select("*").eq("project_id", project_id).eq("shoot_date", day_date).execute()
         if dd_resp.data:
             dd = dd_resp.data[0]
             # Get cards and clips
-            cards_resp = supabase.table("backlot_dailies_cards").select("id").eq("dailies_day_id", dd["id"]).execute()
+            cards_resp = client.table("backlot_dailies_cards").select("id").eq("dailies_day_id", dd["id"]).execute()
             card_ids = [c["id"] for c in (cards_resp.data or [])]
 
             clip_count = 0
             circle_count = 0
             total_duration = 0
             if card_ids:
-                clips_resp = supabase.table("backlot_dailies_clips").select("id, is_circle_take, duration_seconds").in_("dailies_card_id", card_ids).execute()
+                clips_resp = client.table("backlot_dailies_clips").select("id, is_circle_take, duration_seconds").in_("dailies_card_id", card_ids).execute()
                 clips = clips_resp.data or []
                 clip_count = len(clips)
                 circle_count = len([c for c in clips if c.get("is_circle_take")])
@@ -372,7 +385,7 @@ async def get_day_overview(
     # Get tasks due this day
     tasks = []
     if day_date:
-        tasks_resp = supabase.table("backlot_tasks").select("*, profiles:assigned_to(full_name), task_list:task_list_id(name)").eq("project_id", project_id).eq("due_date", day_date).execute()
+        tasks_resp = client.table("backlot_tasks").select("*, profiles:assigned_to(full_name), task_list:task_list_id(name)").eq("project_id", project_id).eq("due_date", day_date).execute()
         for task in (tasks_resp.data or []):
             assigned_name = None
             if task.get("profiles"):
@@ -393,7 +406,7 @@ async def get_day_overview(
     # Get updates for this day
     updates = []
     if day_date:
-        updates_resp = supabase.table("backlot_project_updates").select("*, profiles:created_by(full_name)").eq("project_id", project_id).execute()
+        updates_resp = client.table("backlot_project_updates").select("*, profiles:created_by(full_name)").eq("project_id", project_id).execute()
         for update in (updates_resp.data or []):
             # Check if update is for this day (by created_at date or metadata)
             created = update.get("created_at", "")
@@ -413,7 +426,7 @@ async def get_day_overview(
     # Get timecard entries for this day
     timecard_entries = []
     if day_date:
-        entries_resp = supabase.table("backlot_timecard_entries").select("*, timecard:timecard_id(status, user_id), profiles:timecard_id(user_id)").eq("project_id", project_id).eq("shoot_date", day_date).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("*, timecard:timecard_id(status, user_id), profiles:timecard_id(user_id)").eq("project_id", project_id).eq("shoot_date", day_date).execute()
         for entry in (entries_resp.data or []):
             timecard = entry.get("timecard") or {}
             # Would need to join user profile for name
@@ -429,7 +442,7 @@ async def get_day_overview(
 
     # Get scenes scheduled for this day
     scenes_scheduled = []
-    scenes_resp = supabase.table("backlot_scenes").select("id, scene_number, slugline, page_length").eq("scheduled_day_id", day_id).execute()
+    scenes_resp = client.table("backlot_scenes").select("id, scene_number, slugline, page_length").eq("scheduled_day_id", day_id).execute()
     for scene in (scenes_resp.data or []):
         scenes_scheduled.append({
             "id": scene["id"],

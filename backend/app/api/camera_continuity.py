@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 from app.core.backlot_permissions import can_edit_tab, can_view_tab
 
 router = APIRouter()
@@ -185,13 +185,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -199,12 +212,12 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 async def verify_project_member(supabase, project_id: str, user_id: str) -> bool:
     """Verify user is a member of the project"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
     # Check member
-    member_resp = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
@@ -221,12 +234,12 @@ async def get_shot_list(
 ):
     """Get shot list for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_shot_lists").select("*").eq("project_id", project_id)
+    query = client.table("backlot_shot_lists").select("*").eq("project_id", project_id)
 
     if scene_number:
         query = query.eq("scene_number", scene_number)
@@ -247,7 +260,7 @@ async def create_shot(
 ):
     """Create a new shot in the shot list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -271,7 +284,7 @@ async def create_shot(
         "created_by": user["id"],
     }
 
-    response = supabase.table("backlot_shot_lists").insert(shot_data).execute()
+    response = client.table("backlot_shot_lists").insert(shot_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create shot")
@@ -288,7 +301,7 @@ async def update_shot(
 ):
     """Update an existing shot"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -300,7 +313,7 @@ async def update_shot(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_shot_lists").update(update_data).eq("id", shot_id).eq("project_id", project_id).execute()
+    response = client.table("backlot_shot_lists").update(update_data).eq("id", shot_id).eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Shot not found")
@@ -316,7 +329,7 @@ async def delete_shot(
 ):
     """Delete a shot from the shot list"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -324,7 +337,7 @@ async def delete_shot(
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for camera tools")
 
-    supabase.table("backlot_shot_lists").delete().eq("id", shot_id).eq("project_id", project_id).execute()
+    client.table("backlot_shot_lists").delete().eq("id", shot_id).eq("project_id", project_id).execute()
 
     return {"success": True}
 
@@ -342,12 +355,12 @@ async def get_slate_logs(
 ):
     """Get slate logs for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_slate_logs").select("*").eq("project_id", project_id)
+    query = client.table("backlot_slate_logs").select("*").eq("project_id", project_id)
 
     if scene_number:
         query = query.eq("scene_number", scene_number)
@@ -369,7 +382,7 @@ async def create_slate_log(
 ):
     """Log a new take/slate"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -391,7 +404,7 @@ async def create_slate_log(
         "logged_by": user["id"],
     }
 
-    response = supabase.table("backlot_slate_logs").insert(log_data).execute()
+    response = client.table("backlot_slate_logs").insert(log_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create slate log")
@@ -408,7 +421,7 @@ async def update_slate_log(
 ):
     """Update an existing slate log"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -420,7 +433,7 @@ async def update_slate_log(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_slate_logs").update(update_data).eq("id", log_id).eq("project_id", project_id).execute()
+    response = client.table("backlot_slate_logs").update(update_data).eq("id", log_id).eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Slate log not found")
@@ -436,7 +449,7 @@ async def delete_slate_log(
 ):
     """Delete a slate log"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -444,7 +457,7 @@ async def delete_slate_log(
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for slate logging")
 
-    supabase.table("backlot_slate_logs").delete().eq("id", log_id).eq("project_id", project_id).execute()
+    client.table("backlot_slate_logs").delete().eq("id", log_id).eq("project_id", project_id).execute()
 
     return {"success": True}
 
@@ -458,12 +471,12 @@ async def get_next_take_number(
 ):
     """Get the next take number for a scene/shot combination"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_slate_logs").select("take_number").eq("project_id", project_id).eq("scene_number", scene_number)
+    query = client.table("backlot_slate_logs").select("take_number").eq("project_id", project_id).eq("scene_number", scene_number)
 
     if shot_label:
         query = query.eq("shot_label", shot_label)
@@ -491,12 +504,12 @@ async def get_camera_media(
 ):
     """Get camera media items for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_camera_media").select("*").eq("project_id", project_id)
+    query = client.table("backlot_camera_media").select("*").eq("project_id", project_id)
 
     if status:
         query = query.eq("status", status)
@@ -517,7 +530,7 @@ async def create_camera_media(
 ):
     """Register a new camera media item (card, SSD, etc.)"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -536,7 +549,7 @@ async def create_camera_media(
         "notes": data.notes,
     }
 
-    response = supabase.table("backlot_camera_media").insert(media_data).execute()
+    response = client.table("backlot_camera_media").insert(media_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create camera media")
@@ -553,7 +566,7 @@ async def update_camera_media(
 ):
     """Update camera media status and details"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -565,7 +578,7 @@ async def update_camera_media(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_camera_media").update(update_data).eq("id", media_id).eq("project_id", project_id).execute()
+    response = client.table("backlot_camera_media").update(update_data).eq("id", media_id).eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Camera media not found")
@@ -581,7 +594,7 @@ async def delete_camera_media(
 ):
     """Delete a camera media item"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -589,7 +602,7 @@ async def delete_camera_media(
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for camera media")
 
-    supabase.table("backlot_camera_media").delete().eq("id", media_id).eq("project_id", project_id).execute()
+    client.table("backlot_camera_media").delete().eq("id", media_id).eq("project_id", project_id).execute()
 
     return {"success": True}
 
@@ -608,12 +621,12 @@ async def get_continuity_notes(
 ):
     """Get continuity notes for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_continuity_notes").select("*").eq("project_id", project_id)
+    query = client.table("backlot_continuity_notes").select("*").eq("project_id", project_id)
 
     if scene_number:
         query = query.eq("scene_number", scene_number)
@@ -636,7 +649,7 @@ async def create_continuity_note(
 ):
     """Create a new continuity note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -655,7 +668,7 @@ async def create_continuity_note(
         "created_by": user["id"],
     }
 
-    response = supabase.table("backlot_continuity_notes").insert(note_data).execute()
+    response = client.table("backlot_continuity_notes").insert(note_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create continuity note")
@@ -672,7 +685,7 @@ async def update_continuity_note(
 ):
     """Update an existing continuity note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -684,7 +697,7 @@ async def update_continuity_note(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_continuity_notes").update(update_data).eq("id", note_id).eq("project_id", project_id).execute()
+    response = client.table("backlot_continuity_notes").update(update_data).eq("id", note_id).eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Continuity note not found")
@@ -700,7 +713,7 @@ async def delete_continuity_note(
 ):
     """Delete a continuity note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -708,6 +721,6 @@ async def delete_continuity_note(
     if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for continuity notes")
 
-    supabase.table("backlot_continuity_notes").delete().eq("id", note_id).eq("project_id", project_id).execute()
+    client.table("backlot_continuity_notes").delete().eq("id", note_id).eq("project_id", project_id).execute()
 
     return {"success": True}

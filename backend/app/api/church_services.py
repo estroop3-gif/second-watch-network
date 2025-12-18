@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -98,9 +98,18 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        supabase = get_supabase_admin_client()
-        user = supabase.auth.get_user(token)
-        return user.user.id if user and user.user else None
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            return user.get("id") if user else None
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user = supabase.auth.get_user(token)
+            return user.user.id if user and user.user else None
     except Exception:
         return None
 
@@ -125,8 +134,8 @@ async def list_service_plans(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_service_plans").select("*")
+    client = get_client()
+    query = client.table("church_service_plans").select("*")
 
     if status:
         query = query.eq("status", status)
@@ -151,8 +160,8 @@ async def get_service_plan(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_service_plans").select("*").eq("id", plan_id).single().execute()
+    client = get_client()
+    result = client.table("church_service_plans").select("*").eq("id", plan_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Service plan not found")
@@ -173,7 +182,7 @@ async def create_service_plan(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "service_date": request.service_date,
@@ -185,7 +194,7 @@ async def create_service_plan(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_service_plans").insert(insert_data).execute()
+    result = client.table("church_service_plans").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create service plan")
@@ -204,12 +213,12 @@ async def update_service_plan(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_service_plans").update(update_data).eq("id", plan_id).execute()
+    result = client.table("church_service_plans").update(update_data).eq("id", plan_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Service plan not found")
@@ -231,10 +240,10 @@ async def clone_service_plan(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get original plan
-    original = supabase.table("church_service_plans").select("*").eq("id", plan_id).single().execute()
+    original = client.table("church_service_plans").select("*").eq("id", plan_id).single().execute()
     if not original.data:
         raise HTTPException(status_code=404, detail="Original service plan not found")
 
@@ -249,7 +258,7 @@ async def clone_service_plan(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_service_plans").insert(clone_data).execute()
+    result = client.table("church_service_plans").insert(clone_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to clone service plan")
@@ -271,8 +280,8 @@ async def list_rehearsals(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_rehearsal_plans").select("*").eq("service_plan_id", plan_id).order("rehearsal_datetime").execute()
+    client = get_client()
+    result = client.table("church_rehearsal_plans").select("*").eq("service_plan_id", plan_id).order("rehearsal_datetime").execute()
 
     return result.data or []
 
@@ -288,7 +297,7 @@ async def create_rehearsal(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "service_plan_id": plan_id,
@@ -299,7 +308,7 @@ async def create_rehearsal(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_rehearsal_plans").insert(insert_data).execute()
+    result = client.table("church_rehearsal_plans").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create rehearsal")
@@ -321,8 +330,8 @@ async def list_tech_positions(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_tech_assignments").select("*").eq("service_plan_id", plan_id).execute()
+    client = get_client()
+    result = client.table("church_tech_assignments").select("*").eq("service_plan_id", plan_id).execute()
 
     return result.data or []
 
@@ -338,7 +347,7 @@ async def create_tech_position(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "service_plan_id": plan_id,
@@ -348,7 +357,7 @@ async def create_tech_position(
         "status": request.status,
     }
 
-    result = supabase.table("church_tech_assignments").insert(insert_data).execute()
+    result = client.table("church_tech_assignments").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create tech position")
@@ -367,12 +376,12 @@ async def update_tech_position(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_tech_assignments").update(update_data).eq("id", assignment_id).execute()
+    result = client.table("church_tech_assignments").update(update_data).eq("id", assignment_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Tech assignment not found")

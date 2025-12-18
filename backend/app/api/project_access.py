@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 from app.core.backlot_permissions import (
     get_effective_view_config,
     can_manage_access,
@@ -145,13 +145,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -169,17 +182,17 @@ async def list_project_members(
     List all project members with their roles and permission status
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get project info first
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_resp.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
     owner_id = project_resp.data[0]["owner_id"]
 
     # Get all members (without profile join - avoid PostgREST schema cache issues)
-    members_resp = supabase.table("backlot_project_members").select("*").eq(
+    members_resp = client.table("backlot_project_members").select("*").eq(
         "project_id", project_id
     ).order("joined_at").execute()
 
@@ -192,14 +205,14 @@ async def list_project_members(
     # Fetch all profiles in a single query
     profiles_by_id: Dict[str, Dict] = {}
     if all_user_ids:
-        profiles_resp = supabase.table("profiles").select(
+        profiles_resp = client.table("profiles").select(
             "id, full_name, avatar_url, username"
         ).in_("id", all_user_ids).execute()
         for p in (profiles_resp.data or []):
             profiles_by_id[p["id"]] = p
 
     # Get all backlot roles for this project
-    roles_resp = supabase.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
+    roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
     roles_by_user: Dict[str, List[Dict]] = {}
     for r in (roles_resp.data or []):
         uid = r["user_id"]
@@ -208,7 +221,7 @@ async def list_project_members(
         roles_by_user[uid].append(r)
 
     # Get all user overrides
-    overrides_resp = supabase.table("backlot_project_view_overrides").select("user_id").eq("project_id", project_id).execute()
+    overrides_resp = client.table("backlot_project_view_overrides").select("user_id").eq("project_id", project_id).execute()
     users_with_overrides = set(o["user_id"] for o in (overrides_resp.data or []))
 
     result = []
@@ -280,13 +293,13 @@ async def add_member(
     Add a new member to the project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     # Check if user is already a member
-    existing_resp = supabase.table("backlot_project_members").select("id").eq(
+    existing_resp = client.table("backlot_project_members").select("id").eq(
         "project_id", project_id
     ).eq("user_id", request.user_id).execute()
 
@@ -303,7 +316,7 @@ async def add_member(
         "invited_by": user["id"],
     }
 
-    create_resp = supabase.table("backlot_project_members").insert(member_data).execute()
+    create_resp = client.table("backlot_project_members").insert(member_data).execute()
     if not create_resp.data:
         raise HTTPException(status_code=500, detail="Failed to add member")
 
@@ -311,7 +324,7 @@ async def add_member(
 
     # Assign backlot role if provided
     if request.backlot_role:
-        role_resp = supabase.table("backlot_project_roles").insert({
+        role_resp = client.table("backlot_project_roles").insert({
             "project_id": project_id,
             "user_id": request.user_id,
             "backlot_role": request.backlot_role,
@@ -319,7 +332,7 @@ async def add_member(
         }).execute()
 
     # Get profile info
-    profile_resp = supabase.table("profiles").select("full_name, avatar_url, username").eq("id", request.user_id).execute()
+    profile_resp = client.table("profiles").select("full_name, avatar_url, username").eq("id", request.user_id).execute()
     profile = profile_resp.data[0] if profile_resp.data else {}
 
     return MemberWithRoles(
@@ -351,7 +364,7 @@ async def update_member(
     Update a member's project role or info
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
@@ -367,7 +380,7 @@ async def update_member(
     if not update_data:
         raise HTTPException(status_code=400, detail="No update data provided")
 
-    update_resp = supabase.table("backlot_project_members").update(update_data).eq(
+    update_resp = client.table("backlot_project_members").update(update_data).eq(
         "id", member_id
     ).eq("project_id", project_id).execute()
 
@@ -387,13 +400,13 @@ async def remove_member(
     Remove a member from the project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     # Get member to check if they're the owner
-    member_resp = supabase.table("backlot_project_members").select("user_id").eq(
+    member_resp = client.table("backlot_project_members").select("user_id").eq(
         "id", member_id
     ).eq("project_id", project_id).execute()
 
@@ -403,14 +416,14 @@ async def remove_member(
     member_user_id = member_resp.data[0]["user_id"]
 
     # Check if trying to remove owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == member_user_id:
         raise HTTPException(status_code=400, detail="Cannot remove project owner")
 
     # Delete member and their roles/overrides
-    supabase.table("backlot_project_members").delete().eq("id", member_id).execute()
-    supabase.table("backlot_project_roles").delete().eq("project_id", project_id).eq("user_id", member_user_id).execute()
-    supabase.table("backlot_project_view_overrides").delete().eq("project_id", project_id).eq("user_id", member_user_id).execute()
+    client.table("backlot_project_members").delete().eq("id", member_id).execute()
+    client.table("backlot_project_roles").delete().eq("project_id", project_id).eq("user_id", member_user_id).execute()
+    client.table("backlot_project_view_overrides").delete().eq("project_id", project_id).eq("user_id", member_user_id).execute()
 
     return {"success": True}
 
@@ -429,7 +442,7 @@ async def assign_role(
     Assign a Backlot role to a user
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage roles")
@@ -440,7 +453,7 @@ async def assign_role(
         raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}")
 
     # Check if role already assigned
-    existing_resp = supabase.table("backlot_project_roles").select("id, is_primary").eq(
+    existing_resp = client.table("backlot_project_roles").select("id, is_primary").eq(
         "project_id", project_id
     ).eq("user_id", request.user_id).eq("backlot_role", request.backlot_role).execute()
 
@@ -449,11 +462,11 @@ async def assign_role(
         if existing_resp.data[0]["is_primary"] != request.is_primary:
             if request.is_primary:
                 # Clear other primary flags for this user
-                supabase.table("backlot_project_roles").update({"is_primary": False}).eq(
+                client.table("backlot_project_roles").update({"is_primary": False}).eq(
                     "project_id", project_id
                 ).eq("user_id", request.user_id).execute()
 
-            supabase.table("backlot_project_roles").update({"is_primary": request.is_primary}).eq(
+            client.table("backlot_project_roles").update({"is_primary": request.is_primary}).eq(
                 "id", existing_resp.data[0]["id"]
             ).execute()
 
@@ -461,12 +474,12 @@ async def assign_role(
 
     # If setting as primary, clear other primary flags
     if request.is_primary:
-        supabase.table("backlot_project_roles").update({"is_primary": False}).eq(
+        client.table("backlot_project_roles").update({"is_primary": False}).eq(
             "project_id", project_id
         ).eq("user_id", request.user_id).execute()
 
     # Create role assignment
-    create_resp = supabase.table("backlot_project_roles").insert({
+    create_resp = client.table("backlot_project_roles").insert({
         "project_id": project_id,
         "user_id": request.user_id,
         "backlot_role": request.backlot_role,
@@ -489,12 +502,12 @@ async def remove_role(
     Remove a Backlot role from a user
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage roles")
 
-    supabase.table("backlot_project_roles").delete().eq(
+    client.table("backlot_project_roles").delete().eq(
         "project_id", project_id
     ).eq("user_id", request.user_id).eq("backlot_role", request.backlot_role).execute()
 
@@ -514,12 +527,12 @@ async def list_view_profiles(
     List all custom view profiles for the project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to view profiles")
 
-    profiles_resp = supabase.table("backlot_project_view_profiles").select("*").eq(
+    profiles_resp = client.table("backlot_project_view_profiles").select("*").eq(
         "project_id", project_id
     ).order("backlot_role").execute()
 
@@ -559,7 +572,7 @@ async def update_view_profile(
     Update or create a custom view profile for a role
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage profiles")
@@ -570,7 +583,7 @@ async def update_view_profile(
         raise HTTPException(status_code=400, detail=f"Invalid role")
 
     # Check for existing profile
-    existing_resp = supabase.table("backlot_project_view_profiles").select("id").eq(
+    existing_resp = client.table("backlot_project_view_profiles").select("id").eq(
         "project_id", project_id
     ).eq("backlot_role", role).eq("is_default", True).execute()
 
@@ -581,7 +594,7 @@ async def update_view_profile(
 
     if existing_resp.data:
         # Update existing
-        update_resp = supabase.table("backlot_project_view_profiles").update(profile_data).eq(
+        update_resp = client.table("backlot_project_view_profiles").update(profile_data).eq(
             "id", existing_resp.data[0]["id"]
         ).execute()
         if not update_resp.data:
@@ -595,7 +608,7 @@ async def update_view_profile(
             "is_default": True,
             "created_by_user_id": user["id"],
         })
-        create_resp = supabase.table("backlot_project_view_profiles").insert(profile_data).execute()
+        create_resp = client.table("backlot_project_view_profiles").insert(profile_data).execute()
         if not create_resp.data:
             raise HTTPException(status_code=500, detail="Failed to create profile")
         return ViewProfile(**create_resp.data[0])
@@ -611,12 +624,12 @@ async def delete_view_profile(
     Delete a custom view profile (reverts to system defaults)
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage profiles")
 
-    supabase.table("backlot_project_view_profiles").delete().eq(
+    client.table("backlot_project_view_profiles").delete().eq(
         "project_id", project_id
     ).eq("backlot_role", role).execute()
 
@@ -636,13 +649,13 @@ async def list_overrides(
     List all per-user view overrides for the project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to view overrides")
 
     # Get overrides without profile join (avoid PostgREST schema cache issues)
-    overrides_resp = supabase.table("backlot_project_view_overrides").select("*").eq(
+    overrides_resp = client.table("backlot_project_view_overrides").select("*").eq(
         "project_id", project_id
     ).execute()
 
@@ -652,7 +665,7 @@ async def list_overrides(
     user_ids = [o["user_id"] for o in overrides]
     profiles_by_id: Dict[str, Dict] = {}
     if user_ids:
-        profiles_resp = supabase.table("profiles").select("id, full_name").in_("id", user_ids).execute()
+        profiles_resp = client.table("profiles").select("id, full_name").in_("id", user_ids).execute()
         for p in (profiles_resp.data or []):
             profiles_by_id[p["id"]] = p
 
@@ -682,14 +695,14 @@ async def get_user_override(
     Get a specific user's override config
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Users can view their own override, admins can view any
     if user_id != user["id"] and not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get override without profile join (avoid PostgREST schema cache issues)
-    override_resp = supabase.table("backlot_project_view_overrides").select("*").eq(
+    override_resp = client.table("backlot_project_view_overrides").select("*").eq(
         "project_id", project_id
     ).eq("user_id", user_id).execute()
 
@@ -699,7 +712,7 @@ async def get_user_override(
     o = override_resp.data[0]
 
     # Fetch profile separately
-    profile_resp = supabase.table("profiles").select("full_name").eq("id", user_id).execute()
+    profile_resp = client.table("profiles").select("full_name").eq("id", user_id).execute()
     profile = profile_resp.data[0] if profile_resp.data else {}
 
     return ViewOverride(
@@ -724,19 +737,19 @@ async def update_user_override(
     Create or update a user's permission overrides
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage overrides")
 
     # Check if override exists
-    existing_resp = supabase.table("backlot_project_view_overrides").select("id").eq(
+    existing_resp = client.table("backlot_project_view_overrides").select("id").eq(
         "project_id", project_id
     ).eq("user_id", user_id).execute()
 
     if existing_resp.data:
         # Update existing
-        update_resp = supabase.table("backlot_project_view_overrides").update({
+        update_resp = client.table("backlot_project_view_overrides").update({
             "config": request.config
         }).eq("id", existing_resp.data[0]["id"]).execute()
 
@@ -745,7 +758,7 @@ async def update_user_override(
         return {"success": True, "id": update_resp.data[0]["id"]}
     else:
         # Create new
-        create_resp = supabase.table("backlot_project_view_overrides").insert({
+        create_resp = client.table("backlot_project_view_overrides").insert({
             "project_id": project_id,
             "user_id": user_id,
             "config": request.config,
@@ -766,12 +779,12 @@ async def delete_user_override(
     Delete a user's permission overrides (revert to role defaults)
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_manage_access(project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to manage overrides")
 
-    supabase.table("backlot_project_view_overrides").delete().eq(
+    client.table("backlot_project_view_overrides").delete().eq(
         "project_id", project_id
     ).eq("user_id", user_id).execute()
 
@@ -838,10 +851,10 @@ async def preview_role_config(
     Preview what a user with a specific role would see (view as role)
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get project-specific profile if exists
-    profile_resp = supabase.table("backlot_project_view_profiles").select("config").eq(
+    profile_resp = client.table("backlot_project_view_profiles").select("config").eq(
         "project_id", project_id
     ).eq("backlot_role", role).eq("is_default", True).execute()
 

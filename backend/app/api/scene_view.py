@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -132,13 +132,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -146,12 +159,12 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 async def verify_project_access(supabase, project_id: str, user_id: str) -> bool:
     """Verify user has access to project"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
     # Check membership
-    member_resp = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
@@ -170,13 +183,13 @@ async def list_scenes(
     List all scenes for a project with summary data
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_access(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Build query
-    query = supabase.table("backlot_scenes").select("*").eq("project_id", project_id)
+    query = client.table("backlot_scenes").select("*").eq("project_id", project_id)
 
     if script_version_id:
         query = query.eq("script_id", script_version_id)
@@ -190,7 +203,7 @@ async def list_scenes(
     # Get shot counts
     shot_counts = {}
     if scene_ids:
-        shots_resp = supabase.table("backlot_shots").select("scene_id").in_("scene_id", scene_ids).execute()
+        shots_resp = client.table("backlot_shots").select("scene_id").in_("scene_id", scene_ids).execute()
         for shot in (shots_resp.data or []):
             scene_id = shot["scene_id"]
             shot_counts[scene_id] = shot_counts.get(scene_id, 0) + 1
@@ -198,7 +211,7 @@ async def list_scenes(
     # Get breakdown item counts
     breakdown_counts = {}
     if scene_ids:
-        breakdown_resp = supabase.table("backlot_scene_breakdown_items").select("scene_id").in_("scene_id", scene_ids).execute()
+        breakdown_resp = client.table("backlot_scene_breakdown_items").select("scene_id").in_("scene_id", scene_ids).execute()
         for item in (breakdown_resp.data or []):
             scene_id = item["scene_id"]
             breakdown_counts[scene_id] = breakdown_counts.get(scene_id, 0) + 1
@@ -207,7 +220,7 @@ async def list_scenes(
     scene_numbers = [s["scene_number"] for s in scenes if s.get("scene_number")]
     clip_counts = {}
     if scene_numbers:
-        clips_resp = supabase.table("backlot_dailies_clips").select("scene_number").eq("project_id", project_id).in_("scene_number", scene_numbers).execute()
+        clips_resp = client.table("backlot_dailies_clips").select("scene_number").eq("project_id", project_id).in_("scene_number", scene_numbers).execute()
         for clip in (clips_resp.data or []):
             sn = clip.get("scene_number")
             if sn:
@@ -257,13 +270,13 @@ async def get_scene_overview(
     Get comprehensive overview of a scene with all related data
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_access(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get scene metadata
-    scene_resp = supabase.table("backlot_scenes").select("*").eq("id", scene_id).eq("project_id", project_id).execute()
+    scene_resp = client.table("backlot_scenes").select("*").eq("id", scene_id).eq("project_id", project_id).execute()
     if not scene_resp.data:
         raise HTTPException(status_code=404, detail="Scene not found")
 
@@ -271,7 +284,7 @@ async def get_scene_overview(
     scene = SceneMetadata(**scene_data)
 
     # Get breakdown items
-    breakdown_resp = supabase.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).execute()
+    breakdown_resp = client.table("backlot_scene_breakdown_items").select("*").eq("scene_id", scene_id).execute()
     breakdown_items = [BreakdownItem(
         id=item["id"],
         scene_id=item["scene_id"],
@@ -290,11 +303,11 @@ async def get_scene_overview(
         breakdown_by_type[item.type].append(item)
 
     # Get shots linked to this scene
-    shots_resp = supabase.table("backlot_shots").select("*").eq("scene_id", scene_id).order("shot_number").execute()
+    shots_resp = client.table("backlot_shots").select("*").eq("scene_id", scene_id).order("shot_number").execute()
     shots = []
     for shot in (shots_resp.data or []):
         # Count circle takes for this shot
-        circle_takes = supabase.table("backlot_dailies_clips").select("id").eq("project_id", project_id).eq("is_circle_take", True).execute()
+        circle_takes = client.table("backlot_dailies_clips").select("id").eq("project_id", project_id).eq("is_circle_take", True).execute()
         shots.append(ShotSummary(
             id=shot["id"],
             shot_number=shot.get("shot_number", ""),
@@ -308,7 +321,7 @@ async def get_scene_overview(
     # Get locations
     locations = []
     if scene_data.get("location_id"):
-        loc_resp = supabase.table("backlot_locations").select("*").eq("id", scene_data["location_id"]).execute()
+        loc_resp = client.table("backlot_locations").select("*").eq("id", scene_data["location_id"]).execute()
         if loc_resp.data:
             loc = loc_resp.data[0]
             locations.append(LocationSummary(
@@ -322,7 +335,7 @@ async def get_scene_overview(
     # Get dailies clips for this scene
     dailies_clips = []
     if scene_data.get("scene_number"):
-        clips_resp = supabase.table("backlot_dailies_clips").select("*").eq("project_id", project_id).eq("scene_number", scene_data["scene_number"]).order("take_number").execute()
+        clips_resp = client.table("backlot_dailies_clips").select("*").eq("project_id", project_id).eq("scene_number", scene_data["scene_number"]).order("take_number").execute()
         dailies_clips = [DailiesClipSummary(
             id=clip["id"],
             file_name=clip.get("file_name", ""),
@@ -341,7 +354,7 @@ async def get_scene_overview(
     # Get tasks linked to this scene
     tasks = []
     # Tasks might have a scene_id field or metadata linking to scenes
-    tasks_resp = supabase.table("backlot_tasks").select("*, profiles:assigned_to(full_name)").eq("project_id", project_id).execute()
+    tasks_resp = client.table("backlot_tasks").select("*, profiles:assigned_to(full_name)").eq("project_id", project_id).execute()
     for task in (tasks_resp.data or []):
         # Check if task is linked to this scene (via metadata or title reference)
         meta = task.get("metadata") or {}

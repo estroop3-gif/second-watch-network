@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -157,9 +157,18 @@ async def get_current_user_id(authorization: str = Header(None)) -> Optional[str
         return None
     token = authorization.replace("Bearer ", "")
     try:
-        supabase = get_supabase_admin_client()
-        user = supabase.auth.get_user(token)
-        return user.user.id if user and user.user else None
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            return user.get("id") if user else None
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user = supabase.auth.get_user(token)
+            return user.user.id if user and user.user else None
     except Exception:
         return None
 
@@ -186,8 +195,8 @@ async def list_volunteer_shifts(
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_volunteer_shifts").select("*")
+    client = get_client()
+    query = client.table("church_volunteer_shifts").select("*")
 
     if user_id:
         query = query.eq("user_id", user_id)
@@ -216,8 +225,8 @@ async def get_volunteer_shift(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_volunteer_shifts").select("*").eq("id", shift_id).single().execute()
+    client = get_client()
+    result = client.table("church_volunteer_shifts").select("*").eq("id", shift_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Volunteer shift not found")
@@ -238,7 +247,7 @@ async def create_volunteer_shift(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "user_id": request.user_id,
@@ -250,7 +259,7 @@ async def create_volunteer_shift(
         "notes": request.notes,
     }
 
-    result = supabase.table("church_volunteer_shifts").insert(insert_data).execute()
+    result = client.table("church_volunteer_shifts").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create volunteer shift")
@@ -269,12 +278,12 @@ async def update_volunteer_shift(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_volunteer_shifts").update(update_data).eq("id", shift_id).execute()
+    result = client.table("church_volunteer_shifts").update(update_data).eq("id", shift_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Volunteer shift not found")
@@ -292,8 +301,8 @@ async def delete_volunteer_shift(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_volunteer_shifts").delete().eq("id", shift_id).execute()
+    client = get_client()
+    result = client.table("church_volunteer_shifts").delete().eq("id", shift_id).execute()
 
     return {"success": True, "deleted_id": shift_id}
 
@@ -314,8 +323,8 @@ async def list_training_modules(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_training_modules").select("*")
+    client = get_client()
+    query = client.table("church_training_modules").select("*")
 
     if category:
         query = query.eq("category", category)
@@ -338,8 +347,8 @@ async def get_training_module(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_training_modules").select("*").eq("id", module_id).single().execute()
+    client = get_client()
+    result = client.table("church_training_modules").select("*").eq("id", module_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Training module not found")
@@ -360,7 +369,7 @@ async def create_training_module(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "title": request.title,
@@ -373,7 +382,7 @@ async def create_training_module(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_training_modules").insert(insert_data).execute()
+    result = client.table("church_training_modules").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create training module")
@@ -397,8 +406,8 @@ async def list_training_progress(
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_training_progress").select("*")
+    client = get_client()
+    query = client.table("church_training_progress").select("*")
 
     if user_id:
         query = query.eq("user_id", user_id)
@@ -421,8 +430,8 @@ async def get_my_training_progress(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_training_progress").select("*").eq("user_id", user_id).execute()
+    client = get_client()
+    result = client.table("church_training_progress").select("*").eq("user_id", user_id).execute()
 
     return result.data or []
 
@@ -438,7 +447,7 @@ async def update_training_progress(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -447,7 +456,7 @@ async def update_training_progress(
     if request.status == "completed" and "completed_at" not in update_data:
         update_data["completed_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_training_progress").update(update_data).eq("id", progress_id).execute()
+    result = client.table("church_training_progress").update(update_data).eq("id", progress_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Training progress not found")
@@ -471,8 +480,8 @@ async def list_skills(
     if not current_user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_skills_directory").select("*")
+    client = get_client()
+    query = client.table("church_skills_directory").select("*")
 
     if user_id:
         query = query.eq("user_id", user_id)
@@ -496,7 +505,7 @@ async def create_skill_entry(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "user_id": request.user_id,
@@ -506,7 +515,7 @@ async def create_skill_entry(
         "notes": request.notes,
     }
 
-    result = supabase.table("church_skills_directory").insert(insert_data).execute()
+    result = client.table("church_skills_directory").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create skill entry")
@@ -524,7 +533,7 @@ async def verify_skill(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {
         "verified_by_user_id": user_id,
@@ -532,7 +541,7 @@ async def verify_skill(
         "updated_at": datetime.utcnow().isoformat(),
     }
 
-    result = supabase.table("church_skills_directory").update(update_data).eq("id", skill_id).execute()
+    result = client.table("church_skills_directory").update(update_data).eq("id", skill_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Skill entry not found")
@@ -555,8 +564,8 @@ async def list_position_cards(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    query = supabase.table("church_position_cards").select("*")
+    client = get_client()
+    query = client.table("church_position_cards").select("*")
 
     if department:
         query = query.eq("department", department)
@@ -579,8 +588,8 @@ async def get_position_card(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
-    result = supabase.table("church_position_cards").select("*").eq("id", card_id).single().execute()
+    client = get_client()
+    result = client.table("church_position_cards").select("*").eq("id", card_id).single().execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Position card not found")
@@ -601,7 +610,7 @@ async def create_position_card(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     insert_data = {
         "position_name": request.position_name,
@@ -614,7 +623,7 @@ async def create_position_card(
         "created_by_user_id": user_id,
     }
 
-    result = supabase.table("church_position_cards").insert(insert_data).execute()
+    result = client.table("church_position_cards").insert(insert_data).execute()
 
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create position card")
@@ -633,12 +642,12 @@ async def update_position_card(
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     update_data = {k: v for k, v in request.dict().items() if v is not None}
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    result = supabase.table("church_position_cards").update(update_data).eq("id", card_id).execute()
+    result = client.table("church_position_cards").update(update_data).eq("id", card_id).execute()
 
     if not result.data:
         raise HTTPException(status_code=404, detail="Position card not found")

@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, time
 import secrets
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 from app.core.backlot_permissions import can_edit_tab, can_view_tab, can_manage_access
 
 router = APIRouter()
@@ -198,13 +198,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -212,12 +225,12 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 async def verify_project_member(supabase, project_id: str, user_id: str) -> bool:
     """Verify user is a member of the project"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
     # Check member
-    member_resp = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
@@ -252,12 +265,12 @@ async def list_day_settings(
 ):
     """List all day settings for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    response = supabase.table("backlot_project_day_settings").select("*").eq("project_id", project_id).order("shoot_date").execute()
+    response = client.table("backlot_project_day_settings").select("*").eq("project_id", project_id).order("shoot_date").execute()
 
     return {"settings": response.data or []}
 
@@ -270,12 +283,12 @@ async def get_day_settings(
 ):
     """Get day settings for a specific shoot date"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    response = supabase.table("backlot_project_day_settings").select("*").eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
+    response = client.table("backlot_project_day_settings").select("*").eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
 
     if response.data and len(response.data) > 0:
         return {"settings": response.data[0]}
@@ -291,7 +304,7 @@ async def create_day_settings(
 ):
     """Create day settings for a shoot date"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -309,7 +322,7 @@ async def create_day_settings(
         "weather_override_summary": data.weather_override_summary,
     }
 
-    response = supabase.table("backlot_project_day_settings").insert(settings_data).execute()
+    response = client.table("backlot_project_day_settings").insert(settings_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create day settings")
@@ -326,7 +339,7 @@ async def update_day_settings(
 ):
     """Update day settings for a shoot date"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -338,7 +351,7 @@ async def update_day_settings(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_project_day_settings").update(update_data).eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
+    response = client.table("backlot_project_day_settings").update(update_data).eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Day settings not found")
@@ -358,13 +371,13 @@ async def get_sun_weather(
     Future: integrate with real weather/sun APIs.
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     # Check if we have day settings
-    response = supabase.table("backlot_project_day_settings").select("*").eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
+    response = client.table("backlot_project_day_settings").select("*").eq("project_id", project_id).eq("shoot_date", shoot_date).execute()
 
     if response.data and len(response.data) > 0:
         settings = response.data[0]
@@ -407,12 +420,12 @@ async def list_checkin_sessions(
 ):
     """List check-in sessions for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_checkin_sessions").select("*").eq("project_id", project_id)
+    query = client.table("backlot_checkin_sessions").select("*").eq("project_id", project_id)
 
     if active_only:
         query = query.eq("is_active", True)
@@ -423,7 +436,7 @@ async def list_checkin_sessions(
     # Add check-in counts
     sessions = response.data or []
     for session in sessions:
-        count_resp = supabase.table("backlot_checkins").select("id", count="exact").eq("session_id", session["id"]).execute()
+        count_resp = client.table("backlot_checkins").select("id", count="exact").eq("session_id", session["id"]).execute()
         session["checkin_count"] = count_resp.count or 0
 
     return {"sessions": sessions}
@@ -437,12 +450,12 @@ async def get_checkin_session(
 ):
     """Get a specific check-in session"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    response = supabase.table("backlot_checkin_sessions").select("*").eq("id", session_id).eq("project_id", project_id).execute()
+    response = client.table("backlot_checkin_sessions").select("*").eq("id", session_id).eq("project_id", project_id).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -450,7 +463,7 @@ async def get_checkin_session(
     session = response.data[0]
 
     # Add check-in count
-    count_resp = supabase.table("backlot_checkins").select("id", count="exact").eq("session_id", session_id).execute()
+    count_resp = client.table("backlot_checkins").select("id", count="exact").eq("session_id", session_id).execute()
     session["checkin_count"] = count_resp.count or 0
 
     return {"session": session}
@@ -464,7 +477,7 @@ async def create_checkin_session(
 ):
     """Create a new check-in session"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -487,7 +500,7 @@ async def create_checkin_session(
         "is_active": True,
     }
 
-    response = supabase.table("backlot_checkin_sessions").insert(session_data).execute()
+    response = client.table("backlot_checkin_sessions").insert(session_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create check-in session")
@@ -503,7 +516,7 @@ async def deactivate_checkin_session(
 ):
     """Deactivate a check-in session"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -511,7 +524,7 @@ async def deactivate_checkin_session(
     if not await can_edit_tab(project_id, user["id"], "checkin"):
         raise HTTPException(status_code=403, detail="No permission to manage check-in sessions")
 
-    response = supabase.table("backlot_checkin_sessions").update({
+    response = client.table("backlot_checkin_sessions").update({
         "is_active": False,
         "deactivated_at": datetime.utcnow().isoformat(),
     }).eq("id", session_id).eq("project_id", project_id).execute()
@@ -530,7 +543,7 @@ async def activate_checkin_session(
 ):
     """Re-activate a check-in session"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -538,7 +551,7 @@ async def activate_checkin_session(
     if not await can_edit_tab(project_id, user["id"], "checkin"):
         raise HTTPException(status_code=403, detail="No permission to manage check-in sessions")
 
-    response = supabase.table("backlot_checkin_sessions").update({
+    response = client.table("backlot_checkin_sessions").update({
         "is_active": True,
         "deactivated_at": None,
     }).eq("id", session_id).eq("project_id", project_id).execute()
@@ -560,9 +573,9 @@ async def get_session_by_token(
 ):
     """Get session info by QR token (for crew check-in flow)"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
-    response = supabase.table("backlot_checkin_sessions").select("*, backlot_projects(id, title)").eq("qr_token", qr_token).execute()
+    response = client.table("backlot_checkin_sessions").select("*, backlot_projects(id, title)").eq("qr_token", qr_token).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -577,7 +590,7 @@ async def get_session_by_token(
         raise HTTPException(status_code=403, detail="You are not a member of this project")
 
     # Check if user already checked in
-    existing = supabase.table("backlot_checkins").select("id").eq("session_id", session["id"]).eq("user_id", user["id"]).execute()
+    existing = client.table("backlot_checkins").select("id").eq("session_id", session["id"]).eq("user_id", user["id"]).execute()
 
     return {
         "session": session,
@@ -593,10 +606,10 @@ async def perform_checkin(
 ):
     """Perform check-in for current user"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get session by token
-    session_resp = supabase.table("backlot_checkin_sessions").select("*").eq("qr_token", data.qr_token).execute()
+    session_resp = client.table("backlot_checkin_sessions").select("*").eq("qr_token", data.qr_token).execute()
 
     if not session_resp.data:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -611,7 +624,7 @@ async def perform_checkin(
         raise HTTPException(status_code=403, detail="You are not a member of this project")
 
     # Check for existing check-in
-    existing = supabase.table("backlot_checkins").select("id").eq("session_id", session["id"]).eq("user_id", user["id"]).execute()
+    existing = client.table("backlot_checkins").select("id").eq("session_id", session["id"]).eq("user_id", user["id"]).execute()
 
     if existing.data:
         raise HTTPException(status_code=400, detail="You have already checked in for this session")
@@ -627,7 +640,7 @@ async def perform_checkin(
         "longitude": data.longitude,
     }
 
-    response = supabase.table("backlot_checkins").insert(checkin_data).execute()
+    response = client.table("backlot_checkins").insert(checkin_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to check in")
@@ -643,19 +656,19 @@ async def list_checkins_for_session(
 ):
     """List all check-ins for a session (admin view)"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     # Get check-ins with user info
-    response = supabase.table("backlot_checkins").select("*").eq("session_id", session_id).order("checked_in_at").execute()
+    response = client.table("backlot_checkins").select("*").eq("session_id", session_id).order("checked_in_at").execute()
 
     checkins = response.data or []
 
     # Enrich with user info
     for checkin in checkins:
-        profile_resp = supabase.table("profiles").select("full_name, display_name, avatar_url").eq("id", checkin["user_id"]).execute()
+        profile_resp = client.table("profiles").select("full_name, display_name, avatar_url").eq("id", checkin["user_id"]).execute()
         if profile_resp.data:
             profile = profile_resp.data[0]
             checkin["user_name"] = profile.get("display_name") or profile.get("full_name") or "Unknown"
@@ -675,12 +688,12 @@ async def get_my_notes(
 ):
     """Get current user's notes for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    response = supabase.table("backlot_user_notes").select("*").eq("project_id", project_id).eq("user_id", user["id"]).order("is_pinned", desc=True).order("updated_at", desc=True).execute()
+    response = client.table("backlot_user_notes").select("*").eq("project_id", project_id).eq("user_id", user["id"]).order("is_pinned", desc=True).order("updated_at", desc=True).execute()
 
     return {"notes": response.data or []}
 
@@ -693,7 +706,7 @@ async def create_note(
 ):
     """Create a personal note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -708,7 +721,7 @@ async def create_note(
         "tags": data.tags,
     }
 
-    response = supabase.table("backlot_user_notes").insert(note_data).execute()
+    response = client.table("backlot_user_notes").insert(note_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create note")
@@ -725,7 +738,7 @@ async def update_note(
 ):
     """Update a personal note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
@@ -734,7 +747,7 @@ async def update_note(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    response = supabase.table("backlot_user_notes").update(update_data).eq("id", note_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
+    response = client.table("backlot_user_notes").update(update_data).eq("id", note_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Note not found")
@@ -750,12 +763,12 @@ async def delete_note(
 ):
     """Delete a personal note"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    supabase.table("backlot_user_notes").delete().eq("id", note_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
+    client.table("backlot_user_notes").delete().eq("id", note_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
 
     return {"success": True}
 
@@ -772,12 +785,12 @@ async def get_my_bookmarks(
 ):
     """Get current user's bookmarks for a project"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    query = supabase.table("backlot_user_bookmarks").select("*").eq("project_id", project_id).eq("user_id", user["id"])
+    query = client.table("backlot_user_bookmarks").select("*").eq("project_id", project_id).eq("user_id", user["id"])
 
     if entity_type:
         query = query.eq("entity_type", entity_type)
@@ -796,13 +809,13 @@ async def create_bookmark(
 ):
     """Create a bookmark"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     # Check if bookmark already exists
-    existing = supabase.table("backlot_user_bookmarks").select("id").eq("user_id", user["id"]).eq("entity_type", data.entity_type).eq("entity_id", data.entity_id).execute()
+    existing = client.table("backlot_user_bookmarks").select("id").eq("user_id", user["id"]).eq("entity_type", data.entity_type).eq("entity_id", data.entity_id).execute()
 
     if existing.data:
         return {"bookmark": existing.data[0], "already_exists": True}
@@ -815,7 +828,7 @@ async def create_bookmark(
         "label": data.label,
     }
 
-    response = supabase.table("backlot_user_bookmarks").insert(bookmark_data).execute()
+    response = client.table("backlot_user_bookmarks").insert(bookmark_data).execute()
 
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create bookmark")
@@ -831,12 +844,12 @@ async def delete_bookmark(
 ):
     """Delete a bookmark"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    supabase.table("backlot_user_bookmarks").delete().eq("id", bookmark_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
+    client.table("backlot_user_bookmarks").delete().eq("id", bookmark_id).eq("project_id", project_id).eq("user_id", user["id"]).execute()
 
     return {"success": True}
 
@@ -850,12 +863,12 @@ async def delete_bookmark_by_entity(
 ):
     """Delete a bookmark by entity type and ID"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    supabase.table("backlot_user_bookmarks").delete().eq("project_id", project_id).eq("user_id", user["id"]).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
+    client.table("backlot_user_bookmarks").delete().eq("project_id", project_id).eq("user_id", user["id"]).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
 
     return {"success": True}
 
@@ -869,11 +882,11 @@ async def check_bookmark_exists(
 ):
     """Check if a bookmark exists for an entity"""
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    response = supabase.table("backlot_user_bookmarks").select("id").eq("user_id", user["id"]).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
+    response = client.table("backlot_user_bookmarks").select("id").eq("user_id", user["id"]).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
 
     return {"exists": bool(response.data), "bookmark_id": response.data[0]["id"] if response.data else None}

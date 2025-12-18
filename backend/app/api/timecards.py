@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -132,13 +132,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -146,30 +159,30 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 async def verify_project_member(supabase, project_id: str, user_id: str) -> bool:
     """Verify user is a member of the project"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
     # Check membership
-    member_resp = supabase.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
     return bool(member_resp.data)
 
 
 async def can_approve_timecards(supabase, project_id: str, user_id: str) -> bool:
     """Check if user can approve/reject timecards"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return True
 
     # Check for showrunner/producer role
-    role_resp = supabase.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).execute()
+    role_resp = client.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", user_id).execute()
     for role in (role_resp.data or []):
         if role.get("backlot_role") in ["showrunner", "producer"]:
             return True
 
     # Check admin member
-    member_resp = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
     if member_resp.data and member_resp.data[0].get("role") == "admin":
         return True
 
@@ -215,13 +228,13 @@ async def list_my_timecards(
     List current user's timecards for a project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get timecards
-    query = supabase.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", user["id"])
+    query = client.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", user["id"])
 
     if status:
         query = query.eq("status", status)
@@ -232,7 +245,7 @@ async def list_my_timecards(
     # Get entry stats for each timecard
     result = []
     for tc in timecards:
-        entries_resp = supabase.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
         entries = entries_resp.data or []
         total_hours = sum(e.get("hours_worked", 0) or 0 for e in entries)
         total_overtime = sum(e.get("overtime_hours", 0) or 0 for e in entries)
@@ -260,13 +273,13 @@ async def list_timecards_for_review(
     List timecards for review (showrunner/producer/admin only)
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_approve_timecards(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to review timecards")
 
     # Get timecards with user info
-    query = supabase.table("backlot_timecards").select(
+    query = client.table("backlot_timecards").select(
         "*, profiles:user_id(full_name, avatar_url)"
     ).eq("project_id", project_id)
 
@@ -283,7 +296,7 @@ async def list_timecards_for_review(
         profile = tc.get("profiles") or {}
 
         # Get entry stats
-        entries_resp = supabase.table("backlot_timecard_entries").select("hours_worked, overtime_hours, department").eq("timecard_id", tc["id"]).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("hours_worked, overtime_hours, department").eq("timecard_id", tc["id"]).execute()
         entries = entries_resp.data or []
 
         # Filter by department if specified
@@ -319,10 +332,10 @@ async def get_timecard(
     Get a timecard with all entries
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Get timecard
-    tc_resp = supabase.table("backlot_timecards").select(
+    tc_resp = client.table("backlot_timecards").select(
         "*, profiles:user_id(full_name, avatar_url)"
     ).eq("id", timecard_id).eq("project_id", project_id).execute()
 
@@ -337,7 +350,7 @@ async def get_timecard(
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get entries
-    entries_resp = supabase.table("backlot_timecard_entries").select("*").eq("timecard_id", timecard_id).order("shoot_date").execute()
+    entries_resp = client.table("backlot_timecard_entries").select("*").eq("timecard_id", timecard_id).order("shoot_date").execute()
     entries = [TimecardEntry(**e) for e in (entries_resp.data or [])]
 
     total_hours = sum(e.hours_worked or 0 for e in entries)
@@ -378,7 +391,7 @@ async def create_or_get_timecard(
     Create a new timecard or return existing one for the week
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await verify_project_member(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -387,12 +400,12 @@ async def create_or_get_timecard(
     week_start = get_week_start(request.week_start_date)
 
     # Check for existing timecard
-    existing_resp = supabase.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", user["id"]).eq("week_start_date", week_start).execute()
+    existing_resp = client.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", user["id"]).eq("week_start_date", week_start).execute()
 
     if existing_resp.data:
         tc = existing_resp.data[0]
         # Get entry stats
-        entries_resp = supabase.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
         entries = entries_resp.data or []
         return Timecard(
             **tc,
@@ -409,7 +422,7 @@ async def create_or_get_timecard(
         "status": "draft",
     }
 
-    create_resp = supabase.table("backlot_timecards").insert(new_tc).execute()
+    create_resp = client.table("backlot_timecards").insert(new_tc).execute()
     if not create_resp.data:
         raise HTTPException(status_code=500, detail="Failed to create timecard")
 
@@ -428,10 +441,10 @@ async def create_or_update_entry(
     Create or update a day entry on a timecard (upsert by shoot_date)
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify timecard ownership and status
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
     if not tc_resp.data:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -448,7 +461,7 @@ async def create_or_update_entry(
         hours_worked = calculate_hours(request.call_time, request.wrap_time, request.meal_break_minutes or 0)
 
     # Check for existing entry for this date
-    existing_resp = supabase.table("backlot_timecard_entries").select("*").eq("timecard_id", timecard_id).eq("shoot_date", request.shoot_date).execute()
+    existing_resp = client.table("backlot_timecard_entries").select("*").eq("timecard_id", timecard_id).eq("shoot_date", request.shoot_date).execute()
 
     entry_data = {
         "timecard_id": timecard_id,
@@ -475,20 +488,20 @@ async def create_or_update_entry(
     }
 
     # Try to find production day for this date
-    pd_resp = supabase.table("backlot_production_days").select("id").eq("project_id", project_id).eq("date", request.shoot_date).execute()
+    pd_resp = client.table("backlot_production_days").select("id").eq("project_id", project_id).eq("date", request.shoot_date).execute()
     if pd_resp.data:
         entry_data["production_day_id"] = pd_resp.data[0]["id"]
 
     if existing_resp.data:
         # Update existing
         entry_id = existing_resp.data[0]["id"]
-        update_resp = supabase.table("backlot_timecard_entries").update(entry_data).eq("id", entry_id).execute()
+        update_resp = client.table("backlot_timecard_entries").update(entry_data).eq("id", entry_id).execute()
         if not update_resp.data:
             raise HTTPException(status_code=500, detail="Failed to update entry")
         return TimecardEntry(**update_resp.data[0])
     else:
         # Create new
-        create_resp = supabase.table("backlot_timecard_entries").insert(entry_data).execute()
+        create_resp = client.table("backlot_timecard_entries").insert(entry_data).execute()
         if not create_resp.data:
             raise HTTPException(status_code=500, detail="Failed to create entry")
         return TimecardEntry(**create_resp.data[0])
@@ -505,10 +518,10 @@ async def delete_entry(
     Delete a timecard entry
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify timecard ownership and status
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
     if not tc_resp.data:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -520,7 +533,7 @@ async def delete_entry(
         raise HTTPException(status_code=400, detail="Cannot edit a submitted or approved timecard")
 
     # Delete entry
-    supabase.table("backlot_timecard_entries").delete().eq("id", entry_id).eq("timecard_id", timecard_id).execute()
+    client.table("backlot_timecard_entries").delete().eq("id", entry_id).eq("timecard_id", timecard_id).execute()
 
     return {"success": True}
 
@@ -535,10 +548,10 @@ async def submit_timecard(
     Submit a timecard for approval
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     # Verify timecard ownership
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
     if not tc_resp.data:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -550,7 +563,7 @@ async def submit_timecard(
         raise HTTPException(status_code=400, detail="Timecard has already been submitted")
 
     # Update status
-    update_resp = supabase.table("backlot_timecards").update({
+    update_resp = client.table("backlot_timecards").update({
         "status": "submitted",
         "submitted_at": datetime.utcnow().isoformat(),
         "submitted_by_user_id": user["id"],
@@ -573,13 +586,13 @@ async def approve_timecard(
     Approve a submitted timecard
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_approve_timecards(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to approve timecards")
 
     # Verify timecard exists and is submitted
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
     if not tc_resp.data:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -588,7 +601,7 @@ async def approve_timecard(
         raise HTTPException(status_code=400, detail="Only submitted timecards can be approved")
 
     # Update status
-    update_resp = supabase.table("backlot_timecards").update({
+    update_resp = client.table("backlot_timecards").update({
         "status": "approved",
         "approved_at": datetime.utcnow().isoformat(),
         "approved_by_user_id": user["id"],
@@ -611,13 +624,13 @@ async def reject_timecard(
     Reject a submitted timecard
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_approve_timecards(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="You don't have permission to reject timecards")
 
     # Verify timecard exists and is submitted
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
     if not tc_resp.data:
         raise HTTPException(status_code=404, detail="Timecard not found")
 
@@ -626,7 +639,7 @@ async def reject_timecard(
         raise HTTPException(status_code=400, detail="Only submitted timecards can be rejected")
 
     # Update status
-    update_resp = supabase.table("backlot_timecards").update({
+    update_resp = client.table("backlot_timecards").update({
         "status": "rejected",
         "rejected_at": datetime.utcnow().isoformat(),
         "rejected_by_user_id": user["id"],
@@ -648,13 +661,13 @@ async def get_timecard_summary(
     Get summary statistics for project timecards
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     if not await can_approve_timecards(supabase, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get all timecards
-    tc_resp = supabase.table("backlot_timecards").select("id, status").eq("project_id", project_id).execute()
+    tc_resp = client.table("backlot_timecards").select("id, status").eq("project_id", project_id).execute()
     timecards = tc_resp.data or []
 
     total = len(timecards)
@@ -669,7 +682,7 @@ async def get_timecard_summary(
     total_overtime = 0
 
     if tc_ids:
-        entries_resp = supabase.table("backlot_timecard_entries").select("hours_worked, overtime_hours").in_("timecard_id", tc_ids).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("hours_worked, overtime_hours").in_("timecard_id", tc_ids).execute()
         for entry in (entries_resp.data or []):
             total_hours += entry.get("hours_worked", 0) or 0
             total_overtime += entry.get("overtime_hours", 0) or 0

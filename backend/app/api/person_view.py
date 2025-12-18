@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.supabase import get_supabase_admin_client
+from app.core.database import get_client
 
 router = APIRouter()
 
@@ -97,13 +97,26 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
-    supabase = get_supabase_admin_client()
 
     try:
-        user_response = supabase.auth.get_user(token)
-        if not user_response or not user_response.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user_response.user.id, "email": user_response.user.email}
+        import os
+        USE_AWS = os.getenv('USE_AWS', 'false').lower() == 'true'
+
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if not user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user.get("id"), "email": user.get("email")}
+        else:
+            from app.core.supabase import get_supabase_client
+            supabase = get_supabase_client()
+            user_response = supabase.auth.get_user(token)
+            if not user_response or not user_response.user:
+                raise HTTPException(status_code=401, detail="Invalid token")
+            return {"id": user_response.user.id, "email": user_response.user.email}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
@@ -111,12 +124,12 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 async def verify_project_access(supabase, project_id: str, user_id: str) -> Dict[str, Any]:
     """Verify user has access to project and return access level"""
     # Check owner
-    project_resp = supabase.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if project_resp.data and project_resp.data[0]["owner_id"] == user_id:
         return {"has_access": True, "is_admin": True, "is_owner": True}
 
     # Check membership
-    member_resp = supabase.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_resp = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
     if not member_resp.data:
         return {"has_access": False, "is_admin": False, "is_owner": False}
 
@@ -136,7 +149,7 @@ async def can_view_person(supabase, project_id: str, viewer_id: str, target_user
         return True
 
     # Check for showrunner/producer role
-    role_resp = supabase.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", viewer_id).execute()
+    role_resp = client.table("backlot_project_roles").select("backlot_role").eq("project_id", project_id).eq("user_id", viewer_id).execute()
     for role in (role_resp.data or []):
         if role.get("backlot_role") in ["showrunner", "producer"]:
             return True
@@ -160,21 +173,21 @@ async def list_project_people(
     List all people on a project with summary data
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     access = await verify_project_access(supabase, project_id, user["id"])
     if not access.get("has_access"):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get project members with profiles
-    members_resp = supabase.table("backlot_project_members").select(
+    members_resp = client.table("backlot_project_members").select(
         "*, profiles:user_id(id, full_name, display_name, avatar_url)"
     ).eq("project_id", project_id).execute()
 
     members = members_resp.data or []
 
     # Get all backlot roles for this project
-    roles_resp = supabase.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
+    roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
     roles_by_user: Dict[str, List[Dict]] = {}
     for r in (roles_resp.data or []):
         uid = r["user_id"]
@@ -183,7 +196,7 @@ async def list_project_people(
         roles_by_user[uid].append(r)
 
     # Get task counts per user
-    tasks_resp = supabase.table("backlot_tasks").select("assigned_to").eq("project_id", project_id).not_.is_("assigned_to", "null").execute()
+    tasks_resp = client.table("backlot_tasks").select("assigned_to").eq("project_id", project_id).not_.is_("assigned_to", "null").execute()
     task_counts: Dict[str, int] = {}
     for task in (tasks_resp.data or []):
         aid = task.get("assigned_to")
@@ -191,7 +204,7 @@ async def list_project_people(
             task_counts[aid] = task_counts.get(aid, 0) + 1
 
     # Get pending timecards
-    pending_timecards_resp = supabase.table("backlot_timecards").select("user_id").eq("project_id", project_id).in_("status", ["draft", "submitted"]).execute()
+    pending_timecards_resp = client.table("backlot_timecards").select("user_id").eq("project_id", project_id).in_("status", ["draft", "submitted"]).execute()
     users_with_pending = set(t["user_id"] for t in (pending_timecards_resp.data or []))
 
     # Get scheduled days count per user (from call sheet people)
@@ -266,7 +279,7 @@ async def get_person_overview(
     Get comprehensive overview of a person within a project
     """
     user = await get_current_user_from_token(authorization)
-    supabase = get_supabase_admin_client()
+    client = get_client()
 
     access = await verify_project_access(supabase, project_id, user["id"])
     if not access.get("has_access"):
@@ -277,11 +290,11 @@ async def get_person_overview(
         raise HTTPException(status_code=403, detail="You don't have permission to view this person's details")
 
     # Get profile
-    profile_resp = supabase.table("profiles").select("*").eq("id", target_user_id).execute()
+    profile_resp = client.table("profiles").select("*").eq("id", target_user_id).execute()
     profile = profile_resp.data[0] if profile_resp.data else {}
 
     # Get member info for this project
-    member_resp = supabase.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
+    member_resp = client.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
     member = member_resp.data[0] if member_resp.data else {}
 
     identity = PersonIdentity(
@@ -294,7 +307,7 @@ async def get_person_overview(
     )
 
     # Get roles
-    roles_resp = supabase.table("backlot_project_roles").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
+    roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
     roles = [PersonRole(
         id=r["id"],
         backlot_role=r.get("backlot_role", ""),
@@ -305,7 +318,7 @@ async def get_person_overview(
 
     # Get schedule (days this person is on call sheets)
     schedule = []
-    csp_resp = supabase.table("backlot_call_sheet_people").select(
+    csp_resp = client.table("backlot_call_sheet_people").select(
         "call_time, call_sheet:call_sheet_id(id, date, production_day_id, location_name)"
     ).eq("member_id", target_user_id).execute()
 
@@ -316,7 +329,7 @@ async def get_person_overview(
         if pd_id and pd_id not in seen_days:
             seen_days.add(pd_id)
             # Get production day info
-            pd_resp = supabase.table("backlot_production_days").select("*").eq("id", pd_id).execute()
+            pd_resp = client.table("backlot_production_days").select("*").eq("id", pd_id).execute()
             if pd_resp.data:
                 pd = pd_resp.data[0]
                 schedule.append(ScheduledDay(
@@ -333,10 +346,10 @@ async def get_person_overview(
 
     # Get timecards
     timecards = []
-    tc_resp = supabase.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", target_user_id).order("week_start_date", desc=True).execute()
+    tc_resp = client.table("backlot_timecards").select("*").eq("project_id", project_id).eq("user_id", target_user_id).order("week_start_date", desc=True).execute()
     for tc in (tc_resp.data or []):
         # Get entries for this timecard
-        entries_resp = supabase.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
+        entries_resp = client.table("backlot_timecard_entries").select("hours_worked, overtime_hours").eq("timecard_id", tc["id"]).execute()
         entries = entries_resp.data or []
         total_hours = sum(e.get("hours_worked", 0) or 0 for e in entries)
         total_overtime = sum(e.get("overtime_hours", 0) or 0 for e in entries)
@@ -352,7 +365,7 @@ async def get_person_overview(
 
     # Get tasks assigned to this person
     tasks = []
-    tasks_resp = supabase.table("backlot_tasks").select(
+    tasks_resp = client.table("backlot_tasks").select(
         "*, task_list:task_list_id(name)"
     ).eq("project_id", project_id).eq("assigned_to", target_user_id).execute()
     for task in (tasks_resp.data or []):
@@ -370,7 +383,7 @@ async def get_person_overview(
 
     # Get credit info
     credit = None
-    credits_resp = supabase.table("backlot_credits").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
+    credits_resp = client.table("backlot_credits").select("*").eq("project_id", project_id).eq("user_id", target_user_id).execute()
     if credits_resp.data:
         c = credits_resp.data[0]
         credit = CreditInfo(
