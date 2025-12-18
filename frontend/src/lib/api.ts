@@ -134,6 +134,27 @@ class APIClient {
     this.clearToken()
   }
 
+  async confirmSignUp(email: string, confirmationCode: string) {
+    return this.request<{ message: string }>('/api/v1/auth/confirm-signup', {
+      method: 'POST',
+      body: JSON.stringify({ email, confirmation_code: confirmationCode }),
+    })
+  }
+
+  async forgotPassword(email: string) {
+    return this.request<{ message: string }>('/api/v1/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    })
+  }
+
+  async resetPassword(email: string, confirmationCode: string, newPassword: string) {
+    return this.request<{ message: string }>('/api/v1/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, confirmation_code: confirmationCode, new_password: newPassword }),
+    })
+  }
+
   async getCurrentUser() {
     return this.request<any>('/api/v1/auth/me')
   }

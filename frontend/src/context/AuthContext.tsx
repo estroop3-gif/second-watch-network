@@ -3,12 +3,18 @@ import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
 
+interface SignUpResult {
+  needsConfirmation: boolean;
+  user?: any;
+}
+
 interface AuthContextType {
   session: Session | null;
   user: User | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, fullName?: string) => Promise<void>;
+  signUp: (email: string, password: string, fullName?: string) => Promise<SignUpResult>;
+  confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -136,9 +142,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const signUp = async (email: string, password: string, fullName?: string) => {
+  const signUp = async (email: string, password: string, fullName?: string): Promise<SignUpResult> => {
     try {
       const data = await api.signUp(email, password, fullName);
+
+      // Check if Cognito requires email confirmation
+      if (data.access_token === 'pending_confirmation') {
+        return {
+          needsConfirmation: true,
+          user: data.user,
+        };
+      }
 
       // Store tokens
       localStorage.setItem('access_token', data.access_token);
@@ -170,8 +184,19 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       setSession(mockSession);
       setUser(data.user as User);
+
+      return { needsConfirmation: false, user: data.user };
     } catch (error) {
       console.error('Sign up error:', error);
+      throw error;
+    }
+  };
+
+  const confirmSignUp = async (email: string, code: string) => {
+    try {
+      await api.confirmSignUp(email, code);
+    } catch (error) {
+      console.error('Confirm signup error:', error);
       throw error;
     }
   };
@@ -200,7 +225,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ session, user, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ session, user, loading, signIn, signUp, confirmSignUp, signOut }}>
       {children}
     </AuthContext.Provider>
   );

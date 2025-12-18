@@ -50,11 +50,13 @@ export function SignupForm() {
   const [resendDisabledUntil, setResendDisabledUntil] = useState<number | null>(null);
   const [lastEmail, setLastEmail] = useState("");
   const [genericErrorMsg, setGenericErrorMsg] = useState("");
+  const [confirmationCode, setConfirmationCode] = useState("");
+  const [isConfirming, setIsConfirming] = useState(false);
   const emailInputRef = useRef<HTMLInputElement | null>(null);
   const ariaLiveMsgRef = useRef<string>("");
   const correlationIdRef = useRef<string>(crypto.randomUUID());
 
-  const { signUp } = useAuth();
+  const { signUp, confirmSignUp, signIn } = useAuth();
   const navigate = useNavigate();
   const { settings } = useSettings();
 
@@ -122,6 +124,28 @@ export function SignupForm() {
     setOpenGenericError(true);
   }
 
+  async function handleConfirmCode() {
+    if (!confirmationCode || isConfirming) return;
+    setIsConfirming(true);
+
+    try {
+      await confirmSignUp(lastEmail, confirmationCode);
+      track("signup_confirm_success", { email: lastEmail }, correlationIdRef.current);
+
+      // Now sign in the user
+      await signIn(lastEmail, form.getValues("password"));
+
+      setOpenConfirmSent(false);
+      toast.success("Email confirmed! Welcome to Second Watch Network!");
+      navigate("/dashboard");
+    } catch (error: any) {
+      toast.error(error.message || "Invalid confirmation code. Please try again.");
+      track("signup_confirm_error", { email: lastEmail, error: error.message }, correlationIdRef.current);
+    } finally {
+      setIsConfirming(false);
+    }
+  }
+
   async function onSubmit(values: z.infer<typeof formSchema>) {
     if (isLoading) return;
     correlationIdRef.current = crypto.randomUUID();
@@ -132,10 +156,17 @@ export function SignupForm() {
     setOpenLoading(true);
 
     try {
-      await signUp(values.email, values.password, values.fullName);
+      const result = await signUp(values.email, values.password, values.fullName);
 
       setIsLoading(false);
       setOpenLoading(false);
+
+      // Check if Cognito requires email confirmation
+      if (result.needsConfirmation) {
+        track("signup_needs_confirmation", { email: values.email }, correlationIdRef.current);
+        setOpenConfirmSent(true);
+        return;
+      }
 
       // Success: redirect to dashboard or show welcome message
       toast.success("Account created successfully!");
@@ -322,29 +353,46 @@ export function SignupForm() {
           <DialogHeader>
             <DialogTitle>Check your inbox to confirm</DialogTitle>
             <DialogDescription>
-              We’ve sent a confirmation link to {lastEmail}. Click the link to activate your account.
+              We've sent a 6-digit confirmation code to {lastEmail}. Enter it below to activate your account.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3 text-sm">
+          <div className="space-y-4">
+            <Input
+              type="text"
+              placeholder="Enter 6-digit code"
+              value={confirmationCode}
+              onChange={(e) => setConfirmationCode(e.target.value)}
+              className="text-center text-2xl tracking-widest"
+              maxLength={6}
+            />
+            <UIButton
+              onClick={handleConfirmCode}
+              disabled={confirmationCode.length !== 6 || isConfirming}
+              className="w-full bg-accent-yellow text-charcoal-black"
+            >
+              {isConfirming && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {isConfirming ? "Confirming..." : "Confirm Email"}
+            </UIButton>
+          </div>
+          <div className="space-y-3 text-sm pt-4">
             <button
               className="underline text-accent-yellow"
               onClick={handleResend}
               disabled={!!resendDisabledUntil && Date.now() < resendDisabledUntil}
             >
-              Resend email
+              Resend code
             </button>
-            <a className="underline" href="mailto:" target="_blank" rel="noreferrer">Open email app</a>
             <details>
-              <summary className="cursor-pointer">Didn’t get it?</summary>
+              <summary className="cursor-pointer">Didn't get it?</summary>
               <ul className="list-disc pl-6 mt-2 text-muted-gray">
                 <li>Check your spam or junk folder.</li>
-                <li>Wait a minute and try "Resend email"."</li>
+                <li>Wait a minute and try "Resend code".</li>
                 <li>Add our domain to your allowlist.</li>
               </ul>
             </details>
           </div>
           <DialogFooter>
-            <UIButton autoFocus variant="outline" onClick={() => setOpenConfirmSent(false)}>Close</UIButton>
+            <UIButton variant="outline" onClick={() => setOpenConfirmSent(false)}>Cancel</UIButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>
