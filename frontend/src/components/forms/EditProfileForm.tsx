@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2, PlusCircle, Trash2, Check, AlertCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -55,7 +55,7 @@ interface EditProfileFormProps {
 }
 
 const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpdate, isFilmmaker = false }) => {
-  const { user, session } = useAuth();
+  const { user, session, profileId } = useAuth();
   const qc = useQueryClient();
   const navigate = useNavigate();
 
@@ -112,7 +112,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
   };
 
   const onSubmit = async (data: ProfileFormValues) => {
-    if (!user) {
+    if (!profileId) {
       toast.error('You must be logged in to save changes.');
       return;
     }
@@ -127,30 +127,19 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
     const reelLinksArray = (data.reel_links || []).map((r) => r?.value).filter(Boolean) as string[];
 
     try {
-      // Step 1: Update/upsert profiles table (core profile data)
-      const profileUpdate = {
-        id: user.id,
+      // Step 1: Update profiles table (core profile data)
+      await api.updateProfile(profileId, {
         full_name: data.fullName || null,
         display_name: data.displayName || null,
         location_visible: data.location_visible,
-        updated_at: now,
-      };
+      });
 
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .upsert(profileUpdate, { onConflict: 'id' });
-
-      if (profileError) {
-        throw new Error(`Failed to save profile: ${profileError.message}`);
-      }
-
-      // Step 2: Update/upsert filmmaker_profiles table (extended data)
+      // Step 2: Update filmmaker_profiles table (extended data)
       // Only do this if the user is a filmmaker or if they have filmmaker-specific data
       const hasFilmmakerData = data.department || data.skills?.length || data.bio || data.location;
 
       if (isFilmmaker || hasFilmmakerData) {
-        const filmmakerUpdate = {
-          user_id: user.id,
+        await api.updateFilmmakerProfile(profileId, {
           full_name: data.fullName || null,
           bio: data.bio || null,
           location: data.location || null,
@@ -164,16 +153,7 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
           preferred_locations: data.preferred_locations || [],
           contact_method: data.contact_method || null,
           show_email: data.show_email || false,
-          updated_at: now,
-        };
-
-        const { error: filmmakerError } = await supabase
-          .from('filmmaker_profiles')
-          .upsert(filmmakerUpdate, { onConflict: 'user_id' });
-
-        if (filmmakerError) {
-          throw new Error(`Failed to save filmmaker profile: ${filmmakerError.message}`);
-        }
+        });
       }
 
       // Success!
@@ -183,9 +163,9 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
       toast.success('Profile saved successfully!');
 
       // Invalidate caches
-      qc.invalidateQueries({ queryKey: ['profile', user.id] });
-      qc.invalidateQueries({ queryKey: ['account-profile', user.id] });
-      qc.invalidateQueries({ queryKey: ['filmmaker-profile', user.id] });
+      qc.invalidateQueries({ queryKey: ['profile', profileId] });
+      qc.invalidateQueries({ queryKey: ['account-profile', profileId] });
+      qc.invalidateQueries({ queryKey: ['filmmaker-profile', profileId] });
 
       onProfileUpdate();
       setCreditsDirty(false);
@@ -237,42 +217,22 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
 
   // Handle location visibility toggle separately (optimistic update)
   const handleLocationVisibilityChange = async (checked: boolean, field: any) => {
-    if (!user) return;
+    if (!profileId) return;
 
     const prev = field.value;
     field.onChange(checked);
 
-    const { error } = await supabase
-      .from('profiles')
-      .update({ location_visible: checked })
-      .eq('id', user.id);
-
-    if (error) {
-      field.onChange(prev);
-      toast.error('Could not update location visibility.');
-    } else {
+    try {
+      await api.updateProfile(profileId, { location_visible: checked });
       toast.success('Location preference updated');
       onProfileUpdate();
-      qc.invalidateQueries({ queryKey: ['profile', user.id] });
-      qc.invalidateQueries({ queryKey: ['account-profile', user.id] });
+      qc.invalidateQueries({ queryKey: ['profile', profileId] });
+      qc.invalidateQueries({ queryKey: ['account-profile', profileId] });
+    } catch (error) {
+      field.onChange(prev);
+      toast.error('Could not update location visibility.');
     }
   };
-
-  // Realtime: listen for credits changes so list updates immediately on settings page
-  useEffect(() => {
-    if (!user?.id) return;
-    const channel = supabase
-      .channel(`credits:user:${user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'credits', filter: `user_id=eq.${user.id}` }, () => {
-        setCreditsDirty(true);
-        onProfileUpdate();
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user?.id, onProfileUpdate]);
 
   const canSave = (form.formState.isDirty || creditsDirty) && !isSaving;
 

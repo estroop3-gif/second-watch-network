@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Conversation } from '@/pages/Messages';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -32,24 +32,24 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
   const [newMessage, setNewMessage] = useState('');
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [isOtherTyping, setIsOtherTyping] = useState(false);
-  const [otherOnline, setOtherOnline] = useState(false);
-  const typingSendCooldownRef = useRef<number | null>(null);
-  const typingStopTimerRef = useRef<number | null>(null);
   const markReadDebounceRef = useRef<number | null>(null);
 
   const { data: messages, isLoading } = useQuery<Message[]>({
     queryKey: ['messages', conversation.id],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('conversation_id', conversation.id)
-        .order('created_at', { ascending: true });
-      if (error) throw new Error(error.message);
+      const data = await api.listConversationMessages(conversation.id);
       return data || [];
     },
   });
+
+  // Polling for new messages (replaces realtime subscription)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
+    }, 3000); // Poll every 3 seconds for messages
+
+    return () => clearInterval(interval);
+  }, [conversation.id, queryClient]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -58,12 +58,10 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
   const sendMessageMutation = useMutation({
     mutationFn: async (content: string) => {
       if (!user) throw new Error('User not authenticated');
-      const { error } = await supabase.from('messages').insert({
+      await api.sendMessage(user.id, {
         conversation_id: conversation.id,
-        sender_id: user.id,
         content,
       });
-      if (error) throw new Error(error.message);
     },
     onSuccess: () => {
       setNewMessage('');
@@ -76,8 +74,6 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
     e.preventDefault();
     if (newMessage.trim()) {
       sendMessageMutation.mutate(newMessage.trim());
-      // stop typing once sent
-      sendTyping(false);
     }
   };
 
@@ -89,110 +85,16 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
     }
   }, [messages]);
 
-  // Realtime channel for both DB changes and broadcast (typing/read/presence)
-  useEffect(() => {
-    const channel = supabase.channel(`conversation:${conversation.id}`, {
-      config: { broadcast: { self: true }, presence: { key: user?.id || 'anon' } },
-    });
-
-    // Listen for new messages via Postgres changes
-    channel.on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${conversation.id}` },
-      () => {
-        queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
-      }
-    );
-
-    // Typing broadcast
-    channel.on('broadcast', { event: 'typing' }, (payload: any) => {
-      const { userId, isTyping } = payload.payload || {};
-      if (!user || userId === user.id) return;
-      setIsOtherTyping(Boolean(isTyping));
-      // auto-clear after 4s in case stop event is missed
-      if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
-      typingStopTimerRef.current = window.setTimeout(() => setIsOtherTyping(false), 4000);
-    });
-
-    // Read broadcast
-    channel.on('broadcast', { event: 'read' }, (payload: any) => {
-      // Peer has read; just refresh conversations to update unread count, and messages to update "Seen".
-      queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    });
-
-    // Presence: basic online indicator
-    channel.on('presence', { event: 'sync' }, () => {
-      const state = channel.presenceState() as Record<string, unknown[]>;
-      const otherId = conversation.other_participant.id;
-      setOtherOnline(Boolean(state[otherId] && state[otherId].length > 0));
-    });
-
-    channel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        channel.track({ at: Date.now() });
-      }
-    });
-
-    return () => {
-      supabase.removeChannel(channel);
-      if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
-      if (markReadDebounceRef.current) window.clearTimeout(markReadDebounceRef.current);
-    };
-  }, [conversation.id, conversation.other_participant.id, queryClient, user]);
-
-  // Send typing with simple throttling and idle stop
-  const sendTyping = (isTyping: boolean) => {
-    // Throttle "true" events to at most once every 2s
-    const now = Date.now();
-    if (isTyping) {
-      if (typingSendCooldownRef.current && now - typingSendCooldownRef.current < 2000) {
-        // within cooldown
-      } else {
-        supabase.channel(`conversation:${conversation.id}`).send({
-          type: 'broadcast',
-          event: 'typing',
-          payload: { userId: user?.id, isTyping: true },
-        });
-        typingSendCooldownRef.current = now;
-      }
-      if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
-      typingStopTimerRef.current = window.setTimeout(() => {
-        supabase.channel(`conversation:${conversation.id}`).send({
-          type: 'broadcast',
-          event: 'typing',
-          payload: { userId: user?.id, isTyping: false },
-        });
-        setIsOtherTyping(false); // ensure stale UI clears even if peer misses event
-      }, 3000);
-    } else {
-      supabase.channel(`conversation:${conversation.id}`).send({
-        type: 'broadcast',
-        event: 'typing',
-        payload: { userId: user?.id, isTyping: false },
-      });
-      if (typingStopTimerRef.current) window.clearTimeout(typingStopTimerRef.current);
-    }
-  };
-
   // Mark messages as read when scrolled to bottom (debounced)
   const markAllAsRead = async () => {
     if (!user) return;
-    await supabase
-      .from('messages')
-      .update({ is_read: true })
-      .eq('conversation_id', conversation.id)
-      .neq('sender_id', user.id)
-      .eq('is_read', false);
-    // broadcast read
-    supabase.channel(`conversation:${conversation.id}`).send({
-      type: 'broadcast',
-      event: 'read',
-      payload: { userId: user.id, lastReadAt: new Date().toISOString() },
-    });
-    queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
-    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    try {
+      await api.markConversationRead(conversation.id, user.id);
+      queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    } catch (error) {
+      console.error('Failed to mark messages as read:', error);
+    }
   };
 
   const handleScrollCheck = () => {
@@ -215,7 +117,10 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
     el.addEventListener('scroll', onScroll, { passive: true });
     // initial check
     handleScrollCheck();
-    return () => el.removeEventListener('scroll', onScroll);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (markReadDebounceRef.current) window.clearTimeout(markReadDebounceRef.current);
+    };
   }, [messages]);
 
   // Compute last outgoing message to show "Seen"
@@ -241,7 +146,6 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
         </Avatar>
         <div className="min-w-0">
           <h2 className="text-md font-semibold text-bone-white truncate">{name}</h2>
-          <p className="text-xs text-muted-foreground">{otherOnline ? 'Online' : ' '}</p>
         </div>
       </div>
       <ScrollArea className="flex-1 no-scrollbar overflow-x-hidden" viewportRef={scrollViewportRef}>
@@ -285,22 +189,15 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
           )}
         </div>
       </ScrollArea>
-      <div className="px-3 pt-1 text-xs text-muted-foreground h-5">
-        {isOtherTyping && <span>{name} is typing…</span>}
-      </div>
       <div className="p-3 border-t border-muted-gray">
         <form onSubmit={handleSubmit} className="flex items-center gap-2">
           <Input
             ref={inputRef}
             value={newMessage}
-            onChange={(e) => {
-              setNewMessage(e.target.value);
-              if (e.target.value.trim().length > 0) sendTyping(true);
-            }}
+            onChange={(e) => setNewMessage(e.target.value)}
             placeholder="Type a message…"
             autoComplete="off"
             className="bg-muted-gray border-muted-gray focus:ring-accent-yellow"
-            onBlur={() => sendTyping(false)}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();

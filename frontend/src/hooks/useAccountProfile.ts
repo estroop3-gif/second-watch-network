@@ -4,7 +4,7 @@
  * for use in the Account settings page.
  */
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 export interface CombinedProfileData {
@@ -53,85 +53,61 @@ export const useAccountProfile = () => {
   const fetchCombinedProfile = async (): Promise<CombinedProfileData | null> => {
     if (!user) return null;
 
-    // Fetch base profile
-    const { data: profileData, error: profileError } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .maybeSingle();
-
-    if (profileError && profileError.code !== 'PGRST116') {
-      console.error('Error fetching profile:', profileError);
-      throw profileError;
-    }
-
-    // Fetch filmmaker profile if exists
-    const { data: filmmakerData, error: filmmakerError } = await supabase
-      .from('filmmaker_profiles')
-      .select('*')
-      .eq('user_id', user.id)
-      .maybeSingle();
-
-    if (filmmakerError && filmmakerError.code !== 'PGRST116') {
-      console.error('Error fetching filmmaker profile:', filmmakerError);
-      // Don't throw - filmmaker profile is optional
-    }
-
-    // Fetch credits if they exist (order by created_at since year column may not exist)
-    // Join with productions table to get production title
-    let creditsData = null;
     try {
-      const { data } = await supabase
-        .from('credits')
-        .select('*, productions(id, title)')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-      creditsData = data;
-    } catch {
-      // Credits table might not exist
+      // Use the combined profile API endpoint
+      const data = await api.getCombinedProfile(user.id);
+
+      const profileData = data.profile;
+      const filmmakerData = data.filmmaker_profile;
+      const creditsData = data.credits;
+
+      if (!profileData) return null;
+
+      // Combine the data
+      const combined: CombinedProfileData = {
+        id: profileData.id || user.id,
+        // Profile data
+        username: profileData?.username || null,
+        full_name: profileData?.full_name || null,
+        display_name: profileData?.display_name || null,
+        avatar_url: profileData?.avatar_url || null,
+        email: profileData?.email || user.email || null,
+        role: profileData?.role || null,
+        roles: profileData?.roles || null,
+        location_visible: profileData?.location_visible ?? true,
+        is_filmmaker: profileData?.is_filmmaker || false,
+        is_partner: profileData?.is_partner || false,
+        is_premium: profileData?.is_premium || false,
+        is_order_member: profileData?.is_order_member || false,
+        is_lodge_officer: profileData?.is_lodge_officer || false,
+        is_admin: profileData?.is_admin || false,
+        is_superadmin: profileData?.is_superadmin || false,
+        is_moderator: profileData?.is_moderator || false,
+        has_completed_filmmaker_onboarding: profileData?.has_completed_filmmaker_onboarding || false,
+        updated_at: profileData?.updated_at || filmmakerData?.updated_at || null,
+
+        // Filmmaker profile data
+        bio: filmmakerData?.bio || null,
+        location: filmmakerData?.location || null,
+        department: filmmakerData?.department || null,
+        experience_level: filmmakerData?.experience_level || null,
+        skills: filmmakerData?.skills || null,
+        portfolio_website: filmmakerData?.portfolio_website || null,
+        reel_links: filmmakerData?.reel_links || null,
+        accepting_work: filmmakerData?.accepting_work || false,
+        available_for: filmmakerData?.available_for || null,
+        preferred_locations: filmmakerData?.preferred_locations || null,
+        contact_method: filmmakerData?.contact_method || null,
+        show_email: filmmakerData?.show_email || false,
+        profile_image_url: filmmakerData?.profile_image_url || null,
+        credits: creditsData || null,
+      };
+
+      return combined;
+    } catch (error) {
+      console.error('Error fetching combined profile:', error);
+      throw error;
     }
-
-    // Combine the data
-    const combined: CombinedProfileData = {
-      id: user.id,
-      // Profile data
-      username: profileData?.username || null,
-      full_name: profileData?.full_name || null,
-      display_name: profileData?.display_name || null,
-      avatar_url: profileData?.avatar_url || null,
-      email: profileData?.email || user.email || null,
-      role: profileData?.role || null,
-      roles: profileData?.roles || null,
-      location_visible: profileData?.location_visible ?? true,
-      is_filmmaker: profileData?.is_filmmaker || false,
-      is_partner: profileData?.is_partner || false,
-      is_premium: profileData?.is_premium || false,
-      is_order_member: profileData?.is_order_member || false,
-      is_lodge_officer: profileData?.is_lodge_officer || false,
-      is_admin: profileData?.is_admin || false,
-      is_superadmin: profileData?.is_superadmin || false,
-      is_moderator: profileData?.is_moderator || false,
-      has_completed_filmmaker_onboarding: profileData?.has_completed_filmmaker_onboarding || false,
-      updated_at: profileData?.updated_at || filmmakerData?.updated_at || null,
-
-      // Filmmaker profile data
-      bio: filmmakerData?.bio || null,
-      location: filmmakerData?.location || null,
-      department: filmmakerData?.department || null,
-      experience_level: filmmakerData?.experience_level || null,
-      skills: filmmakerData?.skills || null,
-      portfolio_website: filmmakerData?.portfolio_website || null,
-      reel_links: filmmakerData?.reel_links || null,
-      accepting_work: filmmakerData?.accepting_work || false,
-      available_for: filmmakerData?.available_for || null,
-      preferred_locations: filmmakerData?.preferred_locations || null,
-      contact_method: filmmakerData?.contact_method || null,
-      show_email: filmmakerData?.show_email || false,
-      profile_image_url: filmmakerData?.profile_image_url || null,
-      credits: creditsData || null,
-    };
-
-    return combined;
   };
 
   const { data: profile, isLoading, isError, refetch, error } = useQuery({

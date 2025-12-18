@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { PartnerApplication } from '@/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -9,17 +9,14 @@ import { toast } from 'sonner';
 import { format } from 'date-fns';
 import ViewPartnerApplicationModal from './ViewPartnerApplicationModal';
 import { Skeleton } from '@/components/ui/skeleton';
-import { invokeEdge } from '@/utils/invokeEdge';
+import { api } from '@/lib/api';
 
 type StatusFilter = 'all' | 'new' | 'under_review' | 'approved' | 'rejected';
 
 const fetchApplications = async ({ queryKey }: any): Promise<{ rows: PartnerApplication[]; total: number }> => {
   const [_key, { status, search, page, pageSize }] = queryKey;
-  const { data, error } = await invokeEdge<{ rows: PartnerApplication[]; total: number }>('partner-applications-list', {
-    body: { status, search, page, pageSize },
-  });
-  if (error) throw new Error(error.message);
-  return { rows: data?.rows || [], total: data?.total || 0 };
+  const data = await api.listPartnerApplications({ status: status === 'all' ? undefined : status, search, page, pageSize });
+  return { rows: data?.rows || data?.data || [], total: data?.total || (data?.data?.length || 0) };
 };
 
 const PartnerApplicationsTab = () => {
@@ -36,41 +33,18 @@ const PartnerApplicationsTab = () => {
     keepPreviousData: true,
   });
 
+  // Polling for new applications (replaces real-time)
   useEffect(() => {
-    const channel = (window as any).supabaseRealtimeChannel || null;
-    const sub = (window as any).supabaseRealtimeChannel = (() => {
-      const { createClient } = (supabase as any).constructor;
-      // Use the existing supabase client imported in the app
-      const client = require("@/integrations/supabase/client").supabase;
-      const channel = client
-        .channel('realtime-partner-applications')
-        .on(
-          'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'partner_applications' },
-          () => {
-            toast.info('New partner application received, list updated.');
-            queryClient.invalidateQueries({ queryKey: ['partnerApplications'] });
-          }
-        )
-        .subscribe();
-      return channel;
-    })();
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['partnerApplications'] });
+    }, 30000); // Poll every 30 seconds
 
-    return () => {
-      try {
-        const client = require("@/integrations/supabase/client").supabase;
-        client.removeChannel(sub);
-      } catch {
-        // ignore
-      }
-    };
+    return () => clearInterval(interval);
   }, [queryClient]);
 
   const mutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: Exclude<StatusFilter, 'all'> }) => {
-      const { data, error } = await invokeEdge('partner-application-status', { body: { id, status } });
-      if (error) throw new Error(error.message);
-      return data;
+      return api.updatePartnerApplicationStatus(id, status);
     },
     onSuccess: () => {
       toast.success('Status updated.');

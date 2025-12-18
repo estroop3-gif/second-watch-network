@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Button } from '@/components/ui/button';
@@ -19,11 +19,7 @@ export const SubmissionNotesModal = ({ submission, isOpen, onClose }: { submissi
 
   const saveNotesMutation = useMutation({
     mutationFn: async (notes: string) => {
-      const { error } = await supabase
-        .from('submissions')
-        .update({ admin_notes: notes })
-        .eq('id', submission.id);
-      if (error) throw new Error(error.message);
+      await api.updateSubmissionNotes(submission.id, notes);
       return notes;
     },
     onSuccess: () => {

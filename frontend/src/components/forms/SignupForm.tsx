@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { Link, useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useState, useMemo, useRef } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
 import PasswordStrengthMeter from "../PasswordStrengthMeter";
@@ -94,13 +94,13 @@ export function SignupForm() {
     setResendDisabledUntil(now + 10_000);
 
     track("signup_resend_request", { email: lastEmail }, correlationIdRef.current);
-    const { error } = await supabase.functions.invoke('resend-confirmation', { body: { email: lastEmail } });
-    if (error) {
+    try {
+      await api.resendConfirmation(lastEmail);
+      track("signup_resend_success", { email: lastEmail }, correlationIdRef.current);
+      toast.success("Resent!");
+    } catch (error: any) {
       toast.error(error.message || "Couldn't resend. Try again.");
-      return;
     }
-    track("signup_resend_success", { email: lastEmail }, correlationIdRef.current);
-    toast.success("Resent!");
   }
 
   function mapAuthErrorToUI(error: any) {

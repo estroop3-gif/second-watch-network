@@ -1252,6 +1252,103 @@ async def get_order_dashboard(user = Depends(get_current_user)):
     )
 
 
+from fastapi import Header
+from pydantic import BaseModel
+
+
+# ============ Profile Settings Endpoints ============
+
+class OrderProfileSettingsResponse(BaseModel):
+    user_id: str
+    public_visibility: str = "members-only"  # public, members-only, private
+    show_booking_form: bool = True
+    show_portfolio: bool = True
+
+
+class OrderProfileSettingsUpdate(BaseModel):
+    public_visibility: Optional[str] = None
+    show_booking_form: Optional[bool] = None
+    show_portfolio: Optional[bool] = None
+
+
+@router.get("/profile-settings/me")
+async def get_my_order_profile_settings(authorization: str = Header(None)):
+    """Get Order profile settings for current user"""
+    from app.api.profiles import get_current_user_from_token
+
+    try:
+        current_user = await get_current_user_from_token(authorization)
+        user_id = current_user["id"]
+    except Exception:
+        return None
+
+    client = get_client()
+
+    # Try to fetch existing settings
+    result = client.table("order_profile_settings").select("*").eq(
+        "user_id", user_id
+    ).execute()
+
+    if result.data:
+        return result.data[0]
+
+    # Create default settings
+    default_settings = {
+        "user_id": user_id,
+        "public_visibility": "members-only",
+        "show_booking_form": True,
+        "show_portfolio": True,
+    }
+
+    insert_result = client.table("order_profile_settings").insert(
+        default_settings
+    ).execute()
+
+    return insert_result.data[0] if insert_result.data else default_settings
+
+
+@router.put("/profile-settings/me")
+async def update_my_order_profile_settings(
+    updates: OrderProfileSettingsUpdate,
+    authorization: str = Header(None)
+):
+    """Update Order profile settings for current user"""
+    from app.api.profiles import get_current_user_from_token
+
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+
+    # Build update dict
+    update_data = updates.model_dump(exclude_unset=True)
+    update_data["user_id"] = user_id
+
+    result = client.table("order_profile_settings").upsert(
+        update_data, on_conflict="user_id"
+    ).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=400, detail="Failed to update settings")
+
+    return result.data[0]
+
+
+@router.get("/profile-settings/{user_id}")
+async def get_order_profile_settings_for_user(user_id: str):
+    """Get Order profile settings for a specific user (for viewing other profiles)"""
+    client = get_client()
+
+    result = client.table("order_profile_settings").select("*").eq(
+        "user_id", user_id
+    ).execute()
+
+    if not result.data:
+        return None
+
+    return result.data[0]
+
+
 @router.get("/admin/stats", response_model=OrderAdminStats)
 async def get_admin_stats(user = Depends(require_admin)):
     """Get Order admin statistics"""

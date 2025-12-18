@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import {
@@ -30,66 +30,22 @@ interface FilmmakerProfile {
   }[];
 }
 
-const fetchFilmmakerProfiles = async (): Promise<FilmmakerProfile[]> => {
-  const { data, error } = await supabase
-    .from('profiles')
-    .select(`
-      id,
-      username,
-      avatar_url,
-      filmmaker_profiles!inner(
-        full_name,
-        department,
-        experience_level,
-        location
-      )
-    `)
-    .eq('has_completed_filmmaker_onboarding', true);
-
-  if (error) {
-    console.error("Error fetching filmmaker profiles:", error);
-    throw new Error(error.message);
-  }
-  
-  // The !inner join ensures that we only get profiles with a filmmaker_profile.
-  // The type system might still think filmmaker_profiles can be null, so we filter just in case.
-  return data.filter(p => p.filmmaker_profiles) as FilmmakerProfile[];
-};
-
 const FilmmakerProfileManagement = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const queryClient = useQueryClient();
   const { data: profiles, isLoading, error } = useQuery<FilmmakerProfile[]>({
     queryKey: ['admin-filmmaker-profiles'],
-    queryFn: fetchFilmmakerProfiles,
+    queryFn: () => api.listFilmmakerProfilesAdmin(),
   });
 
   const handleRevokeProfile = async (userId: string) => {
-    // This is a two-step process. Ideally, this would be a single RPC call for atomicity.
-    // Step 1: Delete the filmmaker-specific profile data.
-    const { error: deleteError } = await supabase
-      .from('filmmaker_profiles')
-      .delete()
-      .eq('user_id', userId);
-
-    if (deleteError) {
-      toast.error(`Failed to remove filmmaker profile: ${deleteError.message}`);
-      return;
-    }
-
-    // Step 2: Update the main profile to mark onboarding as incomplete.
-    const { error: updateError } = await supabase
-      .from('profiles')
-      .update({ has_completed_filmmaker_onboarding: false })
-      .eq('id', userId);
-    
-    if (updateError) {
-      toast.error(`Profile data removed, but failed to update onboarding status: ${updateError.message}`);
-    } else {
+    try {
+      await api.revokeFilmmakerProfileAdmin(userId);
       toast.success("Filmmaker profile has been revoked successfully.");
+      queryClient.invalidateQueries({ queryKey: ['admin-filmmaker-profiles'] });
+    } catch (error: any) {
+      toast.error(`Failed to revoke filmmaker profile: ${error.message}`);
     }
-
-    queryClient.invalidateQueries({ queryKey: ['admin-filmmaker-profiles'] });
   };
 
   const filteredProfiles = useMemo(() => {
@@ -108,7 +64,7 @@ const FilmmakerProfileManagement = () => {
   }, [profiles, searchTerm]);
 
   if (error) {
-    toast.error(`Failed to fetch filmmaker profiles: ${error.message}`);
+    toast.error(`Failed to fetch filmmaker profiles: ${(error as Error).message}`);
   }
 
   return (
@@ -116,7 +72,7 @@ const FilmmakerProfileManagement = () => {
       <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-8 -rotate-1">
         Filmmaker <span className="font-spray text-accent-yellow">Profiles</span>
       </h1>
-      
+
       <div className="relative mb-4">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-gray" />
         <Input
@@ -142,7 +98,7 @@ const FilmmakerProfileManagement = () => {
             {isLoading ? (
               <TableRow><TableCell colSpan={5} className="text-center h-48">Loading profiles...</TableCell></TableRow>
             ) : error ? (
-              <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {error.message}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
             ) : filteredProfiles.map((profile) => {
               const fp = profile.filmmaker_profiles[0];
               return (

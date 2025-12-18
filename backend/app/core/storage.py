@@ -330,6 +330,39 @@ def delete_file(bucket: str, path: str) -> bool:
         return False
 
 
+def download_file(bucket: str, path: str) -> bytes:
+    """
+    Download a file from S3.
+    """
+    return storage_client.from_(bucket).download(path)
+
+
+def download_from_s3_uri(s3_uri: str) -> bytes:
+    """
+    Download a file from an S3 URI (s3://bucket/key format).
+
+    Args:
+        s3_uri: Full S3 URI like s3://bucket-name/path/to/file.pdf
+
+    Returns:
+        File contents as bytes
+    """
+    if not s3_uri.startswith('s3://'):
+        raise ValueError(f"Invalid S3 URI: {s3_uri}")
+
+    # Parse s3://bucket-name/path/to/file
+    uri_without_prefix = s3_uri[5:]  # Remove 's3://'
+    parts = uri_without_prefix.split('/', 1)
+
+    if len(parts) < 2:
+        raise ValueError(f"Invalid S3 URI format: {s3_uri}")
+
+    bucket_name = parts[0]
+    key = parts[1]
+
+    return StorageBucket(bucket_name).download(key)
+
+
 def generate_unique_filename(original_filename: str) -> str:
     """
     Generate a unique filename preserving the extension.

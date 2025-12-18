@@ -3,7 +3,7 @@
  * Shot Lists, Slate Logs, Camera Media, and Continuity Notes
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
@@ -125,12 +125,12 @@ export interface CreateContinuityNoteInput {
 // HELPERS
 // =============================================================================
 
-async function getAuthToken(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session?.access_token) {
+function getAuthToken(): string {
+  const token = api.getToken();
+  if (!token) {
     throw new Error('Not authenticated');
   }
-  return data.session.access_token;
+  return token;
 }
 
 // =============================================================================
@@ -146,7 +146,7 @@ export function useShotList(
     queryFn: async (): Promise<ShotListItem[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const params = new URLSearchParams();
       if (filters?.scene_number) params.set('scene_number', filters.scene_number);
       if (filters?.status) params.set('status', filters.status);
@@ -171,7 +171,7 @@ export function useCreateShot(projectId: string | null) {
     mutationFn: async (input: CreateShotInput): Promise<ShotListItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/shots`, {
         method: 'POST',
         headers: {
@@ -198,7 +198,7 @@ export function useUpdateShot(projectId: string | null) {
     mutationFn: async ({ shotId, updates }: { shotId: string; updates: Partial<CreateShotInput> }): Promise<ShotListItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/shots/${shotId}`, {
         method: 'PATCH',
         headers: {
@@ -225,7 +225,7 @@ export function useDeleteShot(projectId: string | null) {
     mutationFn: async (shotId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/shots/${shotId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -252,7 +252,7 @@ export function useSlateLogs(
     queryFn: async (): Promise<SlateLogItem[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const params = new URLSearchParams();
       if (filters?.scene_number) params.set('scene_number', filters.scene_number);
       if (filters?.shoot_date) params.set('shoot_date', filters.shoot_date);
@@ -280,7 +280,7 @@ export function useNextTakeNumber(
     queryFn: async (): Promise<number> => {
       if (!projectId || !sceneNumber) return 1;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const params = new URLSearchParams({ scene_number: sceneNumber });
       if (shotLabel) params.set('shot_label', shotLabel);
 
@@ -304,7 +304,7 @@ export function useCreateSlateLog(projectId: string | null) {
     mutationFn: async (input: CreateSlateLogInput): Promise<SlateLogItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/slate-logs`, {
         method: 'POST',
         headers: {
@@ -332,7 +332,7 @@ export function useUpdateSlateLog(projectId: string | null) {
     mutationFn: async ({ logId, updates }: { logId: string; updates: Partial<CreateSlateLogInput> }): Promise<SlateLogItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/slate-logs/${logId}`, {
         method: 'PATCH',
         headers: {
@@ -359,7 +359,7 @@ export function useDeleteSlateLog(projectId: string | null) {
     mutationFn: async (logId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/slate-logs/${logId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -386,7 +386,7 @@ export function useCameraMedia(
     queryFn: async (): Promise<CameraMediaItem[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const params = new URLSearchParams();
       if (filters?.status) params.set('status', filters.status);
       if (filters?.camera) params.set('camera', filters.camera);
@@ -411,7 +411,7 @@ export function useCreateCameraMedia(projectId: string | null) {
     mutationFn: async (input: CreateCameraMediaInput): Promise<CameraMediaItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/camera-media`, {
         method: 'POST',
         headers: {
@@ -438,7 +438,7 @@ export function useUpdateCameraMedia(projectId: string | null) {
     mutationFn: async ({ mediaId, updates }: { mediaId: string; updates: Partial<CreateCameraMediaInput & { first_backup_done?: boolean; second_backup_done?: boolean; backup_notes?: string }> }): Promise<CameraMediaItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/camera-media/${mediaId}`, {
         method: 'PATCH',
         headers: {
@@ -465,7 +465,7 @@ export function useDeleteCameraMedia(projectId: string | null) {
     mutationFn: async (mediaId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/camera-media/${mediaId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -492,7 +492,7 @@ export function useContinuityNotes(
     queryFn: async (): Promise<ContinuityNoteItem[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const params = new URLSearchParams();
       if (filters?.scene_number) params.set('scene_number', filters.scene_number);
       if (filters?.department) params.set('department', filters.department);
@@ -518,7 +518,7 @@ export function useCreateContinuityNote(projectId: string | null) {
     mutationFn: async (input: CreateContinuityNoteInput): Promise<ContinuityNoteItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/continuity-notes`, {
         method: 'POST',
         headers: {
@@ -545,7 +545,7 @@ export function useUpdateContinuityNote(projectId: string | null) {
     mutationFn: async ({ noteId, updates }: { noteId: string; updates: Partial<CreateContinuityNoteInput> }): Promise<ContinuityNoteItem> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/continuity-notes/${noteId}`, {
         method: 'PATCH',
         headers: {
@@ -572,7 +572,7 @@ export function useDeleteContinuityNote(projectId: string | null) {
     mutationFn: async (noteId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/continuity-notes/${noteId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },

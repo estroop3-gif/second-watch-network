@@ -10,7 +10,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -57,32 +57,10 @@ const EditRolesDialog: React.FC<EditRolesDialogProps> = ({ user, isOpen, onClose
 
     setIsUpdating(true);
     try {
-      const { error } = await supabase.functions.invoke('update-user-roles', {
-        body: { userId: user.id, roles: selectedRoles },
-      });
-
-      if (error) {
-        // Try to parse the detailed error from the function's response
-        let detailedError = 'An unexpected error occurred.';
-        if (error.context && error.context.json) {
-            try {
-                const errorBody = await error.context.json();
-                if (errorBody.error) {
-                    detailedError = errorBody.error;
-                }
-            } catch (e) {
-                // If parsing fails, fall back to the default message
-                detailedError = error.message;
-            }
-        } else {
-            detailedError = error.message;
-        }
-        throw new Error(detailedError);
-      }
+      await api.updateUserRoles(user.id, selectedRoles);
 
       toast.success(`Roles updated for ${user.profile.username || user.email}`);
       await queryClient.invalidateQueries({ queryKey: ['admin-users'] });
-      // New: also invalidate all Community queries to reflect role changes immediately
       await queryClient.invalidateQueries({ queryKey: ['community'] });
       onClose();
     } catch (error: any) {

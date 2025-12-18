@@ -2,7 +2,7 @@
 Backlot API Endpoints
 Handles AI co-pilot chat, call sheet distribution, and other Backlot-specific functionality
 """
-from fastapi import APIRouter, HTTPException, Depends, Header, File, UploadFile, Form, Body
+from fastapi import APIRouter, HTTPException, Depends, Header, File, UploadFile, Form, Body, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
@@ -19,8 +19,14 @@ from app.services.breakdown_pdf_service import (
 )
 from fastapi.responses import Response
 import uuid
-from app.core.database import get_client
+import re
+import os
+import tempfile
+import requests
+from pypdf import PdfReader
+from app.core.database import get_client, execute_single, execute_query
 from app.core.config import settings
+from app.core.storage import upload_file, get_signed_url, generate_unique_filename, BACKLOT_FILES_BUCKET, download_from_s3_uri
 
 router = APIRouter()
 
@@ -87,6 +93,412 @@ async def copilot_health():
         },
         "fallback_mode": not (has_anthropic or has_openai)
     }
+
+
+# =====================================================
+# Project CRUD Endpoints
+# =====================================================
+
+class ProjectCreateInput(BaseModel):
+    """Input for creating a new project"""
+    title: str
+    logline: Optional[str] = None
+    description: Optional[str] = None
+    project_type: Optional[str] = None
+    genre: Optional[str] = None
+    format: Optional[str] = None
+    runtime_minutes: Optional[int] = None
+    status: Optional[str] = "pre_production"
+    visibility: Optional[str] = "private"
+    target_start_date: Optional[str] = None
+    target_end_date: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+
+class ProjectUpdateInput(BaseModel):
+    """Input for updating a project"""
+    title: Optional[str] = None
+    logline: Optional[str] = None
+    description: Optional[str] = None
+    project_type: Optional[str] = None
+    genre: Optional[str] = None
+    format: Optional[str] = None
+    runtime_minutes: Optional[int] = None
+    status: Optional[str] = None
+    visibility: Optional[str] = None
+    target_start_date: Optional[str] = None
+    target_end_date: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+
+class ProjectResponse(BaseModel):
+    """Project response with owner info"""
+    id: str
+    owner_id: str
+    title: str
+    slug: Optional[str] = None
+    logline: Optional[str] = None
+    description: Optional[str] = None
+    project_type: Optional[str] = None
+    genre: Optional[str] = None
+    format: Optional[str] = None
+    runtime_minutes: Optional[int] = None
+    status: Optional[str] = None
+    visibility: Optional[str] = None
+    target_start_date: Optional[str] = None
+    target_end_date: Optional[str] = None
+    cover_image_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    logo_url: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    owner: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> str:
+    """
+    Look up the profile ID from a Cognito user ID.
+    Returns the profile ID or raises an exception if not found.
+    """
+    # Convert to string to ensure proper comparison
+    uid_str = str(cognito_user_id)
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
+        {"cuid": uid_str, "uid": uid_str}
+    )
+    if not profile_row:
+        return None
+    return profile_row["id"]
+
+
+def serialize_project(project: dict) -> dict:
+    """
+    Convert project data to JSON-serializable format.
+    Converts UUIDs and datetimes to strings.
+    """
+    if not project:
+        return project
+
+    result = dict(project)
+
+    # Convert UUID fields to strings
+    for field in ["id", "owner_id"]:
+        if field in result and result[field] is not None:
+            result[field] = str(result[field])
+
+    # Convert datetime fields to ISO strings
+    for field in ["created_at", "updated_at", "target_start_date", "target_end_date"]:
+        if field in result and result[field] is not None:
+            if hasattr(result[field], 'isoformat'):
+                result[field] = result[field].isoformat()
+
+    # Serialize owner if present
+    if "owner" in result and result["owner"]:
+        owner = dict(result["owner"])
+        if "id" in owner and owner["id"] is not None:
+            owner["id"] = str(owner["id"])
+        result["owner"] = owner
+
+    return result
+
+
+@router.get("/projects", response_model=List[ProjectResponse])
+async def list_my_projects(
+    status: Optional[str] = None,
+    visibility: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    authorization: str = Header(None)
+):
+    """
+    List all projects for the current user (owned or member of).
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        if not profile_id:
+            return []  # No profile = no projects
+
+        # Get projects where user is a member
+        member_result = client.table("backlot_project_members").select(
+            "project_id"
+        ).eq("user_id", profile_id).execute()
+
+        member_project_ids = [m["project_id"] for m in (member_result.data or [])]
+
+        # Build query for projects - use raw SQL for OR condition
+        conditions = []
+        params = {"profile_id": profile_id, "limit": limit}
+
+        # Base ownership/membership filter
+        if member_project_ids:
+            placeholders = ",".join([f":id_{i}" for i in range(len(member_project_ids))])
+            for i, pid in enumerate(member_project_ids):
+                params[f"id_{i}"] = pid
+            conditions.append(f"(owner_id = :profile_id OR id IN ({placeholders}))")
+        else:
+            conditions.append("owner_id = :profile_id")
+
+        # Apply optional filters
+        if status and status != "all":
+            conditions.append("status = :status")
+            params["status"] = status
+
+        if visibility and visibility != "all":
+            conditions.append("visibility = :visibility")
+            params["visibility"] = visibility
+
+        if search:
+            conditions.append("title ILIKE :search")
+            params["search"] = f"%{search}%"
+
+        where_clause = " AND ".join(conditions)
+        projects = execute_query(
+            f"SELECT * FROM backlot_projects WHERE {where_clause} ORDER BY updated_at DESC LIMIT :limit",
+            params
+        )
+
+        if not projects:
+            return []
+
+        # Fetch owner profiles
+        owner_ids = list(set(p["owner_id"] for p in projects))
+        profiles_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).in_("id", owner_ids).execute()
+
+        profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Attach owner info and serialize
+        for project in projects:
+            project["owner"] = profile_map.get(project["owner_id"])
+
+        return [serialize_project(p) for p in projects]
+
+    except Exception as e:
+        print(f"Error listing projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects", response_model=ProjectResponse)
+async def create_project(
+    project_input: ProjectCreateInput,
+    authorization: str = Header(None)
+):
+    """
+    Create a new Backlot project.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id (FK constraint requires profiles.id)
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        # Generate slug from title
+        import re
+        slug_base = re.sub(r'[^a-z0-9]+', '-', project_input.title.lower()).strip('-')
+        slug = f"{slug_base}-{str(uuid.uuid4())[:8]}"
+
+        # Create project
+        project_data = {
+            "owner_id": profile_id,
+            "title": project_input.title,
+            "slug": slug,
+            "logline": project_input.logline,
+            "description": project_input.description,
+            "project_type": project_input.project_type,
+            "genre": project_input.genre,
+            "format": project_input.format,
+            "runtime_minutes": project_input.runtime_minutes,
+            "status": project_input.status or "pre_production",
+            "visibility": project_input.visibility or "private",
+            "target_start_date": project_input.target_start_date,
+            "target_end_date": project_input.target_end_date,
+            "cover_image_url": project_input.cover_image_url,
+            "thumbnail_url": project_input.thumbnail_url,
+        }
+
+        result = client.table("backlot_projects").insert(project_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create project")
+
+        project = result.data[0]
+
+        # Add owner as admin member
+        try:
+            client.table("backlot_project_members").insert({
+                "project_id": project["id"],
+                "user_id": profile_id,
+                "role": "admin",
+            }).execute()
+        except Exception as e:
+            print(f"Failed to add owner as member: {e}")
+
+        # Assign showrunner role
+        try:
+            client.table("backlot_project_roles").insert({
+                "project_id": project["id"],
+                "user_id": profile_id,
+                "backlot_role": "showrunner",
+                "is_primary": True,
+            }).execute()
+        except Exception as e:
+            print(f"Failed to assign showrunner role: {e}")
+
+        # Fetch owner profile
+        owner_profile = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).eq("id", profile_id).execute()
+
+        project["owner"] = owner_profile.data[0] if owner_profile.data else None
+
+        return serialize_project(project)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get a single project by ID.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
+
+        # Verify access
+        project = await verify_project_access(client, project_id, profile_id)
+
+        # Fetch owner profile
+        profile_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).eq("id", project["owner_id"]).execute()
+
+        project["owner"] = profile_result.data[0] if profile_result.data else None
+
+        return serialize_project(project)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: str,
+    project_input: ProjectUpdateInput,
+    authorization: str = Header(None)
+):
+    """
+    Update a project.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
+
+        # Verify edit access
+        await verify_project_access(client, project_id, profile_id, require_edit=True)
+
+        # Build update data (only include non-None fields)
+        update_data = {}
+        for field, value in project_input.dict().items():
+            if value is not None:
+                update_data[field] = value
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = client.table("backlot_projects").update(update_data).eq("id", project_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update project")
+
+        project = result.data[0]
+
+        # Fetch owner profile
+        profile_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).eq("id", project["owner_id"]).execute()
+
+        project["owner"] = profile_result.data[0] if profile_result.data else None
+
+        return serialize_project(project)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Delete a project (owner only).
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up the profile ID from cognito_user_id
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id) or cognito_user_id
+
+        # Get project and verify ownership
+        project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+
+        if not project_result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        if project_result.data[0]["owner_id"] != profile_id:
+            raise HTTPException(status_code=403, detail="Only the owner can delete this project")
+
+        # Delete project (cascade should handle related records)
+        client.table("backlot_projects").delete().eq("id", project_id).execute()
+
+        return {"success": True, "message": "Project deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting project: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =====================================================
@@ -165,7 +577,16 @@ async def verify_project_access(
     user_id: str,
     require_edit: bool = False
 ) -> Dict[str, Any]:
-    """Verify user has access to project and return project data"""
+    """Verify user has access to project and return project data.
+
+    user_id can be either a Cognito user ID or a profile ID - both are handled.
+    """
+    # Convert cognito user ID to profile ID if needed
+    profile_id = get_profile_id_from_cognito_id(user_id)
+    if not profile_id:
+        # user_id might already be a profile ID
+        profile_id = user_id
+
     # Get project
     project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
 
@@ -174,12 +595,12 @@ async def verify_project_access(
 
     project = project_response.data[0]
 
-    # Check if owner
-    if project["owner_id"] == user_id:
+    # Check if owner (compare as strings to handle UUID objects)
+    if str(project["owner_id"]) == str(profile_id):
         return project
 
     # Check membership
-    member_response = client.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+    member_response = client.table("backlot_project_members").select("*").eq("project_id", project_id).eq("user_id", profile_id).execute()
 
     if not member_response.data:
         raise HTTPException(status_code=403, detail="You don't have access to this project")
@@ -584,6 +1005,74 @@ async def get_project_members_for_send(
             })
 
     return result
+
+
+# =====================================================
+# Project Credits Models
+# =====================================================
+
+class ProjectCreditInput(BaseModel):
+    """Input for creating/updating a project credit"""
+    department: Optional[str] = None
+    role: str
+    name: str
+    user_id: Optional[str] = None
+    is_primary: bool = False
+    is_public: bool = True
+    order_index: int = 0
+
+
+class ProjectCreditResponse(BaseModel):
+    """Project credit response"""
+    id: str
+    project_id: str
+    department: Optional[str] = None
+    role: str
+    name: str
+    user_id: Optional[str] = None
+    is_primary: bool = False
+    is_public: bool = True
+    order_index: int = 0
+    created_by: Optional[str] = None
+    created_at: Optional[str] = None
+    linked_user: Optional[Dict[str, Any]] = None
+
+    class Config:
+        extra = "allow"
+
+
+# =====================================================
+# Project Updates (Announcements) Models
+# =====================================================
+
+class ProjectAnnouncementInput(BaseModel):
+    """Input for creating/updating a project update/announcement"""
+    title: str
+    content: str
+    type: str = "general"  # general, milestone, deadline, urgent
+    is_public: bool = False
+    attachments: Optional[List[Dict[str, Any]]] = None
+    visible_to_roles: Optional[List[str]] = None
+
+
+class ProjectAnnouncementResponse(BaseModel):
+    """Project update/announcement response"""
+    id: str
+    project_id: str
+    title: str
+    content: str
+    type: str = "general"
+    is_public: bool = False
+    attachments: Optional[List[Dict[str, Any]]] = None
+    visible_to_roles: Optional[List[str]] = None
+    created_by: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    author: Optional[Dict[str, Any]] = None
+    has_read: bool = False
+
+    class Config:
+        extra = "allow"
 
 
 # =====================================================
@@ -3052,6 +3541,535 @@ class ReceiptCreateResponse(BaseModel):
     """Response from receipt creation"""
     receipt: Receipt
     ocr_result: Optional[ReceiptOcrResponse] = None
+
+
+# =====================================================
+# PROJECT CONTACTS ENDPOINTS
+# =====================================================
+
+class ProjectContactInput(BaseModel):
+    """Input for creating/updating a contact"""
+    contact_type: Optional[str] = "other"
+    status: Optional[str] = "new"
+    name: str
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role_interest: Optional[str] = None
+    notes: Optional[str] = None
+    last_contact_date: Optional[str] = None
+    next_follow_up_date: Optional[str] = None
+    user_id: Optional[str] = None
+    source: Optional[str] = None
+
+
+@router.get("/projects/{project_id}/contacts")
+async def get_project_contacts(
+    project_id: str,
+    contact_type: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str = Header(None)
+):
+    """Get all contacts for a project with filters"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_project_contacts").select("*").eq(
+            "project_id", project_id
+        ).order("created_at", desc=True).limit(limit)
+
+        contacts_result = query.execute()
+        contacts = contacts_result.data or []
+
+        # Apply filters client-side (could be optimized with proper SQL)
+        if contact_type and contact_type != "all":
+            contacts = [c for c in contacts if c.get("contact_type") == contact_type]
+        if status and status != "all":
+            contacts = [c for c in contacts if c.get("status") == status]
+        if search:
+            search_lower = search.lower()
+            contacts = [c for c in contacts if
+                search_lower in (c.get("name") or "").lower() or
+                search_lower in (c.get("company") or "").lower() or
+                search_lower in (c.get("email") or "").lower()
+            ]
+
+        # Fetch profiles for linked users
+        if contacts:
+            user_ids = set()
+            for c in contacts:
+                if c.get("user_id"):
+                    user_ids.add(c["user_id"])
+                if c.get("created_by"):
+                    user_ids.add(c["created_by"])
+
+            profile_map = {}
+            if user_ids:
+                profiles_result = client.table("profiles").select(
+                    "id, username, full_name, display_name, avatar_url, role, is_order_member"
+                ).in_("id", list(user_ids)).execute()
+                profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+            for contact in contacts:
+                contact["linked_user"] = profile_map.get(contact.get("user_id"))
+                contact["creator"] = profile_map.get(contact.get("created_by"))
+
+        return {"contacts": contacts}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting contacts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/contacts/{contact_id}")
+async def get_contact(
+    contact_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single contact"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        contact_result = client.table("backlot_project_contacts").select("*").eq(
+            "id", contact_id
+        ).single().execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        contact = contact_result.data
+        await verify_project_access(client, contact["project_id"], user["id"])
+
+        # Fetch profiles
+        user_ids = set()
+        if contact.get("user_id"):
+            user_ids.add(contact["user_id"])
+        if contact.get("created_by"):
+            user_ids.add(contact["created_by"])
+
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", list(user_ids)).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+            contact["linked_user"] = profile_map.get(contact.get("user_id"))
+            contact["creator"] = profile_map.get(contact.get("created_by"))
+
+        return {"contact": contact}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/contacts")
+async def create_contact(
+    project_id: str,
+    input: ProjectContactInput,
+    authorization: str = Header(None)
+):
+    """Create a new contact"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        contact_result = client.table("backlot_project_contacts").insert({
+            "project_id": project_id,
+            "contact_type": input.contact_type or "other",
+            "status": input.status or "new",
+            "name": input.name,
+            "company": input.company,
+            "email": input.email,
+            "phone": input.phone,
+            "role_interest": input.role_interest,
+            "notes": input.notes,
+            "last_contact_date": input.last_contact_date,
+            "next_follow_up_date": input.next_follow_up_date,
+            "user_id": input.user_id,
+            "source": input.source,
+            "created_by": user["id"]
+        }).execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create contact")
+
+        return {"contact": contact_result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: str,
+    input: ProjectContactInput,
+    authorization: str = Header(None)
+):
+    """Update a contact"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get contact to check project access
+        contact_result = client.table("backlot_project_contacts").select("project_id").eq(
+            "id", contact_id
+        ).single().execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        await verify_project_access(client, contact_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {}
+        if input.contact_type is not None:
+            update_data["contact_type"] = input.contact_type
+        if input.status is not None:
+            update_data["status"] = input.status
+        if input.name is not None:
+            update_data["name"] = input.name
+        if input.company is not None:
+            update_data["company"] = input.company
+        if input.email is not None:
+            update_data["email"] = input.email
+        if input.phone is not None:
+            update_data["phone"] = input.phone
+        if input.role_interest is not None:
+            update_data["role_interest"] = input.role_interest
+        if input.notes is not None:
+            update_data["notes"] = input.notes
+        if input.last_contact_date is not None:
+            update_data["last_contact_date"] = input.last_contact_date
+        if input.next_follow_up_date is not None:
+            update_data["next_follow_up_date"] = input.next_follow_up_date
+        if input.user_id is not None:
+            update_data["user_id"] = input.user_id
+        if input.source is not None:
+            update_data["source"] = input.source
+
+        result = client.table("backlot_project_contacts").update(update_data).eq(
+            "id", contact_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update contact")
+
+        return {"contact": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/contacts/{contact_id}/status")
+async def update_contact_status(
+    contact_id: str,
+    status: str = Query(...),
+    authorization: str = Header(None)
+):
+    """Update contact status"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        contact_result = client.table("backlot_project_contacts").select("project_id").eq(
+            "id", contact_id
+        ).single().execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        await verify_project_access(client, contact_result.data["project_id"], user["id"], require_edit=True)
+
+        result = client.table("backlot_project_contacts").update({
+            "status": status
+        }).eq("id", contact_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update status")
+
+        return {"contact": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating contact status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/contacts/{contact_id}/log")
+async def log_contact_interaction(
+    contact_id: str,
+    notes: Optional[str] = Body(None),
+    authorization: str = Header(None)
+):
+    """Log a contact interaction"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        contact_result = client.table("backlot_project_contacts").select(
+            "project_id, notes"
+        ).eq("id", contact_id).single().execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        await verify_project_access(client, contact_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {
+            "last_contact_date": datetime.utcnow().strftime("%Y-%m-%d")
+        }
+
+        if notes:
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d")
+            new_note = f"[{timestamp}] {notes}"
+            existing_notes = contact_result.data.get("notes")
+            update_data["notes"] = f"{existing_notes}\n\n{new_note}" if existing_notes else new_note
+
+        result = client.table("backlot_project_contacts").update(update_data).eq(
+            "id", contact_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to log contact")
+
+        return {"contact": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error logging contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/contacts/{contact_id}")
+async def delete_contact(
+    contact_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a contact"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        contact_result = client.table("backlot_project_contacts").select("project_id").eq(
+            "id", contact_id
+        ).single().execute()
+
+        if not contact_result.data:
+            raise HTTPException(status_code=404, detail="Contact not found")
+
+        await verify_project_access(client, contact_result.data["project_id"], user["id"], require_edit=True)
+
+        client.table("backlot_project_contacts").delete().eq("id", contact_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/contacts/stats")
+async def get_contact_stats(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get contact statistics for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        contacts_result = client.table("backlot_project_contacts").select(
+            "contact_type, status"
+        ).eq("project_id", project_id).execute()
+
+        contacts = contacts_result.data or []
+
+        stats = {
+            "total": len(contacts),
+            "by_type": {
+                "investor": len([c for c in contacts if c.get("contact_type") == "investor"]),
+                "crew": len([c for c in contacts if c.get("contact_type") == "crew"]),
+                "collaborator": len([c for c in contacts if c.get("contact_type") == "collaborator"]),
+                "vendor": len([c for c in contacts if c.get("contact_type") == "vendor"]),
+                "talent": len([c for c in contacts if c.get("contact_type") == "talent"]),
+                "other": len([c for c in contacts if c.get("contact_type") == "other"]),
+            },
+            "by_status": {
+                "new": len([c for c in contacts if c.get("status") == "new"]),
+                "contacted": len([c for c in contacts if c.get("status") == "contacted"]),
+                "in_discussion": len([c for c in contacts if c.get("status") == "in_discussion"]),
+                "confirmed": len([c for c in contacts if c.get("status") == "confirmed"]),
+                "declined": len([c for c in contacts if c.get("status") == "declined"]),
+                "archived": len([c for c in contacts if c.get("status") == "archived"]),
+            },
+            "needs_followup": len([c for c in contacts if c.get("status") not in ["confirmed", "declined", "archived"]]),
+        }
+
+        return stats
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting contact stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# FILE UPLOAD ENDPOINTS (S3)
+# =====================================================
+
+@router.post("/projects/{project_id}/upload-receipt")
+async def upload_receipt_file(
+    project_id: str,
+    file: UploadFile = File(...),
+    authorization: str = Header(None)
+):
+    """
+    Upload a receipt file to S3 and return the URL.
+
+    This should be called before registering the receipt.
+    """
+    from app.core.storage import storage_client
+    import io
+
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed: {', '.join(allowed_types)}")
+
+    # Generate unique filename
+    import uuid
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "jpg"
+    filename = f"receipts/{project_id}/{uuid.uuid4()}.{ext}"
+
+    try:
+        # Upload to S3
+        file_content = await file.read()
+        file_obj = io.BytesIO(file_content)
+
+        storage_client.from_("backlot").upload(
+            filename,
+            file_obj,
+            {"content_type": file.content_type}
+        )
+
+        # Get public URL
+        file_url = storage_client.from_("backlot").get_public_url(filename)
+
+        return {
+            "success": True,
+            "file_url": file_url,
+            "file_path": filename,
+            "content_type": file.content_type
+        }
+
+    except Exception as e:
+        print(f"Error uploading receipt: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
+@router.post("/projects/{project_id}/upload-call-sheet-logo")
+async def upload_call_sheet_logo(
+    project_id: str,
+    file: UploadFile = File(...),
+    authorization: str = Header(None)
+):
+    """
+    Upload a call sheet logo to S3 and return the URL.
+
+    The URL can then be used to update the project's header_logo_url.
+    """
+    from app.core.storage import storage_client
+    import io
+
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_project_access(client, project_id, user_id, require_edit=True)
+
+    # Validate file type - logos should be images
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp", "image/svg+xml"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed: {', '.join(allowed_types)}")
+
+    # Generate unique filename
+    import uuid
+    ext = file.filename.split(".")[-1] if file.filename and "." in file.filename else "png"
+    filename = f"call-sheet-logos/{project_id}/{uuid.uuid4()}.{ext}"
+
+    try:
+        # Get current logo URL to delete old file
+        project_result = client.table("backlot_projects").select("header_logo_url").eq("id", project_id).execute()
+        old_logo_url = project_result.data[0].get("header_logo_url") if project_result.data else None
+
+        # Delete old logo if it exists and is in our S3 bucket
+        if old_logo_url and "s3." in old_logo_url and ("swn-backlot-files" in old_logo_url or "swn-backlot" in old_logo_url):
+            try:
+                # Extract path from URL - handle different URL formats
+                url_parts = old_logo_url.split(".com/")
+                if len(url_parts) > 1:
+                    old_path = url_parts[1]
+                    storage_client.from_("backlot-files").remove([old_path])
+            except Exception as e:
+                print(f"Warning: Could not delete old logo: {e}")
+
+        # Upload to S3
+        file_content = await file.read()
+        file_obj = io.BytesIO(file_content)
+
+        storage_client.from_("backlot-files").upload(
+            filename,
+            file_obj,
+            {"content_type": file.content_type}
+        )
+
+        # Get public URL
+        logo_url = storage_client.from_("backlot-files").get_public_url(filename)
+
+        # Update project with new logo URL
+        client.table("backlot_projects").update({
+            "header_logo_url": logo_url
+        }).eq("id", project_id).execute()
+
+        return {
+            "success": True,
+            "logo_url": logo_url,
+            "message": "Logo uploaded and project updated successfully"
+        }
+
+    except Exception as e:
+        print(f"Error uploading logo: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload logo: {str(e)}")
 
 
 # =====================================================
@@ -6212,7 +7230,7 @@ class SceneInput(BaseModel):
     page_end: Optional[float] = None
     location_hint: Optional[str] = None
     int_ext: Optional[str] = None
-    day_night: Optional[str] = None
+    time_of_day: Optional[str] = None
     location_id: Optional[str] = None
     director_notes: Optional[str] = None
     ad_notes: Optional[str] = None
@@ -6234,6 +7252,7 @@ class BreakdownItemInput(BaseModel):
     linked_entity_type: Optional[str] = None
     department: Optional[str] = None  # cast, locations, props, wardrobe, makeup, sfx, vfx, background, stunts, camera, sound
     stripboard_day: Optional[int] = None  # Optional mapping to schedule day
+    scene_id: Optional[str] = None  # Allow moving item to a different scene
 
 class CallSheetSceneLinkInput(BaseModel):
     scene_id: str
@@ -6253,23 +7272,42 @@ async def get_project_scripts(
 ):
     """Get all scripts for a project"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         result = client.table("backlot_scripts").select("*").eq("project_id", project_id).order("created_at", desc=True).execute()
-        return {"scripts": result.data or []}
+        scripts = result.data or []
+
+        # Convert S3 paths to signed URLs for PDF viewing
+        for script in scripts:
+            if script.get("file_url") and script["file_url"].startswith("s3://"):
+                # Extract bucket and path from s3://bucket/path format
+                s3_uri = script["file_url"][5:]  # Remove 's3://'
+                parts = s3_uri.split("/", 1)
+                if len(parts) == 2:
+                    bucket_name, s3_path = parts
+                    # Generate signed URL (24 hours expiry for viewing)
+                    signed_url = get_signed_url('backlot-files', s3_path, expires_in=86400)
+                    script["file_url"] = signed_url
+
+        return {"scripts": scripts}
     except Exception as e:
         print(f"Error fetching scripts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -6283,21 +7321,16 @@ async def create_script(
 ):
     """Create a new script for a project"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
-    # Verify project edit access
-    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project not found")
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
-    if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
-        if not member_response.data:
-            raise HTTPException(status_code=403, detail="Access denied - not a project member")
-        if member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
-            raise HTTPException(status_code=403, detail="You don't have permission to manage scripts")
+    # Verify project edit access using the helper function
+    await verify_project_access(client, project_id, profile_id, require_edit=True)
 
     try:
         script_data = {
@@ -6307,7 +7340,7 @@ async def create_script(
             "format": script.format or "manual",
             "version": script.version,
             "parse_status": "manual" if not script.file_url else "pending",
-            "created_by_user_id": user_id
+            "created_by_user_id": str(profile_id)
         }
 
         result = client.table("backlot_scripts").insert(script_data).execute()
@@ -6333,21 +7366,16 @@ async def import_script(
 ):
     """Import a script file (PDF or FDX) and parse scenes"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
-    # Verify project edit access
-    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-    if not project_response.data:
-        raise HTTPException(status_code=404, detail="Project not found")
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
-    if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
-        if not member_response.data:
-            raise HTTPException(status_code=403, detail="Access denied - not a project member")
-        if member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
-            raise HTTPException(status_code=403, detail="You don't have permission to import scripts")
+    # Verify project edit access using the helper function
+    await verify_project_access(client, project_id, profile_id, require_edit=True)
 
     try:
         # Determine format from file extension
@@ -6359,6 +7387,12 @@ async def import_script(
 
         # Read file content
         content = await file.read()
+
+        # Debug logging
+        print(f"Script import: filename={filename}, ext={ext}, content_type={type(content)}, content_len={len(content) if content else 0}")
+
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty file uploaded")
 
         # Initialize variables for extraction
         page_count = None
@@ -6427,18 +7461,40 @@ async def import_script(
                 except:
                     pass
 
-        # Upload to storage
-        storage_path = f"scripts/{project_id}/{uuid.uuid4()}.{ext}"
-        upload_result = client.storage.from_("backlot").upload(storage_path, content, {"content-type": file.content_type or "application/octet-stream"})
+        # Upload file to S3 for PDF viewing
+        file_url = None
+        try:
+            import io
+            # Generate unique filename
+            unique_filename = generate_unique_filename(filename)
+            s3_path = f"scripts/{project_id}/{unique_filename}"
 
-        # Get public URL
-        file_url = client.storage.from_("backlot").get_public_url(storage_path)
+            # Upload to S3
+            file_obj = io.BytesIO(content)
+            upload_result = upload_file(
+                'backlot-files',
+                s3_path,
+                file_obj,
+                content_type=f"application/{ext}" if ext in ['pdf'] else 'application/octet-stream'
+            )
+
+            # Get signed URL for private access (1 week expiry)
+            file_url = get_signed_url('backlot-files', s3_path, expires_in=604800)
+
+            # Store the S3 path in file_url for later signed URL generation
+            # We'll store the path, not the signed URL, so we can regenerate signed URLs
+            file_url = f"s3://{BACKLOT_FILES_BUCKET}/{s3_path}"
+
+            print(f"Uploaded script to S3: {s3_path}")
+        except Exception as upload_err:
+            print(f"S3 upload error (continuing without file): {upload_err}")
+            # Continue without file URL - text content is still available
 
         # Create script record with text_content for the editor
         script_data = {
             "project_id": project_id,
             "title": title,
-            "file_url": file_url,
+            "file_url": file_url,  # S3 path for the uploaded file
             "format": ext,
             "version": version or "v1",
             "version_number": 1,
@@ -6446,7 +7502,7 @@ async def import_script(
             "is_current": True,
             "is_locked": False,
             "parse_status": "completed" if text_content else "pending",
-            "created_by_user_id": user_id,
+            "created_by_user_id": profile_id,
             "total_pages": page_count,
             "total_scenes": len(parsed_scenes),
             "text_content": text_content  # For the script editor
@@ -6504,8 +7560,13 @@ async def get_script(
 ):
     """Get a single script with scene count"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
     try:
         result = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
@@ -6520,15 +7581,24 @@ async def get_script(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", script["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", script["project_id"]).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
         # Get scene count
         scene_result = client.table("backlot_scenes").select("id", count="exact").eq("script_id", script_id).execute()
         script["scene_count"] = scene_result.count or 0
+
+        # Convert S3 path to signed URL for PDF viewing
+        if script.get("file_url") and script["file_url"].startswith("s3://"):
+            s3_uri = script["file_url"][5:]  # Remove 's3://'
+            parts = s3_uri.split("/", 1)
+            if len(parts) == 2:
+                bucket_name, s3_path = parts
+                signed_url = get_signed_url('backlot-files', s3_path, expires_in=86400)
+                script["file_url"] = signed_url
 
         return {"script": script}
     except HTTPException:
@@ -6590,10 +7660,13 @@ async def delete_script(
 ):
     """Delete a script and all its scenes"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Get script and verify access
         existing = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not existing.data:
@@ -6602,9 +7675,9 @@ async def delete_script(
         project_id = existing.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="Only admins can delete scripts")
 
@@ -6647,25 +7720,30 @@ async def get_script_version_history(
 ):
     """Get the version history for a script"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
     try:
         # Get script and verify access
-        script = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
-        if not script.data:
+        script_response = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_response.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
-        project_id = script.data["project_id"]
+        project_id = script_response.data["project_id"]
 
         # Verify project access
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -7024,6 +8102,34 @@ async def update_script_text(
             result = client.table("backlot_scripts").insert(new_script_data).execute()
             new_script_id = result.data[0]["id"] if result.data else None
 
+            # Copy highlights from the old script to the new script
+            highlights_copied = 0
+            if new_script_id:
+                old_highlights = client.table("backlot_script_highlight_breakdowns").select(
+                    "page_number, rect_x, rect_y, rect_width, rect_height, highlighted_text, suggested_label, category, color, status, breakdown_item_id"
+                ).eq("script_id", script_id).execute()
+
+                if old_highlights.data:
+                    new_highlights = []
+                    for h in old_highlights.data:
+                        new_highlights.append({
+                            "script_id": new_script_id,
+                            "page_number": h.get("page_number"),
+                            "rect_x": h.get("rect_x"),
+                            "rect_y": h.get("rect_y"),
+                            "rect_width": h.get("rect_width"),
+                            "rect_height": h.get("rect_height"),
+                            "highlighted_text": h.get("highlighted_text"),
+                            "suggested_label": h.get("suggested_label"),
+                            "category": h.get("category"),
+                            "color": h.get("color"),
+                            "status": h.get("status"),
+                            "breakdown_item_id": h.get("breakdown_item_id"),
+                        })
+                    if new_highlights:
+                        client.table("backlot_script_highlight_breakdowns").insert(new_highlights).execute()
+                        highlights_copied = len(new_highlights)
+
             # Sync scenes to the project from the parsed script
             if new_script_id and parsed_scenes:
                 await sync_scenes_from_script(client, project_id, new_script_id, parsed_scenes)
@@ -7033,7 +8139,8 @@ async def update_script_text(
                 "script": result.data[0] if result.data else None,
                 "new_version_created": True,
                 "scenes_synced": scene_count,
-                "message": f"Created new version {new_script_data['version']} with {scene_count} scenes"
+                "highlights_copied": highlights_copied,
+                "message": f"Created new version {new_script_data['version']} with {scene_count} scenes and {highlights_copied} highlights"
             }
         else:
             # Update text in place
@@ -7170,17 +8277,22 @@ async def get_project_scenes(
 ):
     """Get all scenes for a project, optionally filtered by script"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -7252,7 +8364,7 @@ async def create_scene(
             "page_end": scene.page_end,
             "location_hint": scene.location_hint,
             "int_ext": scene.int_ext,
-            "day_night": scene.day_night,
+            "time_of_day": scene.time_of_day,
             "location_id": scene.location_id,
             "director_notes": scene.director_notes,
             "ad_notes": scene.ad_notes,
@@ -7357,7 +8469,7 @@ async def update_scene(
             "page_end": scene.page_end,
             "location_hint": scene.location_hint,
             "int_ext": scene.int_ext,
-            "day_night": scene.day_night,
+            "time_of_day": scene.time_of_day,
             "location_id": scene.location_id,
             "director_notes": scene.director_notes,
             "ad_notes": scene.ad_notes
@@ -7631,6 +8743,16 @@ async def update_breakdown_item(
             "stripboard_day": item.stripboard_day
         }
 
+        # If scene_id is provided, verify access to new scene and update
+        if item.scene_id:
+            # Verify the new scene belongs to the same project
+            new_scene = client.table("backlot_scenes").select("project_id").eq("id", item.scene_id).single().execute()
+            if not new_scene.data:
+                raise HTTPException(status_code=404, detail="Target scene not found")
+            if new_scene.data["project_id"] != project_id:
+                raise HTTPException(status_code=403, detail="Cannot move item to a scene in a different project")
+            update_data["scene_id"] = item.scene_id
+
         result = client.table("backlot_scene_breakdown_items").update(update_data).eq("id", item_id).execute()
         return {"success": True, "item": result.data[0] if result.data else None}
 
@@ -7744,23 +8866,28 @@ async def get_location_needs(
 ):
     """Get location needs grouped by location hint"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
 
     # Verify project access
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = project_response.data[0]["owner_id"] == profile_id
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all scenes with location info
-        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, location_hint, int_ext, day_night, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
+        scenes = client.table("backlot_scenes").select("id, scene_number, slugline, location_hint, int_ext, time_of_day, page_length, location_id, sequence").eq("project_id", project_id).order("sequence").execute()
 
         # Group by location_hint
         location_groups = {}
@@ -7783,8 +8910,8 @@ async def get_location_needs(
                 "page_length": scene.get("page_length", 0)
             })
             location_groups[hint]["total_pages"] += scene.get("page_length", 0) or 0
-            if scene.get("day_night"):
-                location_groups[hint]["day_night_options"].add(scene["day_night"])
+            if scene.get("time_of_day"):
+                location_groups[hint]["day_night_options"].add(scene["time_of_day"])
 
         # Convert sets to lists and add location info
         result = []
@@ -8341,10 +9468,13 @@ async def get_script_page_notes(
 ):
     """Get all notes for a script, optionally filtered by page, type, or resolved status"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access
         script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8357,9 +9487,9 @@ async def get_script_page_notes(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8392,10 +9522,13 @@ async def get_script_notes_summary(
 ):
     """Get summary of notes per page for a script"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access - page_count might not exist, use total_pages instead
         script_result = client.table("backlot_scripts").select("project_id, total_pages").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8409,9 +9542,9 @@ async def get_script_notes_summary(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8455,10 +9588,13 @@ async def create_script_page_note(
 ):
     """Create a new note on a script page"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access
         script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8471,9 +9607,9 @@ async def create_script_page_note(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8492,7 +9628,7 @@ async def create_script_page_note(
             "note_text": note.note_text,
             "note_type": note.note_type or "general",
             "scene_id": note.scene_id,
-            "author_user_id": user_id,
+            "author_user_id": profile_id,
             "resolved": False
         }
 
@@ -8506,7 +9642,7 @@ async def create_script_page_note(
 
         # Try to fetch author profile
         try:
-            author_profile = client.table("profiles").select("id, full_name, avatar_url").eq("id", user_id).single().execute()
+            author_profile = client.table("profiles").select("id, full_name, avatar_url").eq("id", profile_id).single().execute()
             if author_profile.data:
                 created_note["author"] = author_profile.data
         except Exception:
@@ -8530,10 +9666,13 @@ async def update_script_page_note(
 ):
     """Update a script page note"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Get note and verify ownership/permissions
         note_result = client.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
 
@@ -8542,17 +9681,17 @@ async def update_script_page_note(
 
         note_data = note_result.data
         project_id = note_data["backlot_scripts"]["project_id"]
-        is_author = note_data["author_user_id"] == user_id
+        is_author = note_data["author_user_id"] == profile_id
 
         # Check if user can edit (author or editor role)
         can_edit = is_author
         if not can_edit:
             project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-            is_owner = project_response.data[0]["owner_id"] == user_id
+            is_owner = project_response.data[0]["owner_id"] == profile_id
             if is_owner:
                 can_edit = True
             else:
-                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
                 if member_response.data and member_response.data[0]["role"] in ["owner", "admin", "editor"]:
                     can_edit = True
 
@@ -8578,7 +9717,7 @@ async def update_script_page_note(
             update_data["resolved"] = note_update.resolved
             if note_update.resolved:
                 update_data["resolved_at"] = datetime.utcnow().isoformat()
-                update_data["resolved_by_user_id"] = user_id
+                update_data["resolved_by_user_id"] = profile_id
             else:
                 update_data["resolved_at"] = None
                 update_data["resolved_by_user_id"] = None
@@ -8618,10 +9757,13 @@ async def delete_script_page_note(
 ):
     """Delete a script page note"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Get note and verify ownership/permissions
         note_result = client.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
@@ -8636,17 +9778,17 @@ async def delete_script_page_note(
             raise HTTPException(status_code=404, detail="Script not found")
         project_id = script_result.data["project_id"]
 
-        is_author = note_data["author_user_id"] == user_id
+        is_author = note_data["author_user_id"] == profile_id
 
         # Check if user can delete (author or editor role)
         can_delete = is_author
         if not can_delete:
             project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-            is_owner = project_response.data[0]["owner_id"] == user_id
+            is_owner = project_response.data[0]["owner_id"] == profile_id
             if is_owner:
                 can_delete = True
             else:
-                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
                 if member_response.data and member_response.data[0]["role"] in ["owner", "admin"]:
                     can_delete = True
 
@@ -8679,10 +9821,13 @@ async def toggle_note_resolved(
 ):
     """Toggle the resolved status of a note"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Get note and verify access
         note_result = client.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
@@ -8697,9 +9842,9 @@ async def toggle_note_resolved(
 
         # Any project member can resolve/unresolve
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8707,7 +9852,7 @@ async def toggle_note_resolved(
         update_data = {"resolved": body.resolved}
         if body.resolved:
             update_data["resolved_at"] = datetime.utcnow().isoformat()
-            update_data["resolved_by_user_id"] = user_id
+            update_data["resolved_by_user_id"] = profile_id
         else:
             update_data["resolved_at"] = None
             update_data["resolved_by_user_id"] = None
@@ -8764,10 +9909,13 @@ async def get_script_highlights(
 ):
     """Get highlights for a script with optional filtering"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access
         script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8777,9 +9925,9 @@ async def get_script_highlights(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8813,10 +9961,13 @@ async def get_script_highlight_summary(
 ):
     """Get summary of highlights by category"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access
         script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8826,9 +9977,9 @@ async def get_script_highlight_summary(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -8880,10 +10031,13 @@ async def create_script_highlight(
 ):
     """Create a new highlight (text selection for breakdown)"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify script access and get project_id
         script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
         if not script_result.data:
@@ -8893,9 +10047,9 @@ async def create_script_highlight(
 
         # Check project membership - need edit rights
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
             role = member_response.data[0]["role"]
@@ -8926,10 +10080,260 @@ async def create_script_highlight(
         }
         color = input.color or default_colors.get(input.category, "#808080")
 
+        # Determine scene_id from page number if not provided
+        scene_id = input.scene_id
+        print(f"DEBUG: Input scene_id from frontend: {scene_id}")
+        print(f"DEBUG: Input page_number: {input.page_number}")
+        if not scene_id:
+            # Try to find scene from page mapping table first
+            mapping_result = client.table("backlot_scene_page_mappings").select(
+                "scene_id"
+            ).eq("script_id", script_id).lte("page_start", input.page_number).gte("page_end", input.page_number).execute()
+
+            if mapping_result.data:
+                scene_id = mapping_result.data[0]["scene_id"]
+            else:
+                # Fallback: find scene based on page_start or calculate from page_length
+                scenes_result = client.table("backlot_scenes").select(
+                    "id, page_start, page_end, page_length, sequence"
+                ).eq("project_id", project_id).order("sequence").execute()
+
+                scenes_list = scenes_result.data or []
+                page_num = float(input.page_number)
+
+                # Check if any scene has page_start set
+                has_page_start = any(s.get("page_start") is not None for s in scenes_list)
+
+                if has_page_start:
+                    # Use existing page_start values
+                    for i, scene in enumerate(scenes_list):
+                        page_start = scene.get("page_start")
+                        page_end = scene.get("page_end")
+
+                        if page_start is None:
+                            continue
+
+                        page_start = float(page_start)
+
+                        if page_end is not None:
+                            page_end = float(page_end)
+                            if page_start <= page_num <= page_end:
+                                scene_id = scene["id"]
+                                break
+                        else:
+                            if page_num >= page_start:
+                                if i + 1 < len(scenes_list):
+                                    next_page_start = scenes_list[i + 1].get("page_start")
+                                    if next_page_start is not None and page_num < float(next_page_start):
+                                        scene_id = scene["id"]
+                                        break
+                                else:
+                                    scene_id = scene["id"]
+                                    break
+                else:
+                    # Calculate page ranges from page_length
+                    cumulative_page = 1.0
+                    for i, scene in enumerate(scenes_list):
+                        page_length = scene.get("page_length") or 1.0
+                        try:
+                            page_length = float(page_length)
+                        except (ValueError, TypeError):
+                            page_length = 1.0
+
+                        scene_start = cumulative_page
+                        scene_end = cumulative_page + page_length - 0.001  # Slight offset to avoid overlap
+
+                        if scene_start <= page_num <= scene_end + 1:  # +1 for rounding
+                            scene_id = scene["id"]
+                            break
+
+                        cumulative_page += page_length
+
+        print(f"DEBUG: Final scene_id for original highlight: {scene_id}")
+
+        highlight_id = str(uuid.uuid4())
+        breakdown_item_ids = []
+        label = input.suggested_label or input.highlighted_text
+
+        # Get script file URL to scan for all occurrences
+        script_file_result = client.table("backlot_scripts").select("file_url").eq("id", script_id).single().execute()
+        script_file_url = script_file_result.data.get("file_url") if script_file_result.data else None
+
+        # Get all scenes with their page ranges
+        all_scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, page_start, page_end, page_length, sequence"
+        ).eq("project_id", project_id).order("sequence").execute()
+        all_scenes_raw = all_scenes_result.data or []
+
+        # Deduplicate scenes by scene_number (keep first occurrence)
+        seen_scene_numbers = set()
+        all_scenes = []
+        for scene in all_scenes_raw:
+            sn = scene.get("scene_number")
+            if sn not in seen_scene_numbers:
+                seen_scene_numbers.add(sn)
+                all_scenes.append(scene)
+
+        print(f"DEBUG: Raw scenes: {len(all_scenes_raw)}, after dedup: {len(all_scenes)}")
+
+        # Check if any scene has page_start set
+        scenes_have_page_start = any(s.get("page_start") is not None for s in all_scenes)
+
+        # If no page_start values, calculate cumulative page ranges from page_length
+        print(f"DEBUG: scenes_have_page_start={scenes_have_page_start}, total scenes={len(all_scenes)}")
+        if not scenes_have_page_start:
+            cumulative = 1.0
+            for scene in all_scenes:
+                page_length = scene.get("page_length") or 1.0
+                try:
+                    page_length = float(page_length)
+                except (ValueError, TypeError):
+                    page_length = 1.0
+                scene["_calc_page_start"] = cumulative
+                scene["_calc_page_end"] = cumulative + page_length
+                print(f"DEBUG: Scene {scene.get('scene_number')}: pages {cumulative:.1f} - {cumulative + page_length:.1f}")
+                cumulative += page_length
+        else:
+            for scene in all_scenes:
+                print(f"DEBUG: Scene {scene.get('scene_number')}: page_start={scene.get('page_start')}, page_end={scene.get('page_end')}")
+
+        # Find all pages where the highlighted text appears
+        pages_with_text = set()
+        print(f"DEBUG: Scanning for '{label}' in PDF at {script_file_url[:100] if script_file_url else 'None'}...")
+        if script_file_url:
+            try:
+                # Download PDF to temp file
+                pdf_response = requests.get(script_file_url, timeout=30)
+                print(f"DEBUG: PDF download status: {pdf_response.status_code}, size: {len(pdf_response.content)} bytes")
+                if pdf_response.status_code == 200:
+                    with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                        tmp_file.write(pdf_response.content)
+                        tmp_file_path = tmp_file.name
+
+                    # Extract text from each page and search for the highlighted text
+                    reader = PdfReader(tmp_file_path)
+                    print(f"DEBUG: PDF has {len(reader.pages)} pages")
+                    search_text = label.lower()
+                    # Create regex for word boundary matching (allows suffixes like 's, 's)
+                    search_pattern = re.compile(r'\b' + re.escape(search_text) + r"(?:'?s?)?\b", re.IGNORECASE)
+                    print(f"DEBUG: Searching for pattern: {search_pattern.pattern}")
+
+                    for page_num, page in enumerate(reader.pages, start=1):
+                        try:
+                            page_text = page.extract_text() or ""
+                            matches = search_pattern.findall(page_text)
+                            if matches:
+                                pages_with_text.add(page_num)
+                                print(f"DEBUG: Found {len(matches)} matches on page {page_num}: {matches[:3]}")
+                        except Exception as ex:
+                            print(f"DEBUG: Error extracting text from page {page_num}: {ex}")
+
+                    # Clean up temp file
+                    try:
+                        os.unlink(tmp_file_path)
+                    except Exception:
+                        pass
+            except Exception as e:
+                # If PDF scanning fails, fall back to just the current page
+                print(f"PDF scanning failed: {e}")
+                pages_with_text.add(input.page_number)
+
+        # If no pages found, at least use the current page
+        if not pages_with_text:
+            pages_with_text.add(input.page_number)
+
+        print(f"DEBUG: Total pages with text found: {len(pages_with_text)} - pages: {sorted(pages_with_text)}")
+
+        # Map pages to scenes
+        def get_scene_for_page(page_num: int) -> Optional[str]:
+            """Find which scene a page belongs to - returns first scene on that page"""
+            for i, scene in enumerate(all_scenes):
+                # Use calculated page ranges if available, otherwise use stored values
+                if "_calc_page_start" in scene:
+                    # Using calculated ranges from page_length
+                    if scene["_calc_page_start"] <= page_num < scene["_calc_page_end"] + 0.5:
+                        return scene["id"]
+                else:
+                    # Using stored page_start values
+                    page_start = scene.get("page_start")
+                    if page_start is None:
+                        continue
+                    page_start = float(page_start)
+
+                    # If this scene starts on or before current page, it's a candidate
+                    if page_start <= page_num:
+                        # Find next scene that starts on a DIFFERENT page
+                        next_different_page_start = None
+                        for j in range(i + 1, len(all_scenes)):
+                            next_ps = all_scenes[j].get("page_start")
+                            if next_ps is not None:
+                                next_ps = float(next_ps)
+                                if next_ps > page_start:
+                                    next_different_page_start = next_ps
+                                    break
+
+                        # Check if current page is before the next different page starts
+                        if next_different_page_start is None or page_num < next_different_page_start:
+                            return scene["id"]
+            return None
+
+        # Get all scenes where the text appears (allow multiple breakdown items per scene)
+        # IMPORTANT: For the original page, use the user-selected scene_id, not PDF scanning
+        scenes_with_text = []
+        original_page = input.page_number
+
+        for page_num in sorted(pages_with_text):
+            if page_num == original_page:
+                # For the original highlight page, use the user-selected scene_id
+                scene_for_page = scene_id  # This is the user-selected scene
+                scene_name = None
+                for s in all_scenes:
+                    if s["id"] == scene_for_page:
+                        scene_name = s.get("scene_number")
+                        break
+                print(f"DEBUG: Page {page_num} (ORIGINAL) -> Using user-selected Scene {scene_name} (id: {scene_for_page})")
+            else:
+                # For other pages, use PDF scanning to determine the scene
+                scene_for_page = get_scene_for_page(page_num)
+                scene_name = None
+                if scene_for_page:
+                    for s in all_scenes:
+                        if s["id"] == scene_for_page:
+                            scene_name = s.get("scene_number")
+                            break
+                print(f"DEBUG: Page {page_num} -> Scene {scene_name} (id: {scene_for_page})")
+
+            if scene_for_page:
+                scenes_with_text.append({"id": scene_for_page, "page": page_num, "is_original": page_num == original_page})
+
+        print(f"DEBUG: Creating breakdown items for {len(scenes_with_text)} scene instances")
+
+        # Create breakdown items for each scene where the text was found
+        # Put the original page's breakdown item FIRST so it gets linked to the highlight
+        scenes_with_text.sort(key=lambda x: (0 if x.get("is_original") else 1, x["page"]))
+
+        for scene_info in scenes_with_text:
+            breakdown_item_data = {
+                "id": str(uuid.uuid4()),
+                "scene_id": scene_info["id"],
+                "type": input.category,
+                "label": label,
+                "quantity": 1,
+                "notes": f"Found on page {scene_info['page']}" + (" (original highlight)" if scene_info.get("is_original") else ""),
+                "created_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            breakdown_result = client.table("backlot_scene_breakdown_items").insert(breakdown_item_data).execute()
+            if breakdown_result.data:
+                breakdown_item_ids.append(breakdown_result.data[0]["id"])
+
+        # Use the first breakdown item id for the highlight link
+        breakdown_item_id = breakdown_item_ids[0] if breakdown_item_ids else None
+
         highlight_data = {
-            "id": str(uuid.uuid4()),
+            "id": highlight_id,
             "script_id": script_id,
-            "scene_id": input.scene_id,
+            "scene_id": scene_id,
             "page_number": input.page_number,
             "start_offset": input.start_offset,
             "end_offset": input.end_offset,
@@ -8940,16 +10344,23 @@ async def create_script_highlight(
             "rect_height": input.rect_height,
             "category": input.category,
             "color": color,
-            "suggested_label": input.suggested_label or input.highlighted_text,
-            "status": "pending",
-            "created_by_user_id": user_id,
+            "suggested_label": label,
+            "breakdown_item_id": breakdown_item_id,
+            "status": "confirmed" if breakdown_item_id else "pending",
+            "created_by_user_id": profile_id,
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
         }
 
         result = client.table("backlot_script_highlight_breakdowns").insert(highlight_data).execute()
 
-        return {"success": True, "highlight": result.data[0] if result.data else highlight_data}
+        return {
+            "success": True,
+            "highlight": result.data[0] if result.data else highlight_data,
+            "breakdown_item_ids": breakdown_item_ids,
+            "scenes_added": len(scenes_with_text),
+            "scene_id": scene_id
+        }
 
     except HTTPException:
         raise
@@ -8967,10 +10378,13 @@ async def update_script_highlight(
 ):
     """Update a highlight"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify highlight exists and access
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
@@ -8983,9 +10397,9 @@ async def update_script_highlight(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
             role = member_response.data[0]["role"]
@@ -9027,10 +10441,13 @@ async def confirm_script_highlight(
 ):
     """Confirm a highlight and optionally create a breakdown item from it"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify highlight exists and access
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
@@ -9044,9 +10461,9 @@ async def confirm_script_highlight(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -9098,10 +10515,13 @@ async def reject_script_highlight(
 ):
     """Reject/dismiss a highlight"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
         # Verify highlight exists and access
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
             "*, backlot_scripts(project_id)"
@@ -9114,9 +10534,9 @@ async def reject_script_highlight(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -9141,15 +10561,84 @@ async def delete_script_highlight(
     highlight_id: str,
     authorization: str = Header(None)
 ):
-    """Delete a highlight"""
+    """Delete a highlight and its associated breakdown item"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
 
     try:
-        # Verify highlight exists and access
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "*, backlot_scripts(project_id)"
+            "id, script_id, breakdown_item_id"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
+
+        # Check project membership
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+            role = member_response.data[0]["role"]
+            if role not in ["admin", "editor", "coordinator"]:
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Delete associated breakdown item if exists
+        breakdown_item_id = highlight_result.data.get("breakdown_item_id")
+        if breakdown_item_id:
+            client.table("backlot_scene_breakdown_items").delete().eq("id", breakdown_item_id).execute()
+
+        # Delete highlight
+        client.table("backlot_script_highlight_breakdowns").delete().eq("id", highlight_id).execute()
+
+        return {"success": True, "message": "Highlight and breakdown item deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting script highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# HIGHLIGHT INTERNAL NOTES
+# =====================================================
+
+class HighlightNoteInput(BaseModel):
+    """Input for creating a highlight note"""
+    content: str
+
+
+@router.get("/scripts/{script_id}/highlights/{highlight_id}/notes")
+async def get_highlight_notes(
+    script_id: str,
+    highlight_id: str,
+    authorization: str = Header(None)
+):
+    """Get all notes for a highlight"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Verify highlight exists and user has access
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
+            "id, backlot_scripts(project_id)"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
@@ -9159,24 +10648,549 @@ async def delete_script_highlight(
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = project_response.data and project_response.data[0]["owner_id"] == user_id
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
-            role = member_response.data[0]["role"]
-            if role not in ["admin", "editor", "coordinator"]:
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
 
-        # Delete highlight
-        client.table("backlot_script_highlight_breakdowns").delete().eq("id", highlight_id).execute()
+        # Get notes with author info
+        notes_result = client.table("backlot_highlight_notes").select(
+            "*, profiles(id, full_name, display_name, avatar_url)"
+        ).eq("highlight_id", highlight_id).order("created_at", desc=False).execute()
 
-        return {"success": True, "message": "Highlight deleted"}
+        return notes_result.data or []
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error deleting script highlight: {e}")
+        print(f"Error getting highlight notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/scripts/{script_id}/highlights/{highlight_id}/notes")
+async def create_highlight_note(
+    script_id: str,
+    highlight_id: str,
+    input: HighlightNoteInput,
+    authorization: str = Header(None)
+):
+    """Create a note on a highlight"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Verify highlight exists and user has access
+        highlight_result = client.table("backlot_script_highlight_breakdowns").select(
+            "id, backlot_scripts(project_id)"
+        ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
+
+        if not highlight_result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+
+        # Check project membership
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Create note
+        note_data = {
+            "id": str(uuid.uuid4()),
+            "highlight_id": highlight_id,
+            "author_user_id": str(profile_id),
+            "content": input.content,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        result = client.table("backlot_highlight_notes").insert(note_data).execute()
+
+        # Fetch the note with author info
+        if result.data:
+            note_with_author = client.table("backlot_highlight_notes").select(
+                "*, profiles(id, full_name, display_name, avatar_url)"
+            ).eq("id", result.data[0]["id"]).single().execute()
+            return note_with_author.data
+
+        return result.data[0] if result.data else note_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating highlight note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/scripts/{script_id}/highlights/{highlight_id}/notes/{note_id}")
+async def delete_highlight_note(
+    script_id: str,
+    highlight_id: str,
+    note_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a highlight note (only author or admin can delete)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Verify note exists
+        note_result = client.table("backlot_highlight_notes").select(
+            "id, author_user_id, highlight_id"
+        ).eq("id", note_id).eq("highlight_id", highlight_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        # Check if user is author
+        is_author = str(note_result.data["author_user_id"]) == str(profile_id)
+
+        if not is_author:
+            # Check if user is admin of the project
+            highlight_result = client.table("backlot_script_highlight_breakdowns").select(
+                "backlot_scripts(project_id)"
+            ).eq("id", highlight_id).single().execute()
+
+            if highlight_result.data:
+                project_id = highlight_result.data["backlot_scripts"]["project_id"]
+                project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+                is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
+
+                if not is_owner:
+                    member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
+                    if not member_response.data or member_response.data[0]["role"] != "admin":
+                        raise HTTPException(status_code=403, detail="Only note author or project admin can delete notes")
+
+        # Delete note
+        client.table("backlot_highlight_notes").delete().eq("id", note_id).execute()
+
+        return {"success": True, "message": "Note deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting highlight note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scripts/{script_id}/export-with-highlights")
+async def export_script_with_highlights(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Export script PDF with highlights overlaid and notes addendum.
+
+    Returns a PDF with:
+    - Original script pages with colored highlight overlays
+    - Addendum page(s) listing all notes with page references
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        from pypdf import PdfReader, PdfWriter
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.colors import Color
+        from reportlab.lib.units import inch
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from io import BytesIO
+        import requests
+
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Get script and verify access
+        script_result = client.table("backlot_scripts").select(
+            "id, title, file_url, project_id"
+        ).eq("id", script_id).single().execute()
+
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script = script_result.data
+        project_id = script["project_id"]
+
+        # Verify project access
+        project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project = project_response.data[0]
+        is_owner = str(project["owner_id"]) == str(profile_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="You don't have access to this project")
+
+        # Get all highlights for the script
+        highlights_result = client.table("backlot_script_highlight_breakdowns").select(
+            "id, page_number, rect_x, rect_y, rect_width, rect_height, category, color, highlighted_text, suggested_label, status"
+        ).eq("script_id", script_id).order("page_number").execute()
+        highlights = highlights_result.data or []
+
+        # Get all script page notes
+        notes_result = client.table("backlot_script_page_notes").select(
+            "id, page_number, position_x, position_y, note_text, note_type, resolved, created_at, author_user_id"
+        ).eq("script_id", script_id).order("page_number").order("created_at").execute()
+        notes = notes_result.data or []
+
+        # Get author names for notes
+        author_ids = list(set([n.get("author_user_id") for n in notes if n.get("author_user_id")]))
+        author_map = {}
+        if author_ids:
+            authors_result = client.table("profiles").select("id, full_name, display_name, username").in_("id", author_ids).execute()
+            for author in (authors_result.data or []):
+                author_map[str(author["id"])] = author
+
+        # Attach author info to notes
+        for note in notes:
+            aid = note.get("author_user_id")
+            if aid and str(aid) in author_map:
+                note["author"] = author_map[str(aid)]
+            else:
+                note["author"] = None
+
+        # Get highlight notes
+        highlight_notes_result = client.table("backlot_highlight_notes").select(
+            "id, highlight_id, content, created_at, author_user_id"
+        ).execute()
+
+        # Get author names for highlight notes
+        hn_author_ids = list(set([hn.get("author_user_id") for hn in (highlight_notes_result.data or []) if hn.get("author_user_id")]))
+        for aid in hn_author_ids:
+            if str(aid) not in author_map:
+                # Fetch additional authors not already fetched
+                pass
+        if hn_author_ids:
+            hn_authors_result = client.table("profiles").select("id, full_name, display_name, username").in_("id", hn_author_ids).execute()
+            for author in (hn_authors_result.data or []):
+                author_map[str(author["id"])] = author
+
+        highlight_notes_map = {}
+        for hn in (highlight_notes_result.data or []):
+            hid = hn.get("highlight_id")
+            # Attach author info
+            aid = hn.get("author_user_id")
+            if aid and str(aid) in author_map:
+                hn["author"] = author_map[str(aid)]
+            else:
+                hn["author"] = None
+            if hid not in highlight_notes_map:
+                highlight_notes_map[hid] = []
+            highlight_notes_map[hid].append(hn)
+
+        # Download original PDF from S3
+        if not script.get("file_url"):
+            raise HTTPException(status_code=400, detail="Script has no PDF file")
+
+        file_url = script["file_url"]
+
+        # Handle S3 URIs (s3://bucket/key) vs HTTPS URLs
+        if file_url.startswith("s3://"):
+            pdf_content = download_from_s3_uri(file_url)
+        else:
+            # Fallback for HTTPS URLs
+            pdf_response = requests.get(file_url, timeout=60)
+            if pdf_response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to download script PDF")
+            pdf_content = pdf_response.content
+
+        # Read original PDF
+        original_pdf = PdfReader(BytesIO(pdf_content))
+        num_pages = len(original_pdf.pages)
+
+        # Category colors mapping
+        CATEGORY_COLORS = {
+            "cast": "#3B82F6",      # Blue
+            "background": "#8B5CF6", # Purple
+            "prop": "#F59E0B",       # Amber
+            "vehicle": "#EF4444",    # Red
+            "sfx": "#10B981",        # Green
+            "vfx": "#EC4899",        # Pink
+            "wardrobe": "#F97316",   # Orange
+            "makeup": "#14B8A6",     # Teal
+            "location": "#6366F1",   # Indigo
+            "stunt": "#DC2626",      # Dark Red
+            "animal": "#84CC16",     # Lime
+            "other": "#6B7280",      # Gray
+        }
+
+        def hex_to_rgb(hex_color):
+            """Convert hex color to RGB tuple (0-1 range)"""
+            hex_color = hex_color.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) / 255 for i in (0, 2, 4))
+
+        # Create output PDF
+        output = PdfWriter()
+
+        # Create note index map (note_id -> serial number)
+        note_index_map = {note.get("id"): idx for idx, note in enumerate(notes, 1)}
+
+        # Process each page and add highlight overlays and note markers
+        for page_num in range(num_pages):
+            original_page = original_pdf.pages[page_num]
+            page_width = float(original_page.mediabox.width)
+            page_height = float(original_page.mediabox.height)
+
+            # Get highlights for this page
+            page_highlights = [h for h in highlights if h.get("page_number") == page_num + 1]
+            # Get notes for this page
+            page_notes = [n for n in notes if n.get("page_number") == page_num + 1]
+
+            if page_highlights or page_notes:
+                # Create overlay for this page
+                overlay_buffer = BytesIO()
+                c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
+
+                # Draw highlight rectangles
+                for highlight in page_highlights:
+                    # Get color
+                    color_hex = highlight.get("color") or CATEGORY_COLORS.get(highlight.get("category"), "#FFFF00")
+                    r, g, b = hex_to_rgb(color_hex)
+
+                    # Calculate position (rect values are 0-1 percentages)
+                    # Convert Decimal to float for math operations
+                    rect_x = float(highlight.get("rect_x") or 0)
+                    rect_y = float(highlight.get("rect_y") or 0)
+                    rect_w = float(highlight.get("rect_width") or 0.1)
+                    rect_h = float(highlight.get("rect_height") or 0.02)
+
+                    x = rect_x * page_width
+                    # PDF coordinates are from bottom, so invert y
+                    y = page_height - (rect_y * page_height) - (rect_h * page_height)
+                    w = rect_w * page_width
+                    h = rect_h * page_height
+
+                    # Draw semi-transparent highlight rectangle
+                    c.setFillColor(Color(r, g, b, alpha=0.3))
+                    c.setStrokeColor(Color(r, g, b, alpha=0.8))
+                    c.setLineWidth(0.5)
+                    c.rect(x, y, w, h, fill=True, stroke=True)
+
+                # Draw note markers (circled numbers)
+                for note in page_notes:
+                    note_num = note_index_map.get(note.get("id"), 0)
+                    if note_num == 0:
+                        continue
+
+                    # Get note position (0-1 percentages)
+                    pos_x = float(note.get("position_x") or 0)
+                    pos_y = float(note.get("position_y") or 0)
+
+                    # Convert to PDF coordinates
+                    marker_x = pos_x * page_width
+                    marker_y = page_height - (pos_y * page_height)
+
+                    # Draw marker - red circle with white number
+                    marker_radius = 8
+                    c.setFillColor(Color(0.9, 0.2, 0.2, alpha=0.9))  # Red
+                    c.setStrokeColor(Color(1, 1, 1, alpha=1))  # White border
+                    c.setLineWidth(1)
+                    c.circle(marker_x, marker_y, marker_radius, fill=True, stroke=True)
+
+                    # Draw number in white
+                    c.setFillColor(Color(1, 1, 1, alpha=1))
+                    c.setFont("Helvetica-Bold", 7)
+                    # Center the text in the circle
+                    text_width = c.stringWidth(str(note_num), "Helvetica-Bold", 7)
+                    c.drawString(marker_x - text_width/2, marker_y - 2.5, str(note_num))
+
+                c.save()
+                overlay_buffer.seek(0)
+
+                # Merge overlay with original page
+                overlay_pdf = PdfReader(overlay_buffer)
+                original_page.merge_page(overlay_pdf.pages[0])
+
+            output.add_page(original_page)
+
+        # Create notes addendum page(s)
+        def create_notes_addendum():
+            """Create addendum pages with all notes listed"""
+            buffer = BytesIO()
+            c = canvas.Canvas(buffer, pagesize=letter)
+            page_width, page_height = letter
+
+            # Title
+            y_position = page_height - 1 * inch
+
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(1 * inch, y_position, f"Script Notes - {script.get('title', 'Untitled')}")
+            y_position -= 0.3 * inch
+
+            c.setFont("Helvetica", 10)
+            c.setFillColor(Color(0.4, 0.4, 0.4))
+            c.drawString(1 * inch, y_position, f"Project: {project.get('title', 'Unknown')}")
+            y_position -= 0.2 * inch
+            c.drawString(1 * inch, y_position, f"Generated: {datetime.utcnow().strftime('%B %d, %Y at %H:%M UTC')}")
+            y_position -= 0.4 * inch
+
+            c.setFillColor(Color(0, 0, 0))
+
+            # Section: Script Page Notes
+            if notes:
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(1 * inch, y_position, "Script Page Notes")
+                y_position -= 0.3 * inch
+
+                c.setFont("Helvetica", 9)
+
+                note_type_labels = {
+                    "general": "General",
+                    "technical": "Technical",
+                    "creative": "Creative",
+                    "continuity": "Continuity",
+                    "vfx": "VFX",
+                    "sound": "Sound",
+                    "production": "Production",
+                }
+
+                for i, note in enumerate(notes, 1):
+                    if y_position < 1.5 * inch:
+                        c.showPage()
+                        y_position = page_height - 1 * inch
+                        c.setFont("Helvetica", 9)
+
+                    # Note header
+                    c.setFont("Helvetica-Bold", 9)
+                    note_type = note_type_labels.get(note.get("note_type"), note.get("note_type", "Note"))
+                    page_ref = f"Page {note.get('page_number', '?')}"
+                    author_info = note.get("author") or {}
+                    author_name = author_info.get("display_name") or author_info.get("full_name") or author_info.get("username") or "Unknown"
+                    resolved_marker = " [RESOLVED]" if note.get("resolved") else ""
+
+                    header_text = f"[{i}] {note_type} - {page_ref} - by {author_name}{resolved_marker}"
+                    c.drawString(1 * inch, y_position, header_text)
+                    y_position -= 0.15 * inch
+
+                    # Note text (wrap long text)
+                    c.setFont("Helvetica", 9)
+                    note_text = note.get("note_text", "")
+                    max_width = page_width - 2 * inch
+                    words = note_text.split()
+                    line = ""
+                    for word in words:
+                        test_line = f"{line} {word}".strip()
+                        if c.stringWidth(test_line, "Helvetica", 9) < max_width:
+                            line = test_line
+                        else:
+                            c.drawString(1.2 * inch, y_position, line)
+                            y_position -= 0.15 * inch
+                            line = word
+                            if y_position < 1.5 * inch:
+                                c.showPage()
+                                y_position = page_height - 1 * inch
+                                c.setFont("Helvetica", 9)
+                    if line:
+                        c.drawString(1.2 * inch, y_position, line)
+                        y_position -= 0.25 * inch
+
+            # Section: Breakdown Highlights with Notes
+            highlights_with_notes = [h for h in highlights if h.get("id") in highlight_notes_map]
+            if highlights_with_notes:
+                y_position -= 0.3 * inch
+                if y_position < 2 * inch:
+                    c.showPage()
+                    y_position = page_height - 1 * inch
+
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(1 * inch, y_position, "Breakdown Highlight Notes")
+                y_position -= 0.3 * inch
+
+                for highlight in highlights_with_notes:
+                    if y_position < 1.5 * inch:
+                        c.showPage()
+                        y_position = page_height - 1 * inch
+
+                    # Highlight info
+                    c.setFont("Helvetica-Bold", 9)
+                    label = highlight.get("suggested_label") or highlight.get("highlighted_text", "")
+                    category = highlight.get("category", "other").capitalize()
+                    page_ref = f"Page {highlight.get('page_number', '?')}"
+                    c.drawString(1 * inch, y_position, f"{category}: \"{label}\" - {page_ref}")
+                    y_position -= 0.15 * inch
+
+                    # Notes for this highlight
+                    c.setFont("Helvetica", 9)
+                    for hn in highlight_notes_map.get(highlight.get("id"), []):
+                        if y_position < 1.5 * inch:
+                            c.showPage()
+                            y_position = page_height - 1 * inch
+                            c.setFont("Helvetica", 9)
+
+                        hn_author = hn.get("author") or {}
+                        hn_author_name = hn_author.get("display_name") or hn_author.get("full_name") or hn_author.get("username") or "Unknown"
+                        content = hn.get("content", "")
+
+                        c.drawString(1.2 * inch, y_position, f"• {hn_author_name}: {content[:80]}{'...' if len(content) > 80 else ''}")
+                        y_position -= 0.15 * inch
+
+                    y_position -= 0.15 * inch
+
+            # Summary section
+            y_position -= 0.3 * inch
+            if y_position < 2 * inch:
+                c.showPage()
+                y_position = page_height - 1 * inch
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(1 * inch, y_position, "Summary")
+            y_position -= 0.25 * inch
+
+            c.setFont("Helvetica", 10)
+            c.drawString(1 * inch, y_position, f"Total Highlights: {len(highlights)}")
+            y_position -= 0.15 * inch
+            c.drawString(1 * inch, y_position, f"Total Script Notes: {len(notes)}")
+            y_position -= 0.15 * inch
+            c.drawString(1 * inch, y_position, f"Unresolved Notes: {len([n for n in notes if not n.get('resolved')])}")
+
+            c.save()
+            buffer.seek(0)
+            return buffer
+
+        # Add notes addendum if there are any notes or highlight notes
+        if notes or any(h.get("id") in highlight_notes_map for h in highlights):
+            addendum_buffer = create_notes_addendum()
+            addendum_pdf = PdfReader(addendum_buffer)
+            for page in addendum_pdf.pages:
+                output.add_page(page)
+
+        # Write final PDF to buffer
+        final_buffer = BytesIO()
+        output.write(final_buffer)
+        final_buffer.seek(0)
+
+        # Generate filename
+        script_title = script.get("title", "script").replace(" ", "_")[:30]
+        filename = f"{script_title}_with_highlights.pdf"
+
+        return Response(
+            content=final_buffer.getvalue(),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error exporting script with highlights: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -13075,6 +15089,116 @@ async def get_analytics_overview(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/dashboard")
+async def get_project_dashboard(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get optimized project dashboard data in a single request.
+    Aggregates task stats, production days, locations, team, and updates.
+    This endpoint replaces multiple separate API calls for better performance.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Look up profile ID from cognito user ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        # Verify access - check owner or member
+        project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_result.data[0]["owner_id"]) == str(profile_id)
+        if not is_owner:
+            member_result = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", profile_id).execute()
+            if not member_result.data:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # 1. Task Stats - aggregate counts by status
+        tasks_result = client.table("backlot_tasks").select("status").eq("project_id", project_id).execute()
+        tasks = tasks_result.data or []
+        task_stats = {
+            "total": len(tasks),
+            "todo": sum(1 for t in tasks if t.get("status") == "todo"),
+            "in_progress": sum(1 for t in tasks if t.get("status") == "in_progress"),
+            "review": sum(1 for t in tasks if t.get("status") == "review"),
+            "completed": sum(1 for t in tasks if t.get("status") == "done"),
+        }
+
+        # 2. Production Days - get all with basic info
+        days_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title, general_call_time, is_completed"
+        ).eq("project_id", project_id).order("date").execute()
+        days = days_result.data or []
+
+        # 3. Locations count
+        locations_result = client.table("backlot_project_locations").select("id").eq("project_id", project_id).execute()
+        locations_count = len(locations_result.data or [])
+
+        # 4. Team members count (including profiles for display)
+        members_result = client.table("backlot_project_members").select(
+            "id, user_id, role, production_role"
+        ).eq("project_id", project_id).execute()
+        members = members_result.data or []
+
+        # Batch fetch profiles for members
+        if members:
+            user_ids = list(set(m["user_id"] for m in members))
+            profiles_result = client.table("profiles").select(
+                "id, full_name, display_name, avatar_url"
+            ).in_("id", user_ids).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+            for member in members:
+                member["profile"] = profile_map.get(member["user_id"])
+
+        # 5. Recent updates (last 5)
+        updates_result = client.table("backlot_updates").select(
+            "id, title, content, created_at, author_id"
+        ).eq("project_id", project_id).order("created_at", desc=True).limit(5).execute()
+        updates = updates_result.data or []
+
+        # Batch fetch update authors
+        if updates:
+            author_ids = list(set(u["author_id"] for u in updates if u.get("author_id")))
+            if author_ids:
+                authors_result = client.table("profiles").select(
+                    "id, full_name, display_name, avatar_url"
+                ).in_("id", author_ids).execute()
+                author_map = {a["id"]: a for a in (authors_result.data or [])}
+
+                for update in updates:
+                    update["author"] = author_map.get(update.get("author_id"))
+
+        # 6. Gear count (optional, quick count)
+        gear_result = client.table("backlot_gear_items").select("id").eq("project_id", project_id).execute()
+        gear_count = len(gear_result.data or [])
+
+        return {
+            "success": True,
+            "task_stats": task_stats,
+            "days": days,
+            "days_count": len(days),
+            "locations_count": locations_count,
+            "members": members,
+            "members_count": len(members),
+            "updates": updates,
+            "gear_count": gear_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching project dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # SHOT LISTS API (Professional DP/Producer Shot Lists)
 # =====================================================
@@ -16064,7 +18188,12 @@ async def get_project_breakdown(
     - stripboard_day: Filter by stripboard day number
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+    # Convert Cognito ID to profile ID for ownership/membership checks
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found for user")
+    profile_id_str = str(profile_id)
     client = get_client()
 
     # Verify project access
@@ -16072,16 +18201,16 @@ async def get_project_breakdown(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == profile_id_str
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id_str).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get all scenes for project
         scenes_response = client.table("backlot_scenes").select(
-            "id, scene_number, slugline, page_length, int_ext, day_night, sequence"
+            "id, scene_number, slugline, page_length, int_ext, time_of_day, sequence"
         ).eq("project_id", project_id).order("sequence").execute()
 
         scenes = {s["id"]: s for s in (scenes_response.data or [])}
@@ -16120,14 +18249,14 @@ async def get_project_breakdown(
         item_ids = [item["id"] for item in breakdown_items]
         if item_ids:
             highlights_response = client.table("backlot_script_highlight_breakdowns").select(
-                "breakdown_item_id, highlight_id"
+                "id, breakdown_item_id"
             ).in_("breakdown_item_id", item_ids).execute()
 
             highlight_map = {}
             for h in (highlights_response.data or []):
                 if h["breakdown_item_id"] not in highlight_map:
                     highlight_map[h["breakdown_item_id"]] = []
-                highlight_map[h["breakdown_item_id"]].append(h["highlight_id"])
+                highlight_map[h["breakdown_item_id"]].append(h["id"])
 
             for item in breakdown_items:
                 item["highlight_ids"] = highlight_map.get(item["id"], [])
@@ -16183,7 +18312,12 @@ async def get_project_breakdown_summary(
 ):
     """Get breakdown summary stats for a project"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+    # Convert Cognito ID to profile ID for ownership/membership checks
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found for user")
+    profile_id_str = str(profile_id)
     client = get_client()
 
     # Verify project access
@@ -16191,9 +18325,9 @@ async def get_project_breakdown_summary(
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == profile_id_str
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id_str).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -16262,7 +18396,12 @@ async def export_project_breakdown_pdf(
     Otherwise, exports all scenes with breakdown items.
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+    # Convert Cognito ID to profile ID for ownership/membership checks
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found for user")
+    profile_id_str = str(profile_id)
     client = get_client()
 
     # Verify project access
@@ -16272,16 +18411,16 @@ async def export_project_breakdown_pdf(
 
     project_title = project_response.data[0]["title"]
 
-    is_owner = project_response.data[0]["owner_id"] == user_id
+    is_owner = str(project_response.data[0]["owner_id"]) == profile_id_str
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id_str).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
         # Get scenes
         scenes_response = client.table("backlot_scenes").select(
-            "id, scene_number, slugline, page_length, int_ext, day_night, description, sequence"
+            "id, scene_number, slugline, page_length, int_ext, time_of_day, description, sequence"
         ).eq("project_id", project_id).order("sequence").execute()
 
         scenes = {s["id"]: s for s in (scenes_response.data or [])}
@@ -16403,7 +18542,7 @@ async def export_scene_breakdown_pdf(
     try:
         # Get scene and verify access
         scene_response = client.table("backlot_scenes").select(
-            "id, scene_number, slugline, page_length, int_ext, day_night, description, project_id"
+            "id, scene_number, slugline, page_length, int_ext, time_of_day, description, project_id"
         ).eq("id", scene_id).single().execute()
 
         if not scene_response.data:
@@ -16800,6 +18939,1230 @@ async def export_project_notes_pdf(
 # Dailies System Models and Endpoints
 # =====================================================
 
+class DailiesDayInput(BaseModel):
+    """Input for creating/updating a dailies day"""
+    shoot_date: str  # YYYY-MM-DD format
+    label: str
+    unit: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DailiesCardInput(BaseModel):
+    """Input for creating/updating a dailies card"""
+    camera_label: str
+    roll_name: str
+    storage_mode: Optional[str] = "cloud"
+    media_root_path: Optional[str] = None
+    storage_location: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DailiesClipInput(BaseModel):
+    """Input for creating a dailies clip"""
+    file_name: str
+    relative_path: Optional[str] = None
+    storage_mode: Optional[str] = "cloud"
+    cloud_url: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    timecode_start: Optional[str] = None
+    frame_rate: Optional[float] = None
+    resolution: Optional[str] = None
+    codec: Optional[str] = None
+    camera_label: Optional[str] = None
+    scene_number: Optional[str] = None
+    take_number: Optional[int] = None
+    is_circle_take: Optional[bool] = False
+    rating: Optional[int] = None
+    script_scene_id: Optional[str] = None
+    shot_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DailiesClipUpdateInput(BaseModel):
+    """Input for updating a dailies clip"""
+    scene_number: Optional[str] = None
+    take_number: Optional[int] = None
+    is_circle_take: Optional[bool] = None
+    rating: Optional[int] = None
+    script_scene_id: Optional[str] = None
+    shot_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DailiesClipNoteInput(BaseModel):
+    """Input for creating/updating a clip note"""
+    time_seconds: Optional[float] = None
+    note_text: str
+    category: Optional[str] = None
+
+
+# =====================================================
+# Dailies Days CRUD Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/dailies/days")
+async def get_dailies_days(
+    project_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    authorization: str = Header(None)
+):
+    """Get all dailies days for a project with aggregate stats"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get days
+        days_result = client.table("backlot_dailies_days").select("*").eq(
+            "project_id", project_id
+        ).order("shoot_date", desc=True).limit(limit).execute()
+
+        days = days_result.data or []
+        if not days:
+            return {"days": []}
+
+        day_ids = [d["id"] for d in days]
+
+        # Get cards for all days
+        cards_result = client.table("backlot_dailies_cards").select(
+            "id, dailies_day_id"
+        ).in_("dailies_day_id", day_ids).execute()
+
+        cards = cards_result.data or []
+        card_count_map = {}
+        card_to_day_map = {}
+        for card in cards:
+            day_id = card["dailies_day_id"]
+            card_count_map[day_id] = card_count_map.get(day_id, 0) + 1
+            card_to_day_map[card["id"]] = day_id
+
+        # Get clips for aggregate stats
+        card_ids = [c["id"] for c in cards]
+        clip_stats = {}  # day_id -> {count, circles, duration}
+
+        if card_ids:
+            clips_result = client.table("backlot_dailies_clips").select(
+                "dailies_card_id, is_circle_take, duration_seconds"
+            ).in_("dailies_card_id", card_ids).execute()
+
+            for clip in (clips_result.data or []):
+                day_id = card_to_day_map.get(clip["dailies_card_id"])
+                if day_id:
+                    if day_id not in clip_stats:
+                        clip_stats[day_id] = {"count": 0, "circles": 0, "duration": 0}
+                    clip_stats[day_id]["count"] += 1
+                    if clip.get("is_circle_take"):
+                        clip_stats[day_id]["circles"] += 1
+                    if clip.get("duration_seconds"):
+                        clip_stats[day_id]["duration"] += clip["duration_seconds"]
+
+        # Build response
+        result = []
+        for day in days:
+            day_data = dict(day)
+            day_id = day["id"]
+            day_data["card_count"] = card_count_map.get(day_id, 0)
+            day_data["clip_count"] = clip_stats.get(day_id, {}).get("count", 0)
+            day_data["circle_take_count"] = clip_stats.get(day_id, {}).get("circles", 0)
+            day_data["total_duration_seconds"] = clip_stats.get(day_id, {}).get("duration", 0)
+            result.append(day_data)
+
+        return {"days": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies days: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/days/{day_id}")
+async def get_dailies_day(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single dailies day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        day_result = client.table("backlot_dailies_days").select("*").eq(
+            "id", day_id
+        ).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        # Verify project access
+        await verify_project_access(client, day_result.data["project_id"], user["id"])
+
+        return {"day": day_result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/dailies/days")
+async def create_dailies_day(
+    project_id: str,
+    input: DailiesDayInput,
+    authorization: str = Header(None)
+):
+    """Create a new dailies day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        day_result = client.table("backlot_dailies_days").insert({
+            "project_id": project_id,
+            "shoot_date": input.shoot_date,
+            "label": input.label,
+            "unit": input.unit,
+            "notes": input.notes,
+            "created_by_user_id": user["id"]
+        }).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create day")
+
+        return {"day": day_result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating dailies day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/days/{day_id}")
+async def update_dailies_day(
+    day_id: str,
+    input: DailiesDayInput,
+    authorization: str = Header(None)
+):
+    """Update a dailies day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get day to check project access
+        day_result = client.table("backlot_dailies_days").select("project_id").eq(
+            "id", day_id
+        ).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        await verify_project_access(client, day_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {}
+        if input.shoot_date is not None:
+            update_data["shoot_date"] = input.shoot_date
+        if input.label is not None:
+            update_data["label"] = input.label
+        if input.unit is not None:
+            update_data["unit"] = input.unit
+        if input.notes is not None:
+            update_data["notes"] = input.notes
+
+        result = client.table("backlot_dailies_days").update(update_data).eq(
+            "id", day_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update day")
+
+        return {"day": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating dailies day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dailies/days/{day_id}")
+async def delete_dailies_day(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a dailies day and all associated cards/clips"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get day to check project access
+        day_result = client.table("backlot_dailies_days").select("project_id").eq(
+            "id", day_id
+        ).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        await verify_project_access(client, day_result.data["project_id"], user["id"], require_edit=True)
+
+        # Delete cascades via database constraints
+        client.table("backlot_dailies_days").delete().eq("id", day_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting dailies day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Dailies Cards CRUD Endpoints
+# =====================================================
+
+@router.get("/dailies/days/{day_id}/cards")
+async def get_dailies_cards_by_day(
+    day_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    authorization: str = Header(None)
+):
+    """Get all cards for a dailies day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get day to verify access
+        day_result = client.table("backlot_dailies_days").select("project_id").eq(
+            "id", day_id
+        ).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        await verify_project_access(client, day_result.data["project_id"], user["id"])
+
+        cards_result = client.table("backlot_dailies_cards").select("*").eq(
+            "dailies_day_id", day_id
+        ).order("created_at").limit(limit).execute()
+
+        cards = cards_result.data or []
+
+        # Get clip counts
+        if cards:
+            card_ids = [c["id"] for c in cards]
+            clips_result = client.table("backlot_dailies_clips").select(
+                "dailies_card_id"
+            ).in_("dailies_card_id", card_ids).execute()
+
+            clip_count_map = {}
+            for clip in (clips_result.data or []):
+                card_id = clip["dailies_card_id"]
+                clip_count_map[card_id] = clip_count_map.get(card_id, 0) + 1
+
+            for card in cards:
+                card["clip_count"] = clip_count_map.get(card["id"], 0)
+
+        return {"cards": cards}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies cards: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/cards")
+async def get_dailies_cards_by_project(
+    project_id: str,
+    limit: int = Query(50, ge=1, le=500),
+    authorization: str = Header(None)
+):
+    """Get all cards for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        cards_result = client.table("backlot_dailies_cards").select("*").eq(
+            "project_id", project_id
+        ).order("created_at").limit(limit).execute()
+
+        cards = cards_result.data or []
+
+        # Get clip counts
+        if cards:
+            card_ids = [c["id"] for c in cards]
+            clips_result = client.table("backlot_dailies_clips").select(
+                "dailies_card_id"
+            ).in_("dailies_card_id", card_ids).execute()
+
+            clip_count_map = {}
+            for clip in (clips_result.data or []):
+                card_id = clip["dailies_card_id"]
+                clip_count_map[card_id] = clip_count_map.get(card_id, 0) + 1
+
+            for card in cards:
+                card["clip_count"] = clip_count_map.get(card["id"], 0)
+
+        return {"cards": cards}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies cards: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/days/{day_id}/cards")
+async def create_dailies_card(
+    day_id: str,
+    input: DailiesCardInput,
+    authorization: str = Header(None)
+):
+    """Create a new dailies card"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get day to verify access and get project_id
+        day_result = client.table("backlot_dailies_days").select("project_id").eq(
+            "id", day_id
+        ).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        project_id = day_result.data["project_id"]
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        card_result = client.table("backlot_dailies_cards").insert({
+            "dailies_day_id": day_id,
+            "project_id": project_id,
+            "camera_label": input.camera_label,
+            "roll_name": input.roll_name,
+            "storage_mode": input.storage_mode or "cloud",
+            "media_root_path": input.media_root_path,
+            "storage_location": input.storage_location,
+            "notes": input.notes,
+            "created_by_user_id": user["id"]
+        }).execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create card")
+
+        return {"card": card_result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating dailies card: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/cards/{card_id}")
+async def update_dailies_card(
+    card_id: str,
+    input: DailiesCardInput,
+    authorization: str = Header(None)
+):
+    """Update a dailies card"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get card to check project access
+        card_result = client.table("backlot_dailies_cards").select("project_id").eq(
+            "id", card_id
+        ).single().execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        await verify_project_access(client, card_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {}
+        if input.camera_label is not None:
+            update_data["camera_label"] = input.camera_label
+        if input.roll_name is not None:
+            update_data["roll_name"] = input.roll_name
+        if input.storage_mode is not None:
+            update_data["storage_mode"] = input.storage_mode
+        if input.media_root_path is not None:
+            update_data["media_root_path"] = input.media_root_path
+        if input.storage_location is not None:
+            update_data["storage_location"] = input.storage_location
+        if input.notes is not None:
+            update_data["notes"] = input.notes
+
+        result = client.table("backlot_dailies_cards").update(update_data).eq(
+            "id", card_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update card")
+
+        return {"card": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating dailies card: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/cards/{card_id}/checksum")
+async def verify_card_checksum(
+    card_id: str,
+    verified: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Mark card checksum as verified/unverified"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get card to check project access
+        card_result = client.table("backlot_dailies_cards").select("project_id").eq(
+            "id", card_id
+        ).single().execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        await verify_project_access(client, card_result.data["project_id"], user["id"], require_edit=True)
+
+        result = client.table("backlot_dailies_cards").update({
+            "checksum_verified": verified
+        }).eq("id", card_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update card")
+
+        return {"card": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error verifying card checksum: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dailies/cards/{card_id}")
+async def delete_dailies_card(
+    card_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a dailies card and all associated clips"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get card to check project access
+        card_result = client.table("backlot_dailies_cards").select("project_id").eq(
+            "id", card_id
+        ).single().execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        await verify_project_access(client, card_result.data["project_id"], user["id"], require_edit=True)
+
+        # Delete cascades via database constraints
+        client.table("backlot_dailies_cards").delete().eq("id", card_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting dailies card: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Dailies Clips CRUD Endpoints
+# =====================================================
+
+@router.get("/dailies/cards/{card_id}/clips")
+async def get_dailies_clips_by_card(
+    card_id: str,
+    limit: int = Query(200, ge=1, le=1000),
+    authorization: str = Header(None)
+):
+    """Get all clips for a dailies card"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get card to verify access
+        card_result = client.table("backlot_dailies_cards").select("project_id").eq(
+            "id", card_id
+        ).single().execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        await verify_project_access(client, card_result.data["project_id"], user["id"])
+
+        clips_result = client.table("backlot_dailies_clips").select("*").eq(
+            "dailies_card_id", card_id
+        ).order("created_at").limit(limit).execute()
+
+        clips = clips_result.data or []
+
+        # Get note counts
+        if clips:
+            clip_ids = [c["id"] for c in clips]
+            notes_result = client.table("backlot_dailies_clip_notes").select(
+                "dailies_clip_id"
+            ).in_("dailies_clip_id", clip_ids).execute()
+
+            note_count_map = {}
+            for note in (notes_result.data or []):
+                clip_id = note["dailies_clip_id"]
+                note_count_map[clip_id] = note_count_map.get(clip_id, 0) + 1
+
+            for clip in clips:
+                clip["note_count"] = note_count_map.get(clip["id"], 0)
+
+        return {"clips": clips}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/clips")
+async def get_dailies_clips_by_project(
+    project_id: str,
+    scene_number: Optional[str] = None,
+    take_number: Optional[int] = None,
+    is_circle_take: Optional[bool] = None,
+    rating_min: Optional[int] = None,
+    storage_mode: Optional[str] = None,
+    text_search: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=1000),
+    authorization: str = Header(None)
+):
+    """Get clips for a project with optional filters"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_dailies_clips").select("*").eq(
+            "project_id", project_id
+        )
+
+        # Apply filters
+        if scene_number:
+            query = query.eq("scene_number", scene_number)
+        if take_number is not None:
+            query = query.eq("take_number", take_number)
+        if is_circle_take is not None:
+            query = query.eq("is_circle_take", is_circle_take)
+        if rating_min is not None:
+            query = query.gte("rating", rating_min)
+        if storage_mode:
+            query = query.eq("storage_mode", storage_mode)
+        if text_search:
+            query = query.or_(f"file_name.ilike.%{text_search}%,notes.ilike.%{text_search}%")
+
+        clips_result = query.order("created_at").limit(limit).execute()
+        clips = clips_result.data or []
+
+        # Get card info for clips
+        if clips:
+            card_ids = list(set(c["dailies_card_id"] for c in clips if c.get("dailies_card_id")))
+            if card_ids:
+                cards_result = client.table("backlot_dailies_cards").select("*").in_(
+                    "id", card_ids
+                ).execute()
+                card_map = {c["id"]: c for c in (cards_result.data or [])}
+
+                for clip in clips:
+                    clip["card"] = card_map.get(clip.get("dailies_card_id"))
+
+            # Get note counts
+            clip_ids = [c["id"] for c in clips]
+            notes_result = client.table("backlot_dailies_clip_notes").select(
+                "dailies_clip_id"
+            ).in_("dailies_clip_id", clip_ids).execute()
+
+            note_count_map = {}
+            for note in (notes_result.data or []):
+                clip_id = note["dailies_clip_id"]
+                note_count_map[clip_id] = note_count_map.get(clip_id, 0) + 1
+
+            for clip in clips:
+                clip["note_count"] = note_count_map.get(clip["id"], 0)
+
+        return {"clips": clips}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/clips/{clip_id}")
+async def get_dailies_clip(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single dailies clip with full details"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select("*").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"])
+
+        # Fetch card
+        if clip.get("dailies_card_id"):
+            card_result = client.table("backlot_dailies_cards").select("*").eq(
+                "id", clip["dailies_card_id"]
+            ).single().execute()
+            clip["card"] = card_result.data
+
+        # Fetch scene
+        if clip.get("script_scene_id"):
+            scene_result = client.table("backlot_scenes").select(
+                "id, scene_number, scene_heading, int_ext, time_of_day"
+            ).eq("id", clip["script_scene_id"]).single().execute()
+            clip["scene"] = scene_result.data
+
+        # Get note count
+        notes_result = client.table("backlot_dailies_clip_notes").select(
+            "id", count="exact"
+        ).eq("dailies_clip_id", clip_id).execute()
+        clip["note_count"] = notes_result.count or 0
+
+        return {"clip": clip}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies clip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/cards/{card_id}/clips")
+async def create_dailies_clip(
+    card_id: str,
+    input: DailiesClipInput,
+    authorization: str = Header(None)
+):
+    """Create a new dailies clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get card to verify access and get project_id
+        card_result = client.table("backlot_dailies_cards").select("project_id").eq(
+            "id", card_id
+        ).single().execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        project_id = card_result.data["project_id"]
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        clip_result = client.table("backlot_dailies_clips").insert({
+            "dailies_card_id": card_id,
+            "project_id": project_id,
+            "file_name": input.file_name,
+            "relative_path": input.relative_path,
+            "storage_mode": input.storage_mode or "cloud",
+            "cloud_url": input.cloud_url,
+            "duration_seconds": input.duration_seconds,
+            "timecode_start": input.timecode_start,
+            "frame_rate": input.frame_rate,
+            "resolution": input.resolution,
+            "codec": input.codec,
+            "camera_label": input.camera_label,
+            "scene_number": input.scene_number,
+            "take_number": input.take_number,
+            "is_circle_take": input.is_circle_take or False,
+            "rating": input.rating,
+            "script_scene_id": input.script_scene_id,
+            "shot_id": input.shot_id,
+            "notes": input.notes,
+            "created_by_user_id": user["id"]
+        }).execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create clip")
+
+        return {"clip": clip_result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating dailies clip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/clips/{clip_id}")
+async def update_dailies_clip(
+    clip_id: str,
+    input: DailiesClipUpdateInput,
+    authorization: str = Header(None)
+):
+    """Update a dailies clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get clip to check project access
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {}
+        if input.scene_number is not None:
+            update_data["scene_number"] = input.scene_number
+        if input.take_number is not None:
+            update_data["take_number"] = input.take_number
+        if input.is_circle_take is not None:
+            update_data["is_circle_take"] = input.is_circle_take
+        if input.rating is not None:
+            update_data["rating"] = input.rating
+        if input.script_scene_id is not None:
+            update_data["script_scene_id"] = input.script_scene_id
+        if input.shot_id is not None:
+            update_data["shot_id"] = input.shot_id
+        if input.notes is not None:
+            update_data["notes"] = input.notes
+
+        result = client.table("backlot_dailies_clips").update(update_data).eq(
+            "id", clip_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update clip")
+
+        return {"clip": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating dailies clip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/clips/{clip_id}/circle")
+async def toggle_clip_circle_take(
+    clip_id: str,
+    is_circle: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Toggle clip circle take status"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        result = client.table("backlot_dailies_clips").update({
+            "is_circle_take": is_circle
+        }).eq("id", clip_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update clip")
+
+        return {"clip": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling circle take: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/clips/{clip_id}/rating")
+async def set_clip_rating(
+    clip_id: str,
+    rating: Optional[int] = Query(None),
+    authorization: str = Header(None)
+):
+    """Set clip rating (1-5 or null)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        result = client.table("backlot_dailies_clips").update({
+            "rating": rating
+        }).eq("id", clip_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update clip")
+
+        return {"clip": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting clip rating: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dailies/clips/{clip_id}")
+async def delete_dailies_clip(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a dailies clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        client.table("backlot_dailies_clips").delete().eq("id", clip_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting dailies clip: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/clips/by-scene/{scene_id}")
+async def get_clips_by_scene(
+    project_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Get clips linked to a specific scene"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        clips_result = client.table("backlot_dailies_clips").select("*").eq(
+            "project_id", project_id
+        ).eq("script_scene_id", scene_id).order("take_number").execute()
+
+        return {"clips": clips_result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clips by scene: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/clips/circle-takes")
+async def get_circle_takes(
+    project_id: str,
+    day_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all circle takes for a project, optionally filtered by day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_dailies_clips").select("*").eq(
+            "project_id", project_id
+        ).eq("is_circle_take", True)
+
+        clips_result = query.order("scene_number").order("take_number").execute()
+        clips = clips_result.data or []
+
+        # Filter by day if specified
+        if day_id and clips:
+            cards_result = client.table("backlot_dailies_cards").select("id").eq(
+                "dailies_day_id", day_id
+            ).execute()
+            day_card_ids = set(c["id"] for c in (cards_result.data or []))
+            clips = [c for c in clips if c.get("dailies_card_id") in day_card_ids]
+
+        return {"clips": clips}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting circle takes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Dailies Clip Notes CRUD Endpoints
+# =====================================================
+
+@router.get("/dailies/clips/{clip_id}/notes")
+async def get_clip_notes(
+    clip_id: str,
+    include_resolved: bool = Query(True),
+    authorization: str = Header(None)
+):
+    """Get notes for a clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get clip to verify access
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"])
+
+        query = client.table("backlot_dailies_clip_notes").select("*").eq(
+            "dailies_clip_id", clip_id
+        )
+
+        if not include_resolved:
+            query = query.eq("is_resolved", False)
+
+        notes_result = query.order("time_seconds", nullsfirst=False).order("created_at").execute()
+        notes = notes_result.data or []
+
+        # Fetch author profiles
+        if notes:
+            author_ids = list(set(n["author_user_id"] for n in notes if n.get("author_user_id")))
+            if author_ids:
+                profiles_result = client.table("profiles").select(
+                    "id, username, full_name, display_name, avatar_url"
+                ).in_("id", author_ids).execute()
+                author_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+                for note in notes:
+                    note["author"] = author_map.get(note.get("author_user_id"))
+
+        return {"notes": notes}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clip notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/clips/{clip_id}/notes")
+async def add_clip_note(
+    clip_id: str,
+    input: DailiesClipNoteInput,
+    authorization: str = Header(None)
+):
+    """Add a note to a clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get clip to verify access
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        note_result = client.table("backlot_dailies_clip_notes").insert({
+            "dailies_clip_id": clip_id,
+            "author_user_id": user["id"],
+            "time_seconds": input.time_seconds,
+            "note_text": input.note_text,
+            "category": input.category
+        }).execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=500, detail="Failed to add note")
+
+        return {"note": note_result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding clip note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/notes/{note_id}")
+async def update_clip_note(
+    note_id: str,
+    input: DailiesClipNoteInput,
+    authorization: str = Header(None)
+):
+    """Update a clip note"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get note to verify access
+        note_result = client.table("backlot_dailies_clip_notes").select(
+            "dailies_clip_id"
+        ).eq("id", note_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", note_result.data["dailies_clip_id"]
+        ).single().execute()
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        update_data = {}
+        if input.time_seconds is not None:
+            update_data["time_seconds"] = input.time_seconds
+        if input.note_text is not None:
+            update_data["note_text"] = input.note_text
+        if input.category is not None:
+            update_data["category"] = input.category
+
+        result = client.table("backlot_dailies_clip_notes").update(update_data).eq(
+            "id", note_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update note")
+
+        return {"note": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clip note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/dailies/notes/{note_id}/resolve")
+async def resolve_clip_note(
+    note_id: str,
+    resolved: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Mark a note as resolved/unresolved"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get note to verify access
+        note_result = client.table("backlot_dailies_clip_notes").select(
+            "dailies_clip_id"
+        ).eq("id", note_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", note_result.data["dailies_clip_id"]
+        ).single().execute()
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        result = client.table("backlot_dailies_clip_notes").update({
+            "is_resolved": resolved
+        }).eq("id", note_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update note")
+
+        return {"note": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resolving clip note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dailies/notes/{note_id}")
+async def delete_clip_note(
+    note_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a clip note"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get note to verify access
+        note_result = client.table("backlot_dailies_clip_notes").select(
+            "dailies_clip_id"
+        ).eq("id", note_id).single().execute()
+
+        if not note_result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
+            "id", note_result.data["dailies_clip_id"]
+        ).single().execute()
+
+        await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
+
+        client.table("backlot_dailies_clip_notes").delete().eq("id", note_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting clip note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Local Ingest and Summary (existing endpoints)
+# =====================================================
+
 class DailiesLocalIngestClip(BaseModel):
     """Single clip from local ingest"""
     file_name: str
@@ -17030,4 +20393,2240 @@ async def get_dailies_summary(
         raise
     except Exception as e:
         print(f"Error getting dailies summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Project Credits API Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/credits")
+async def get_project_credits(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all credits for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get credits ordered by department and order_index
+        credits_result = client.table("backlot_project_credits").select("*").eq(
+            "project_id", project_id
+        ).order("department").order("order_index").execute()
+
+        credits = credits_result.data or []
+
+        # Get linked user profiles
+        user_ids = [c["user_id"] for c in credits if c.get("user_id")]
+        profiles_map = {}
+
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role"
+            ).in_("id", user_ids).execute()
+
+            for p in (profiles_result.data or []):
+                profiles_map[p["id"]] = {
+                    "id": str(p["id"]),
+                    "username": p.get("username"),
+                    "full_name": p.get("full_name"),
+                    "display_name": p.get("display_name"),
+                    "avatar_url": p.get("avatar_url"),
+                    "role": p.get("role")
+                }
+
+        # Add linked_user to each credit
+        result = []
+        for credit in credits:
+            credit_data = dict(credit)
+            credit_data["id"] = str(credit_data["id"])
+            credit_data["project_id"] = str(credit_data["project_id"])
+            if credit_data.get("user_id"):
+                credit_data["user_id"] = str(credit_data["user_id"])
+                credit_data["linked_user"] = profiles_map.get(credit_data["user_id"])
+            if credit_data.get("created_by"):
+                credit_data["created_by"] = str(credit_data["created_by"])
+            if credit_data.get("created_at"):
+                credit_data["created_at"] = credit_data["created_at"].isoformat() if hasattr(credit_data["created_at"], 'isoformat') else str(credit_data["created_at"])
+            result.append(credit_data)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting project credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/credits")
+async def create_project_credit(
+    project_id: str,
+    input: ProjectCreditInput,
+    authorization: str = Header(None)
+):
+    """Create a new project credit"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(client, project_id, user["id"])
+
+        credit_data = {
+            "project_id": project_id,
+            "department": input.department,
+            "role": input.role,
+            "name": input.name,
+            "user_id": input.user_id,
+            "is_primary": input.is_primary,
+            "is_public": input.is_public,
+            "order_index": input.order_index,
+            "created_by": user["id"]
+        }
+
+        result = client.table("backlot_project_credits").insert(credit_data).execute()
+
+        if result.data:
+            credit = result.data[0]
+            credit["id"] = str(credit["id"])
+            credit["project_id"] = str(credit["project_id"])
+            if credit.get("user_id"):
+                credit["user_id"] = str(credit["user_id"])
+            if credit.get("created_by"):
+                credit["created_by"] = str(credit["created_by"])
+            return credit
+
+        raise HTTPException(status_code=500, detail="Failed to create credit")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating project credit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/credits/{credit_id}")
+async def update_project_credit(
+    credit_id: str,
+    input: ProjectCreditInput,
+    authorization: str = Header(None)
+):
+    """Update a project credit"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get credit to verify access
+        credit_result = client.table("backlot_project_credits").select("project_id").eq("id", credit_id).execute()
+        if not credit_result.data:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        project_id = credit_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        update_data = {
+            "department": input.department,
+            "role": input.role,
+            "name": input.name,
+            "user_id": input.user_id,
+            "is_primary": input.is_primary,
+            "is_public": input.is_public,
+            "order_index": input.order_index
+        }
+
+        result = client.table("backlot_project_credits").update(update_data).eq("id", credit_id).execute()
+
+        if result.data:
+            credit = result.data[0]
+            credit["id"] = str(credit["id"])
+            credit["project_id"] = str(credit["project_id"])
+            if credit.get("user_id"):
+                credit["user_id"] = str(credit["user_id"])
+            if credit.get("created_by"):
+                credit["created_by"] = str(credit["created_by"])
+            return credit
+
+        raise HTTPException(status_code=500, detail="Failed to update credit")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating project credit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/credits/{credit_id}")
+async def delete_project_credit(
+    credit_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a project credit"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get credit to verify access
+        credit_result = client.table("backlot_project_credits").select("project_id").eq("id", credit_id).execute()
+        if not credit_result.data:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        project_id = credit_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        client.table("backlot_project_credits").delete().eq("id", credit_id).execute()
+
+        return {"success": True, "message": "Credit deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting project credit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/credits/{credit_id}/primary")
+async def toggle_credit_primary(
+    credit_id: str,
+    is_primary: bool = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Toggle primary status of a credit"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get credit to verify access
+        credit_result = client.table("backlot_project_credits").select("project_id").eq("id", credit_id).execute()
+        if not credit_result.data:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        project_id = credit_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        result = client.table("backlot_project_credits").update(
+            {"is_primary": is_primary}
+        ).eq("id", credit_id).execute()
+
+        if result.data:
+            return result.data[0]
+
+        raise HTTPException(status_code=500, detail="Failed to update credit")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling credit primary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/credits/{credit_id}/public")
+async def toggle_credit_public(
+    credit_id: str,
+    is_public: bool = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Toggle public visibility of a credit"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get credit to verify access
+        credit_result = client.table("backlot_project_credits").select("project_id").eq("id", credit_id).execute()
+        if not credit_result.data:
+            raise HTTPException(status_code=404, detail="Credit not found")
+
+        project_id = credit_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        result = client.table("backlot_project_credits").update(
+            {"is_public": is_public}
+        ).eq("id", credit_id).execute()
+
+        if result.data:
+            return result.data[0]
+
+        raise HTTPException(status_code=500, detail="Failed to update credit")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling credit public: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/projects/{project_id}/credits/reorder")
+async def reorder_project_credits(
+    project_id: str,
+    credits: List[Dict[str, Any]] = Body(...),
+    authorization: str = Header(None)
+):
+    """Reorder credits within a department"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Update each credit's order_index
+        for credit in credits:
+            client.table("backlot_project_credits").update(
+                {"order_index": credit["order_index"]}
+            ).eq("id", credit["id"]).execute()
+
+        return {"success": True, "message": "Credits reordered"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/credits/public")
+async def get_public_project_credits(project_id: str):
+    """Get public credits for a project (no auth required)"""
+    client = get_client()
+
+    try:
+        # Get public credits
+        credits_result = client.table("backlot_project_credits").select("*").eq(
+            "project_id", project_id
+        ).eq("is_public", True).order(
+            "is_primary", desc=True
+        ).order("department").order("order_index").execute()
+
+        credits = credits_result.data or []
+
+        # Get linked user profiles
+        user_ids = [c["user_id"] for c in credits if c.get("user_id")]
+        profiles_map = {}
+
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role"
+            ).in_("id", user_ids).execute()
+
+            for p in (profiles_result.data or []):
+                profiles_map[p["id"]] = {
+                    "id": str(p["id"]),
+                    "username": p.get("username"),
+                    "full_name": p.get("full_name"),
+                    "display_name": p.get("display_name"),
+                    "avatar_url": p.get("avatar_url"),
+                    "role": p.get("role")
+                }
+
+        # Add linked_user to each credit
+        result = []
+        for credit in credits:
+            credit_data = dict(credit)
+            credit_data["id"] = str(credit_data["id"])
+            credit_data["project_id"] = str(credit_data["project_id"])
+            if credit_data.get("user_id"):
+                credit_data["user_id"] = str(credit_data["user_id"])
+                credit_data["linked_user"] = profiles_map.get(credit_data["user_id"])
+            if credit_data.get("created_by"):
+                credit_data["created_by"] = str(credit_data["created_by"])
+            result.append(credit_data)
+
+        return result
+
+    except Exception as e:
+        print(f"Error getting public project credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Project Updates (Announcements) API Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/updates")
+async def get_project_updates(
+    project_id: str,
+    type: Optional[str] = None,
+    public_only: bool = False,
+    limit: int = 50,
+    authorization: str = Header(None)
+):
+    """Get updates/announcements for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Build query
+        query = client.table("backlot_project_updates").select("*").eq(
+            "project_id", project_id
+        ).order("created_at", desc=True).limit(limit)
+
+        if type and type != "all":
+            query = query.eq("type", type)
+
+        if public_only:
+            query = query.eq("is_public", True)
+
+        updates_result = query.execute()
+        updates = updates_result.data or []
+
+        if not updates:
+            return []
+
+        # Get author profiles
+        author_ids = list(set([u["created_by"] for u in updates if u.get("created_by")]))
+        profiles_map = {}
+
+        if author_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", author_ids).execute()
+
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = {
+                    "id": str(p["id"]),
+                    "username": p.get("username"),
+                    "full_name": p.get("full_name"),
+                    "display_name": p.get("display_name"),
+                    "avatar_url": p.get("avatar_url"),
+                    "role": p.get("role"),
+                    "is_order_member": p.get("is_order_member")
+                }
+
+        # Get read status for current user
+        update_ids = [u["id"] for u in updates]
+        read_map = {}
+
+        if update_ids:
+            reads_result = client.table("backlot_project_update_reads").select(
+                "update_id"
+            ).eq("user_id", user["id"]).in_("update_id", update_ids).execute()
+
+            for r in (reads_result.data or []):
+                read_map[str(r["update_id"])] = True
+
+        # Build response
+        result = []
+        for update in updates:
+            update_data = dict(update)
+            update_data["id"] = str(update_data["id"])
+            update_data["project_id"] = str(update_data["project_id"])
+            update_data["created_by"] = str(update_data["created_by"]) if update_data.get("created_by") else None
+            update_data["author"] = profiles_map.get(update_data["created_by"]) if update_data.get("created_by") else None
+            update_data["has_read"] = read_map.get(update_data["id"], False)
+            if update_data.get("created_at"):
+                update_data["created_at"] = update_data["created_at"].isoformat() if hasattr(update_data["created_at"], 'isoformat') else str(update_data["created_at"])
+            if update_data.get("updated_at"):
+                update_data["updated_at"] = update_data["updated_at"].isoformat() if hasattr(update_data["updated_at"], 'isoformat') else str(update_data["updated_at"])
+            result.append(update_data)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting project updates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/updates")
+async def create_project_update(
+    project_id: str,
+    input: ProjectAnnouncementInput,
+    authorization: str = Header(None)
+):
+    """Create a new project update/announcement"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        update_data = {
+            "project_id": project_id,
+            "title": input.title,
+            "content": input.content,
+            "type": input.type,
+            "is_public": input.is_public,
+            "attachments": input.attachments or [],
+            "visible_to_roles": input.visible_to_roles or [],
+            "created_by": user["id"]
+        }
+
+        result = client.table("backlot_project_updates").insert(update_data).execute()
+
+        if result.data:
+            update = result.data[0]
+            update["id"] = str(update["id"])
+            update["project_id"] = str(update["project_id"])
+            update["created_by"] = str(update["created_by"]) if update.get("created_by") else None
+            return update
+
+        raise HTTPException(status_code=500, detail="Failed to create update")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating project update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/updates/{update_id}")
+async def get_project_update(
+    update_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single project update"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        update_result = client.table("backlot_project_updates").select("*").eq("id", update_id).execute()
+        if not update_result.data:
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        update = update_result.data[0]
+        await verify_project_access(client, str(update["project_id"]), user["id"])
+
+        # Get author profile
+        if update.get("created_by"):
+            author_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).eq("id", update["created_by"]).execute()
+
+            if author_result.data:
+                author = author_result.data[0]
+                update["author"] = {
+                    "id": str(author["id"]),
+                    "username": author.get("username"),
+                    "full_name": author.get("full_name"),
+                    "display_name": author.get("display_name"),
+                    "avatar_url": author.get("avatar_url"),
+                    "role": author.get("role"),
+                    "is_order_member": author.get("is_order_member")
+                }
+
+        update["id"] = str(update["id"])
+        update["project_id"] = str(update["project_id"])
+        update["created_by"] = str(update["created_by"]) if update.get("created_by") else None
+
+        return update
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting project update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/updates/{update_id}")
+async def update_project_update(
+    update_id: str,
+    input: ProjectAnnouncementInput,
+    authorization: str = Header(None)
+):
+    """Update a project update/announcement"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get update to verify access
+        update_result = client.table("backlot_project_updates").select("project_id").eq("id", update_id).execute()
+        if not update_result.data:
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        project_id = update_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        update_data = {
+            "title": input.title,
+            "content": input.content,
+            "type": input.type,
+            "is_public": input.is_public,
+            "attachments": input.attachments or []
+        }
+
+        result = client.table("backlot_project_updates").update(update_data).eq("id", update_id).execute()
+
+        if result.data:
+            update = result.data[0]
+            update["id"] = str(update["id"])
+            update["project_id"] = str(update["project_id"])
+            update["created_by"] = str(update["created_by"]) if update.get("created_by") else None
+            return update
+
+        raise HTTPException(status_code=500, detail="Failed to update")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating project update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/updates/{update_id}")
+async def delete_project_update(
+    update_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a project update/announcement"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get update to verify access
+        update_result = client.table("backlot_project_updates").select("project_id").eq("id", update_id).execute()
+        if not update_result.data:
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        project_id = update_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        client.table("backlot_project_updates").delete().eq("id", update_id).execute()
+
+        return {"success": True, "message": "Update deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting project update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/updates/{update_id}/public")
+async def toggle_update_public(
+    update_id: str,
+    is_public: bool = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Toggle public visibility of an update"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get update to verify access
+        update_result = client.table("backlot_project_updates").select("project_id").eq("id", update_id).execute()
+        if not update_result.data:
+            raise HTTPException(status_code=404, detail="Update not found")
+
+        project_id = update_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        result = client.table("backlot_project_updates").update(
+            {"is_public": is_public}
+        ).eq("id", update_id).execute()
+
+        if result.data:
+            return result.data[0]
+
+        raise HTTPException(status_code=500, detail="Failed to update")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling update public: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/updates/{update_id}/read")
+async def mark_update_as_read(
+    update_id: str,
+    authorization: str = Header(None)
+):
+    """Mark an update as read for the current user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Upsert read record
+        client.table("backlot_project_update_reads").upsert({
+            "update_id": update_id,
+            "user_id": user["id"]
+        }, on_conflict="update_id,user_id").execute()
+
+        return {"success": True, "message": "Marked as read"}
+
+    except Exception as e:
+        print(f"Error marking update as read: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/updates/public")
+async def get_public_project_updates(
+    project_id: str,
+    limit: int = 10
+):
+    """Get public updates for a project (no auth required)"""
+    client = get_client()
+
+    try:
+        updates_result = client.table("backlot_project_updates").select("*").eq(
+            "project_id", project_id
+        ).eq("is_public", True).order("created_at", desc=True).limit(limit).execute()
+
+        updates = updates_result.data or []
+
+        if not updates:
+            return []
+
+        # Get author profiles
+        author_ids = list(set([u["created_by"] for u in updates if u.get("created_by")]))
+        profiles_map = {}
+
+        if author_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", author_ids).execute()
+
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = {
+                    "id": str(p["id"]),
+                    "username": p.get("username"),
+                    "full_name": p.get("full_name"),
+                    "display_name": p.get("display_name"),
+                    "avatar_url": p.get("avatar_url"),
+                    "role": p.get("role"),
+                    "is_order_member": p.get("is_order_member")
+                }
+
+        # Build response
+        result = []
+        for update in updates:
+            update_data = dict(update)
+            update_data["id"] = str(update_data["id"])
+            update_data["project_id"] = str(update_data["project_id"])
+            update_data["created_by"] = str(update_data["created_by"]) if update_data.get("created_by") else None
+            update_data["author"] = profiles_map.get(update_data["created_by"]) if update_data.get("created_by") else None
+            result.append(update_data)
+
+        return result
+
+    except Exception as e:
+        print(f"Error getting public project updates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Backlot Team Member Roles API Endpoints
+# =====================================================
+
+class BacklotMemberRoleInput(BaseModel):
+    """Input for assigning a team member role"""
+    user_id: str
+    backlot_role: str  # showrunner, producer, director, etc.
+    is_primary: bool = False
+
+
+@router.get("/projects/{project_id}/member-roles")
+async def get_project_member_roles(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all team member roles for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        roles_result = client.table("backlot_project_roles").select("*").eq(
+            "project_id", project_id
+        ).order("created_at").execute()
+
+        roles = roles_result.data or []
+
+        if not roles:
+            return []
+
+        # Get user profiles
+        user_ids = list(set([r["user_id"] for r in roles if r.get("user_id")]))
+        profiles_map = {}
+
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", user_ids).execute()
+
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = {
+                    "id": str(p["id"]),
+                    "username": p.get("username"),
+                    "full_name": p.get("full_name"),
+                    "display_name": p.get("display_name"),
+                    "avatar_url": p.get("avatar_url"),
+                    "role": p.get("role"),
+                    "is_order_member": p.get("is_order_member")
+                }
+
+        # Build response
+        result = []
+        for role in roles:
+            role_data = dict(role)
+            role_data["id"] = str(role_data["id"])
+            role_data["project_id"] = str(role_data["project_id"])
+            role_data["user_id"] = str(role_data["user_id"]) if role_data.get("user_id") else None
+            role_data["profile"] = profiles_map.get(role_data["user_id"]) if role_data.get("user_id") else None
+            result.append(role_data)
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting project member roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/member-roles")
+async def assign_member_role(
+    project_id: str,
+    input: BacklotMemberRoleInput,
+    authorization: str = Header(None)
+):
+    """Assign a team member role"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # If setting as primary, clear other primary roles for this user
+        if input.is_primary:
+            client.table("backlot_project_roles").update(
+                {"is_primary": False}
+            ).eq("project_id", project_id).eq("user_id", input.user_id).execute()
+
+        # Upsert the role
+        role_data = {
+            "project_id": project_id,
+            "user_id": input.user_id,
+            "backlot_role": input.backlot_role,
+            "is_primary": input.is_primary
+        }
+
+        result = client.table("backlot_project_roles").upsert(
+            role_data, on_conflict="project_id,user_id,backlot_role"
+        ).execute()
+
+        if result.data:
+            role = result.data[0]
+            role["id"] = str(role["id"])
+            role["project_id"] = str(role["project_id"])
+            role["user_id"] = str(role["user_id"]) if role.get("user_id") else None
+            return role
+
+        raise HTTPException(status_code=500, detail="Failed to assign role")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error assigning member role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/member-roles/{role_id}")
+async def remove_member_role(
+    role_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a team member role"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get role to verify access
+        role_result = client.table("backlot_project_roles").select("project_id").eq("id", role_id).execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        project_id = role_result.data[0]["project_id"]
+        await verify_project_access(client, str(project_id), user["id"])
+
+        client.table("backlot_project_roles").delete().eq("id", role_id).execute()
+
+        return {"success": True, "message": "Role removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing member role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/member-roles/{role_id}/primary")
+async def set_primary_member_role(
+    role_id: str,
+    authorization: str = Header(None)
+):
+    """Set a role as the primary role for the user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get role info
+        role_result = client.table("backlot_project_roles").select(
+            "project_id, user_id"
+        ).eq("id", role_id).execute()
+
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role_info = role_result.data[0]
+        project_id = role_info["project_id"]
+        role_user_id = role_info["user_id"]
+
+        await verify_project_access(client, str(project_id), user["id"])
+
+        # Clear other primary roles for this user
+        client.table("backlot_project_roles").update(
+            {"is_primary": False}
+        ).eq("project_id", project_id).eq("user_id", role_user_id).execute()
+
+        # Set this role as primary
+        result = client.table("backlot_project_roles").update(
+            {"is_primary": True}
+        ).eq("id", role_id).execute()
+
+        if result.data:
+            return result.data[0]
+
+        raise HTTPException(status_code=500, detail="Failed to update role")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting primary role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/my-roles")
+async def get_my_project_roles(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get current user's roles in a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        roles_result = client.table("backlot_project_roles").select("*").eq(
+            "project_id", project_id
+        ).eq("user_id", user["id"]).execute()
+
+        roles = roles_result.data or []
+
+        result = []
+        for role in roles:
+            role_data = dict(role)
+            role_data["id"] = str(role_data["id"])
+            role_data["project_id"] = str(role_data["project_id"])
+            role_data["user_id"] = str(role_data["user_id"]) if role_data.get("user_id") else None
+            result.append(role_data)
+
+        return result
+
+    except Exception as e:
+        print(f"Error getting my project roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/view-config")
+async def get_view_config(
+    project_id: str,
+    view_as_role: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get effective view config for the current user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Default view configs
+        default_configs = {
+            "showrunner": {
+                "tabs": {
+                    "overview": True, "script": True, "shot-lists": True, "coverage": True,
+                    "schedule": True, "call-sheets": True, "casting": True, "locations": True,
+                    "gear": True, "dailies": True, "review": True, "assets": True,
+                    "budget": True, "daily-budget": True, "receipts": True, "analytics": True,
+                    "tasks": True, "updates": True, "contacts": True,
+                    "clearances": True, "credits": True, "roles": True, "settings": True,
+                },
+                "sections": {"budget_numbers": True, "admin_tools": True},
+            },
+            "crew": {
+                "tabs": {
+                    "overview": True, "script": True, "shot-lists": False, "coverage": False,
+                    "schedule": True, "call-sheets": True, "casting": False, "locations": False,
+                    "gear": False, "dailies": False, "review": False, "assets": False,
+                    "budget": False, "daily-budget": False, "receipts": False, "analytics": False,
+                    "tasks": True, "updates": True, "contacts": False,
+                    "clearances": False, "credits": False, "roles": False, "settings": False,
+                },
+                "sections": {"budget_numbers": False, "admin_tools": False},
+            },
+        }
+
+        # If viewing as a specific role (admin feature)
+        if view_as_role:
+            config = default_configs.get(view_as_role, default_configs["crew"])
+            return {"role": view_as_role, **config}
+
+        user_id = user["id"]
+
+        # Check if user is project owner
+        project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if project_result.data and project_result.data[0]["owner_id"] == user_id:
+            return {"role": "owner", **default_configs["showrunner"]}
+
+        # Check user's profile for admin status
+        profile_result = client.table("profiles").select("role").eq("id", user_id).execute()
+        if profile_result.data:
+            profile_role = profile_result.data[0].get("role")
+            if profile_role in ["admin", "superadmin"]:
+                return {"role": "admin", **default_configs["showrunner"]}
+
+        # Get user's primary backlot role
+        roles_result = client.table("backlot_project_roles").select(
+            "backlot_role, is_primary"
+        ).eq("project_id", project_id).eq("user_id", user_id).order(
+            "is_primary", desc=True
+        ).execute()
+
+        roles = roles_result.data or []
+        primary_role = next((r["backlot_role"] for r in roles if r.get("is_primary")), None)
+        if not primary_role and roles:
+            primary_role = roles[0]["backlot_role"]
+        if not primary_role:
+            primary_role = "crew"
+
+        # Check for custom view profile
+        view_result = client.table("backlot_project_view_profiles").select("config").eq(
+            "project_id", project_id
+        ).eq("backlot_role", primary_role).eq("is_default", True).execute()
+
+        if view_result.data and view_result.data[0].get("config"):
+            return {"role": primary_role, "config": view_result.data[0]["config"]}
+
+        # Return default config
+        config = default_configs.get(primary_role, default_configs["crew"])
+        return {"role": primary_role, **config}
+
+    except Exception as e:
+        print(f"Error getting view config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# GEAR MANAGEMENT
+# =====================================================
+
+@router.get("/projects/{project_id}/gear")
+async def get_project_gear(
+    project_id: str,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(100, le=500),
+    authorization: str = Header(None)
+):
+    """Get all gear items for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_gear_items").select("*").eq("project_id", project_id)
+
+        if category:
+            query = query.eq("category", category)
+        if status:
+            query = query.eq("status", status)
+
+        query = query.order("category").order("name").limit(limit)
+        result = query.execute()
+
+        gear_items = result.data or []
+
+        # Fetch assignee profiles
+        user_ids = set()
+        for g in gear_items:
+            if g.get("assigned_to"):
+                user_ids.add(g["assigned_to"])
+
+        profile_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url"
+            ).in_("id", list(user_ids)).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        for g in gear_items:
+            g["assignee"] = profile_map.get(g.get("assigned_to"))
+
+        return {"gear": gear_items}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting gear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/gear/{gear_id}")
+async def get_gear_item(
+    gear_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single gear item"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_gear_items").select("*").eq("id", gear_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Gear item not found")
+
+        gear = result.data[0]
+        await verify_project_access(client, gear["project_id"], user["id"])
+
+        # Fetch assignee if exists
+        if gear.get("assigned_to"):
+            profile_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url"
+            ).eq("id", gear["assigned_to"]).execute()
+            gear["assignee"] = profile_result.data[0] if profile_result.data else None
+
+        return {"gear": gear}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting gear item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/gear")
+async def create_gear_item(
+    project_id: str,
+    gear: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Create a gear item"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        gear_data = {
+            "project_id": project_id,
+            "name": gear.get("name"),
+            "category": gear.get("category"),
+            "description": gear.get("description"),
+            "serial_number": gear.get("serial_number"),
+            "asset_tag": gear.get("asset_tag"),
+            "status": gear.get("status", "available"),
+            "is_owned": gear.get("is_owned", False),
+            "rental_house": gear.get("rental_house"),
+            "rental_cost_per_day": gear.get("rental_cost_per_day"),
+            "assigned_to": gear.get("assigned_to"),
+            "assigned_production_day_id": gear.get("assigned_production_day_id"),
+            "pickup_date": gear.get("pickup_date"),
+            "return_date": gear.get("return_date"),
+            "notes": gear.get("notes"),
+            "condition_notes": gear.get("condition_notes"),
+        }
+
+        result = client.table("backlot_gear_items").insert(gear_data).execute()
+
+        return {"gear": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating gear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/gear/{gear_id}")
+async def update_gear_item(
+    gear_id: str,
+    gear: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a gear item"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_gear_items").select("project_id").eq("id", gear_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Gear item not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {}
+        for field in ["name", "category", "description", "serial_number", "asset_tag",
+                      "status", "is_owned", "rental_house", "rental_cost_per_day",
+                      "assigned_to", "assigned_production_day_id", "pickup_date",
+                      "return_date", "notes", "condition_notes"]:
+            if field in gear:
+                update_data[field] = gear[field]
+
+        result = client.table("backlot_gear_items").update(update_data).eq("id", gear_id).execute()
+
+        return {"gear": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating gear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/gear/{gear_id}/status")
+async def update_gear_status(
+    gear_id: str,
+    status: str = Query(...),
+    authorization: str = Header(None)
+):
+    """Update gear item status"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_gear_items").select("project_id").eq("id", gear_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Gear item not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        result = client.table("backlot_gear_items").update({"status": status}).eq("id", gear_id).execute()
+
+        return {"gear": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating gear status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/gear/{gear_id}")
+async def delete_gear_item(
+    gear_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a gear item"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_gear_items").select("project_id").eq("id", gear_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Gear item not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        client.table("backlot_gear_items").delete().eq("id", gear_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting gear: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/gear/categories")
+async def get_gear_categories(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get unique gear categories for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        result = client.table("backlot_gear_items").select("category").eq(
+            "project_id", project_id
+        ).not_.is_("category", "null").execute()
+
+        categories = list(set(item["category"] for item in (result.data or []) if item.get("category")))
+        categories.sort()
+
+        return {"categories": categories}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting gear categories: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SIMPLE TASKS (project-based, not task-list based)
+# =====================================================
+
+@router.get("/projects/{project_id}/simple-tasks")
+async def get_project_simple_tasks(
+    project_id: str,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    department: Optional[str] = None,
+    production_day_id: Optional[str] = None,
+    parent_only: bool = True,
+    limit: int = Query(100, le=500),
+    authorization: str = Header(None)
+):
+    """Get simple tasks for a project (direct backlot_tasks query)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_tasks").select("*").eq("project_id", project_id)
+
+        if parent_only:
+            query = query.is_("parent_task_id", "null")
+        if status:
+            query = query.eq("status", status)
+        if priority:
+            query = query.eq("priority", priority)
+        if assigned_to:
+            query = query.eq("assigned_to", assigned_to)
+        if department:
+            query = query.eq("department", department)
+        if production_day_id:
+            query = query.eq("production_day_id", production_day_id)
+
+        query = query.order("position").limit(limit)
+        result = query.execute()
+
+        tasks = result.data or []
+
+        # Fetch profiles for assigned users and creators
+        user_ids = set()
+        for t in tasks:
+            if t.get("assigned_to"):
+                user_ids.add(t["assigned_to"])
+            if t.get("created_by"):
+                user_ids.add(t["created_by"])
+
+        profile_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url"
+            ).in_("id", list(user_ids)).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Fetch subtasks
+        task_ids = [t["id"] for t in tasks]
+        subtask_map = {}
+        if task_ids:
+            subtasks_result = client.table("backlot_tasks").select("*").in_(
+                "parent_task_id", task_ids
+            ).order("position").execute()
+
+            for st in (subtasks_result.data or []):
+                parent_id = st["parent_task_id"]
+                if parent_id not in subtask_map:
+                    subtask_map[parent_id] = []
+                st["assignee"] = profile_map.get(st.get("assigned_to"))
+                st["creator"] = profile_map.get(st.get("created_by"))
+                subtask_map[parent_id].append(st)
+
+        for t in tasks:
+            t["assignee"] = profile_map.get(t.get("assigned_to"))
+            t["creator"] = profile_map.get(t.get("created_by"))
+            t["subtasks"] = subtask_map.get(t["id"], [])
+
+        return {"tasks": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting simple tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/simple-tasks/{task_id}")
+async def get_simple_task(
+    task_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single simple task"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_tasks").select("*").eq("id", task_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task = result.data[0]
+        await verify_project_access(client, task["project_id"], user["id"])
+
+        # Fetch profiles
+        user_ids = set()
+        if task.get("assigned_to"):
+            user_ids.add(task["assigned_to"])
+        if task.get("created_by"):
+            user_ids.add(task["created_by"])
+
+        profile_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url"
+            ).in_("id", list(user_ids)).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        task["assignee"] = profile_map.get(task.get("assigned_to"))
+        task["creator"] = profile_map.get(task.get("created_by"))
+
+        # Fetch subtasks
+        subtasks_result = client.table("backlot_tasks").select("*").eq(
+            "parent_task_id", task_id
+        ).order("position").execute()
+        task["subtasks"] = subtasks_result.data or []
+
+        return {"task": task}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting simple task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/simple-tasks")
+async def create_simple_task(
+    project_id: str,
+    task: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Create a simple task"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get max position
+        parent_task_id = task.get("parent_task_id")
+        pos_query = client.table("backlot_tasks").select("position").eq(
+            "project_id", project_id
+        )
+        if parent_task_id:
+            pos_query = pos_query.eq("parent_task_id", parent_task_id)
+        else:
+            pos_query = pos_query.is_("parent_task_id", "null")
+        pos_result = pos_query.order("position", desc=True).limit(1).execute()
+
+        max_pos = pos_result.data[0]["position"] if pos_result.data else -1
+        new_position = task.get("position", max_pos + 1)
+
+        task_data = {
+            "project_id": project_id,
+            "title": task.get("title"),
+            "description": task.get("description"),
+            "status": task.get("status", "todo"),
+            "priority": task.get("priority", "medium"),
+            "assigned_to": task.get("assigned_to"),
+            "department": task.get("department"),
+            "due_date": task.get("due_date"),
+            "parent_task_id": parent_task_id,
+            "production_day_id": task.get("production_day_id"),
+            "position": new_position,
+            "created_by": user["id"],
+        }
+
+        result = client.table("backlot_tasks").insert(task_data).execute()
+
+        return {"task": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating simple task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/simple-tasks/{task_id}")
+async def update_simple_task(
+    task_id: str,
+    task: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a simple task"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_tasks").select("project_id").eq("id", task_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {}
+        for field in ["title", "description", "status", "priority", "assigned_to",
+                      "department", "due_date", "parent_task_id", "production_day_id", "position"]:
+            if field in task:
+                update_data[field] = task[field]
+
+        # Handle completed_at
+        if "status" in task:
+            if task["status"] == "completed":
+                update_data["completed_at"] = datetime.utcnow().isoformat()
+            else:
+                update_data["completed_at"] = None
+
+        result = client.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
+
+        return {"task": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating simple task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/simple-tasks/{task_id}/status")
+async def update_simple_task_status(
+    task_id: str,
+    status: str = Query(...),
+    authorization: str = Header(None)
+):
+    """Update simple task status"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_tasks").select("project_id").eq("id", task_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {"status": status}
+        if status == "completed":
+            update_data["completed_at"] = datetime.utcnow().isoformat()
+        else:
+            update_data["completed_at"] = None
+
+        result = client.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
+
+        return {"task": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating simple task status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/simple-tasks/{task_id}")
+async def delete_simple_task(
+    task_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a simple task"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_tasks").select("project_id").eq("id", task_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        client.table("backlot_tasks").delete().eq("id", task_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting simple task: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/simple-tasks/reorder")
+async def reorder_simple_tasks(
+    project_id: str,
+    task_ids: List[str] = Body(...),
+    authorization: str = Header(None)
+):
+    """Reorder simple tasks"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        for index, task_id in enumerate(task_ids):
+            client.table("backlot_tasks").update({"position": index}).eq("id", task_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/simple-tasks/stats")
+async def get_simple_task_stats(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get task statistics for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        result = client.table("backlot_tasks").select("status").eq("project_id", project_id).execute()
+
+        tasks = result.data or []
+        stats = {
+            "total": len(tasks),
+            "todo": sum(1 for t in tasks if t.get("status") == "todo"),
+            "in_progress": sum(1 for t in tasks if t.get("status") == "in_progress"),
+            "review": sum(1 for t in tasks if t.get("status") == "review"),
+            "completed": sum(1 for t in tasks if t.get("status") == "completed"),
+            "blocked": sum(1 for t in tasks if t.get("status") == "blocked"),
+        }
+
+        return stats
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting task stats: {e}")
+        return {
+            "total": 0, "todo": 0, "in_progress": 0,
+            "review": 0, "completed": 0, "blocked": 0
+        }
+
+
+# =====================================================
+# PRODUCTION DAYS CRUD
+# =====================================================
+
+@router.get("/projects/{project_id}/production-days")
+async def get_production_days(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all production days for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        result = client.table("backlot_production_days").select("*").eq(
+            "project_id", project_id
+        ).order("day_number").execute()
+
+        return {"days": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production days: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/production-days/{day_id}")
+async def get_production_day(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_production_days").select("*").eq("id", day_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        return {"day": day}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/production-days")
+async def create_production_day(
+    project_id: str,
+    day: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Create a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        day_data = {
+            "project_id": project_id,
+            "day_number": day.get("day_number"),
+            "date": day.get("date"),
+            "title": day.get("title"),
+            "description": day.get("description"),
+            "general_call_time": day.get("general_call_time"),
+            "wrap_time": day.get("wrap_time"),
+            "location_id": day.get("location_id"),
+            "location_name": day.get("location_name"),
+            "location_address": day.get("location_address"),
+            "notes": day.get("notes"),
+            "weather_notes": day.get("weather_notes"),
+        }
+
+        result = client.table("backlot_production_days").insert(day_data).execute()
+
+        return {"day": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/production-days/{day_id}")
+async def update_production_day(
+    day_id: str,
+    day: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {}
+        for field in ["day_number", "date", "title", "description", "general_call_time",
+                      "wrap_time", "location_id", "location_name", "location_address",
+                      "notes", "weather_notes", "is_completed"]:
+            if field in day:
+                update_data[field] = day[field]
+
+        result = client.table("backlot_production_days").update(update_data).eq("id", day_id).execute()
+
+        return {"day": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/production-days/{day_id}/completed")
+async def mark_production_day_completed(
+    day_id: str,
+    completed: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Mark a production day as completed or not"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        result = client.table("backlot_production_days").update(
+            {"is_completed": completed}
+        ).eq("id", day_id).execute()
+
+        return {"day": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error marking day completed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/production-days/{day_id}")
+async def delete_production_day(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        client.table("backlot_production_days").delete().eq("id", day_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CALL SHEETS CRUD
+# =====================================================
+
+@router.get("/projects/{project_id}/call-sheets")
+async def get_call_sheets(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all call sheets for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        result = client.table("backlot_call_sheets").select("*").eq(
+            "project_id", project_id
+        ).order("date").execute()
+
+        return {"call_sheets": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting call sheets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/call-sheets/{call_sheet_id}")
+async def get_call_sheet(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single call sheet with people, scenes, and locations"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        sheet = result.data[0]
+        await verify_project_access(client, sheet["project_id"], user["id"])
+
+        # Fetch people
+        people_result = client.table("backlot_call_sheet_people").select("*").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("sort_order").execute()
+        sheet["people"] = people_result.data or []
+
+        # Fetch scenes
+        scenes_result = client.table("backlot_call_sheet_scenes").select("*").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("sort_order").execute()
+        sheet["scenes"] = scenes_result.data or []
+
+        # Fetch locations
+        locations_result = client.table("backlot_call_sheet_locations").select("*").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("location_number").execute()
+        sheet["locations"] = locations_result.data or []
+
+        return {"call_sheet": sheet}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/call-sheets")
+async def create_call_sheet(
+    project_id: str,
+    sheet: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Create a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        sheet_data = {
+            "project_id": project_id,
+            "production_day_id": sheet.get("production_day_id"),
+            "title": sheet.get("title"),
+            "date": sheet.get("date"),
+            "general_call_time": sheet.get("general_call_time"),
+            "location_name": sheet.get("location_name"),
+            "location_address": sheet.get("location_address"),
+            "parking_notes": sheet.get("parking_notes"),
+            "production_contact": sheet.get("production_contact"),
+            "production_phone": sheet.get("production_phone"),
+            "schedule_blocks": sheet.get("schedule_blocks", []),
+            "weather_info": sheet.get("weather_info"),
+            "special_instructions": sheet.get("special_instructions"),
+            "safety_notes": sheet.get("safety_notes"),
+            "hospital_name": sheet.get("hospital_name"),
+            "hospital_address": sheet.get("hospital_address"),
+            "hospital_phone": sheet.get("hospital_phone"),
+            "created_by": user["id"],
+        }
+
+        result = client.table("backlot_call_sheets").insert(sheet_data).execute()
+
+        return {"call_sheet": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/call-sheets/{call_sheet_id}")
+async def update_call_sheet(
+    call_sheet_id: str,
+    sheet: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {}
+        for field in ["production_day_id", "title", "date", "general_call_time",
+                      "location_name", "location_address", "parking_notes",
+                      "production_contact", "production_phone", "schedule_blocks",
+                      "weather_info", "special_instructions", "safety_notes",
+                      "hospital_name", "hospital_address", "hospital_phone"]:
+            if field in sheet:
+                update_data[field] = sheet[field]
+
+        result = client.table("backlot_call_sheets").update(update_data).eq("id", call_sheet_id).execute()
+
+        return {"call_sheet": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/call-sheets/{call_sheet_id}/publish")
+async def publish_call_sheet(
+    call_sheet_id: str,
+    publish: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Publish or unpublish a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        update_data = {
+            "is_published": publish,
+            "published_at": datetime.utcnow().isoformat() if publish else None,
+        }
+
+        result = client.table("backlot_call_sheets").update(update_data).eq("id", call_sheet_id).execute()
+
+        return {"call_sheet": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error publishing call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/call-sheets/{call_sheet_id}")
+async def delete_call_sheet(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        client.table("backlot_call_sheets").delete().eq("id", call_sheet_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CALL SHEET PEOPLE CRUD
+# =====================================================
+
+@router.get("/call-sheets/{call_sheet_id}/people")
+async def get_call_sheet_people(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get all people for a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        result = client.table("backlot_call_sheet_people").select("*").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("sort_order").execute()
+
+        return {"people": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting call sheet people: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/people")
+async def add_call_sheet_person(
+    call_sheet_id: str,
+    person: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Add a person to a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        person_data = {
+            "call_sheet_id": call_sheet_id,
+            "member_id": person.get("member_id"),
+            "name": person.get("name"),
+            "role": person.get("role"),
+            "department": person.get("department"),
+            "call_time": person.get("call_time"),
+            "phone": person.get("phone"),
+            "email": person.get("email"),
+            "notes": person.get("notes"),
+            "makeup_time": person.get("makeup_time"),
+            "wardrobe_notes": person.get("wardrobe_notes"),
+            "sort_order": person.get("sort_order", 0),
+        }
+
+        result = client.table("backlot_call_sheet_people").insert(person_data).execute()
+
+        return {"person": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/call-sheets/{call_sheet_id}/people/{person_id}")
+async def update_call_sheet_person(
+    call_sheet_id: str,
+    person_id: str,
+    person: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a person on a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        update_data = {}
+        for field in ["member_id", "name", "role", "department", "call_time",
+                      "phone", "email", "notes", "makeup_time", "wardrobe_notes", "sort_order"]:
+            if field in person:
+                update_data[field] = person[field]
+
+        result = client.table("backlot_call_sheet_people").update(update_data).eq("id", person_id).execute()
+
+        return {"person": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/call-sheets/{call_sheet_id}/people/{person_id}")
+async def remove_call_sheet_person(
+    call_sheet_id: str,
+    person_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a person from a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        client.table("backlot_call_sheet_people").delete().eq("id", person_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing person: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/people/reorder")
+async def reorder_call_sheet_people(
+    call_sheet_id: str,
+    person_ids: List[str] = Body(...),
+    authorization: str = Header(None)
+):
+    """Reorder people on a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        for index, person_id in enumerate(person_ids):
+            client.table("backlot_call_sheet_people").update(
+                {"sort_order": index}
+            ).eq("id", person_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering people: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/can-manage-roles")
+async def can_manage_roles(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Check if current user can manage roles"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        user_id = user["id"]
+
+        # Check if project owner
+        project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if project_result.data and project_result.data[0]["owner_id"] == user_id:
+            return {"can_manage": True}
+
+        # Check admin status
+        profile_result = client.table("profiles").select("role").eq("id", user_id).execute()
+        if profile_result.data:
+            profile_role = profile_result.data[0].get("role")
+            if profile_role in ["admin", "superadmin"]:
+                return {"can_manage": True}
+
+        # Check if showrunner
+        roles_result = client.table("backlot_project_roles").select("backlot_role").eq(
+            "project_id", project_id
+        ).eq("user_id", user_id).eq("backlot_role", "showrunner").execute()
+
+        return {"can_manage": len(roles_result.data or []) > 0}
+
+    except Exception as e:
+        print(f"Error checking manage roles permission: {e}")
         raise HTTPException(status_code=500, detail=str(e))

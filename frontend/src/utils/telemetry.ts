@@ -21,8 +21,8 @@ export function track(event: TelemetryEvent, data?: Record<string, unknown>, cor
     correlationId: correlationId ?? crypto.randomUUID(),
     ...data,
   };
-  // Replace this with a Supabase insert if desired
-  // e.g., supabase.from('telemetry').insert(payload)
+  // Replace this with an API call if desired
+  // e.g., api.post('/api/v1/telemetry', payload)
   // For now, just console.log
   // eslint-disable-next-line no-console
   console.log("[telemetry]", payload);

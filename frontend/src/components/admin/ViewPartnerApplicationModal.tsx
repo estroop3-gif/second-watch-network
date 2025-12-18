@@ -5,7 +5,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
 interface ViewApplicationModalProps {
@@ -26,14 +26,7 @@ const ViewPartnerApplicationModal = ({ isOpen, onClose, application, onUpdated }
     if (saving) return;
     setSaving(true);
     try {
-      const { error } = await supabase.functions.invoke('partner-application-status', {
-        body: {
-          id: application.id,
-          status,
-          admin_notes: adminNotes,
-        },
-      });
-      if (error) throw error;
+      await api.updatePartnerApplicationStatus(application.id, status, adminNotes);
       toast.success('Application updated.');
       onUpdated?.();
       onClose();

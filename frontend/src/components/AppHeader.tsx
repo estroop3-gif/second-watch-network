@@ -7,7 +7,7 @@ import { Sheet, SheetContent, SheetTrigger } from './ui/sheet';
 import { Menu } from 'lucide-react';
 import { NotificationBell } from './NotificationBell';
 import { UserNavMenuItems } from './UserNavMenuItems';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
 const AppHeader = () => {
@@ -15,11 +15,15 @@ const AppHeader = () => {
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error && error.message !== 'Auth session missing!') {
-      toast.error("Failed to log out: " + error.message);
-    } else {
+    try {
+      await api.signOut();
       navigate('/');
+    } catch (error: any) {
+      if (error.message !== 'Auth session missing!') {
+        toast.error("Failed to log out: " + error.message);
+      } else {
+        navigate('/');
+      }
     }
   };
 

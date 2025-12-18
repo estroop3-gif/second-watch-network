@@ -1,10 +1,12 @@
 import React, { useState, useRef } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { User, UploadCloud, Loader2 } from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface AvatarUploaderProps {
   avatarUrl: string | null | undefined;
@@ -18,57 +20,42 @@ export const AvatarUploader: React.FC<AvatarUploaderProps> = ({ avatarUrl, onUpl
 
   const handleAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!event.target.files || event.target.files.length === 0 || !session) return;
-    const file = event.target.files[0];
-    const fileExt = file.name.split('.').pop();
-    const filePath = `${session.user.id}/${Math.random()}.${fileExt}`;
 
+    const file = event.target.files[0];
     setIsUploading(true);
 
-    // It's good practice to remove the old avatar to save space
-    if (session.user.user_metadata.avatar_url) {
-        const oldAvatarPath = session.user.user_metadata.avatar_url.split('/avatars/').pop();
-        if (oldAvatarPath) {
-            await supabase.storage.from('avatars').remove([oldAvatarPath]);
-        }
-    }
+    try {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-    const { error: uploadError } = await supabase.storage.from('avatars').upload(filePath, file);
+      // Create form data for file upload
+      const formData = new FormData();
+      formData.append('file', file);
 
-    if (uploadError) {
-      toast.error(`Upload failed: ${uploadError.message}`);
+      const response = await fetch(`${API_BASE}/api/v1/profiles/avatar`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+
       setIsUploading(false);
-      return;
-    }
+      toast.success('Profile picture updated!');
 
-    const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(filePath);
-    
-    const { error: updateUserError } = await supabase.auth.updateUser({
-      data: { avatar_url: publicUrl },
-    });
-
-    if (updateUserError) {
-      toast.error(`Failed to update auth profile: ${updateUserError.message}`);
-      setIsUploading(false);
-      return;
-    }
-    
-    // Also update the public profiles table to keep it in sync
-    await supabase
-      .from('profiles')
-      .update({ avatar_url: publicUrl })
-      .eq('id', session.user.id);
-
-    // And the filmmaker profile, if it exists
-    await supabase
-      .from('filmmaker_profiles')
-      .update({ profile_image_url: publicUrl })
-      .eq('user_id', session.user.id);
-
-    setIsUploading(false);
-    toast.success("Profile picture updated!");
-    await supabase.auth.refreshSession();
-    if (onUploadSuccess) {
+      if (onUploadSuccess) {
         onUploadSuccess();
+      }
+    } catch (error) {
+      setIsUploading(false);
+      toast.error(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 

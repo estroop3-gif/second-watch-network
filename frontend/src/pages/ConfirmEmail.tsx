@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -25,17 +25,14 @@ const ConfirmEmail = () => {
     }
     setIsLoading(true);
     track("signup_resend_request", { email });
-    const { error } = await supabase.functions.invoke('resend-confirmation', {
-      body: { email }
-    });
-    setIsLoading(false);
-
-    if (error) {
-      toast.error(error.message);
-    } else {
+    try {
+      await api.resendConfirmation(email);
       track("signup_resend_success", { email });
       toast.success("Confirmation email sent!");
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to resend confirmation email");
     }
+    setIsLoading(false);
   };
 
   if (!email) {

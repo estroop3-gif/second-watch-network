@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
@@ -17,62 +17,55 @@ type Settings = {
 };
 
 export default function NotificationSettings() {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!profileId) return;
     let isMounted = true;
     (async () => {
       setLoading(true);
-      const { data, error } = await supabase
-        .from("user_notification_settings")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (error) {
-        // If no row exists, initialize defaults in UI; we upsert on save.
-        setSettings({
-          user_id: user.id,
-          email_digest_enabled: false,
-          email_on_submission_updates: true,
-          email_on_connection_accepts: true,
-          digest_hour_utc: 13,
-        });
-      } else {
+      try {
+        const data = await api.getNotificationSettings(profileId);
         setSettings(
           data || {
-            user_id: user.id,
+            user_id: profileId,
             email_digest_enabled: false,
             email_on_submission_updates: true,
             email_on_connection_accepts: true,
             digest_hour_utc: 13,
           }
         );
+      } catch (error) {
+        // If no row exists, initialize defaults in UI; we upsert on save.
+        setSettings({
+          user_id: profileId,
+          email_digest_enabled: false,
+          email_on_submission_updates: true,
+          email_on_connection_accepts: true,
+          digest_hour_utc: 13,
+        });
       }
       if (isMounted) setLoading(false);
     })();
     return () => {
       isMounted = false;
     };
-  }, [user?.id]);
+  }, [profileId]);
 
   const save = async () => {
-    if (!user?.id || !settings) return;
+    if (!profileId || !settings) return;
     setSaving(true);
-    const payload = { ...settings, user_id: user.id };
-    const { error } = await supabase
-      .from("user_notification_settings")
-      .upsert(payload, { onConflict: "user_id" });
-    setSaving(false);
-    if (error) {
-      toast({ title: "Save failed", description: error.message });
-    } else {
+    try {
+      await api.updateNotificationSettings(profileId, settings);
       toast({ title: "Preferences saved", description: "Your email preferences were updated." });
+    } catch (error: any) {
+      toast({ title: "Save failed", description: error?.message || "Failed to save preferences" });
     }
+    setSaving(false);
   };
 
   const update = (patch: Partial<Settings>) => {
@@ -84,7 +77,7 @@ export default function NotificationSettings() {
       <Card className="bg-charcoal-black/50 border-muted-gray/20">
         <CardHeader>
           <CardTitle className="font-heading text-3xl text-bone-white">Notification Settings</CardTitle>
-          <CardDescription>Choose how you’d like to be notified by email.</CardDescription>
+          <CardDescription>Choose how you'd like to be notified by email.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           {loading || !settings ? (

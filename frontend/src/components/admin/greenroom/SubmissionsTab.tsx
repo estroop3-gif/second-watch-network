@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import {
@@ -99,12 +99,7 @@ const SubmissionsTab = () => {
   const { data: cycles } = useQuery({
     queryKey: ['greenroom-cycles-list'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_cycles')
-        .select('id, name, status')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await api.listGreenroomCycles();
       return data;
     },
   });
@@ -113,38 +108,31 @@ const SubmissionsTab = () => {
   const { data: projects, isLoading } = useQuery({
     queryKey: ['greenroom-projects-admin', selectedCycleId, statusFilter],
     queryFn: async () => {
-      let query = supabase
-        .from('greenroom_projects')
-        .select(`
-          *,
-          cycle:greenroom_cycles(name),
-          profile:profiles(display_name, avatar_url)
-        `)
-        .order('created_at', { ascending: false });
+      // Get projects from the API - need to fetch for each cycle if no specific one selected
+      let allProjects: any[] = [];
 
       if (selectedCycleId !== 'all') {
-        query = query.eq('cycle_id', selectedCycleId);
+        const data = await api.listGreenroomProjects(selectedCycleId, statusFilter !== 'all' ? statusFilter : undefined);
+        allProjects = data || [];
+      } else {
+        // Get all cycles and fetch projects from each
+        const cyclesList = await api.listGreenroomCycles();
+        for (const cycle of (cyclesList || [])) {
+          const data = await api.listGreenroomProjects(cycle.id, statusFilter !== 'all' ? statusFilter : undefined);
+          if (data) {
+            allProjects.push(...data.map((p: any) => ({ ...p, cycle: { name: cycle.name } })));
+          }
+        }
       }
 
-      if (statusFilter !== 'all') {
-        query = query.eq('status', statusFilter);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      return data as Project[];
+      return allProjects as Project[];
     },
   });
 
   // Update project status mutation
   const updateStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update({ status })
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.updateGreenroomProjectStatus(id, status);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-projects-admin'] });
@@ -156,15 +144,17 @@ const SubmissionsTab = () => {
     },
   });
 
-  // Update admin notes mutation
+  // Update admin notes mutation - uses the notes endpoint
   const updateNotesMutation = useMutation({
     mutationFn: async ({ id, notes }: { id: string; notes: string }) => {
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update({ admin_notes: notes })
-        .eq('id', id);
-
-      if (error) throw error;
+      // Using the admin notes endpoint
+      const params = new URLSearchParams({ notes });
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/greenroom/admin/projects/${id}/notes?${params}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${api.getToken()}`,
+        },
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-projects-admin'] });
@@ -179,12 +169,7 @@ const SubmissionsTab = () => {
   // Toggle featured mutation
   const toggleFeaturedMutation = useMutation({
     mutationFn: async ({ id, featured }: { id: string; featured: boolean }) => {
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update({ is_featured: featured })
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.toggleGreenroomProjectFeatured(id, featured);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-projects-admin'] });

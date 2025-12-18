@@ -2,9 +2,10 @@
  * useCredits - React Query hooks for Backlot project credits
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 import { BacklotProjectCredit, ProjectCreditInput, BacklotProfile } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Predefined credit departments
 export const CREDIT_DEPARTMENTS = [
@@ -55,46 +56,27 @@ export const CREDIT_ROLES: Record<string, string[]> = {
  */
 export function useCredits(projectId: string | null) {
   const queryClient = useQueryClient();
-  const { user } = useAuth();
 
   const query = useQuery({
     queryKey: ['backlot', 'credits', projectId],
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('department', { ascending: true })
-        .order('order_index', { ascending: true });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/credits`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch linked user profiles
-      const userIds = data
-        .filter((c) => c.user_id)
-        .map((c) => c.user_id as string);
-
-      let profilesMap: Record<string, BacklotProfile> = {};
-      if (userIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role')
-          .in('id', userIds);
-
-        if (profiles) {
-          profilesMap = profiles.reduce((acc, p) => {
-            acc[p.id] = p as BacklotProfile;
-            return acc;
-          }, {} as Record<string, BacklotProfile>);
-        }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch credits' }));
+        throw new Error(error.detail);
       }
 
-      return data.map((credit) => ({
-        ...credit,
-        linked_user: credit.user_id ? profilesMap[credit.user_id] : undefined,
-      })) as BacklotProjectCredit[];
+      return (await response.json()) as BacklotProjectCredit[];
     },
     enabled: !!projectId,
   });
@@ -102,17 +84,32 @@ export function useCredits(projectId: string | null) {
   // Create credit
   const createCredit = useMutation({
     mutationFn: async (input: ProjectCreditInput & { project_id: string }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .insert({
-          ...input,
-          created_by: user?.id,
-        })
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${input.project_id}/credits`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          department: input.department,
+          role: input.role,
+          name: input.name,
+          user_id: input.user_id,
+          is_primary: input.is_primary ?? false,
+          is_public: input.is_public ?? true,
+          order_index: input.order_index ?? 0,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create credit' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
@@ -127,15 +124,32 @@ export function useCredits(projectId: string | null) {
       id,
       ...updates
     }: Partial<ProjectCreditInput> & { id: string; project_id: string }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credits/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          department: updates.department,
+          role: updates.role,
+          name: updates.name,
+          user_id: updates.user_id,
+          is_primary: updates.is_primary ?? false,
+          is_public: updates.is_public ?? true,
+          order_index: updates.order_index ?? 0,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update credit' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
@@ -147,12 +161,21 @@ export function useCredits(projectId: string | null) {
   // Delete credit
   const deleteCredit = useMutation({
     mutationFn: async ({ id, project_id }: { id: string; project_id: string }) => {
-      const { error } = await supabase
-        .from('backlot_project_credits')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credits/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete credit' }));
+        throw new Error(error.detail);
+      }
+
       return { id, project_id };
     },
     onSuccess: (_, variables) => {
@@ -171,15 +194,23 @@ export function useCredits(projectId: string | null) {
       project_id: string;
       credits: { id: string; order_index: number }[];
     }) => {
-      // Update each credit's order_index
-      const updates = credits.map((c) =>
-        supabase
-          .from('backlot_project_credits')
-          .update({ order_index: c.order_index })
-          .eq('id', c.id)
-      );
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      await Promise.all(updates);
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${project_id}/credits/reorder`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(credits),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder credits' }));
+        throw new Error(error.detail);
+      }
+
       return { project_id };
     },
     onSuccess: (_, variables) => {
@@ -200,15 +231,24 @@ export function useCredits(projectId: string | null) {
       is_primary: boolean;
       project_id: string;
     }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .update({ is_primary })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credits/${id}/primary`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_primary }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to toggle primary' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
@@ -228,15 +268,24 @@ export function useCredits(projectId: string | null) {
       is_public: boolean;
       project_id: string;
     }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .update({ is_public })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credits/${id}/public`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_public }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to toggle public' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
@@ -267,41 +316,14 @@ export function usePublicCredits(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_project_credits')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('is_public', true)
-        .order('is_primary', { ascending: false })
-        .order('department', { ascending: true })
-        .order('order_index', { ascending: true });
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/credits/public`);
 
-      if (error) throw error;
-
-      // Fetch linked user profiles
-      const userIds = data
-        .filter((c) => c.user_id)
-        .map((c) => c.user_id as string);
-
-      let profilesMap: Record<string, BacklotProfile> = {};
-      if (userIds.length > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role')
-          .in('id', userIds);
-
-        if (profiles) {
-          profilesMap = profiles.reduce((acc, p) => {
-            acc[p.id] = p as BacklotProfile;
-            return acc;
-          }, {} as Record<string, BacklotProfile>);
-        }
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch public credits' }));
+        throw new Error(error.detail);
       }
 
-      return data.map((credit) => ({
-        ...credit,
-        linked_user: credit.user_id ? profilesMap[credit.user_id] : undefined,
-      })) as BacklotProjectCredit[];
+      return (await response.json()) as BacklotProjectCredit[];
     },
     enabled: !!projectId,
   });

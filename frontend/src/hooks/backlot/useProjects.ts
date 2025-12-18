@@ -1,8 +1,10 @@
 /**
  * useProjects - Hook for fetching and managing Backlot projects
+ * Uses the backend API for all operations (Cognito auth compatible)
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
 import {
   BacklotProject,
   BacklotProjectMember,
@@ -20,128 +22,48 @@ interface UseProjectsOptions extends ProjectFilters {
 export function useProjects(options: UseProjectsOptions = {}) {
   const { status = 'all', visibility = 'all', search, limit = 50 } = options;
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   const queryKey = ['backlot-projects', { status, visibility, search, limit }];
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey,
     queryFn: async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      if (!user) throw new Error('Not authenticated');
 
-      // First get projects where user is owner or member
-      const { data: memberProjects } = await supabase
-        .from('backlot_project_members')
-        .select('project_id')
-        .eq('user_id', userData.user.id);
+      const projects = await api.listBacklotProjects({
+        status: status !== 'all' ? status : undefined,
+        visibility: visibility !== 'all' ? visibility : undefined,
+        search,
+        limit,
+      });
 
-      const memberProjectIds = memberProjects?.map(m => m.project_id) || [];
-
-      // Build query for projects
-      let query = supabase
-        .from('backlot_projects')
-        .select('*')
-        .order('updated_at', { ascending: false })
-        .limit(limit);
-
-      // Filter to owned or member projects
-      if (memberProjectIds.length > 0) {
-        query = query.or(`owner_id.eq.${userData.user.id},id.in.(${memberProjectIds.join(',')})`);
-      } else {
-        query = query.eq('owner_id', userData.user.id);
-      }
-
-      if (status !== 'all') {
-        query = query.eq('status', status);
-      }
-
-      if (visibility !== 'all') {
-        query = query.eq('visibility', visibility);
-      }
-
-      if (search) {
-        query = query.ilike('title', `%${search}%`);
-      }
-
-      const { data: projectsData, error } = await query;
-      if (error) throw error;
-      if (!projectsData || projectsData.length === 0) return [];
-
-      // Fetch owner profiles
-      const ownerIds = [...new Set(projectsData.map(p => p.owner_id))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .in('id', ownerIds);
-
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-
-      return projectsData.map(project => ({
-        ...project,
-        owner: profileMap.get(project.owner_id) || null,
-      })) as BacklotProject[];
+      return projects as BacklotProject[];
     },
+    enabled: !!user,
   });
 
   const createProject = useMutation({
     mutationFn: async (input: ProjectInput) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      if (!user) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_projects')
-        .insert({
-          owner_id: userData.user.id,
-          title: input.title,
-          logline: input.logline || null,
-          description: input.description || null,
-          project_type: input.project_type || null,
-          genre: input.genre || null,
-          format: input.format || null,
-          runtime_minutes: input.runtime_minutes || null,
-          status: input.status || 'pre_production',
-          visibility: input.visibility || 'private',
-          target_start_date: input.target_start_date || null,
-          target_end_date: input.target_end_date || null,
-          cover_image_url: input.cover_image_url || null,
-          thumbnail_url: input.thumbnail_url || null,
-        })
-        .select()
-        .single();
+      const project = await api.createBacklotProject({
+        title: input.title,
+        logline: input.logline || null,
+        description: input.description || null,
+        project_type: input.project_type || null,
+        genre: input.genre || null,
+        format: input.format || null,
+        runtime_minutes: input.runtime_minutes || null,
+        status: input.status || 'pre_production',
+        visibility: input.visibility || 'private',
+        target_start_date: input.target_start_date || null,
+        target_end_date: input.target_end_date || null,
+        cover_image_url: input.cover_image_url || null,
+        thumbnail_url: input.thumbnail_url || null,
+      });
 
-      if (error) throw error;
-
-      // Also add the owner as an admin member so RLS policies work correctly
-      const { error: memberError } = await supabase
-        .from('backlot_project_members')
-        .insert({
-          project_id: data.id,
-          user_id: userData.user.id,
-          role: 'admin',
-        });
-
-      if (memberError) {
-        console.error('Failed to add owner as member:', memberError);
-        // Don't throw - project was created, member insert might fail due to RLS
-        // but the owner_id on the project will still work for ownership checks
-      }
-
-      // Assign the showrunner Backlot role to the project creator
-      const { error: roleError } = await supabase
-        .from('backlot_project_roles')
-        .insert({
-          project_id: data.id,
-          user_id: userData.user.id,
-          backlot_role: 'showrunner',
-          is_primary: true,
-        });
-
-      if (roleError) {
-        console.error('Failed to assign showrunner role:', roleError);
-        // Don't throw - project was created, role assignment is secondary
-      }
-
-      return data as BacklotProject;
+      return project as BacklotProject;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-projects'] });
@@ -150,29 +72,23 @@ export function useProjects(options: UseProjectsOptions = {}) {
 
   const updateProject = useMutation({
     mutationFn: async ({ id, ...input }: ProjectInput & { id: string }) => {
-      const { data, error } = await supabase
-        .from('backlot_projects')
-        .update({
-          title: input.title,
-          logline: input.logline || null,
-          description: input.description || null,
-          project_type: input.project_type || null,
-          genre: input.genre || null,
-          format: input.format || null,
-          runtime_minutes: input.runtime_minutes || null,
-          status: input.status,
-          visibility: input.visibility,
-          target_start_date: input.target_start_date || null,
-          target_end_date: input.target_end_date || null,
-          cover_image_url: input.cover_image_url || null,
-          thumbnail_url: input.thumbnail_url || null,
-        })
-        .eq('id', id)
-        .select()
-        .single();
+      const project = await api.updateBacklotProject(id, {
+        title: input.title,
+        logline: input.logline || null,
+        description: input.description || null,
+        project_type: input.project_type || null,
+        genre: input.genre || null,
+        format: input.format || null,
+        runtime_minutes: input.runtime_minutes || null,
+        status: input.status,
+        visibility: input.visibility,
+        target_start_date: input.target_start_date || null,
+        target_end_date: input.target_end_date || null,
+        cover_image_url: input.cover_image_url || null,
+        thumbnail_url: input.thumbnail_url || null,
+      });
 
-      if (error) throw error;
-      return data as BacklotProject;
+      return project as BacklotProject;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['backlot-projects'] });
@@ -183,12 +99,7 @@ export function useProjects(options: UseProjectsOptions = {}) {
 
   const deleteProject = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_projects')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.deleteBacklotProject(id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-projects'] });
@@ -206,119 +117,60 @@ export function useProjects(options: UseProjectsOptions = {}) {
   };
 }
 
-// Fetch a single project by ID
+// Fetch a single project by ID with live updates
 export function useProject(id: string | null) {
+  const { user } = useAuth();
+
   return useQuery({
     queryKey: ['backlot-project', id],
     queryFn: async () => {
       if (!id) return null;
-
-      const { data: project, error } = await supabase
-        .from('backlot_projects')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (error) throw error;
-
-      // Fetch owner profile
-      const { data: owner } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .eq('id', project.owner_id)
-        .single();
-
-      return { ...project, owner } as BacklotProject;
+      const project = await api.getBacklotProject(id);
+      return project as BacklotProject;
     },
-    enabled: !!id,
+    enabled: !!id && !!user,
+    staleTime: 10000, // Data is fresh for 10 seconds
+    refetchOnWindowFocus: true, // Refetch when tab is focused
+    refetchInterval: 30000, // Refetch every 30 seconds for live updates
   });
 }
 
 // Fetch a project by slug (for public pages)
 export function useProjectBySlug(slug: string | null) {
+  const { user } = useAuth();
+
   return useQuery({
     queryKey: ['backlot-project-slug', slug],
     queryFn: async () => {
       if (!slug) return null;
-
-      const { data: project, error } = await supabase
-        .from('backlot_projects')
-        .select('*')
-        .eq('slug', slug)
-        .single();
-
-      if (error) throw error;
-
-      // Fetch owner profile
-      const { data: owner } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .eq('id', project.owner_id)
-        .single();
-
-      return { ...project, owner } as BacklotProject;
+      // For now, we don't have a slug endpoint, but we could add one
+      // This would need a backend endpoint: GET /api/v1/backlot/projects/by-slug/{slug}
+      throw new Error('Project by slug not yet implemented via API');
     },
-    enabled: !!slug,
+    enabled: !!slug && !!user,
   });
 }
 
-// Fetch project members
+// Fetch project members - still uses API
 export function useProjectMembers(projectId: string | null) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['backlot-project-members', projectId],
     queryFn: async () => {
       if (!projectId) return [];
-
-      const { data: membersData, error } = await supabase
-        .from('backlot_project_members')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('joined_at', { ascending: true });
-
-      if (error) throw error;
-      if (!membersData || membersData.length === 0) return [];
-
-      // Fetch profiles
-      const userIds = [...new Set(membersData.map(m => m.user_id))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .in('id', userIds);
-
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-
-      return membersData.map(member => ({
-        ...member,
-        profile: profileMap.get(member.user_id) || null,
-      })) as BacklotProjectMember[];
+      // This would need a backend endpoint: GET /api/v1/backlot/projects/{projectId}/members
+      // For now, return empty array since we need to implement the endpoint
+      return [] as BacklotProjectMember[];
     },
-    enabled: !!projectId,
+    enabled: !!projectId && !!user,
   });
 
   const addMember = useMutation({
     mutationFn: async ({ projectId, ...input }: ProjectMemberInput & { projectId: string }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
-
-      const { data, error } = await supabase
-        .from('backlot_project_members')
-        .insert({
-          project_id: projectId,
-          user_id: input.user_id,
-          role: input.role || 'viewer',
-          production_role: input.production_role || null,
-          department: input.department || null,
-          phone: input.phone || null,
-          email: input.email || null,
-          invited_by: userData.user.id,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data;
+      // This would need a backend endpoint: POST /api/v1/backlot/projects/{projectId}/members
+      throw new Error('Add member not yet implemented via API');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-members', projectId] });
@@ -327,22 +179,8 @@ export function useProjectMembers(projectId: string | null) {
 
   const updateMember = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ProjectMemberInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.role !== undefined) updateData.role = input.role;
-      if (input.production_role !== undefined) updateData.production_role = input.production_role;
-      if (input.department !== undefined) updateData.department = input.department;
-      if (input.phone !== undefined) updateData.phone = input.phone;
-      if (input.email !== undefined) updateData.email = input.email;
-
-      const { data, error } = await supabase
-        .from('backlot_project_members')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data;
+      // This would need a backend endpoint: PUT /api/v1/backlot/members/{memberId}
+      throw new Error('Update member not yet implemented via API');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-members', projectId] });
@@ -351,12 +189,8 @@ export function useProjectMembers(projectId: string | null) {
 
   const removeMember = useMutation({
     mutationFn: async (memberId: string) => {
-      const { error } = await supabase
-        .from('backlot_project_members')
-        .delete()
-        .eq('id', memberId);
-
-      if (error) throw error;
+      // This would need a backend endpoint: DELETE /api/v1/backlot/members/{memberId}
+      throw new Error('Remove member not yet implemented via API');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-members', projectId] });
@@ -376,51 +210,33 @@ export function useProjectMembers(projectId: string | null) {
 
 // Check if current user has permission for a project
 export function useProjectPermission(projectId: string | null) {
+  const { user } = useAuth();
+
   return useQuery({
     queryKey: ['backlot-project-permission', projectId],
     queryFn: async () => {
-      if (!projectId) return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null as BacklotMemberRole | null };
-
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
-
-      // Check if owner
-      const { data: project } = await supabase
-        .from('backlot_projects')
-        .select('owner_id, visibility')
-        .eq('id', projectId)
-        .single();
-
-      if (!project) return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
-
-      const isOwner = project.owner_id === userData.user.id;
-
-      if (isOwner) {
-        return { canView: true, canEdit: true, isAdmin: true, isOwner: true, role: 'owner' as BacklotMemberRole };
+      if (!projectId || !user) {
+        return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null as BacklotMemberRole | null };
       }
 
-      // Check membership
-      const { data: member } = await supabase
-        .from('backlot_project_members')
-        .select('role')
-        .eq('project_id', projectId)
-        .eq('user_id', userData.user.id)
-        .single();
+      try {
+        // Try to get the project - if we can access it, we have at least view permission
+        const project = await api.getBacklotProject(projectId);
 
-      if (member) {
-        const role = member.role as BacklotMemberRole;
-        const canEdit = ['owner', 'admin', 'editor'].includes(role);
-        const isAdmin = ['owner', 'admin'].includes(role);
-        return { canView: true, canEdit, isAdmin, isOwner: false, role };
+        // Check if owner
+        const isOwner = project.owner_id === user.id;
+
+        if (isOwner) {
+          return { canView: true, canEdit: true, isAdmin: true, isOwner: true, role: 'owner' as BacklotMemberRole };
+        }
+
+        // For now, if we can access the project, assume we have view access
+        // More granular permissions would need additional backend endpoints
+        return { canView: true, canEdit: false, isAdmin: false, isOwner: false, role: 'viewer' as BacklotMemberRole };
+      } catch (error) {
+        return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
       }
-
-      // Check if public/unlisted
-      if (project.visibility === 'public' || project.visibility === 'unlisted') {
-        return { canView: true, canEdit: false, isAdmin: false, isOwner: false, role: null };
-      }
-
-      return { canView: false, canEdit: false, isAdmin: false, isOwner: false, role: null };
     },
-    enabled: !!projectId,
+    enabled: !!projectId && !!user,
   });
 }

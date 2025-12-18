@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
 import { ConversationList } from '@/components/messages/ConversationList';
 import { MessageView } from '@/components/messages/MessageView';
 import { Card } from '@/components/ui/card';
@@ -28,6 +29,7 @@ export type Conversation = {
 };
 
 const Messages = () => {
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const conversationIdFromUrl = searchParams.get('id') || searchParams.get('open');
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(conversationIdFromUrl);
@@ -35,12 +37,13 @@ const Messages = () => {
   const isMobile = useIsMobile();
 
   const { data: conversations, isLoading } = useQuery<Conversation[]>({
-    queryKey: ['conversations'],
+    queryKey: ['conversations', user?.id],
     queryFn: async () => {
-      const { data, error } = await supabase.rpc('get_user_conversations');
-      if (error) throw new Error(error.message);
+      if (!user?.id) return [];
+      const data = await api.listConversations(user.id);
       return data || [];
     },
+    enabled: !!user?.id,
   });
 
   useEffect(() => {
@@ -68,8 +71,8 @@ const Messages = () => {
 
   return (
     <>
-      <NewMessageModal 
-        isOpen={isNewMessageModalOpen} 
+      <NewMessageModal
+        isOpen={isNewMessageModalOpen}
         onClose={() => setIsNewMessageModalOpen(false)}
         onConversationCreated={(id) => {
           handleSelectConversation(id);

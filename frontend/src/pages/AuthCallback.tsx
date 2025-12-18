@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -16,61 +16,65 @@ const AuthCallback = () => {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      // 1) If we have a code param, exchange it for a session
+      // 1) If we have a code param, exchange it for tokens via API
       const code = params.get('code');
       const type = params.get('type');
       const returnTo = params.get('returnTo') || '/dashboard';
+
       if (code) {
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-        if (exchangeError) {
+        try {
+          // Exchange OAuth code for tokens
+          const redirectUri = `${window.location.origin}/auth/callback`;
+          await api.oauthCallback(code, redirectUri);
+        } catch (error) {
+          console.error('OAuth code exchange error:', error);
           setOpenError(true);
           return;
         }
       }
 
-      // 2) Confirm we have a session now
-      const { data: sessionResp } = await supabase.auth.getSession();
-      const session = sessionResp?.session;
-      if (!session) {
+      // 2) Confirm we have a token now
+      const token = api.getToken();
+      if (!token) {
         navigate('/login', { replace: true });
         return;
       }
 
       // Ensure a profile row exists
-      const { data, error } = await supabase.rpc('ensure_profile');
-      if (error) {
-        track("profile_create_error", { message: error.message });
+      try {
+        const result = await api.ensureProfile();
+        const newlyCreated = result?.newly_created === true;
+
+        // If this was an email confirmation flow, let the user know.
+        if (type === 'signup') {
+          toast.success('Your email is confirmed.');
+        }
+
+        if (newlyCreated) {
+          track("profile_created", { email: result?.profile?.email });
+          toast.success('Your profile is set up.');
+        }
+      } catch (error) {
+        console.error('Profile ensure error:', error);
+        track("profile_create_error", { message: String(error) });
         setOpenError(true);
         return;
       }
 
-      const newlyCreated = Array.isArray(data) ? (data[0]?.newly_created === true) : (data as any)?.newly_created === true;
-      const email = session.user.email || '';
-      const displayName = (session.user.user_metadata?.display_name as string) || (session.user.user_metadata?.full_name as string) || undefined;
-
-      // If this was an email confirmation flow, let the user know.
-      if (type === 'signup') {
-        toast.success('Your email is confirmed.');
+      // 3) Try to refresh token to get latest claims
+      try {
+        const refreshToken = localStorage.getItem('refresh_token');
+        if (refreshToken) {
+          await api.refreshToken(refreshToken);
+        }
+      } catch {
+        // Non-blocking, token refresh is optional
       }
 
-      if (newlyCreated) {
-        // Fire non-blocking email (best effort)
-        supabase.functions.invoke('send-profile-created-email', { body: { email, displayName } })
-          .then(() => {
-            // no-op
-          })
-          .catch(() => {
-            // ignore
-          });
-        track("profile_created", { email });
-        toast.success('Your profile is set up.');
+      // 4) Redirect to intended destination (if provided), else dashboard
+      if (mounted) {
+        navigate(returnTo, { replace: true });
       }
-
-      // Ensure client JWT is fully up to date with roles after verification
-      try { await supabase.auth.refreshSession(); } catch {}
-
-      // 3) Redirect to intended destination (if provided), else dashboard
-      navigate(returnTo, { replace: true });
     })();
 
     return () => { mounted = false; };
@@ -78,16 +82,17 @@ const AuthCallback = () => {
 
   async function retryEnsureProfile() {
     setRetrying(true);
-    const { data, error } = await supabase.rpc('ensure_profile');
-    setRetrying(false);
-    if (error) {
+    try {
+      await api.ensureProfile();
+      toast.success("Your profile is set up.");
+      setOpenError(false);
+      const returnTo = params.get('returnTo') || '/dashboard';
+      navigate(returnTo, { replace: true });
+    } catch (error) {
       toast.error("Still couldn't set up your profile.");
-      return;
+    } finally {
+      setRetrying(false);
     }
-    toast.success("Your profile is set up.");
-    setOpenError(false);
-    const returnTo = params.get('returnTo') || '/dashboard';
-    navigate(returnTo, { replace: true });
   }
 
   return (

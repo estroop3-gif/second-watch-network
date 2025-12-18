@@ -2,7 +2,7 @@
  * useClearances - Hook for managing project clearances/releases
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotClearanceItem,
   BacklotClearanceTemplate,
@@ -12,6 +12,8 @@ import {
   ClearanceSummary,
   ClearanceBulkStatusResponse,
 } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface UseClearancesOptions {
   projectId: string | null;
@@ -32,103 +34,59 @@ export function useClearances(options: UseClearancesOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      let query = supabase
-        .from('backlot_clearance_items')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('type', { ascending: true })
-        .order('title', { ascending: true })
-        .limit(limit);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (type !== 'all') {
-        query = query.eq('type', type);
+      const params = new URLSearchParams();
+      params.append('limit', String(limit));
+      if (type !== 'all') params.append('type', type);
+      if (status !== 'all') params.append('status', status);
+      if (search) params.append('search', search);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clearances' }));
+        throw new Error(error.detail);
       }
 
-      if (status !== 'all') {
-        query = query.eq('status', status);
-      }
-
-      if (search) {
-        query = query.or(`title.ilike.%${search}%,related_person_name.ilike.%${search}%,related_asset_label.ilike.%${search}%`);
-      }
-
-      const { data: clearanceData, error } = await query;
-      if (error) throw error;
-      if (!clearanceData || clearanceData.length === 0) return [];
-
-      // Fetch creator profiles
-      const creatorIds = new Set<string>();
-      clearanceData.forEach(c => {
-        if (c.created_by_user_id) creatorIds.add(c.created_by_user_id);
-      });
-
-      let profileMap = new Map<string, any>();
-      if (creatorIds.size > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .in('id', Array.from(creatorIds));
-        profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-      }
-
-      // Fetch related locations
-      const locationIds = new Set<string>();
-      clearanceData.forEach(c => {
-        if (c.related_location_id) locationIds.add(c.related_location_id);
-      });
-
-      let locationMap = new Map<string, any>();
-      if (locationIds.size > 0) {
-        const { data: locations } = await supabase
-          .from('backlot_locations')
-          .select('id, name, address, city, state')
-          .in('id', Array.from(locationIds));
-        locationMap = new Map(locations?.map(l => [l.id, l]) || []);
-      }
-
-      return clearanceData.map(clearance => ({
-        ...clearance,
-        created_by: clearance.created_by_user_id ? profileMap.get(clearance.created_by_user_id) : null,
-        related_location: clearance.related_location_id ? locationMap.get(clearance.related_location_id) : null,
-      })) as BacklotClearanceItem[];
+      const result = await response.json();
+      return (result.clearances || result || []) as BacklotClearanceItem[];
     },
     enabled: !!projectId,
   });
 
   const createClearance = useMutation({
     mutationFn: async ({ projectId, ...input }: ClearanceItemInput & { projectId: string }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .insert({
-          project_id: projectId,
-          type: input.type,
-          title: input.title,
-          description: input.description || null,
-          related_person_id: input.related_person_id || null,
-          related_person_name: input.related_person_name || null,
-          related_location_id: input.related_location_id || null,
-          related_project_location_id: input.related_project_location_id || null,
-          related_asset_label: input.related_asset_label || null,
-          file_url: input.file_url || null,
-          file_name: input.file_name || null,
-          file_is_sensitive: input.file_is_sensitive ?? false,
-          status: input.status || 'not_started',
-          requested_date: input.requested_date || null,
-          signed_date: input.signed_date || null,
-          expiration_date: input.expiration_date || null,
-          notes: input.notes || null,
-          contact_email: input.contact_email || null,
-          contact_phone: input.contact_phone || null,
-          created_by_user_id: userData.user.id,
-        })
-        .select()
-        .single();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
 
-      if (error) throw error;
-      return data as BacklotClearanceItem;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create clearance' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.clearance || result) as BacklotClearanceItem;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
@@ -138,35 +96,25 @@ export function useClearances(options: UseClearancesOptions) {
 
   const updateClearance = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ClearanceItemInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.type !== undefined) updateData.type = input.type;
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.description !== undefined) updateData.description = input.description;
-      if (input.related_person_id !== undefined) updateData.related_person_id = input.related_person_id;
-      if (input.related_person_name !== undefined) updateData.related_person_name = input.related_person_name;
-      if (input.related_location_id !== undefined) updateData.related_location_id = input.related_location_id;
-      if (input.related_project_location_id !== undefined) updateData.related_project_location_id = input.related_project_location_id;
-      if (input.related_asset_label !== undefined) updateData.related_asset_label = input.related_asset_label;
-      if (input.file_url !== undefined) updateData.file_url = input.file_url;
-      if (input.file_name !== undefined) updateData.file_name = input.file_name;
-      if (input.file_is_sensitive !== undefined) updateData.file_is_sensitive = input.file_is_sensitive;
-      if (input.status !== undefined) updateData.status = input.status;
-      if (input.requested_date !== undefined) updateData.requested_date = input.requested_date;
-      if (input.signed_date !== undefined) updateData.signed_date = input.signed_date;
-      if (input.expiration_date !== undefined) updateData.expiration_date = input.expiration_date;
-      if (input.notes !== undefined) updateData.notes = input.notes;
-      if (input.contact_email !== undefined) updateData.contact_email = input.contact_email;
-      if (input.contact_phone !== undefined) updateData.contact_phone = input.contact_phone;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/clearances/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
 
-      if (error) throw error;
-      return data as BacklotClearanceItem;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update clearance' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.clearance || result) as BacklotClearanceItem;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
@@ -176,22 +124,28 @@ export function useClearances(options: UseClearancesOptions) {
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status, signedDate }: { id: string; status: BacklotClearanceStatus; signedDate?: string }) => {
-      const updateData: Record<string, any> = { status };
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      // Auto-set signed_date if status is 'signed' and no date was previously set
-      if (status === 'signed' && signedDate) {
-        updateData.signed_date = signedDate;
+      const params = new URLSearchParams();
+      params.append('status', status);
+      if (signedDate) params.append('signed_date', signedDate);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${id}/status?${params.toString()}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update status' }));
+        throw new Error(error.detail);
       }
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data as BacklotClearanceItem;
+      const result = await response.json();
+      return (result.clearance || result) as BacklotClearanceItem;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
@@ -201,12 +155,18 @@ export function useClearances(options: UseClearancesOptions) {
 
   const deleteClearance = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_clearance_items')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/clearances/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete clearance' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
@@ -233,37 +193,22 @@ export function useClearanceItem(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/clearances/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch creator profile if exists
-      let created_by = null;
-      if (data.created_by_user_id) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .eq('id', data.created_by_user_id)
-          .single();
-        created_by = profile;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clearance' }));
+        throw new Error(error.detail);
       }
 
-      // Fetch related location if exists
-      let related_location = null;
-      if (data.related_location_id) {
-        const { data: location } = await supabase
-          .from('backlot_locations')
-          .select('id, name, address, city, state')
-          .eq('id', data.related_location_id)
-          .single();
-        related_location = location;
-      }
-
-      return { ...data, created_by, related_location } as BacklotClearanceItem;
+      const result = await response.json();
+      return (result.clearance || result) as BacklotClearanceItem;
     },
     enabled: !!id,
   });
@@ -276,64 +221,51 @@ export function useClearanceSummary(projectId: string | null) {
     queryFn: async (): Promise<ClearanceSummary | null> => {
       if (!projectId) return null;
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .select('type, status')
-        .eq('project_id', projectId);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/report`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-      // Build summary from data
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch summary' }));
+        throw new Error(error.detail);
+      }
+
+      const data = await response.json();
+
+      // Transform report data to ClearanceSummary format
       const summary: ClearanceSummary = {
-        total: data?.length || 0,
+        total: data.total_clearances || 0,
         by_status: {
-          not_started: 0,
-          requested: 0,
-          signed: 0,
-          expired: 0,
-          rejected: 0,
+          not_started: data.status_breakdown?.not_started || 0,
+          requested: data.status_breakdown?.requested || 0,
+          signed: data.status_breakdown?.signed || 0,
+          expired: data.status_breakdown?.expired || 0,
+          rejected: data.status_breakdown?.rejected || 0,
         },
         by_type: {} as ClearanceSummary['by_type'],
-        expiring_soon: 0,
+        expiring_soon: data.expiring_soon_count || 0,
       };
 
-      // Get items expiring within 30 days
-      const thirtyDaysFromNow = new Date();
-      thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-
-      const { data: expiringData } = await supabase
-        .from('backlot_clearance_items')
-        .select('id')
-        .eq('project_id', projectId)
-        .eq('status', 'signed')
-        .not('expiration_date', 'is', null)
-        .lte('expiration_date', thirtyDaysFromNow.toISOString().split('T')[0]);
-
-      summary.expiring_soon = expiringData?.length || 0;
-
-      // Count by status
-      data?.forEach(item => {
-        if (item.status in summary.by_status) {
-          summary.by_status[item.status as BacklotClearanceStatus]++;
-        }
-
-        // Count by type
-        const type = item.type as BacklotClearanceType;
-        if (!summary.by_type[type]) {
-          summary.by_type[type] = {
-            total: 0,
-            signed: 0,
-            requested: 0,
-            not_started: 0,
-            expired: 0,
+      // Build by_type from type_breakdown if available
+      if (data.type_breakdown) {
+        for (const [typeName, typeData] of Object.entries(data.type_breakdown as Record<string, any>)) {
+          summary.by_type[typeName as BacklotClearanceType] = {
+            total: typeData.total || 0,
+            signed: typeData.signed || 0,
+            requested: typeData.requested || 0,
+            not_started: typeData.not_started || 0,
+            expired: typeData.expired || 0,
           };
         }
-        summary.by_type[type].total++;
-        if (item.status === 'signed') summary.by_type[type].signed++;
-        if (item.status === 'requested') summary.by_type[type].requested++;
-        if (item.status === 'not_started') summary.by_type[type].not_started++;
-        if (item.status === 'expired') summary.by_type[type].expired++;
-      });
+      }
 
       return summary;
     },
@@ -346,28 +278,28 @@ export function useClearanceTemplates(type?: BacklotClearanceType) {
   return useQuery({
     queryKey: ['backlot-clearance-templates', type],
     queryFn: async () => {
-      let query = supabase
-        .from('backlot_clearance_templates')
-        .select('*')
-        .eq('is_active', true)
-        .order('name', { ascending: true });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (type) {
-        query = query.eq('type', type);
+      const params = new URLSearchParams();
+      if (type) params.append('type', type);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearance-templates?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch templates' }));
+        throw new Error(error.detail);
       }
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (userData.user) {
-        // Get system templates OR user's own templates
-        query = query.or(`owner_user_id.is.null,owner_user_id.eq.${userData.user.id}`);
-      } else {
-        // Just system templates
-        query = query.is('owner_user_id', null);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-      return data as BacklotClearanceTemplate[];
+      const result = await response.json();
+      return (result.templates || result || []) as BacklotClearanceTemplate[];
     },
   });
 }
@@ -379,16 +311,25 @@ export function useLocationClearances(projectId: string | null, locationId: stri
     queryFn: async () => {
       if (!projectId || !locationId) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('type', 'location_release')
-        .or(`related_location_id.eq.${locationId},related_project_location_id.eq.${locationId}`)
-        .order('created_at', { ascending: false });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data as BacklotClearanceItem[];
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/location/${locationId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clearances' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.clearances || result || []) as BacklotClearanceItem[];
     },
     enabled: !!projectId && !!locationId,
   });
@@ -405,16 +346,28 @@ export function usePersonClearances(
     queryFn: async () => {
       if (!projectId || !personId) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_clearance_items')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('related_person_id', personId)
-        .eq('type', releaseType)
-        .order('created_at', { ascending: false });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data as BacklotClearanceItem[];
+      const params = new URLSearchParams();
+      params.append('release_type', releaseType);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/person/${personId}?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clearances' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.clearances || result || []) as BacklotClearanceItem[];
     },
     enabled: !!projectId && !!personId,
   });
@@ -433,73 +386,34 @@ export function useBulkClearanceStatus(
         return { locations: {}, persons: {} };
       }
 
-      // Fetch location clearances
-      const locationsResult: Record<string, BacklotClearanceStatus | 'missing'> = {};
-      if (locationIds.length > 0) {
-        const { data: locationClearances } = await supabase
-          .from('backlot_clearance_items')
-          .select('related_location_id, related_project_location_id, status, expiration_date')
-          .eq('project_id', projectId)
-          .eq('type', 'location_release')
-          .or(`related_location_id.in.(${locationIds.join(',')}),related_project_location_id.in.(${locationIds.join(',')})`);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-        // Group by location ID, preferring 'signed' status
-        locationIds.forEach(locId => {
-          const matches = locationClearances?.filter(
-            c => c.related_location_id === locId || c.related_project_location_id === locId
-          ) || [];
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/bulk-status`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            location_ids: locationIds,
+            person_ids: personIds,
+          }),
+        }
+      );
 
-          if (matches.length === 0) {
-            locationsResult[locId] = 'missing';
-          } else {
-            // Find best status (signed > requested > not_started > expired)
-            const statusPriority: Record<string, number> = {
-              signed: 1,
-              requested: 2,
-              not_started: 3,
-              expired: 4,
-              rejected: 5,
-            };
-            const sorted = matches.sort((a, b) =>
-              (statusPriority[a.status] || 99) - (statusPriority[b.status] || 99)
-            );
-            locationsResult[locId] = sorted[0].status as BacklotClearanceStatus;
-          }
-        });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch status' }));
+        throw new Error(error.detail);
       }
 
-      // Fetch person clearances
-      const personsResult: Record<string, BacklotClearanceStatus | 'missing'> = {};
-      if (personIds.length > 0) {
-        const { data: personClearances } = await supabase
-          .from('backlot_clearance_items')
-          .select('related_person_id, status, expiration_date')
-          .eq('project_id', projectId)
-          .in('type', ['talent_release', 'appearance_release'])
-          .in('related_person_id', personIds);
-
-        personIds.forEach(personId => {
-          const matches = personClearances?.filter(c => c.related_person_id === personId) || [];
-
-          if (matches.length === 0) {
-            personsResult[personId] = 'missing';
-          } else {
-            const statusPriority: Record<string, number> = {
-              signed: 1,
-              requested: 2,
-              not_started: 3,
-              expired: 4,
-              rejected: 5,
-            };
-            const sorted = matches.sort((a, b) =>
-              (statusPriority[a.status] || 99) - (statusPriority[b.status] || 99)
-            );
-            personsResult[personId] = sorted[0].status as BacklotClearanceStatus;
-          }
-        });
-      }
-
-      return { locations: locationsResult, persons: personsResult };
+      const result = await response.json();
+      return {
+        locations: result.locations || {},
+        persons: result.persons || {},
+      };
     },
     enabled: !!projectId && (locationIds.length > 0 || personIds.length > 0),
   });

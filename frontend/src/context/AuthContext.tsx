@@ -1,7 +1,21 @@
 import { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
-import { Session, User } from '@supabase/supabase-js';
-import { supabase } from '@/integrations/supabase/client';
 import { api } from '@/lib/api';
+
+// Custom types to replace Supabase types
+interface AuthUser {
+  id: string;
+  email?: string;
+  user_metadata?: Record<string, any>;
+  app_metadata?: Record<string, any>;
+}
+
+interface AuthSession {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  token_type: string;
+  user: AuthUser;
+}
 
 interface SignUpResult {
   needsConfirmation: boolean;
@@ -9,8 +23,10 @@ interface SignUpResult {
 }
 
 interface AuthContextType {
-  session: Session | null;
-  user: User | null;
+  session: AuthSession | null;
+  user: AuthUser | null;
+  profile: any | null;
+  profileId: string | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (email: string, password: string, fullName?: string) => Promise<SignUpResult>;
@@ -21,10 +37,10 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
-  // Track whether initial auth check is complete to prevent race conditions
   const initialCheckComplete = useRef(false);
 
   // Check for existing session on mount
@@ -39,41 +55,38 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           const userData = await api.getCurrentUser();
           const refreshToken = localStorage.getItem('refresh_token') || '';
 
-          // Set the session on the Supabase client so supabase.auth.getUser() works
-          try {
-            await supabase.auth.setSession({
-              access_token: token,
-              refresh_token: refreshToken,
-            });
-          } catch (e) {
-            // Token might not be a valid Supabase JWT - that's OK for backend-only auth
-            console.warn('Could not set Supabase session:', e);
-          }
-
-          // Create a session-like object for compatibility
-          const mockSession: Session = {
+          // Create a session object
+          const authSession: AuthSession = {
             access_token: token,
             refresh_token: refreshToken,
             expires_in: 3600,
             token_type: 'bearer',
-            user: userData as User,
+            user: userData as AuthUser,
           };
 
-          setSession(mockSession);
-          setUser(userData as User);
+          setSession(authSession);
+          setUser(userData as AuthUser);
+
+          // Try to load profile
+          try {
+            const profileData = await api.getProfile();
+            setProfile(profileData);
+            if (profileData?.id) {
+              localStorage.setItem('profile_id', profileData.id);
+            }
+          } catch {
+            // Profile may not exist yet
+          }
         } catch (error) {
           // Token is invalid, clear it
           localStorage.removeItem('access_token');
           localStorage.removeItem('refresh_token');
+          localStorage.removeItem('profile_id');
           api.setToken(null);
           setSession(null);
           setUser(null);
+          setProfile(null);
         }
-      } else {
-        // Fallback to Supabase session for backward compatibility
-        const { data: { session } } = await supabase.auth.getSession();
-        setSession(session);
-        setUser(session?.user ?? null);
       }
 
       setLoading(false);
@@ -81,25 +94,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     };
 
     checkSession();
-
-    // Keep Supabase auth listener for OAuth flows
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      // Only handle auth state changes after initial check is complete
-      // This prevents race conditions where this callback fires before checkSession() finishes
-      if (!initialCheckComplete.current) {
-        return;
-      }
-      if (session && !localStorage.getItem('access_token')) {
-        setSession(session);
-        setUser(session?.user ?? null);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
   }, []);
 
   const signIn = async (email: string, password: string) => {
@@ -114,28 +108,28 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       api.setToken(data.access_token);
 
-      // Set the session on the Supabase client so supabase.auth.getUser() works
-      try {
-        await supabase.auth.setSession({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token || '',
-        });
-      } catch (e) {
-        // Token might not be a valid Supabase JWT - that's OK for backend-only auth
-        console.warn('Could not set Supabase session:', e);
-      }
-
-      // Create mock session for compatibility
-      const mockSession: Session = {
+      // Create session
+      const authSession: AuthSession = {
         access_token: data.access_token,
         refresh_token: data.refresh_token || '',
         expires_in: 3600,
         token_type: 'bearer',
-        user: data.user as User,
+        user: data.user as AuthUser,
       };
 
-      setSession(mockSession);
-      setUser(data.user as User);
+      setSession(authSession);
+      setUser(data.user as AuthUser);
+
+      // Load profile
+      try {
+        const profileData = await api.getProfile();
+        setProfile(profileData);
+        if (profileData?.id) {
+          localStorage.setItem('profile_id', profileData.id);
+        }
+      } catch {
+        // Profile may not exist yet
+      }
     } catch (error) {
       console.error('Sign in error:', error);
       throw error;
@@ -162,28 +156,17 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       api.setToken(data.access_token);
 
-      // Set the session on the Supabase client so supabase.auth.getUser() works
-      try {
-        await supabase.auth.setSession({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token || '',
-        });
-      } catch (e) {
-        // Token might not be a valid Supabase JWT - that's OK for backend-only auth
-        console.warn('Could not set Supabase session:', e);
-      }
-
-      // Create mock session for compatibility
-      const mockSession: Session = {
+      // Create session
+      const authSession: AuthSession = {
         access_token: data.access_token,
         refresh_token: data.refresh_token || '',
         expires_in: 3600,
         token_type: 'bearer',
-        user: data.user as User,
+        user: data.user as AuthUser,
       };
 
-      setSession(mockSession);
-      setUser(data.user as User);
+      setSession(authSession);
+      setUser(data.user as AuthUser);
 
       return { needsConfirmation: false, user: data.user };
     } catch (error) {
@@ -205,9 +188,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // Clear local state first to ensure UI updates immediately
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
+    localStorage.removeItem('profile_id');
     api.setToken(null);
     setSession(null);
     setUser(null);
+    setProfile(null);
 
     // Try to sign out from backend API
     try {
@@ -215,17 +200,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (error) {
       console.warn('Backend sign out error (non-blocking):', error);
     }
-
-    // Also sign out from Supabase for OAuth sessions
-    try {
-      await supabase.auth.signOut();
-    } catch (error) {
-      console.warn('Supabase sign out error (non-blocking):', error);
-    }
   };
 
+  const profileId = profile?.id || localStorage.getItem('profile_id') || null;
+
   return (
-    <AuthContext.Provider value={{ session, user, loading, signIn, signUp, confirmSignUp, signOut }}>
+    <AuthContext.Provider value={{
+      session,
+      user,
+      profile,
+      profileId,
+      loading,
+      signIn,
+      signUp,
+      confirmSignUp,
+      signOut
+    }}>
       {children}
     </AuthContext.Provider>
   );

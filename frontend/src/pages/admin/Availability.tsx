@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -34,48 +34,24 @@ interface AvailabilityRecord {
   } | null;
 }
 
-const fetchAvailability = async (): Promise<AvailabilityRecord[]> => {
-  const { data, error } = await supabase
-    .from('availability')
-    .select(`
-      id,
-      start_date,
-      end_date,
-      notes,
-      created_at,
-      profiles (
-        username,
-        avatar_url,
-        filmmaker_profiles (
-          full_name,
-          department
-        )
-      )
-    `);
-
-  if (error) {
-    console.error("Error fetching availability:", error);
-    throw new Error(error.message);
-  }
-  return data as AvailabilityRecord[];
-};
-
 const AvailabilityManagement = () => {
   const [sortBy, setSortBy] = useState<'start_date' | 'created_at'>('start_date');
   const queryClient = useQueryClient();
   const { data: availability, isLoading, error } = useQuery<AvailabilityRecord[]>({
     queryKey: ['admin-availability'],
-    queryFn: fetchAvailability,
+    queryFn: async () => {
+      const data = await api.listAllAvailabilityAdmin();
+      return data as AvailabilityRecord[];
+    },
   });
 
   const handleDeleteAvailability = async (recordId: string) => {
-    const { error } = await supabase.from('availability').delete().eq('id', recordId);
-
-    if (error) {
-      toast.error(`Failed to delete availability record: ${error.message}`);
-    } else {
+    try {
+      await api.deleteAvailabilityAdmin(recordId);
       toast.success("Availability record deleted.");
       queryClient.invalidateQueries({ queryKey: ['admin-availability'] });
+    } catch (error: any) {
+      toast.error(`Failed to delete availability record: ${error.message}`);
     }
   };
 

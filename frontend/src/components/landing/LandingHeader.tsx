@@ -8,7 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { SearchBar } from '@/components/SearchBar';
 import { NotificationBell } from '@/components/NotificationBell';
 import { UserNavMenuItems } from '../UserNavMenuItems';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
 type TargetKey = 'originals' | 'partners' | 'submit';
@@ -25,11 +25,15 @@ const LandingHeader = () => {
   const isDesktop = () => typeof window !== 'undefined' && window.innerWidth >= MOBILE_BREAKPOINT;
 
   const handleLogout = async () => {
-    const { error } = await supabase.auth.signOut();
-    if (error && error.message !== 'Auth session missing!') {
-      toast.error("Failed to log out: " + error.message);
-    } else {
+    try {
+      await api.signOut();
       navigate('/');
+    } catch (error: any) {
+      if (error.message !== 'Auth session missing!') {
+        toast.error("Failed to log out: " + error.message);
+      } else {
+        navigate('/');
+      }
     }
   };
 

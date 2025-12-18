@@ -2,7 +2,7 @@
  * useScripts - Hooks for managing scripts, scenes, and breakdown items
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotScript,
   BacklotScene,
@@ -53,14 +53,14 @@ export function useScripts(options: UseScriptsOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/scripts`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -78,8 +78,8 @@ export function useScripts(options: UseScriptsOptions) {
 
   const createScript = useMutation({
     mutationFn: async (input: ScriptInput & { projectId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${input.projectId}/scripts`,
@@ -87,7 +87,7 @@ export function useScripts(options: UseScriptsOptions) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -120,14 +120,14 @@ export function useScript(scriptId: string | null) {
     queryFn: async () => {
       if (!scriptId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -148,8 +148,8 @@ export function useScriptMutations() {
 
   const updateScript = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ScriptInput> & { id: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${id}`,
@@ -157,7 +157,7 @@ export function useScriptMutations() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -178,15 +178,15 @@ export function useScriptMutations() {
 
   const deleteScript = useMutation({
     mutationFn: async (id: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${id}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -223,12 +223,13 @@ export function useImportScript() {
       title?: string;
       version?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      // Get token from API module (works with Cognito)
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const formData = new FormData();
       formData.append('file', file);
-      if (title) formData.append('title', title);
+      formData.append('title', title || file.name.replace(/\.[^/.]+$/, ''));
       if (version) formData.append('version', version);
 
       const response = await fetch(
@@ -236,14 +237,14 @@ export function useImportScript() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: formData,
         }
       );
 
       if (!response.ok) {
-        const error = await response.json();
+        const error = await response.json().catch(() => ({ detail: 'Failed to import script' }));
         throw new Error(error.detail || 'Failed to import script');
       }
 
@@ -283,8 +284,8 @@ export function useScenes(options: UseScenesOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const params = new URLSearchParams();
       if (scriptId) params.append('script_id', scriptId);
@@ -298,7 +299,7 @@ export function useScenes(options: UseScenesOptions) {
         `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes?${params}`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -316,8 +317,8 @@ export function useScenes(options: UseScenesOptions) {
 
   const createScene = useMutation({
     mutationFn: async (input: SceneInput & { projectId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${input.projectId}/scenes`,
@@ -325,7 +326,7 @@ export function useScenes(options: UseScenesOptions) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -359,14 +360,14 @@ export function useScene(sceneId: string | null) {
     queryFn: async () => {
       if (!sceneId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${sceneId}`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -387,8 +388,8 @@ export function useSceneMutations() {
 
   const updateScene = useMutation({
     mutationFn: async ({ id, ...input }: Partial<SceneInput> & { id: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${id}`,
@@ -396,7 +397,7 @@ export function useSceneMutations() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -426,8 +427,8 @@ export function useSceneMutations() {
       coverage_status: BacklotSceneCoverageStatus;
       notes?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${id}/coverage`,
@@ -435,7 +436,7 @@ export function useSceneMutations() {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ coverage_status, notes }),
         }
@@ -457,15 +458,15 @@ export function useSceneMutations() {
 
   const deleteScene = useMutation({
     mutationFn: async (id: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${id}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -489,8 +490,8 @@ export function useSceneMutations() {
       projectId: string;
       sceneIds: string[];
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes/reorder`,
@@ -498,7 +499,7 @@ export function useSceneMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ scene_ids: sceneIds }),
         }
@@ -536,14 +537,14 @@ export function useBreakdownItems(sceneId: string | null) {
     queryFn: async () => {
       if (!sceneId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -572,8 +573,8 @@ export function useBreakdownItemMutations() {
 
   const createItem = useMutation({
     mutationFn: async (input: BreakdownItemInput & { sceneId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const { sceneId, ...itemInput } = input;
 
@@ -583,7 +584,7 @@ export function useBreakdownItemMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(itemInput),
         }
@@ -604,8 +605,8 @@ export function useBreakdownItemMutations() {
 
   const updateItem = useMutation({
     mutationFn: async ({ id, ...input }: Partial<BreakdownItemInput> & { id: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/breakdown-items/${id}`,
@@ -613,7 +614,7 @@ export function useBreakdownItemMutations() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -633,15 +634,15 @@ export function useBreakdownItemMutations() {
 
   const deleteItem = useMutation({
     mutationFn: async (id: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/breakdown-items/${id}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -674,14 +675,14 @@ export function useCoverageStats(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/script/coverage`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -703,14 +704,14 @@ export function useLocationNeeds(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/script/location-needs`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -743,8 +744,8 @@ export function useGenerateTasks() {
       sceneIds?: string[];
       itemTypes?: string[];
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/script/generate-tasks`,
@@ -752,7 +753,7 @@ export function useGenerateTasks() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ scene_ids: sceneIds, item_types: itemTypes }),
         }
@@ -782,8 +783,8 @@ export function useGenerateBudgetSuggestions() {
       projectId: string;
       scriptId?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const body: Record<string, any> = {};
       if (scriptId) body.script_id = scriptId;
@@ -794,7 +795,7 @@ export function useGenerateBudgetSuggestions() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(body),
         }
@@ -819,14 +820,14 @@ export function useBudgetSuggestions(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/budget-suggestions`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -858,8 +859,8 @@ export function useBudgetSuggestionMutations() {
       applied_line_item_id?: string;
       notes?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const body: Record<string, any> = {};
       if (status) body.status = status;
@@ -872,7 +873,7 @@ export function useBudgetSuggestionMutations() {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(body),
         }
@@ -905,14 +906,14 @@ export function useCallSheetSceneLinks(callSheetId: string | null) {
     queryFn: async () => {
       if (!callSheetId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -942,8 +943,8 @@ export function useCallSheetSceneLinkMutations() {
       callSheetId,
       ...input
     }: CallSheetSceneLinkInput & { callSheetId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/linked-scenes`,
@@ -951,7 +952,7 @@ export function useCallSheetSceneLinkMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -973,8 +974,8 @@ export function useCallSheetSceneLinkMutations() {
 
   const unlinkScene = useMutation({
     mutationFn: async (params: { callSheetId: string; sceneId: string } | { linkId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       // Support both deletion by linkId or by callSheetId/sceneId
       const url = 'linkId' in params
@@ -984,7 +985,7 @@ export function useCallSheetSceneLinkMutations() {
       const response = await fetch(url, {
         method: 'DELETE',
         headers: {
-          Authorization: `Bearer ${session.session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -1031,8 +1032,8 @@ export function useScriptPageNotes(options: UseScriptPageNotesOptions) {
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const params = new URLSearchParams();
       if (page_number !== undefined) params.append('page_number', String(page_number));
@@ -1045,7 +1046,7 @@ export function useScriptPageNotes(options: UseScriptPageNotesOptions) {
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes?${params}`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1075,14 +1076,14 @@ export function useScriptPageNotesSummary(scriptId: string | null) {
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/summary`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1105,8 +1106,8 @@ export function useScriptPageNoteMutations() {
 
   const createNote = useMutation({
     mutationFn: async (input: ScriptPageNoteInput & { scriptId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const { scriptId, ...noteInput } = input;
 
@@ -1116,7 +1117,7 @@ export function useScriptPageNoteMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(noteInput),
         }
@@ -1141,8 +1142,8 @@ export function useScriptPageNoteMutations() {
       noteId,
       ...input
     }: ScriptPageNoteUpdateInput & { scriptId: string; noteId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}`,
@@ -1150,7 +1151,7 @@ export function useScriptPageNoteMutations() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -1171,15 +1172,15 @@ export function useScriptPageNoteMutations() {
 
   const deleteNote = useMutation({
     mutationFn: async ({ scriptId, noteId }: { scriptId: string; noteId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1205,8 +1206,8 @@ export function useScriptPageNoteMutations() {
       noteId: string;
       resolved: boolean;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/notes/${noteId}/resolve`,
@@ -1214,7 +1215,7 @@ export function useScriptPageNoteMutations() {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ resolved }),
         }
@@ -1254,14 +1255,14 @@ export function useScriptVersionHistory(scriptId: string | null) {
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/versions`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1289,8 +1290,8 @@ export function useCreateScriptVersion() {
       scriptId,
       ...input
     }: ScriptVersionInput & { scriptId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/versions`,
@@ -1298,7 +1299,7 @@ export function useCreateScriptVersion() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -1333,8 +1334,8 @@ export function useLockScriptVersion() {
       scriptId: string;
       lock: boolean;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       // Use the appropriate endpoint based on lock/unlock action
       const endpoint = lock ? 'lock' : 'unlock';
@@ -1344,7 +1345,7 @@ export function useLockScriptVersion() {
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1372,15 +1373,15 @@ export function useSetCurrentScriptVersion() {
 
   return useMutation({
     mutationFn: async (scriptId: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/set-current`,
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1422,8 +1423,8 @@ export function useUpdateScriptText() {
       colorCode?: string;
       revisionNotes?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/text`,
@@ -1431,7 +1432,7 @@ export function useUpdateScriptText() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
             text_content: textContent,
@@ -1454,6 +1455,8 @@ export function useUpdateScriptText() {
       queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-script-versions'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-breakdown'] });
     },
   });
 }
@@ -1466,15 +1469,15 @@ export function useExtractScriptText() {
 
   return useMutation({
     mutationFn: async (scriptId: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/extract-text`,
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1508,8 +1511,8 @@ export function useScriptHighlights(scriptId: string | null, pageNumber?: number
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const params = new URLSearchParams();
       if (pageNumber !== undefined) params.append('page_number', String(pageNumber));
@@ -1518,7 +1521,7 @@ export function useScriptHighlights(scriptId: string | null, pageNumber?: number
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights?${params}`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1544,14 +1547,14 @@ export function useScriptHighlightSummary(scriptId: string | null) {
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/summary`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1576,8 +1579,8 @@ export function useScriptHighlightMutations() {
 
   const createHighlight = useMutation({
     mutationFn: async (input: ScriptHighlightInput & { scriptId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const { scriptId, ...highlightInput } = input;
 
@@ -1587,7 +1590,7 @@ export function useScriptHighlightMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(highlightInput),
         }
@@ -1603,6 +1606,9 @@ export function useScriptHighlightMutations() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+      // Also invalidate breakdown items since highlights now auto-create breakdown items
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-breakdown'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-breakdown-summary'] });
     },
   });
 
@@ -1618,8 +1624,8 @@ export function useScriptHighlightMutations() {
       label?: string;
       sceneId?: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const body: Record<string, any> = {};
       if (label) body.label = label;
@@ -1631,7 +1637,7 @@ export function useScriptHighlightMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(body),
         }
@@ -1659,15 +1665,15 @@ export function useScriptHighlightMutations() {
       scriptId: string;
       highlightId: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/reject`,
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1693,15 +1699,15 @@ export function useScriptHighlightMutations() {
       scriptId: string;
       highlightId: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1714,6 +1720,58 @@ export function useScriptHighlightMutations() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+      // Also invalidate breakdown items since deleting a highlight also deletes its breakdown item
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-breakdown'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-breakdown-summary'] });
+    },
+  });
+
+  const updateHighlight = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+      scene_id,
+      category,
+      suggested_label,
+    }: {
+      scriptId: string;
+      highlightId: string;
+      scene_id?: string;
+      category?: string;
+      suggested_label?: string;
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const body: Record<string, any> = {};
+      if (scene_id !== undefined) body.scene_id = scene_id;
+      if (category !== undefined) body.category = category;
+      if (suggested_label !== undefined) body.suggested_label = suggested_label;
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update highlight');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-breakdown'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-breakdown-summary'] });
     },
   });
 
@@ -1722,6 +1780,140 @@ export function useScriptHighlightMutations() {
     confirmHighlight,
     rejectHighlight,
     deleteHighlight,
+    updateHighlight,
+  };
+}
+
+// =============================================================================
+// HIGHLIGHT NOTES
+// =============================================================================
+
+export interface HighlightNote {
+  id: string;
+  highlight_id: string;
+  author_user_id: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+  profiles?: {
+    id: string;
+    full_name: string | null;
+    display_name: string | null;
+    avatar_url: string | null;
+  };
+}
+
+/**
+ * Get notes for a highlight
+ */
+export function useHighlightNotes(scriptId: string | null, highlightId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-highlight-notes', scriptId, highlightId],
+    queryFn: async () => {
+      if (!scriptId || !highlightId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/notes`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch highlight notes');
+      }
+
+      return response.json() as Promise<HighlightNote[]>;
+    },
+    enabled: !!scriptId && !!highlightId,
+  });
+}
+
+/**
+ * Mutations for highlight notes
+ */
+export function useHighlightNoteMutations() {
+  const queryClient = useQueryClient();
+
+  const createNote = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+      content,
+    }: {
+      scriptId: string;
+      highlightId: string;
+      content: string;
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/notes`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ content }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create note');
+      }
+
+      return response.json() as Promise<HighlightNote>;
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-highlight-notes', variables.scriptId, variables.highlightId] });
+    },
+  });
+
+  const deleteNote = useMutation({
+    mutationFn: async ({
+      scriptId,
+      highlightId,
+      noteId,
+    }: {
+      scriptId: string;
+      highlightId: string;
+      noteId: string;
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}/notes/${noteId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete note');
+      }
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-highlight-notes', variables.scriptId, variables.highlightId] });
+    },
+  });
+
+  return {
+    createNote,
+    deleteNote,
   };
 }
 
@@ -1738,14 +1930,14 @@ export function useScenePageMappings(scriptId: string | null) {
     queryFn: async () => {
       if (!scriptId) return [];
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1770,8 +1962,8 @@ export function useScenePageMappingMutations() {
 
   const createMapping = useMutation({
     mutationFn: async (input: ScenePageMappingInput & { scriptId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const { scriptId, ...mappingInput } = input;
 
@@ -1781,7 +1973,7 @@ export function useScenePageMappingMutations() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(mappingInput),
         }
@@ -1806,8 +1998,8 @@ export function useScenePageMappingMutations() {
       mappingId,
       ...input
     }: Partial<ScenePageMappingInput> & { scriptId: string; mappingId: string }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings/${mappingId}`,
@@ -1815,7 +2007,7 @@ export function useScenePageMappingMutations() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -1842,15 +2034,15 @@ export function useScenePageMappingMutations() {
       scriptId: string;
       mappingId: string;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/page-mappings/${mappingId}`,
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -1870,5 +2062,61 @@ export function useScenePageMappingMutations() {
     createMapping,
     updateMapping,
     deleteMapping,
+  };
+}
+
+// =============================================================================
+// SCRIPT PDF EXPORT WITH HIGHLIGHTS
+// =============================================================================
+
+/**
+ * Hook for exporting script with highlights and notes addendum
+ */
+export function useExportScriptWithHighlights() {
+  const exportScript = useMutation({
+    mutationFn: async ({ scriptId }: { scriptId: string }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/export-with-highlights`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to export script');
+      }
+
+      // Get filename from Content-Disposition header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'script_with_highlights.pdf';
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+)"/);
+        if (match) filename = match[1];
+      }
+
+      // Download the PDF
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      return { success: true, filename };
+    },
+  });
+
+  return {
+    exportScript,
+    isExporting: exportScript.isPending,
   };
 }

@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { CommunityProfile } from '@/types';
 
 type SortBy = 'updated_at' | 'created_at';
@@ -34,19 +34,14 @@ export function useCommunity(params?: CommunityParams) {
   const queryKey = ['community', merged.q, merged.pageSize, merged.sortBy, merged.sortDir];
 
   const fetchPage = async ({ pageParam = 1 }: { pageParam?: number }): Promise<CommunityResponse> => {
-    const { data, error } = await supabase.functions.invoke('community', {
-      body: {
-        q: merged.q || '',
-        page: pageParam,
-        pageSize: merged.pageSize,
-        sortBy: merged.sortBy,
-        sortDir: merged.sortDir,
-      },
+    const data = await api.listCommunityProfiles({
+      q: merged.q || '',
+      page: pageParam,
+      pageSize: merged.pageSize,
+      sortBy: merged.sortBy,
+      sortDir: merged.sortDir,
     });
 
-    if (error) {
-      throw new Error(error.message);
-    }
     return data as CommunityResponse;
   };
 

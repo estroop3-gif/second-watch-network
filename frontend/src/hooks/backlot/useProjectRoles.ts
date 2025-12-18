@@ -2,8 +2,10 @@
  * useProjectRoles - Hook for managing Backlot project roles and view configurations
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { BacklotProfile } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Backlot role definitions
 export const BACKLOT_ROLES = [
@@ -157,28 +159,21 @@ export function useProjectRoles(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: rolesData, error } = await supabase
-        .from('backlot_project_roles')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('created_at', { ascending: true });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      if (!rolesData || rolesData.length === 0) return [];
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/member-roles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch user profiles
-      const userIds = [...new Set(rolesData.map(r => r.user_id))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .in('id', userIds);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch roles' }));
+        throw new Error(error.detail);
+      }
 
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-
-      return rolesData.map(role => ({
-        ...role,
-        profile: profileMap.get(role.user_id) || null,
-      })) as BacklotProjectRole[];
+      return (await response.json()) as BacklotProjectRole[];
     },
     enabled: !!projectId,
   });
@@ -195,30 +190,28 @@ export function useProjectRoles(projectId: string | null) {
       backlotRole: BacklotRoleValue;
       isPrimary?: boolean;
     }) => {
-      // If setting as primary, clear other primary roles for this user
-      if (isPrimary) {
-        await supabase
-          .from('backlot_project_roles')
-          .update({ is_primary: false })
-          .eq('project_id', projectId)
-          .eq('user_id', userId);
-      }
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_roles')
-        .upsert({
-          project_id: projectId,
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/member-roles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
           user_id: userId,
           backlot_role: backlotRole,
           is_primary: isPrimary,
-        }, {
-          onConflict: 'project_id,user_id,backlot_role',
-        })
-        .select()
-        .single();
+        }),
+      });
 
-      if (error) throw error;
-      return data as BacklotProjectRole;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to assign role' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotProjectRole;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
@@ -229,12 +222,20 @@ export function useProjectRoles(projectId: string | null) {
 
   const removeRole = useMutation({
     mutationFn: async (roleId: string) => {
-      const { error } = await supabase
-        .from('backlot_project_roles')
-        .delete()
-        .eq('id', roleId);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/member-roles/${roleId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove role' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
@@ -253,23 +254,22 @@ export function useProjectRoles(projectId: string | null) {
       userId: string;
       roleId: string;
     }) => {
-      // Clear other primary roles for this user
-      await supabase
-        .from('backlot_project_roles')
-        .update({ is_primary: false })
-        .eq('project_id', projectId)
-        .eq('user_id', userId);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      // Set the selected role as primary
-      const { data, error } = await supabase
-        .from('backlot_project_roles')
-        .update({ is_primary: true })
-        .eq('id', roleId)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/member-roles/${roleId}/primary`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      if (error) throw error;
-      return data as BacklotProjectRole;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to set primary role' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
@@ -296,17 +296,21 @@ export function useMyProjectRoles(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) return [];
+      const token = api.getToken();
+      if (!token) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_project_roles')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('user_id', userData.user.id);
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/my-roles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      if (error) throw error;
-      return (data || []) as BacklotProjectRole[];
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch my roles' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotProjectRole[];
     },
     enabled: !!projectId,
   });
@@ -327,65 +331,23 @@ export function useViewConfig(projectId: string | null, viewAsRole?: string | nu
         return { role: viewAsRole, ...config };
       }
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) {
+      const token = api.getToken();
+      if (!token) {
         return { role: 'crew', ...DEFAULT_VIEW_CONFIGS.crew };
       }
 
-      // Check if user is project owner
-      const { data: project } = await supabase
-        .from('backlot_projects')
-        .select('owner_id')
-        .eq('id', projectId)
-        .single();
+      const params = viewAsRole ? `?view_as_role=${viewAsRole}` : '';
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/view-config${params}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      if (project?.owner_id === userData.user.id) {
-        return { role: 'owner', ...DEFAULT_VIEW_CONFIGS.showrunner };
+      if (!response.ok) {
+        return { role: 'crew', ...DEFAULT_VIEW_CONFIGS.crew };
       }
 
-      // Check user's profile for global admin status
-      // Note: is_admin/is_superadmin may not exist in all profile schemas
-      try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userData.user.id)
-          .single();
-
-        // Check if user has admin role
-        if (profile?.role === 'admin' || profile?.role === 'superadmin') {
-          return { role: 'admin', ...DEFAULT_VIEW_CONFIGS.showrunner };
-        }
-      } catch (e) {
-        // Ignore profile check errors
-      }
-
-      // Get user's primary backlot role
-      const { data: roles } = await supabase
-        .from('backlot_project_roles')
-        .select('backlot_role, is_primary')
-        .eq('project_id', projectId)
-        .eq('user_id', userData.user.id)
-        .order('is_primary', { ascending: false });
-
-      const primaryRole = roles?.find(r => r.is_primary)?.backlot_role || roles?.[0]?.backlot_role || 'crew';
-
-      // Check for custom view profile
-      const { data: customProfile } = await supabase
-        .from('backlot_project_view_profiles')
-        .select('config')
-        .eq('project_id', projectId)
-        .eq('backlot_role', primaryRole)
-        .eq('is_default', true)
-        .single();
-
-      if (customProfile?.config) {
-        return { role: primaryRole, config: customProfile.config as ViewConfig };
-      }
-
-      // Return default config for the role
-      const defaultConfig = DEFAULT_VIEW_CONFIGS[primaryRole] || DEFAULT_VIEW_CONFIGS.crew;
-      return { role: primaryRole, ...defaultConfig };
+      return (await response.json()) as EffectiveViewConfig;
     },
     enabled: !!projectId,
   });
@@ -401,14 +363,21 @@ export function useViewProfiles(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data, error } = await supabase
-        .from('backlot_project_view_profiles')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('backlot_role', { ascending: true });
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return (data || []) as BacklotViewProfile[];
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/view-profiles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        // May not exist yet - return empty array
+        return [];
+      }
+
+      return (await response.json()) as BacklotViewProfile[];
     },
     enabled: !!projectId,
   });
@@ -427,33 +396,29 @@ export function useViewProfiles(projectId: string | null) {
       config: ViewConfig;
       isDefault?: boolean;
     }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      // If setting as default, clear other defaults for this role
-      if (isDefault) {
-        await supabase
-          .from('backlot_project_view_profiles')
-          .update({ is_default: false })
-          .eq('project_id', projectId)
-          .eq('backlot_role', backlotRole);
-      }
-
-      const { data, error } = await supabase
-        .from('backlot_project_view_profiles')
-        .insert({
-          project_id: projectId,
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/view-profiles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
           backlot_role: backlotRole,
           label,
           config,
           is_default: isDefault,
-          created_by_user_id: userData.user.id,
-        })
-        .select()
-        .single();
+        }),
+      });
 
-      if (error) throw error;
-      return data as BacklotViewProfile;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create view profile' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotViewProfile;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-view-profiles'] });
@@ -473,20 +438,28 @@ export function useViewProfiles(projectId: string | null) {
       config?: ViewConfig;
       isDefault?: boolean;
     }) => {
-      const updateData: Record<string, any> = {};
-      if (label !== undefined) updateData.label = label;
-      if (config !== undefined) updateData.config = config;
-      if (isDefault !== undefined) updateData.is_default = isDefault;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_view_profiles')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/view-profiles/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          label,
+          config,
+          is_default: isDefault,
+        }),
+      });
 
-      if (error) throw error;
-      return data as BacklotViewProfile;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update view profile' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotViewProfile;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-view-profiles'] });
@@ -496,12 +469,20 @@ export function useViewProfiles(projectId: string | null) {
 
   const deleteViewProfile = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_project_view_profiles')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/view-profiles/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete view profile' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-view-profiles'] });
@@ -527,40 +508,21 @@ export function useCanManageRoles(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return false;
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) return false;
+      const token = api.getToken();
+      if (!token) return false;
 
-      // Check if project owner
-      const { data: project } = await supabase
-        .from('backlot_projects')
-        .select('owner_id')
-        .eq('id', projectId)
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/can-manage-roles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      if (project?.owner_id === userData.user.id) return true;
-
-      // Check global admin status via role field
-      try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userData.user.id)
-          .single();
-
-        if (profile?.role === 'admin' || profile?.role === 'superadmin') return true;
-      } catch (e) {
-        // Ignore profile check errors
+      if (!response.ok) {
+        return false;
       }
 
-      // Check if showrunner
-      const { data: roles } = await supabase
-        .from('backlot_project_roles')
-        .select('backlot_role')
-        .eq('project_id', projectId)
-        .eq('user_id', userData.user.id)
-        .eq('backlot_role', 'showrunner');
-
-      return (roles?.length || 0) > 0;
+      const result = await response.json();
+      return result.can_manage || false;
     },
     enabled: !!projectId,
   });
@@ -573,40 +535,22 @@ export function useCanViewAsRole(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return false;
 
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) return false;
+      const token = api.getToken();
+      if (!token) return false;
 
-      // Check global admin/superadmin via role field
-      try {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('role')
-          .eq('id', userData.user.id)
-          .single();
+      // Same permissions as canManageRoles
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/can-manage-roles`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-        if (profile?.role === 'admin' || profile?.role === 'superadmin') return true;
-      } catch (e) {
-        // Ignore profile check errors
+      if (!response.ok) {
+        return false;
       }
 
-      // Check if project owner
-      const { data: project } = await supabase
-        .from('backlot_projects')
-        .select('owner_id')
-        .eq('id', projectId)
-        .single();
-
-      if (project?.owner_id === userData.user.id) return true;
-
-      // Check if showrunner
-      const { data: roles } = await supabase
-        .from('backlot_project_roles')
-        .select('backlot_role')
-        .eq('project_id', projectId)
-        .eq('user_id', userData.user.id)
-        .eq('backlot_role', 'showrunner');
-
-      return (roles?.length || 0) > 0;
+      const result = await response.json();
+      return result.can_manage || false;
     },
     enabled: !!projectId,
   });

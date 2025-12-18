@@ -2,13 +2,15 @@
  * useTasks - Hook for managing production tasks
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotTask,
   ProductionTaskInput,
   TaskFilters,
   BacklotTaskStatus,
 } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface UseTasksOptions extends TaskFilters {
   projectId: string | null;
@@ -34,123 +36,62 @@ export function useTasks(options: UseTasksOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      let query = supabase
-        .from('backlot_tasks')
-        .select('*')
-        .eq('project_id', projectId)
-        .is('parent_task_id', null) // Only top-level tasks
-        .order('position', { ascending: true })
-        .limit(limit);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (status !== 'all') {
-        query = query.eq('status', status);
-      }
+      const params = new URLSearchParams();
+      params.append('limit', String(limit));
+      params.append('parent_only', 'true');
+      if (status !== 'all') params.append('status', status);
+      if (priority !== 'all') params.append('priority', priority);
+      if (assigned_to) params.append('assigned_to', assigned_to);
+      if (department) params.append('department', department);
+      if (production_day_id) params.append('production_day_id', production_day_id);
 
-      if (priority !== 'all') {
-        query = query.eq('priority', priority);
-      }
-
-      if (assigned_to) {
-        query = query.eq('assigned_to', assigned_to);
-      }
-
-      if (department) {
-        query = query.eq('department', department);
-      }
-
-      if (production_day_id) {
-        query = query.eq('production_day_id', production_day_id);
-      }
-
-      const { data: tasksData, error } = await query;
-      if (error) throw error;
-      if (!tasksData || tasksData.length === 0) return [];
-
-      // Fetch profiles for assigned users and creators
-      const userIds = new Set<string>();
-      tasksData.forEach(t => {
-        if (t.assigned_to) userIds.add(t.assigned_to);
-        if (t.created_by) userIds.add(t.created_by);
-      });
-
-      let profileMap = new Map<string, any>();
-      if (userIds.size > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .in('id', Array.from(userIds));
-        profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-      }
-
-      // Fetch subtasks for each task
-      const taskIds = tasksData.map(t => t.id);
-      const { data: subtasks } = await supabase
-        .from('backlot_tasks')
-        .select('*')
-        .in('parent_task_id', taskIds)
-        .order('position', { ascending: true });
-
-      const subtaskMap = new Map<string, BacklotTask[]>();
-      subtasks?.forEach(st => {
-        const parentId = st.parent_task_id!;
-        if (!subtaskMap.has(parentId)) {
-          subtaskMap.set(parentId, []);
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/simple-tasks?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         }
-        subtaskMap.get(parentId)!.push({
-          ...st,
-          assignee: st.assigned_to ? profileMap.get(st.assigned_to) : null,
-          creator: st.created_by ? profileMap.get(st.created_by) : null,
-        } as BacklotTask);
-      });
+      );
 
-      return tasksData.map(task => ({
-        ...task,
-        assignee: task.assigned_to ? profileMap.get(task.assigned_to) : null,
-        creator: task.created_by ? profileMap.get(task.created_by) : null,
-        subtasks: subtaskMap.get(task.id) || [],
-      })) as BacklotTask[];
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch tasks' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.tasks || []) as BacklotTask[];
     },
     enabled: !!projectId,
   });
 
   const createTask = useMutation({
     mutationFn: async (input: ProductionTaskInput & { projectId: string }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      // Get max position for ordering
-      const { data: maxPosData } = await supabase
-        .from('backlot_tasks')
-        .select('position')
-        .eq('project_id', input.projectId)
-        .is('parent_task_id', input.parent_task_id || null)
-        .order('position', { ascending: false })
-        .limit(1)
-        .single();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${input.projectId}/simple-tasks`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
 
-      const newPosition = (maxPosData?.position ?? -1) + 1;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create task' }));
+        throw new Error(error.detail);
+      }
 
-      const { data, error } = await supabase
-        .from('backlot_tasks')
-        .insert({
-          project_id: input.projectId,
-          title: input.title,
-          description: input.description || null,
-          status: input.status || 'todo',
-          priority: input.priority || 'medium',
-          assigned_to: input.assigned_to || null,
-          department: input.department || null,
-          due_date: input.due_date || null,
-          parent_task_id: input.parent_task_id || null,
-          production_day_id: input.production_day_id || null,
-          position: input.position ?? newPosition,
-          created_by: userData.user.id,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data as BacklotTask;
+      const result = await response.json();
+      return (result.task || result) as BacklotTask;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
@@ -159,34 +100,25 @@ export function useTasks(options: UseTasksOptions) {
 
   const updateTask = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ProductionTaskInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.description !== undefined) updateData.description = input.description;
-      if (input.status !== undefined) {
-        updateData.status = input.status;
-        if (input.status === 'completed') {
-          updateData.completed_at = new Date().toISOString();
-        } else {
-          updateData.completed_at = null;
-        }
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/simple-tasks/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update task' }));
+        throw new Error(error.detail);
       }
-      if (input.priority !== undefined) updateData.priority = input.priority;
-      if (input.assigned_to !== undefined) updateData.assigned_to = input.assigned_to;
-      if (input.department !== undefined) updateData.department = input.department;
-      if (input.due_date !== undefined) updateData.due_date = input.due_date;
-      if (input.parent_task_id !== undefined) updateData.parent_task_id = input.parent_task_id;
-      if (input.production_day_id !== undefined) updateData.production_day_id = input.production_day_id;
-      if (input.position !== undefined) updateData.position = input.position;
 
-      const { data, error } = await supabase
-        .from('backlot_tasks')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data as BacklotTask;
+      const result = await response.json();
+      return (result.task || result) as BacklotTask;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
@@ -195,22 +127,24 @@ export function useTasks(options: UseTasksOptions) {
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: BacklotTaskStatus }) => {
-      const updateData: Record<string, any> = { status };
-      if (status === 'completed') {
-        updateData.completed_at = new Date().toISOString();
-      } else {
-        updateData.completed_at = null;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/simple-tasks/${id}/status?status=${status}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update status' }));
+        throw new Error(error.detail);
       }
 
-      const { data, error } = await supabase
-        .from('backlot_tasks')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data as BacklotTask;
+      const result = await response.json();
+      return (result.task || result) as BacklotTask;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
@@ -219,12 +153,18 @@ export function useTasks(options: UseTasksOptions) {
 
   const deleteTask = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_tasks')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/simple-tasks/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete task' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
@@ -233,14 +173,27 @@ export function useTasks(options: UseTasksOptions) {
 
   const reorderTasks = useMutation({
     mutationFn: async (orderedIds: string[]) => {
-      const updates = orderedIds.map((id, index) =>
-        supabase
-          .from('backlot_tasks')
-          .update({ position: index })
-          .eq('id', id)
+      if (!projectId) throw new Error('No project ID');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/simple-tasks/reorder`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(orderedIds),
+        }
       );
 
-      await Promise.all(updates);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder tasks' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
@@ -267,41 +220,22 @@ export function useTask(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data: task, error } = await supabase
-        .from('backlot_tasks')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/simple-tasks/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch profiles
-      const userIds = new Set<string>();
-      if (task.assigned_to) userIds.add(task.assigned_to);
-      if (task.created_by) userIds.add(task.created_by);
-
-      let profileMap = new Map<string, any>();
-      if (userIds.size > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .in('id', Array.from(userIds));
-        profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch task' }));
+        throw new Error(error.detail);
       }
 
-      // Fetch subtasks
-      const { data: subtasks } = await supabase
-        .from('backlot_tasks')
-        .select('*')
-        .eq('parent_task_id', id)
-        .order('position', { ascending: true });
-
-      return {
-        ...task,
-        assignee: task.assigned_to ? profileMap.get(task.assigned_to) : null,
-        creator: task.created_by ? profileMap.get(task.created_by) : null,
-        subtasks: subtasks || [],
-      } as BacklotTask;
+      const result = await response.json();
+      return (result.task || result) as BacklotTask;
     },
     enabled: !!id,
   });
@@ -314,15 +248,22 @@ export function useTaskStats(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      try {
-        const { data: tasks, error } = await supabase
-          .from('backlot_tasks')
-          .select('status')
-          .eq('project_id', projectId);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-        if (error) {
-          // Table might not exist or permission denied - return empty stats
-          console.warn('Could not fetch task stats:', error.message);
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/v1/backlot/projects/${projectId}/simple-tasks/stats`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          }
+        );
+
+        if (!response.ok) {
+          // Return empty stats on error
+          console.warn('Could not fetch task stats');
           return {
             total: 0,
             todo: 0,
@@ -333,16 +274,7 @@ export function useTaskStats(projectId: string | null) {
           };
         }
 
-        const stats = {
-          total: tasks?.length || 0,
-          todo: tasks?.filter(t => t.status === 'todo').length || 0,
-          in_progress: tasks?.filter(t => t.status === 'in_progress').length || 0,
-          review: tasks?.filter(t => t.status === 'review').length || 0,
-          completed: tasks?.filter(t => t.status === 'completed').length || 0,
-          blocked: tasks?.filter(t => t.status === 'blocked').length || 0,
-        };
-
-        return stats;
+        return response.json();
       } catch (e) {
         // Return empty stats on any error
         return {

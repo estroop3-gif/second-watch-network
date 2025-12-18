@@ -15,7 +15,7 @@ import {
   FormMessage
 } from "@/components/ui/form";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -78,14 +78,12 @@ const LoginForm = () => {
     // UI cooldown: 10s
     setResendCooldownUntil(now + 10_000);
 
-    const { error } = await supabase.functions.invoke("resend-confirmation", {
-      body: { email: lastTriedEmail },
-    });
-    if (error) {
+    try {
+      await api.resendConfirmation(lastTriedEmail);
+      toast.success("Confirmation email resent.");
+    } catch (error: any) {
       toast.error(error.message || "Couldn't resend confirmation. Try again.");
-      return;
     }
-    toast.success("Confirmation email resent.");
   }
 
   const onSubmit = async (values: FormValues) => {

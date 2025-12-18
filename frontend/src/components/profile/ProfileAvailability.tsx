@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { format } from 'date-fns';
 import { Availability } from '@/types';
@@ -15,21 +15,14 @@ interface ProfileAvailabilityProps {
 const ProfileAvailability = ({ user_id }: ProfileAvailabilityProps) => {
   const [showCalendar, setShowCalendar] = useState(false);
 
-  const fetchAvailability = async () => {
-    const today = new Date().toISOString().split('T')[0];
-    const { data, error } = await supabase
-      .from('availability')
-      .select('*')
-      .eq('user_id', user_id)
-      .gte('end_date', today) // Only fetch upcoming or current
-      .order('start_date', { ascending: true });
-    if (error) throw new Error(error.message);
-    return data as Availability[];
-  };
-
   const { data: availabilities, isLoading } = useQuery({
     queryKey: ['public_availability', user_id],
-    queryFn: fetchAvailability,
+    queryFn: async () => {
+      const data = await api.listAvailability(user_id);
+      // Filter to only upcoming or current availability
+      const today = new Date().toISOString().split('T')[0];
+      return (data as Availability[]).filter(a => a.end_date >= today);
+    },
   });
 
   return (

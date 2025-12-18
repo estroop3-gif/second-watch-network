@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { track } from "@/utils/telemetry";
 
@@ -21,7 +21,14 @@ export default function BillingReturn() {
           track("upgrade_success_return", { context, returnTo, resume: true });
         } catch {}
         // Refresh session to pick up new roles from webhook update
-        await supabase.auth.refreshSession();
+        const refreshToken = localStorage.getItem('refresh_token');
+        if (refreshToken) {
+          try {
+            await api.refreshToken(refreshToken);
+          } catch {
+            // Token refresh is optional
+          }
+        }
         toast.success("Premium activated! Enjoy your new features.");
 
         // Ensure auto-resume flags make it to the target page

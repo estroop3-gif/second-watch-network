@@ -10,6 +10,17 @@ import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
   FileText,
   Plus,
   MoreVertical,
@@ -43,6 +54,7 @@ import {
   History,
   ChevronDown,
   StickyNote,
+  Download,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -68,6 +80,8 @@ import {
   useScriptVersionHistory,
   useSetCurrentScriptVersion,
   useLockScriptVersion,
+  useScriptMutations,
+  useExportScriptWithHighlights,
 } from '@/hooks/backlot';
 import {
   BacklotScript,
@@ -441,9 +455,12 @@ const ScriptView: React.FC<ScriptViewProps> = ({
     search: searchQuery || undefined,
   });
   const { updateCoverage } = useSceneMutations();
+  const { deleteScript } = useScriptMutations();
   const { data: locationNeeds, isLoading: locationNeedsLoading } = useLocationNeeds(projectId);
   const generateTasks = useGenerateTasks();
   const generateBudgetSuggestions = useGenerateBudgetSuggestions();
+  const { exportScript, isExporting } = useExportScriptWithHighlights();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const handleCoverageChange = async (sceneId: string, status: BacklotSceneCoverageStatus) => {
     try {
@@ -488,6 +505,25 @@ const ScriptView: React.FC<ScriptViewProps> = ({
       toast({
         title: 'Error',
         description: 'Failed to generate budget suggestions',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDeleteScript = async () => {
+    if (!activeScript) return;
+    try {
+      await deleteScript.mutateAsync(activeScript.id);
+      setShowDeleteDialog(false);
+      setSelectedScriptId(null);
+      toast({
+        title: 'Script Deleted',
+        description: 'The script and all its scenes have been removed.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to delete script',
         variant: 'destructive',
       });
     }
@@ -567,6 +603,39 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            {activeScript && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  exportScript.mutate(
+                    { scriptId: activeScript.id },
+                    {
+                      onSuccess: () => {
+                        toast({
+                          title: 'Export Complete',
+                          description: 'Script PDF with highlights and notes has been downloaded',
+                        });
+                      },
+                      onError: (error) => {
+                        toast({
+                          title: 'Export Failed',
+                          description: error.message,
+                          variant: 'destructive',
+                        });
+                      },
+                    }
+                  );
+                }}
+                disabled={isExporting}
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Export Marked Script
+              </Button>
+            )}
             <Button
               onClick={onImportClick}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
@@ -574,19 +643,64 @@ const ScriptView: React.FC<ScriptViewProps> = ({
               <Upload className="w-4 h-4 mr-2" />
               Import Script
             </Button>
+            {activeScript && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon">
+                    <MoreVertical className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => setShowDeleteDialog(true)}
+                    className="text-red-400 focus:text-red-400"
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Delete Script
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         )}
       </div>
 
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent className="bg-charcoal-black border-muted-gray/20">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-bone-white">Delete Script?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-gray">
+              This will permanently delete "{activeScript?.title}" and all associated scenes,
+              breakdown items, notes, and highlights. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="border-muted-gray/20">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteScript}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {deleteScript.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                'Delete Script'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
         <TabsList className="bg-charcoal-black border border-muted-gray/20">
-          {activeScript?.file_url && (
-            <TabsTrigger value="viewer" className="flex items-center gap-1">
-              <BookOpen className="w-3 h-3" />
-              View Script
-            </TabsTrigger>
-          )}
+          <TabsTrigger value="viewer" className="flex items-center gap-1">
+            <BookOpen className="w-3 h-3" />
+            View Script
+          </TabsTrigger>
           <TabsTrigger value="editor" className="flex items-center gap-1">
             <Edit className="w-3 h-3" />
             Editor
@@ -613,8 +727,18 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           ) : (
             <div className="text-center py-12 text-muted-gray">
               <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-40" />
-              <p>No PDF script available</p>
-              <p className="text-sm">Import a PDF script to view it here</p>
+              <p className="text-bone-white text-lg mb-2">No PDF Available</p>
+              <p className="text-sm mb-6">This script was imported before PDF storage was enabled.</p>
+              <p className="text-sm mb-4">To view the PDF, you need to re-import the script file.</p>
+              {canEdit && (
+                <Button
+                  onClick={onImportClick}
+                  className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Re-import Script
+                </Button>
+              )}
             </div>
           )}
         </TabsContent>

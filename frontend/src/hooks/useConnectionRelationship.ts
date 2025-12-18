@@ -1,5 +1,5 @@
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 type RelationshipState = 'none' | 'outboundPending' | 'inboundPending' | 'connected';
@@ -24,15 +24,13 @@ export function useConnectionRelationship(peerId: string | undefined) {
     queryFn: async () => {
       if (!user || !peerId) return null;
 
-      const { data, error } = await supabase
-        .from<ConnectionRow>('connections')
-        .select('*')
-        .or(`and(requester_id.eq.${user.id},addressee_id.eq.${peerId}),and(requester_id.eq.${peerId},addressee_id.eq.${user.id})`)
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (error) throw new Error(error.message);
-      return data?.[0] ?? null;
+      try {
+        const data = await api.getConnectionRelationship(peerId, user.id);
+        return data as ConnectionRow | null;
+      } catch (error) {
+        console.error('Connection relationship error:', error);
+        return null;
+      }
     },
   });
 
@@ -51,12 +49,7 @@ export function useConnectionRelationship(peerId: string | undefined) {
   const sendRequest = useMutation({
     mutationFn: async () => {
       if (!user || !peerId) throw new Error('Missing user or peer');
-      const { error } = await supabase.from('connections').insert({
-        requester_id: user.id,
-        addressee_id: peerId,
-        status: 'pending',
-      });
-      if (error) throw new Error(error.message);
+      await api.createConnectionRequest(user.id, { addressee_id: peerId });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connectionRelationship', user?.id, peerId] });
@@ -65,11 +58,7 @@ export function useConnectionRelationship(peerId: string | undefined) {
 
   const accept = useMutation({
     mutationFn: async (requestId: string) => {
-      const { error } = await supabase
-        .from('connections')
-        .update({ status: 'accepted' })
-        .eq('id', requestId);
-      if (error) throw new Error(error.message);
+      await api.updateConnection(requestId, 'accepted');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connectionRelationship', user?.id, peerId] });
@@ -78,11 +67,7 @@ export function useConnectionRelationship(peerId: string | undefined) {
 
   const deny = useMutation({
     mutationFn: async (requestId: string) => {
-      const { error } = await supabase
-        .from('connections')
-        .update({ status: 'denied' })
-        .eq('id', requestId);
-      if (error) throw new Error(error.message);
+      await api.updateConnection(requestId, 'denied');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connectionRelationship', user?.id, peerId] });
@@ -90,13 +75,8 @@ export function useConnectionRelationship(peerId: string | undefined) {
   });
 
   const cancel = useMutation({
-    // Use DELETE for cancel to avoid relying on a 'cancelled' enum that may not exist
     mutationFn: async (requestId: string) => {
-      const { error } = await supabase
-        .from('connections')
-        .delete()
-        .eq('id', requestId);
-      if (error) throw new Error(error.message);
+      await api.deleteConnection(requestId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['connectionRelationship', user?.id, peerId] });

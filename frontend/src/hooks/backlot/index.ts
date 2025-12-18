@@ -11,6 +11,16 @@ export {
   useProjectPermission,
 } from './useProjects';
 
+// Optimized Project Dashboard (single API call for overview)
+export { useProjectDashboard } from './useProjectDashboard';
+export type {
+  TaskStats,
+  ProductionDay,
+  ProjectMember,
+  ProjectUpdate,
+  ProjectDashboardData,
+} from './useProjectDashboard';
+
 // Schedule (Production Days & Call Sheets)
 export {
   useProductionDays,
@@ -197,9 +207,14 @@ export {
   useScriptHighlights,
   useScriptHighlightSummary,
   useScriptHighlightMutations,
+  // Highlight Notes
+  useHighlightNotes,
+  useHighlightNoteMutations,
   // Scene Page Mappings
   useScenePageMappings,
   useScenePageMappingMutations,
+  // Script PDF Export
+  useExportScriptWithHighlights,
 } from './useScripts';
 
 // Casting & Crew Pipeline

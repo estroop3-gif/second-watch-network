@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
@@ -34,25 +34,10 @@ export const NewMessageModal = ({ isOpen, onClose, onConversationCreated }: NewM
     queryKey: ['messaging-recipients', term],
     queryFn: async () => {
       if (!user) return [];
-      let query = supabase
-        .from('profiles')
-        .select('id, username, display_name, full_name, avatar_url')
-        .neq('id', user.id)
-        .limit(50);
-
-      if (term) {
-        // Search across username, display_name, full_name (case-insensitive)
-        query = query.or(
-          `username.ilike.%${term}%,display_name.ilike.%${term}%,full_name.ilike.%${term}%`
-        );
-      }
-
-      const { data, error } = await query;
-      if (error) {
-        console.error('Error fetching recipients:', error);
-        throw new Error(error.message);
-      }
-      return (data || []).map((p) => ({
+      // Use searchUsers API with larger limit, filtering happens server-side
+      const data = await api.searchUsers(term || '', 50);
+      // Filter out current user from results
+      return (data || []).filter((p: any) => p.id !== user.id).map((p: any) => ({
         id: p.id,
         username: p.username,
         display_name: p.display_name,
@@ -66,11 +51,9 @@ export const NewMessageModal = ({ isOpen, onClose, onConversationCreated }: NewM
 
   const createConversationMutation = useMutation({
     mutationFn: async (otherUserId: string) => {
-      const { data, error } = await supabase.rpc('create_private_conversation', {
-        other_user_id: otherUserId,
-      });
-      if (error) throw error;
-      return data as string | null;
+      if (!user) throw new Error('User not authenticated');
+      const result = await api.createPrivateConversation(user.id, otherUserId);
+      return result.conversation_id;
     },
     onSuccess: (newConversationId) => {
       if (newConversationId) {

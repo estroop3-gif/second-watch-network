@@ -213,7 +213,17 @@ def parse_pdf(content: bytes) -> ParseResult:
         except ImportError:
             raise ImportError("pypdf or PyPDF2 is required for PDF parsing")
 
-    reader = PdfReader(io.BytesIO(content))
+    # Ensure content is bytes
+    if not isinstance(content, bytes):
+        raise ValueError(f"Expected bytes, got {type(content)}")
+
+    print(f"parse_pdf: content is {type(content)}, length={len(content)}")
+
+    # Create BytesIO wrapper
+    pdf_bytes = io.BytesIO(content)
+    print(f"parse_pdf: BytesIO created, readable={pdf_bytes.readable()}")
+
+    reader = PdfReader(pdf_bytes)
     page_count = len(reader.pages)
 
     elements: List[ScriptElement] = []

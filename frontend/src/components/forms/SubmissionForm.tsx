@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { useState } from "react";
 
@@ -37,14 +37,14 @@ const formSchema = z.object({
 });
 
 export function SubmissionForm() {
-  const { session } = useAuth();
+  const { session, user } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      name: session?.user?.user_metadata?.username || "",
-      email: session?.user?.email || "",
+      name: (user as any)?.username || (user as any)?.full_name || "",
+      email: (user as any)?.email || "",
       projectTitle: "",
       project_type: "",
       logline: "",
@@ -57,7 +57,6 @@ export function SubmissionForm() {
   async function onSubmit(values: z.infer<typeof formSchema>) {
     setIsSubmitting(true);
     const submissionData = {
-      user_id: session?.user?.id || null,
       name: values.name,
       email: values.email,
       project_title: values.projectTitle,
@@ -68,22 +67,15 @@ export function SubmissionForm() {
       status: 'Pending',
     };
 
-    const { error } = await supabase.from("submissions").insert([submissionData]);
-
-    if (error) {
+    try {
+      await api.createSubmission(user?.id || '', submissionData);
+      toast.success("Submission received! We'll be in touch.");
+      form.reset();
+    } catch (error: any) {
       toast.error(`Submission failed: ${error.message}`);
+    } finally {
       setIsSubmitting(false);
-      return;
     }
-
-    // Trigger email notification, but don't block on its completion
-    supabase.functions.invoke('send-submission-email', {
-      body: submissionData,
-    }).catch(console.error);
-
-    toast.success("Submission received! We'll be in touch.");
-    form.reset();
-    setIsSubmitting(false);
   }
 
   return (

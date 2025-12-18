@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -46,56 +46,28 @@ interface Credit {
   } | null;
 }
 
-// Fetch Functions
-const fetchProductions = async (): Promise<Production[]> => {
-  const { data, error } = await supabase
-    .from('productions')
-    .select(`
-      id,
-      title,
-      slug,
-      created_at,
-      profiles (username, full_name)
-    `)
-    .order('created_at', { ascending: false });
-  if (error) throw new Error(error.message);
-  return data;
-};
-
-const fetchCredits = async (): Promise<Credit[]> => {
-  const { data, error } = await supabase
-    .from('credits')
-    .select(`
-      id,
-      position,
-      production_date,
-      profiles (username, full_name, avatar_url),
-      productions (title, slug)
-    `)
-    .order('created_at', { ascending: false });
-  if (error) throw new Error(error.message);
-  return data;
-};
-
 // Components
 const ProductionsTable = () => {
   const queryClient = useQueryClient();
   const { data: productions, isLoading, error } = useQuery({
     queryKey: ['admin-productions'],
-    queryFn: fetchProductions,
+    queryFn: async () => {
+      const data = await api.listAllProductionsAdmin();
+      return data as Production[];
+    },
   });
 
-  if (error) toast.error(`Failed to fetch productions: ${error.message}`);
+  if (error) toast.error(`Failed to fetch productions: ${(error as Error).message}`);
 
   const handleDeleteProduction = async (productionId: string) => {
-    const { error } = await supabase.from('productions').delete().eq('id', productionId);
-    if (error) {
+    try {
+      await api.deleteProductionAdmin(productionId);
+      toast.success("Production deleted successfully.");
+      queryClient.invalidateQueries({ queryKey: ['admin-productions'] });
+    } catch (error: any) {
       toast.error(`Failed to delete production: ${error.message}`, {
         description: "You may need to delete associated credits first."
       });
-    } else {
-      toast.success("Production deleted successfully.");
-      queryClient.invalidateQueries({ queryKey: ['admin-productions'] });
     }
   };
 
@@ -146,18 +118,21 @@ const CreditsTable = () => {
   const queryClient = useQueryClient();
   const { data: credits, isLoading, error } = useQuery({
     queryKey: ['admin-credits'],
-    queryFn: fetchCredits,
+    queryFn: async () => {
+      const data = await api.listAllCreditsAdmin();
+      return data as Credit[];
+    },
   });
 
-  if (error) toast.error(`Failed to fetch credits: ${error.message}`);
+  if (error) toast.error(`Failed to fetch credits: ${(error as Error).message}`);
 
   const handleDeleteCredit = async (creditId: string) => {
-    const { error } = await supabase.from('credits').delete().eq('id', creditId);
-    if (error) {
-      toast.error(`Failed to delete credit: ${error.message}`);
-    } else {
+    try {
+      await api.deleteCreditAdmin(creditId);
       toast.success("Credit deleted successfully.");
       queryClient.invalidateQueries({ queryKey: ['admin-credits'] });
+    } catch (error: any) {
+      toast.error(`Failed to delete credit: ${error.message}`);
     }
   };
 

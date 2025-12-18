@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2, PlusCircle, Trash2, Edit, X } from 'lucide-react';
 
@@ -70,77 +70,50 @@ const CreditForm = ({ onSave, existingCredit, closeModal }: { onSave: (data: Cre
 };
 
 const ManageCredits = ({ initialCredits, onCreditsUpdate }: { initialCredits: any[], onCreditsUpdate: () => void }) => {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingCredit, setEditingCredit] = useState<any | null>(null);
 
   const handleSaveCredit = async (data: CreditFormValues, creditId?: string) => {
-    if (!user) return;
+    if (!profileId) return;
     setIsSubmitting(true);
 
-    // Find or create production
-    let { data: production, error: productionError } = await supabase
-      .from('productions')
-      .select('id')
-      .eq('title', data.productionTitle)
-      .single();
+    try {
+      const creditPayload = {
+        position: data.position,
+        production_title: data.productionTitle,
+        description: data.description,
+        production_date: data.productionDate || undefined,
+      };
 
-    if (productionError && productionError.code !== 'PGRST116') {
-      toast.error(`Error finding production: ${productionError.message}`);
-      setIsSubmitting(false);
-      return;
-    }
-
-    if (!production) {
-      const { data: newProduction, error: newProductionError } = await supabase
-        .from('productions')
-        .insert({ title: data.productionTitle, slug: data.productionTitle.toLowerCase().replace(/\s+/g, '-'), created_by: user.id })
-        .select('id')
-        .single();
-      if (newProductionError) {
-        toast.error(`Error creating production: ${newProductionError.message}`);
-        setIsSubmitting(false);
-        return;
+      if (creditId) {
+        // Update existing credit
+        await api.updateCredit(creditId, profileId, creditPayload);
+        toast.success('Credit updated successfully!');
+      } else {
+        // Create new credit
+        await api.createCredit(profileId, creditPayload);
+        toast.success('Credit added successfully!');
       }
-      production = newProduction;
-    }
 
-    const creditData = {
-      user_id: user.id,
-      production_id: production.id,
-      position: data.position,
-      description: data.description,
-      production_date: data.productionDate || null,
-    };
-
-    let error;
-    if (creditId) {
-      // Update existing credit
-      ({ error } = await supabase.from('credits').update(creditData).eq('id', creditId));
-    } else {
-      // Insert new credit
-      ({ error } = await supabase.from('credits').insert(creditData));
-    }
-
-    setIsSubmitting(false);
-    if (error) {
-      toast.error(`Failed to save credit: ${error.message}`);
-    } else {
-      toast.success(`Credit ${creditId ? 'updated' : 'added'} successfully!`);
       onCreditsUpdate();
+    } catch (error: any) {
+      toast.error(`Failed to save credit: ${error.message}`);
+    } finally {
+      setIsSubmitting(false);
+      setIsModalOpen(false);
+      setEditingCredit(null);
     }
-    setIsModalOpen(false);
-    setEditingCredit(null);
   };
 
   const handleDeleteCredit = async (creditId: string) => {
-    const { error } = await supabase.from('credits').delete().eq('id', creditId);
-    if (error) {
-      toast.error(`Failed to delete credit: ${error.message}`);
-    } else {
+    try {
+      await api.deleteCredit(creditId);
       toast.success("Credit deleted.");
       onCreditsUpdate();
+    } catch (error: any) {
+      toast.error(`Failed to delete credit: ${error.message}`);
     }
   };
 

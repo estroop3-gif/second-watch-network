@@ -4654,6 +4654,7 @@ export interface BreakdownItemInput {
   linked_entity_type?: string;
   department?: BacklotBreakdownDepartment;
   stripboard_day?: number;
+  scene_id?: string; // Allow moving item to a different scene
 }
 
 // Project breakdown response from API

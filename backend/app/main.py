@@ -14,7 +14,7 @@ from app.api import (
     profiles, submissions, notifications, connections,
     admin, availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
-    camera_continuity, utilities,
+    camera_continuity, utilities, billing,
     church_services, church_people, church_content, church_planning,
     church_resources, church_readiness
 )
@@ -101,6 +101,7 @@ app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", t
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
 app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
+app.include_router(billing.router, prefix=f"{settings.API_V1_PREFIX}/billing", tags=["Billing"])
 app.include_router(backlot.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot"])
 
 # Backlot Glue Views

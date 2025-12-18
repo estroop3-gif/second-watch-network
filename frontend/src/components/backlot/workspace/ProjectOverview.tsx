@@ -1,5 +1,6 @@
 /**
  * ProjectOverview - Dashboard view for a project showing stats and quick actions
+ * Fetches project data directly for live updates when project details change.
  */
 import React from 'react';
 import { Link } from 'react-router-dom';
@@ -7,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Progress } from '@/components/ui/progress';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   Calendar,
   CheckSquare,
@@ -20,7 +22,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { BacklotProject } from '@/types/backlot';
-import { useTaskStats, useProductionDays, useLocations, useGear, useProjectMembers, useUpdates } from '@/hooks/backlot';
+import { useProjectDashboard, useProject } from '@/hooks/backlot';
 import { formatDistanceToNow, format, isAfter, isBefore, addDays } from 'date-fns';
 
 interface ProjectOverviewProps {
@@ -40,24 +42,46 @@ const StatCard: React.FC<{
   icon: React.ReactNode;
   subtitle?: string;
   color?: string;
-}> = ({ title, value, icon, subtitle, color = 'text-accent-yellow' }) => (
+  isLoading?: boolean;
+}> = ({ title, value, icon, subtitle, color = 'text-accent-yellow', isLoading }) => (
   <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
     <div className="flex items-center gap-3 mb-2">
       <div className={`${color}`}>{icon}</div>
       <span className="text-sm text-muted-gray">{title}</span>
     </div>
-    <div className="text-2xl font-bold text-bone-white">{value}</div>
-    {subtitle && <div className="text-xs text-muted-gray mt-1">{subtitle}</div>}
+    {isLoading ? (
+      <>
+        <Skeleton className="h-8 w-16 bg-muted-gray/20" />
+        {subtitle && <Skeleton className="h-3 w-20 mt-2 bg-muted-gray/10" />}
+      </>
+    ) : (
+      <>
+        <div className="text-2xl font-bold text-bone-white">{value}</div>
+        {subtitle && <div className="text-xs text-muted-gray mt-1">{subtitle}</div>}
+      </>
+    )}
   </div>
 );
 
-const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }) => {
-  const { data: taskStats } = useTaskStats(project.id);
-  const { days } = useProductionDays(project.id);
-  const { locations } = useLocations(project.id);
-  const { gear } = useGear({ projectId: project.id });
-  const { members } = useProjectMembers(project.id);
-  const { updates } = useUpdates({ projectId: project.id, limit: 5 });
+const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project: initialProject, permission }) => {
+  // Fetch fresh project data for live updates
+  const { data: liveProject, isLoading: projectLoading } = useProject(initialProject.id);
+
+  // Use live project data if available, fallback to initial prop
+  const project = liveProject || initialProject;
+
+  // Single optimized API call for all dashboard data
+  const { data: dashboardData, isLoading: dashboardLoading } = useProjectDashboard(project.id);
+
+  const isLoading = projectLoading || dashboardLoading;
+
+  // Extract data with defaults
+  const taskStats = dashboardData?.task_stats;
+  const days = dashboardData?.days || [];
+  const locationsCount = dashboardData?.locations_count || 0;
+  const members = dashboardData?.members || [];
+  const updates = dashboardData?.updates || [];
+  const gearCount = dashboardData?.gear_count || 0;
 
   // Calculate progress
   const taskProgress = taskStats
@@ -141,6 +165,7 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
           value={`${taskStats?.completed || 0}/${taskStats?.total || 0}`}
           icon={<CheckSquare className="w-5 h-5" />}
           subtitle={`${taskProgress}% complete`}
+          isLoading={isLoading}
         />
         <StatCard
           title="Shoot Days"
@@ -148,19 +173,22 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
           icon={<Calendar className="w-5 h-5" />}
           subtitle={`${upcomingDays.length} upcoming`}
           color="text-blue-400"
+          isLoading={isLoading}
         />
         <StatCard
           title="Locations"
-          value={locations.length}
+          value={locationsCount}
           icon={<MapPin className="w-5 h-5" />}
           color="text-green-400"
+          isLoading={isLoading}
         />
         <StatCard
           title="Team"
-          value={members.length + 1}
+          value={(dashboardData?.members_count || 0) + 1}
           icon={<Users className="w-5 h-5" />}
           subtitle="members"
           color="text-purple-400"
+          isLoading={isLoading}
         />
       </div>
 
@@ -209,7 +237,16 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
               </Button>
             )}
           </div>
-          {upcomingDays.length > 0 ? (
+          {isLoading ? (
+            <div className="divide-y divide-muted-gray/10">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="p-4">
+                  <Skeleton className="h-5 w-48 bg-muted-gray/20 mb-2" />
+                  <Skeleton className="h-4 w-32 bg-muted-gray/10" />
+                </div>
+              ))}
+            </div>
+          ) : upcomingDays.length > 0 ? (
             <div className="divide-y divide-muted-gray/10">
               {upcomingDays.map((day) => (
                 <div key={day.id} className="p-4 hover:bg-muted-gray/5 transition-colors">
@@ -251,7 +288,22 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
               </Button>
             )}
           </div>
-          {updates.length > 0 ? (
+          {isLoading ? (
+            <div className="divide-y divide-muted-gray/10">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="p-4">
+                  <div className="flex items-start gap-3">
+                    <Skeleton className="w-8 h-8 rounded-full bg-muted-gray/20" />
+                    <div className="flex-1">
+                      <Skeleton className="h-4 w-40 bg-muted-gray/20 mb-2" />
+                      <Skeleton className="h-3 w-full bg-muted-gray/10 mb-1" />
+                      <Skeleton className="h-3 w-20 bg-muted-gray/10" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : updates.length > 0 ? (
             <div className="divide-y divide-muted-gray/10">
               {updates.slice(0, 3).map((update) => (
                 <div key={update.id} className="p-4 hover:bg-muted-gray/5 transition-colors">
@@ -286,7 +338,7 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
         <div className="flex items-center justify-between p-4 border-b border-muted-gray/20">
           <h3 className="font-medium text-bone-white flex items-center gap-2">
             <Users className="w-4 h-4 text-accent-yellow" />
-            Team ({members.length + 1})
+            Team ({(dashboardData?.members_count || 0) + 1})
           </h3>
           {permission?.isAdmin && (
             <Button variant="ghost" size="sm" className="text-accent-yellow hover:text-bone-white">
@@ -296,45 +348,53 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project, permission }
           )}
         </div>
         <div className="p-4">
-          <div className="flex flex-wrap gap-2">
-            {/* Owner */}
-            {project.owner && (
-              <div className="flex items-center gap-2 bg-muted-gray/10 rounded-full px-3 py-1.5">
-                <Avatar className="w-6 h-6">
-                  <AvatarImage src={project.owner.avatar_url || ''} />
-                  <AvatarFallback className="text-[10px]">
-                    {(project.owner.display_name || project.owner.full_name || 'O').slice(0, 1)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="text-sm text-bone-white">
-                  {project.owner.display_name || project.owner.full_name || 'Owner'}
-                </span>
-                <Badge variant="outline" className="text-[10px] border-accent-yellow/30 text-accent-yellow">
-                  Owner
-                </Badge>
-              </div>
-            )}
-            {/* Members */}
-            {members.map((member) => (
-              <div
-                key={member.id}
-                className="flex items-center gap-2 bg-muted-gray/10 rounded-full px-3 py-1.5"
-              >
-                <Avatar className="w-6 h-6">
-                  <AvatarImage src={member.profile?.avatar_url || ''} />
-                  <AvatarFallback className="text-[10px]">
-                    {(member.profile?.display_name || 'M').slice(0, 1)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="text-sm text-bone-white">
-                  {member.profile?.display_name || member.profile?.full_name || 'Member'}
-                </span>
-                {member.production_role && (
-                  <span className="text-xs text-muted-gray">{member.production_role}</span>
-                )}
-              </div>
-            ))}
-          </div>
+          {isLoading ? (
+            <div className="flex flex-wrap gap-2">
+              {[1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-9 w-32 rounded-full bg-muted-gray/20" />
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {/* Owner */}
+              {project.owner && (
+                <div className="flex items-center gap-2 bg-muted-gray/10 rounded-full px-3 py-1.5">
+                  <Avatar className="w-6 h-6">
+                    <AvatarImage src={project.owner.avatar_url || ''} />
+                    <AvatarFallback className="text-[10px]">
+                      {(project.owner.display_name || project.owner.full_name || 'O').slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm text-bone-white">
+                    {project.owner.display_name || project.owner.full_name || 'Owner'}
+                  </span>
+                  <Badge variant="outline" className="text-[10px] border-accent-yellow/30 text-accent-yellow">
+                    Owner
+                  </Badge>
+                </div>
+              )}
+              {/* Members */}
+              {members.map((member) => (
+                <div
+                  key={member.id}
+                  className="flex items-center gap-2 bg-muted-gray/10 rounded-full px-3 py-1.5"
+                >
+                  <Avatar className="w-6 h-6">
+                    <AvatarImage src={member.profile?.avatar_url || ''} />
+                    <AvatarFallback className="text-[10px]">
+                      {(member.profile?.display_name || 'M').slice(0, 1)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm text-bone-white">
+                    {member.profile?.display_name || member.profile?.full_name || 'Member'}
+                  </span>
+                  {member.production_role && (
+                    <span className="text-xs text-muted-gray">{member.production_role}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

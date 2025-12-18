@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
-import { useForm, Controller } from 'react-hook-form';
+import { api } from '@/lib/api';
+import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { toast } from 'sonner';
@@ -35,29 +35,22 @@ interface Setting {
   value: { value: any };
 }
 
-const fetchSettings = async (): Promise<Setting[]> => {
-  const { data, error } = await supabase.from('settings').select('key, value');
-  if (error) throw new Error(error.message);
-  return data;
-};
-
 const SiteSettings = () => {
   const queryClient = useQueryClient();
   const { data: settings, isLoading, error } = useQuery({
     queryKey: ['siteSettings'],
-    queryFn: fetchSettings,
+    queryFn: () => api.getSiteSettings(),
   });
 
   const mutation = useMutation({
     mutationFn: async (values: SettingsFormValues) => {
-      const { error } = await supabase.rpc('update_settings', { payload: values });
-      if (error) throw error;
+      await api.updateSiteSettings(values);
     },
     onSuccess: () => {
       toast.success('Site settings updated successfully!');
       queryClient.invalidateQueries({ queryKey: ['siteSettings'] });
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(`Failed to update settings: ${error.message}`);
     },
   });
@@ -68,7 +61,7 @@ const SiteSettings = () => {
 
   useEffect(() => {
     if (settings) {
-      const settingsObject = settings.reduce((acc, setting) => {
+      const settingsObject = settings.reduce((acc: any, setting: Setting) => {
         acc[setting.key] = setting.value.value;
         return acc;
       }, {} as any);
@@ -98,7 +91,7 @@ const SiteSettings = () => {
   }
 
   if (error) {
-    toast.error(`Error loading settings: ${error.message}`);
+    toast.error(`Error loading settings: ${(error as Error).message}`);
     return <div>Error loading settings. Please try again later.</div>;
   }
 

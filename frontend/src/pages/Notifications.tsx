@@ -8,7 +8,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { useState, useMemo, useEffect } from 'react';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -146,26 +146,31 @@ const Notifications = () => {
   const markSelectedRead = async () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
-    await supabase.functions.invoke('notifications-read', { body: { ids } });
+    try {
+      await api.markNotificationsRead(ids);
+    } catch (error) {
+      console.error('Failed to mark notifications as read:', error);
+    }
     clearSelection();
     refresh();
   };
 
   // Inline actions for connection requests
   const acceptRequest = async (requestId: string) => {
-    // Update connections row status; policies allow addressee to update pending
-    const { error } = await supabase
-      .from('connections')
-      .update({ status: 'accepted' })
-      .eq('id', requestId);
-    if (!error) refresh();
+    try {
+      await api.updateConnection(requestId, 'accepted');
+      refresh();
+    } catch (error) {
+      console.error('Failed to accept request:', error);
+    }
   };
   const denyRequest = async (requestId: string) => {
-    const { error } = await supabase
-      .from('connections')
-      .update({ status: 'denied' })
-      .eq('id', requestId);
-    if (!error) refresh();
+    try {
+      await api.updateConnection(requestId, 'denied');
+      refresh();
+    } catch (error) {
+      console.error('Failed to deny request:', error);
+    }
   };
 
   const RequestsActions = ({ item }: { item: any }) => {
@@ -238,17 +243,17 @@ const Notifications = () => {
           <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="hidden sm:block w-full mb-4">
             <TabsList className="grid w-full grid-cols-5 bg-muted-gray/10">
               <TabsTrigger value="all">
-                All {counts?.unread_total ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.unread_total}</span> : null}
+                All {counts?.total ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.total}</span> : null}
               </TabsTrigger>
               <TabsTrigger value="unread">Unread</TabsTrigger>
               <TabsTrigger value="messages">
-                Messages {counts?.unread_messages ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.unread_messages}</span> : null}
+                Messages {counts?.messages ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.messages}</span> : null}
               </TabsTrigger>
               <TabsTrigger value="requests">
-                Requests {counts?.unread_requests ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.unread_requests}</span> : null}
+                Requests {counts?.connection_requests ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.connection_requests}</span> : null}
               </TabsTrigger>
               <TabsTrigger value="submissions">
-                Submissions {counts?.unread_submissions ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.unread_submissions}</span> : null}
+                Submissions {counts?.submission_updates ? <span className="ml-2 inline-flex min-w-[18px] justify-center rounded-full bg-muted-gray/30 px-1 text-xs">{counts.submission_updates}</span> : null}
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -444,7 +449,7 @@ const Notifications = () => {
               <div className="text-center py-16">
                 <Bell className="mx-auto h-12 w-12 text-muted-gray" />
                 <h3 className="mt-4 text-lg font-semibold text-bone-white">No notifications</h3>
-                <p className="mt-1 text-sm text-muted-gray">We’ll let you know when something new happens.</p>
+                <p className="mt-1 text-sm text-muted-gray">We'll let you know when something new happens.</p>
               </div>
             )}
             {filtered.length > 0 && selectedIds.size !== filtered.length && (

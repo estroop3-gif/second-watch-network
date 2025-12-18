@@ -67,7 +67,9 @@ import {
   Moon,
 } from 'lucide-react';
 import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations } from '@/hooks/backlot';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 import { useToast } from '@/hooks/use-toast';
 import {
   BacklotCallSheet,
@@ -649,27 +651,31 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     setLogoUploading(true);
 
     try {
-      // Generate unique filename
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${projectId}-${Date.now()}.${fileExt}`;
-      const filePath = `call-sheet-logos/${fileName}`;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      // Upload to Supabase Storage
-      const { error: uploadError } = await supabase.storage
-        .from('backlot-files')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
+      // Upload to S3 via API
+      const formData = new FormData();
+      formData.append('file', file);
 
-      if (uploadError) throw uploadError;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/upload-call-sheet-logo`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formData,
+        }
+      );
 
-      // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('backlot-files')
-        .getPublicUrl(filePath);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(error.detail);
+      }
 
-      setHeaderLogoUrl(publicUrl);
+      const result = await response.json();
+      setHeaderLogoUrl(result.logo_url);
 
       toast({
         title: 'Logo Uploaded',
@@ -867,12 +873,12 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   };
 
   // Helper to get auth token
-  const getAuthToken = async (): Promise<string> => {
-    const { data } = await supabase.auth.getSession();
-    if (!data.session?.access_token) {
+  const getAuthToken = (): string => {
+    const token = api.getToken();
+    if (!token) {
       throw new Error('Not authenticated');
     }
-    return data.session.access_token;
+    return token;
   };
 
   const isPending = createCallSheet.isPending || updateCallSheet.isPending;

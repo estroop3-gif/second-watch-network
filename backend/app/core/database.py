@@ -142,9 +142,12 @@ class DatabaseTable:
         self._order_desc = False
         self._limit = None
         self._offset = None
+        self._single = False
+        self._count_mode = None
 
-    def select(self, columns: str = "*"):
+    def select(self, columns: str = "*", count: str = None):
         self._select_cols = columns
+        self._count_mode = count  # "exact" for Supabase compatibility
         return self
 
     def eq(self, column: str, value):
@@ -235,14 +238,39 @@ class DatabaseTable:
 
     def execute(self):
         query, params = self._build_query()
-        results = execute_query(query, params)
-        return type('Response', (), {'data': results, 'error': None})()
+
+        # Handle count mode (Supabase compatibility)
+        if self._count_mode == "exact":
+            count_query = f"SELECT COUNT(*) as cnt FROM {self.table_name}"
+            if self._filters:
+                conditions = []
+                for i, (col, op, val) in enumerate(self._filters):
+                    param_name = f"p{i}"
+                    if op == "IS" and val is None:
+                        conditions.append(f"{col} IS NULL")
+                    elif op == "IN":
+                        params[param_name] = tuple(val)
+                        conditions.append(f"{col} IN :{param_name}")
+                    else:
+                        params[param_name] = val
+                        conditions.append(f"{col} {op} :{param_name}")
+                count_query += " WHERE " + " AND ".join(conditions)
+            count_result = execute_single(count_query, params)
+            count_value = count_result["cnt"] if count_result else 0
+            results = execute_query(query, params)
+            return type('Response', (), {'data': results, 'error': None, 'count': count_value})()
+
+        if self._single:
+            result = execute_single(query, params)
+            return type('Response', (), {'data': result, 'error': None, 'count': None})()
+        else:
+            results = execute_query(query, params)
+            return type('Response', (), {'data': results, 'error': None, 'count': None})()
 
     def single(self):
         self._limit = 1
-        query, params = self._build_query()
-        result = execute_single(query, params)
-        return type('Response', (), {'data': result, 'error': None})()
+        self._single = True
+        return self
 
     def range(self, start: int, end: int):
         """Supabase-style range pagination (0-indexed, inclusive)."""

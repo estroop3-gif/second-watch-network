@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { ThreadCard, Thread as ThreadType } from './ThreadCard';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
@@ -7,33 +7,37 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 interface ThreadListProps {
   categorySlug?: string;
 }
 
 const fetchThreads = async (categorySlug?: string, searchTerm?: string, sortBy?: string) => {
-  let query = supabase
-    .from('forum_threads_with_details')
-    .select('*')
-    .order('is_pinned', { ascending: false })
-    .order(sortBy === 'latest' ? 'created_at' : 'last_reply_at', { ascending: false });
+  const token = api.getToken();
+  if (!token) throw new Error('Not authenticated');
 
-  if (categorySlug) {
-    query = query.eq('category_slug', categorySlug);
+  const params = new URLSearchParams();
+  params.append('limit', '50');
+  if (categorySlug) params.append('category_slug', categorySlug);
+  if (searchTerm) params.append('search', searchTerm);
+  if (sortBy) params.append('sort_by', sortBy);
+
+  const response = await fetch(
+    `${API_BASE}/api/v1/forum/threads-with-details?${params.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to fetch threads' }));
+    throw new Error(error.detail);
   }
 
-  if (searchTerm) {
-    query = query.ilike('title', `%${searchTerm}%`);
-  }
-
-  const { data, error } = await query;
-
-  if (error) {
-    console.error('Error fetching threads:', error);
-    throw new Error(error.message);
-  }
-  
-  return data as ThreadType[];
+  return response.json() as Promise<ThreadType[]>;
 };
 
 const ThreadListPlaceholder = () => (
@@ -67,8 +71,8 @@ export const ThreadList = ({ categorySlug }: ThreadListProps) => {
   return (
     <div>
       <div className="flex flex-col sm:flex-row gap-4 mb-6 p-4 bg-charcoal-black/30 rounded-lg border border-muted-gray/20">
-        <Input 
-          placeholder="Search threads by title..." 
+        <Input
+          placeholder="Search threads by title..."
           className="flex-grow bg-charcoal-black border-muted-gray focus:ring-accent-yellow"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
@@ -86,7 +90,7 @@ export const ThreadList = ({ categorySlug }: ThreadListProps) => {
 
       {showLoadingState && <ThreadListPlaceholder />}
       {error && !showLoadingState && <p className="text-red-500 text-center py-8">Failed to load threads. Please try again later.</p>}
-      
+
       {!showLoadingState && !error && threads?.length === 0 && (
         <div className="text-center py-12 border border-dashed border-muted-gray/30 rounded-lg">
           <h3 className="text-xl font-bold">No Threads Yet</h3>

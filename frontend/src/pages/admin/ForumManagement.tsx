@@ -1,6 +1,6 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { format } from 'date-fns';
@@ -68,65 +68,35 @@ interface ForumCategory {
   description: string | null;
 }
 
-// Fetch Functions
-const fetchThreads = async (): Promise<ForumThread[]> => {
-  const { data, error } = await supabase
-    .from('forum_threads_with_details')
-    .select('id, title, created_at, username, full_name, category_name, replies_count')
-    .order('created_at', { ascending: false });
-  if (error) throw new Error(error.message);
-  return data as ForumThread[];
-};
-
-const fetchReplies = async (): Promise<ForumReply[]> => {
-  const { data, error } = await supabase
-    .from('forum_replies_with_details')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) throw new Error(error.message);
-  return data as ForumReply[];
-};
-
-const fetchCategories = async (): Promise<ForumCategory[]> => {
-  const { data, error } = await supabase
-    .from('forum_categories')
-    .select('id, name, slug, description')
-    .order('name', { ascending: true });
-  if (error) throw new Error(error.message);
-  return data;
-};
-
 const slugify = (text: string) =>
   text
     .toString()
     .toLowerCase()
-    .replace(/\s+/g, '-') // Replace spaces with -
-    .replace(/[^\w-]+/g, '') // Remove all non-word chars
-    .replace(/--+/g, '-') // Replace multiple - with single -
-    .replace(/^-+/, '') // Trim - from start of text
-    .replace(/-+$/, ''); // Trim - from end of text
+    .replace(/\s+/g, '-')
+    .replace(/[^\w-]+/g, '')
+    .replace(/--+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
 
 // Components
 const ThreadsTable = () => {
   const queryClient = useQueryClient();
   const { data: threads, isLoading, error } = useQuery({
     queryKey: ['admin-forum-threads'],
-    queryFn: fetchThreads,
+    queryFn: () => api.listForumThreadsAdmin(),
   });
 
   const handleDeleteThread = async (threadId: string) => {
-    // Supabase is set up with cascading deletes, so we only need to delete the thread.
-    const { error } = await supabase.from('forum_threads').delete().eq('id', threadId);
-
-    if (error) {
-      toast.error(`Failed to delete thread: ${error.message}`);
-    } else {
+    try {
+      await api.deleteForumThreadAdmin(threadId);
       toast.success("Thread and its replies have been deleted.");
       queryClient.invalidateQueries({ queryKey: ['admin-forum-threads'] });
+    } catch (error: any) {
+      toast.error(`Failed to delete thread: ${error.message}`);
     }
   };
 
-  if (error) toast.error(`Failed to fetch threads: ${error.message}`);
+  if (error) toast.error(`Failed to fetch threads: ${(error as Error).message}`);
 
   return (
     <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
@@ -145,8 +115,8 @@ const ThreadsTable = () => {
           {isLoading ? (
             <TableRow><TableCell colSpan={6} className="text-center h-48">Loading threads...</TableCell></TableRow>
           ) : error ? (
-            <TableRow><TableCell colSpan={6} className="text-center h-48 text-primary-red">Error: {error.message}</TableCell></TableRow>
-          ) : threads?.map((thread) => (
+            <TableRow><TableCell colSpan={6} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
+          ) : threads?.map((thread: ForumThread) => (
             <TableRow key={thread.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
               <TableCell className="font-medium max-w-xs truncate">
                 <Link to={`/the-backlot/threads/${thread.id}`} className="hover:underline" title={thread.title}>
@@ -183,23 +153,21 @@ const RepliesTable = () => {
   const queryClient = useQueryClient();
   const { data: replies, isLoading, error } = useQuery({
     queryKey: ['admin-forum-replies'],
-    queryFn: fetchReplies,
+    queryFn: () => api.listForumRepliesAdmin(),
   });
 
   const handleDeleteReply = async (replyId: string) => {
-    const { error } = await supabase.from('forum_replies').delete().eq('id', replyId);
-
-    if (error) {
-      toast.error(`Failed to delete reply: ${error.message}`);
-    } else {
+    try {
+      await api.deleteForumReplyAdmin(replyId);
       toast.success("The reply has been deleted.");
       queryClient.invalidateQueries({ queryKey: ['admin-forum-replies'] });
-      // Also invalidate threads query as reply count will change
       queryClient.invalidateQueries({ queryKey: ['admin-forum-threads'] });
+    } catch (error: any) {
+      toast.error(`Failed to delete reply: ${error.message}`);
     }
   };
 
-  if (error) toast.error(`Failed to fetch replies: ${error.message}`);
+  if (error) toast.error(`Failed to fetch replies: ${(error as Error).message}`);
 
   return (
     <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
@@ -217,8 +185,8 @@ const RepliesTable = () => {
           {isLoading ? (
             <TableRow><TableCell colSpan={5} className="text-center h-48">Loading replies...</TableCell></TableRow>
           ) : error ? (
-            <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {error.message}</TableCell></TableRow>
-          ) : replies?.map((reply) => (
+            <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
+          ) : replies?.map((reply: ForumReply) => (
             <TableRow key={reply.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
               <TableCell className="font-medium max-w-sm truncate" title={reply.body}>{reply.body}</TableCell>
               <TableCell>{reply.full_name || reply.username || 'N/A'}</TableCell>
@@ -268,7 +236,7 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
       description: category?.description || "",
     },
   });
-  
+
   React.useEffect(() => {
     if (isOpen) {
       form.reset({
@@ -280,16 +248,17 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
 
   const onSubmit = async (values: CategoryFormValues) => {
     const slug = slugify(values.name);
-    const { error } = category
-      ? await supabase.from('forum_categories').update({ ...values, slug }).eq('id', category.id)
-      : await supabase.from('forum_categories').insert({ ...values, slug });
-
-    if (error) {
-      toast.error(`Failed to save category: ${error.message}`);
-    } else {
+    try {
+      if (category) {
+        await api.updateForumCategoryAdmin(category.id, { ...values, slug });
+      } else {
+        await api.createForumCategoryAdmin({ ...values, slug });
+      }
       toast.success(`Category ${category ? 'updated' : 'created'} successfully.`);
       queryClient.invalidateQueries({ queryKey: ['admin-forum-categories'] });
       setIsOpen(false);
+    } catch (error: any) {
+      toast.error(`Failed to save category: ${error.message}`);
     }
   };
 
@@ -348,23 +317,22 @@ const CategoriesTable = () => {
   const queryClient = useQueryClient();
   const { data: categories, isLoading, error } = useQuery({
     queryKey: ['admin-forum-categories'],
-    queryFn: fetchCategories,
+    queryFn: () => api.listForumCategoriesAdmin(),
   });
 
   const handleDeleteCategory = async (categoryId: string) => {
-    const { error } = await supabase.from('forum_categories').delete().eq('id', categoryId);
-
-    if (error) {
+    try {
+      await api.deleteForumCategoryAdmin(categoryId);
+      toast.success("Category has been deleted.");
+      queryClient.invalidateQueries({ queryKey: ['admin-forum-categories'] });
+    } catch (error: any) {
       toast.error(`Failed to delete category: ${error.message}`, {
         description: "You may need to re-assign or delete threads in this category first."
       });
-    } else {
-      toast.success("Category has been deleted.");
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-categories'] });
     }
   };
 
-  if (error) toast.error(`Failed to fetch categories: ${error.message}`);
+  if (error) toast.error(`Failed to fetch categories: ${(error as Error).message}`);
 
   return (
     <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
@@ -385,8 +353,8 @@ const CategoriesTable = () => {
           {isLoading ? (
             <TableRow><TableCell colSpan={3} className="text-center h-48">Loading categories...</TableCell></TableRow>
           ) : error ? (
-            <TableRow><TableCell colSpan={3} className="text-center h-48 text-primary-red">Error: {error.message}</TableCell></TableRow>
-          ) : categories?.map((category) => (
+            <TableRow><TableCell colSpan={3} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
+          ) : categories?.map((category: ForumCategory) => (
             <TableRow key={category.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
               <TableCell className="font-medium">{category.name}</TableCell>
               <TableCell className="max-w-md truncate">{category.description}</TableCell>
@@ -423,7 +391,7 @@ const ForumManagement = () => {
       <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-8 -rotate-1">
         Forum <span className="font-spray text-accent-yellow">Tools</span>
       </h1>
-      
+
       <Tabs defaultValue="threads" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="threads"><MessageSquare className="mr-2 h-4 w-4" />Threads</TabsTrigger>

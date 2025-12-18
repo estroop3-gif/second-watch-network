@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -25,6 +25,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '
 import { Switch } from '@/components/ui/switch';
 import { Loader2 } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const threadSchema = z.object({
   title: z.string().min(5, 'Title must be at least 5 characters long.'),
   body: z.string().min(10, 'Body must be at least 10 characters long.'),
@@ -36,9 +38,21 @@ const threadSchema = z.object({
 type ThreadFormData = z.infer<typeof threadSchema>;
 
 const fetchCategories = async () => {
-  const { data, error } = await supabase.from('forum_categories').select('id, name');
-  if (error) throw new Error(error.message);
-  return data;
+  const token = api.getToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE}/api/v1/forum/categories`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to fetch categories' }));
+    throw new Error(error.detail);
+  }
+
+  return response.json();
 };
 
 interface NewThreadModalProps {
@@ -67,18 +81,33 @@ export const NewThreadModal = ({ isOpen, onOpenChange }: NewThreadModalProps) =>
   const createThreadMutation = useMutation({
     mutationFn: withUpgradeGate(hasPermission, 'forum_post', async (newThread: ThreadFormData) => {
       if (!user) throw new Error('You must be logged in to create a thread.');
-      const { data: { user: currentUser } } = await supabase.auth.getUser();
-      if (!currentUser) throw new Error('You must be logged in to create a thread.');
+
+      const token = api.getToken();
+      if (!token) throw new Error('You must be logged in to create a thread.');
+
       const tagsArray = newThread.tags?.split(',').map(tag => tag.trim()).filter(Boolean) || [];
-      const { error } = await supabase.from('forum_threads').insert({
-        user_id: currentUser.id,
-        title: newThread.title,
-        body: newThread.body,
-        category_id: newThread.category_id,
-        tags: tagsArray,
-        is_anonymous: newThread.is_anonymous,
+
+      const response = await fetch(`${API_BASE}/api/v1/forum/threads`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: newThread.title,
+          body: newThread.body,
+          category_id: newThread.category_id,
+          tags: tagsArray,
+          is_anonymous: newThread.is_anonymous,
+        }),
       });
-      if (error) throw error;
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create thread' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
     }),
     onSuccess: async () => {
       toast.success('Thread created successfully!');
@@ -139,7 +168,7 @@ export const NewThreadModal = ({ isOpen, onOpenChange }: NewThreadModalProps) =>
                       {isLoadingCategories ? (
                         <SelectItem value="loading" disabled>Loading...</SelectItem>
                       ) : (
-                        categories?.map(cat => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)
+                        categories?.map((cat: any) => <SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>)
                       )}
                     </SelectContent>
                   </Select>

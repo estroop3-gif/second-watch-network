@@ -52,15 +52,53 @@ async def list_threads(
     try:
         client = get_client()
         query = client.table("forum_threads").select("*")
-        
+
         if category_id:
             query = query.eq("category_id", category_id)
         if is_pinned is not None:
             query = query.eq("is_pinned", is_pinned)
-        
+
         response = query.range(skip, skip + limit - 1).order("created_at", desc=True).execute()
         return response.data
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/threads-with-details")
+async def list_threads_with_details(
+    skip: int = 0,
+    limit: int = 50,
+    category_slug: Optional[str] = None,
+    search: Optional[str] = None,
+    sort_by: str = "active"
+):
+    """
+    List forum threads with full details from view.
+    Supports search by title and sorting by activity or latest.
+    """
+    try:
+        client = get_client()
+        query = client.table("forum_threads_with_details").select("*")
+
+        if category_slug:
+            query = query.eq("category_slug", category_slug)
+
+        if search:
+            query = query.ilike("title", f"%{search}%")
+
+        # Always sort pinned first, then by selected sort field
+        query = query.order("is_pinned", desc=True)
+
+        if sort_by == "latest":
+            query = query.order("created_at", desc=True)
+        else:
+            # "active" - sort by last reply, with fallback to created_at
+            query = query.order("last_reply_at", desc=True, nullsfirst=False)
+
+        response = query.range(skip, skip + limit - 1).execute()
+        return response.data or []
+    except Exception as e:
+        print(f"Error fetching threads: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -70,10 +108,25 @@ async def get_thread(thread_id: str):
     try:
         client = get_client()
         response = client.table("forum_threads").select("*").eq("id", thread_id).execute()
-        
+
         if not response.data:
             raise HTTPException(status_code=404, detail="Thread not found")
-        
+
+        return response.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/threads/{thread_id}/details")
+async def get_thread_with_details(thread_id: str):
+    """Get thread with full details from view (author info, reply count, etc.)"""
+    try:
+        client = get_client()
+        response = client.table("forum_threads_with_details").select("*").eq("id", thread_id).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Thread not found")
+
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -134,6 +187,19 @@ async def list_thread_replies(thread_id: str, skip: int = 0, limit: int = 50):
             "thread_id", thread_id
         ).range(skip, skip + limit - 1).order("created_at").execute()
         return response.data
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/threads/{thread_id}/replies-with-profiles")
+async def list_thread_replies_with_profiles(thread_id: str):
+    """List thread replies with author profile info from view"""
+    try:
+        client = get_client()
+        response = client.table("forum_replies_with_profiles").select("*").eq(
+            "thread_id", thread_id
+        ).order("created_at").execute()
+        return response.data or []
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

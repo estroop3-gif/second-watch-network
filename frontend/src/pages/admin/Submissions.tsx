@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useSearchParams } from 'react-router-dom';
 import { Submission } from '@/types';
@@ -42,31 +42,6 @@ const statusColorClasses: Record<Submission['status'], string> = {
   archived: 'bg-gray-400/20 text-gray-300 border-gray-400/30',
 };
 
-const fetchSubmissions = async ({ page, status, searchTerm }: { page: number; status: string; searchTerm: string; }) => {
-  let query = supabase
-    .from('submissions')
-    .select(`
-      id, created_at, project_title, status, youtube_link, description, logline, project_type, admin_notes, has_unread_admin_messages, email,
-      profiles (id, username, full_name, avatar_url)
-    `, { count: 'exact' });
-
-  if (status !== 'all') {
-    query = query.eq('status', status);
-  }
-
-  if (searchTerm) {
-    query = query.or(`project_title.ilike.%${searchTerm}%,profiles.full_name.ilike.%${searchTerm}%,profiles.username.ilike.%${searchTerm}%`);
-  }
-
-  const { from, to } = { from: (page - 1) * PAGE_SIZE, to: page * PAGE_SIZE - 1 };
-  query = query.range(from, to).order('created_at', { ascending: false });
-
-  const { data, error, count } = await query;
-
-  if (error) throw new Error(error.message);
-  return { submissions: data as Submission[], count: count ?? 0 };
-};
-
 const SubmissionManagement = () => {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -80,16 +55,17 @@ const SubmissionManagement = () => {
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['adminSubmissions', { page, status, searchTerm }],
-    queryFn: () => fetchSubmissions({ page, status, searchTerm }),
-    keepPreviousData: true,
+    queryFn: () => api.listSubmissionsAdmin({
+      skip: (page - 1) * PAGE_SIZE,
+      limit: PAGE_SIZE,
+      status,
+      search: searchTerm || undefined,
+    }),
   });
 
   const updateStatusMutation = useMutation({
     mutationFn: async ({ submissionId, status: newStatus }: { submissionId: string; status: string }) => {
-      const { error: mutationError } = await supabase.functions.invoke('update-submission-status', {
-        body: { submissionId, status: newStatus },
-      });
-      if (mutationError) throw new Error(mutationError.message);
+      await api.updateSubmissionStatus(submissionId, newStatus);
     },
     onSuccess: () => {
       toast.success('Submission status updated.');
@@ -101,11 +77,7 @@ const SubmissionManagement = () => {
 
   const markAsReadMutation = useMutation({
     mutationFn: async (submissionId: string) => {
-      const { error } = await supabase
-        .from('submissions')
-        .update({ has_unread_admin_messages: false })
-        .eq('id', submissionId);
-      if (error) throw new Error(error.message);
+      await api.markSubmissionRead(submissionId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['adminSubmissions'] });
@@ -143,7 +115,7 @@ const SubmissionManagement = () => {
       <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-8 -rotate-1">
         Submission <span className="font-spray text-accent-yellow">Management</span>
       </h1>
-      
+
       <div className="flex flex-col md:flex-row gap-4 mb-4">
         <div className="relative flex-grow">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-5 w-5 text-muted-gray" />
@@ -177,10 +149,10 @@ const SubmissionManagement = () => {
             {isLoading ? (
               <TableRow><TableCell colSpan={5} className="text-center h-48">Loading submissions...</TableCell></TableRow>
             ) : error ? (
-              <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {error.message}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
             ) : data?.submissions.map((submission) => (
-              <TableRow 
-                key={submission.id} 
+              <TableRow
+                key={submission.id}
                 className={cn(
                   "border-b-muted-gray hover:bg-charcoal-black/20 cursor-pointer",
                   submission.has_unread_admin_messages && "bg-accent-yellow/5"

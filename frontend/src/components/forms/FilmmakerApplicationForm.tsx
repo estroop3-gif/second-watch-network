@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { TagInput } from '@/components/ui/tag-input';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { experienceLevels, filmmakerSkills } from '@/data/filmmaker-options';
 import { Trash2 } from 'lucide-react';
@@ -83,26 +83,27 @@ const FilmmakerApplicationForm = ({ onSuccess }: FilmmakerApplicationFormProps) 
       return;
     }
     setIsLoading(true);
-    const { error } = await supabase.from('filmmaker_applications').insert({
-      user_id: user.id,
-      full_name: values.fullName,
-      display_name: values.displayName,
-      email: values.email,
-      location: values.location,
-      portfolio_link: values.portfolioLink,
-      professional_profile_link: values.professionalProfileLink,
-      years_of_experience: values.yearsOfExperience,
-      primary_roles: values.primaryRoles,
-      top_projects: values.topProjects,
-      join_reason: values.joinReason,
-    });
 
-    setIsLoading(false);
-    if (error) {
-      toast.error('Failed to submit application: ' + error.message);
-    } else {
+    try {
+      await api.submitFilmmakerApplication({
+        full_name: values.fullName,
+        display_name: values.displayName,
+        email: values.email,
+        location: values.location,
+        portfolio_link: values.portfolioLink,
+        professional_profile_link: values.professionalProfileLink,
+        years_of_experience: values.yearsOfExperience,
+        primary_roles: values.primaryRoles,
+        top_projects: values.topProjects,
+        join_reason: values.joinReason,
+      });
+
       toast.success('Application submitted! We will review it shortly.');
       onSuccess();
+    } catch (error: any) {
+      toast.error('Failed to submit application: ' + error.message);
+    } finally {
+      setIsLoading(false);
     }
   };
 

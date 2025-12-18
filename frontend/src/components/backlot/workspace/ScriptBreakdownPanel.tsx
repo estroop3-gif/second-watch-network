@@ -323,9 +323,10 @@ const BreakdownItemDialog: React.FC<{
   onClose: () => void;
   item?: BacklotSceneBreakdownItem;
   sceneId: string;
+  scenes?: BacklotScene[];
   onSave: (input: BreakdownItemInput) => void;
   isLoading: boolean;
-}> = ({ open, onClose, item, sceneId, onSave, isLoading }) => {
+}> = ({ open, onClose, item, sceneId, scenes = [], onSave, isLoading }) => {
   const [type, setType] = useState<BacklotBreakdownItemType>(
     item?.type || "prop"
   );
@@ -335,6 +336,7 @@ const BreakdownItemDialog: React.FC<{
   const [department, setDepartment] = useState<BacklotBreakdownDepartment | "">(
     item?.department || ""
   );
+  const [selectedSceneId, setSelectedSceneId] = useState<string>(sceneId);
 
   React.useEffect(() => {
     if (item) {
@@ -343,14 +345,16 @@ const BreakdownItemDialog: React.FC<{
       setQuantity(item.quantity);
       setNotes(item.notes || "");
       setDepartment(item.department || "");
+      setSelectedSceneId(item.scene_id);
     } else {
       setType("prop");
       setLabel("");
       setQuantity(1);
       setNotes("");
       setDepartment("");
+      setSelectedSceneId(sceneId);
     }
-  }, [item, open]);
+  }, [item, open, sceneId]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -362,6 +366,8 @@ const BreakdownItemDialog: React.FC<{
       quantity,
       notes: notes.trim() || undefined,
       department: department || undefined,
+      // Only include scene_id if editing and scene changed
+      scene_id: item && selectedSceneId !== item.scene_id ? selectedSceneId : undefined,
     });
   };
 
@@ -410,6 +416,31 @@ const BreakdownItemDialog: React.FC<{
             />
           </div>
 
+          {/* Scene selector - only show when editing an existing item */}
+          {item && scenes.length > 0 && (
+            <div className="space-y-2">
+              <Label>Scene</Label>
+              <Select
+                value={selectedSceneId}
+                onValueChange={setSelectedSceneId}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select scene" />
+                </SelectTrigger>
+                <SelectContent>
+                  {scenes.map((scene) => (
+                    <SelectItem key={scene.id} value={scene.id}>
+                      Scene {scene.scene_number}{scene.slugline ? ` - ${scene.slugline}` : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Move this breakdown item to a different scene
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Quantity</Label>
@@ -423,16 +454,16 @@ const BreakdownItemDialog: React.FC<{
             <div className="space-y-2">
               <Label>Department</Label>
               <Select
-                value={department}
+                value={department || "none"}
                 onValueChange={(v) =>
-                  setDepartment(v as BacklotBreakdownDepartment | "")
+                  setDepartment(v === "none" ? "" : (v as BacklotBreakdownDepartment))
                 }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Optional" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">None</SelectItem>
+                  <SelectItem value="none">None</SelectItem>
                   {BREAKDOWN_DEPARTMENTS.map((d) => (
                     <SelectItem key={d} value={d}>
                       {BREAKDOWN_DEPARTMENT_LABELS[d]}
@@ -816,6 +847,7 @@ export default function ScriptBreakdownPanel({
         }}
         item={editingItem}
         sceneId={activeSceneId}
+        scenes={scenes}
         onSave={handleSaveItem}
         isLoading={
           mutations.createItem.isPending || mutations.updateItem.isPending

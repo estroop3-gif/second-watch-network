@@ -26,7 +26,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { departments, filmmakerSkills, experienceLevels, filmPositions, availableForOptions, contactMethods } from "@/data/filmmaker-options";
 import { MultiSelect } from "../ui/multi-select";
 import { useAuth } from "@/context/AuthContext";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
@@ -101,7 +101,7 @@ const AddCreditForm = ({ onAddCredit, closeModal }: { onAddCredit: (data: Credit
 }
 
 const FilmmakerOnboardingForm = () => {
-  const { user, session } = useAuth();
+  const { profileId, session } = useAuth();
   const navigate = useNavigate();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCreditModalOpen, setIsCreditModalOpen] = useState(false);
@@ -137,44 +137,43 @@ const FilmmakerOnboardingForm = () => {
   });
 
   async function onSubmit(data: OnboardingFormValues) {
-    if (!user) {
+    if (!profileId) {
       toast.error("You must be logged in to create a profile.");
       return;
     }
     setIsSubmitting(true);
 
-    const { error } = await supabase.rpc('onboard_filmmaker', {
-      p_user_id: user.id,
-      p_full_name: data.fullName,
-      p_display_name: data.displayName,
-      p_bio: data.bio,
-      p_reel_links: data.reel_links?.map(link => link.value).filter(Boolean),
-      p_portfolio_website: data.portfolio_website,
-      p_location: data.location,
-      p_location_visible: data.location_visible,
-      p_department: data.department,
-      p_experience_level: data.experienceLevel,
-      p_skills: data.skills,
-      p_credits: data.credits,
-      p_accepting_work: data.accepting_work,
-      p_available_for: data.available_for,
-      p_preferred_locations: data.preferred_locations,
-      p_contact_method: data.contact_method,
-      p_show_email: data.show_email,
-    });
+    try {
+      await api.onboardFilmmaker({
+        full_name: data.fullName,
+        display_name: data.displayName,
+        bio: data.bio,
+        reel_links: data.reel_links?.map(link => link.value).filter(Boolean) as string[],
+        portfolio_website: data.portfolio_website,
+        location: data.location,
+        location_visible: data.location_visible,
+        department: data.department,
+        experience_level: data.experienceLevel,
+        skills: data.skills,
+        credits: data.credits,
+        accepting_work: data.accepting_work,
+        available_for: data.available_for,
+        preferred_locations: data.preferred_locations,
+        contact_method: data.contact_method,
+        show_email: data.show_email,
+      });
 
-    setIsSubmitting(false);
-
-    if (error) {
-      console.error("Onboarding error:", error);
-      toast.error("Failed to save profile: " + error.message);
-    } else {
       toast.success("Profile created successfully!");
       // Invalidate profile queries to refresh data
-      await queryClient.invalidateQueries({ queryKey: ['filmmaker_profile', user.id] });
-      await queryClient.invalidateQueries({ queryKey: ['profile', user.id] });
+      await queryClient.invalidateQueries({ queryKey: ['filmmaker_profile', profileId] });
+      await queryClient.invalidateQueries({ queryKey: ['profile', profileId] });
       // Navigate to success page
       navigate("/filmmaker-onboarding/success");
+    } catch (error: any) {
+      console.error("Onboarding error:", error);
+      toast.error("Failed to save profile: " + error.message);
+    } finally {
+      setIsSubmitting(false);
     }
   }
 

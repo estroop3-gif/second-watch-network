@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -8,53 +8,29 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { format } from 'date-fns';
 import { SubscriptionActivity } from '@/types';
 
-const fetchSubscriptionActivity = async (userId: string): Promise<SubscriptionActivity[]> => {
-  const { data, error } = await supabase
-    .from('subscription_activity')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false });
-
-  if (error) {
-    console.error('Error fetching subscription activity:', error);
-    throw error;
-  }
-  return data;
-};
-
 export const SubscriptionActivityLog = () => {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const queryClient = useQueryClient();
 
   const { data: activities, isLoading } = useQuery({
-    queryKey: ['subscriptionActivity', user?.id],
-    queryFn: () => fetchSubscriptionActivity(user!.id),
-    enabled: !!user,
+    queryKey: ['subscriptionActivity', profileId],
+    queryFn: async () => {
+      const data = await api.getSubscriptionActivity(profileId!);
+      return data as SubscriptionActivity[];
+    },
+    enabled: !!profileId,
   });
 
+  // Polling fallback for realtime updates (every 60 seconds for subscription activity)
   useEffect(() => {
-    if (!user) return;
+    if (!profileId) return;
 
-    const channel = supabase
-      .channel(`subscription-activity-${user.id}`)
-      .on<SubscriptionActivity>(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'subscription_activity',
-          filter: `user_id=eq.${user.id}`,
-        },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ['subscriptionActivity', user.id] });
-        }
-      )
-      .subscribe();
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['subscriptionActivity', profileId] });
+    }, 60000);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user, queryClient]);
+    return () => clearInterval(interval);
+  }, [profileId, queryClient]);
 
   return (
     <Card className="bg-muted-gray/20 border-muted-gray">

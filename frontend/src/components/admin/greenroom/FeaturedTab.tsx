@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import {
@@ -79,22 +79,27 @@ const FeaturedTab = () => {
   const [actionType, setActionType] = useState<'suspend' | 'unsuspend' | 'flag'>('suspend');
   const [actionReason, setActionReason] = useState('');
 
+  // Helper to fetch all projects from all cycles
+  const fetchAllProjects = async (): Promise<any[]> => {
+    const cycles = await api.listGreenroomCycles();
+    const allProjects: any[] = [];
+
+    for (const cycle of (cycles || [])) {
+      const projects = await api.listGreenroomProjects(cycle.id);
+      if (projects) {
+        allProjects.push(...projects.map((p: any) => ({ ...p, cycle: { name: cycle.name } })));
+      }
+    }
+
+    return allProjects;
+  };
+
   // Fetch featured projects
   const { data: featuredProjects, isLoading: featuredLoading } = useQuery({
     queryKey: ['greenroom-featured-projects'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_projects')
-        .select(`
-          *,
-          profile:profiles(display_name, avatar_url),
-          cycle:greenroom_cycles(name)
-        `)
-        .or('is_featured.eq.true,is_staff_pick.eq.true')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data as Project[];
+      const allProjects = await fetchAllProjects();
+      return allProjects.filter((p: any) => p.is_featured || p.is_staff_pick) as Project[];
     },
   });
 
@@ -102,18 +107,8 @@ const FeaturedTab = () => {
   const { data: flaggedProjects, isLoading: flaggedLoading } = useQuery({
     queryKey: ['greenroom-flagged-projects'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_projects')
-        .select(`
-          *,
-          profile:profiles(display_name, avatar_url),
-          cycle:greenroom_cycles(name)
-        `)
-        .or('status.eq.flagged,is_suspended.eq.true')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data as Project[];
+      const allProjects = await fetchAllProjects();
+      return allProjects.filter((p: any) => p.status === 'flagged' || p.is_suspended) as Project[];
     },
   });
 
@@ -121,31 +116,19 @@ const FeaturedTab = () => {
   const { data: approvedProjects, isLoading: approvedLoading } = useQuery({
     queryKey: ['greenroom-approved-projects'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_projects')
-        .select(`
-          *,
-          profile:profiles(display_name, avatar_url),
-          cycle:greenroom_cycles(name)
-        `)
-        .in('status', ['approved', 'shortlisted'])
-        .eq('is_suspended', false)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data as Project[];
+      const allProjects = await fetchAllProjects();
+      return allProjects.filter((p: any) =>
+        ['approved', 'shortlisted'].includes(p.status) && !p.is_suspended
+      ) as Project[];
     },
   });
 
   // Toggle featured mutation
   const toggleFeaturedMutation = useMutation({
     mutationFn: async ({ id, field, value }: { id: string; field: 'is_featured' | 'is_staff_pick'; value: boolean }) => {
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update({ [field]: value })
-        .eq('id', id);
-
-      if (error) throw error;
+      const isFeatured = field === 'is_featured' ? value : false;
+      const isStaffPick = field === 'is_staff_pick' ? value : false;
+      await api.toggleGreenroomProjectFeatured(id, isFeatured, isStaffPick);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-featured-projects'] });
@@ -160,20 +143,18 @@ const FeaturedTab = () => {
   // Suspend/unsuspend mutation
   const suspendMutation = useMutation({
     mutationFn: async ({ id, suspended, reason }: { id: string; suspended: boolean; reason?: string }) => {
-      const updates: Record<string, any> = { is_suspended: suspended };
-      if (reason) {
-        updates.admin_notes = reason;
-      }
-      if (!suspended) {
-        updates.status = 'approved';
-      }
+      // Using the admin suspend endpoint
+      const params = new URLSearchParams({
+        suspended: suspended.toString(),
+      });
+      if (reason) params.append('reason', reason);
 
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update(updates)
-        .eq('id', id);
-
-      if (error) throw error;
+      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/greenroom/admin/projects/${id}/suspend?${params}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${api.getToken()}`,
+        },
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-flagged-projects'] });
@@ -190,12 +171,7 @@ const FeaturedTab = () => {
   // Clear flag mutation
   const clearFlagMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('greenroom_projects')
-        .update({ status: 'approved' })
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.updateGreenroomProjectStatus(id, 'approved');
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-flagged-projects'] });

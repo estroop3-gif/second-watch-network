@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -59,60 +59,31 @@ const StatusUpdatePost = ({ update }: { update: StatusUpdate }) => {
 };
 
 const ProfileStatusUpdates = ({ profile }: { profile: FilmmakerProfileData | any }) => {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const queryClient = useQueryClient();
-  
+
   // The profile object can come from two different sources with different shapes.
   // This line reliably gets the user UUID from either `profile.user_id` or `profile.id`.
   const targetUserId = profile?.user_id || profile?.id;
-  
-  const isOwner = user?.id === targetUserId;
 
-  const fetchStatusUpdates = async () => {
-    if (!targetUserId) return [];
-
-    const { data, error } = await supabase
-      .from('status_updates')
-      .select(`
-        *,
-        profiles (
-          username,
-          avatar_url,
-          full_name,
-          display_name
-        )
-      `)
-      .eq('user_id', targetUserId)
-      .order('created_at', { ascending: false });
-
-    if (error) throw new Error(error.message);
-    return data as StatusUpdate[];
-  };
+  const isOwner = profileId === targetUserId;
 
   const { data: updates, isLoading } = useQuery({
     queryKey: ['status_updates', targetUserId],
-    queryFn: fetchStatusUpdates,
+    queryFn: async () => {
+      if (!targetUserId) return [];
+      return await api.listStatusUpdates(targetUserId) as StatusUpdate[];
+    },
     enabled: !!targetUserId,
   });
 
   const mutation = useMutation({
     mutationFn: async (newUpdate: { content: string }) => {
-      if (!user) throw new Error("Not authenticated");
-      const { data, error } = await supabase.from('status_updates').insert({
-        user_id: user.id,
+      if (!profileId) throw new Error("Not authenticated");
+      return await api.createStatusUpdate({
         content: newUpdate.content,
         type: 'manual',
-      }).select(`
-        *,
-        profiles (
-          username,
-          avatar_url,
-          full_name,
-          display_name
-        )
-      `).single();
-      if (error) throw error;
-      return data;
+      });
     },
     onSuccess: (newlyCreatedUpdate) => {
       queryClient.setQueryData(['status_updates', targetUserId], (oldData: StatusUpdate[] | undefined) => {
@@ -121,7 +92,7 @@ const ProfileStatusUpdates = ({ profile }: { profile: FilmmakerProfileData | any
       toast.success("Status posted to your profile!");
       form.reset();
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(`Failed to post update: ${error.message}`);
     },
   });

@@ -3,8 +3,10 @@
  * Enhanced with visible_to_roles filtering and read tracking
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { BacklotProjectUpdate, ProjectUpdateInput, BacklotUpdateType } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface UseUpdatesOptions {
   projectId: string | null;
@@ -30,81 +32,60 @@ export function useUpdates(options: UseUpdatesOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: userData } = await supabase.auth.getUser();
-      const currentUserId = userData?.user?.id;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      let query = supabase
-        .from('backlot_project_updates')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('created_at', { ascending: false })
-        .limit(limit);
+      const params = new URLSearchParams();
+      if (type && type !== 'all') params.append('type', type);
+      if (publicOnly) params.append('public_only', 'true');
+      params.append('limit', String(limit));
 
-      if (type !== 'all') {
-        query = query.eq('type', type);
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/updates?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch updates' }));
+        throw new Error(error.detail);
       }
 
-      if (publicOnly) {
-        query = query.eq('is_public', true);
-      }
-
-      const { data: updatesData, error } = await query;
-      if (error) throw error;
-      if (!updatesData || updatesData.length === 0) return [];
-
-      // Fetch author profiles
-      const authorIds = [...new Set(updatesData.map(u => u.created_by))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .in('id', authorIds);
-
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-
-      // Fetch read status for current user
-      let readMap = new Map<string, boolean>();
-      if (currentUserId) {
-        const updateIds = updatesData.map(u => u.id);
-        const { data: reads } = await supabase
-          .from('backlot_project_update_reads')
-          .select('update_id')
-          .eq('user_id', currentUserId)
-          .in('update_id', updateIds);
-
-        reads?.forEach(r => readMap.set(r.update_id, true));
-      }
-
-      return updatesData.map(update => ({
-        ...update,
-        author: profileMap.get(update.created_by) || null,
-        has_read: readMap.get(update.id) || false,
-      })) as BacklotProjectUpdateWithRead[];
+      return (await response.json()) as BacklotProjectUpdateWithRead[];
     },
     enabled: !!projectId,
   });
 
   const createUpdate = useMutation({
     mutationFn: async ({ projectId, ...input }: ProjectUpdateInput & { projectId: string; visible_to_roles?: string[] }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_updates')
-        .insert({
-          project_id: projectId,
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/updates`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
           title: input.title,
           content: input.content,
           type: input.type || 'general',
           is_public: input.is_public ?? false,
           attachments: input.attachments || [],
-          visible_to_roles: (input as any).visible_to_roles || [],
-          created_by: userData.user.id,
-        })
-        .select()
-        .single();
+          visible_to_roles: input.visible_to_roles || [],
+        }),
+      });
 
-      if (error) throw error;
-      return data as BacklotProjectUpdate;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create update' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotProjectUpdate;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -113,19 +94,20 @@ export function useUpdates(options: UseUpdatesOptions) {
 
   const markAsRead = useMutation({
     mutationFn: async (updateId: string) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { error } = await supabase
-        .from('backlot_project_update_reads')
-        .upsert({
-          update_id: updateId,
-          user_id: userData.user.id,
-        }, {
-          onConflict: 'update_id,user_id',
-        });
+      const response = await fetch(`${API_BASE}/api/v1/backlot/updates/${updateId}/read`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to mark as read' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -134,22 +116,30 @@ export function useUpdates(options: UseUpdatesOptions) {
 
   const updateUpdate = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ProjectUpdateInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.content !== undefined) updateData.content = input.content;
-      if (input.type !== undefined) updateData.type = input.type;
-      if (input.is_public !== undefined) updateData.is_public = input.is_public;
-      if (input.attachments !== undefined) updateData.attachments = input.attachments;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_updates')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/updates/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          title: input.title,
+          content: input.content,
+          type: input.type,
+          is_public: input.is_public,
+          attachments: input.attachments,
+        }),
+      });
 
-      if (error) throw error;
-      return data as BacklotProjectUpdate;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotProjectUpdate;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -158,12 +148,20 @@ export function useUpdates(options: UseUpdatesOptions) {
 
   const deleteUpdate = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_project_updates')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/updates/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete update' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -172,15 +170,24 @@ export function useUpdates(options: UseUpdatesOptions) {
 
   const togglePublic = useMutation({
     mutationFn: async ({ id, isPublic }: { id: string; isPublic: boolean }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_updates')
-        .update({ is_public: isPublic })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data as BacklotProjectUpdate;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/updates/${id}/public`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ is_public: isPublic }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to toggle public' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as BacklotProjectUpdate;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-updates'] });
@@ -207,22 +214,21 @@ export function useUpdate(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data: update, error } = await supabase
-        .from('backlot_project_updates')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/updates/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch author profile
-      const { data: author } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .eq('id', update.created_by)
-        .single();
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch update' }));
+        throw new Error(error.detail);
+      }
 
-      return { ...update, author } as BacklotProjectUpdate;
+      return (await response.json()) as BacklotProjectUpdate;
     },
     enabled: !!id,
   });
@@ -235,30 +241,16 @@ export function usePublicUpdates(projectId: string | null, limit: number = 10) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: updatesData, error } = await supabase
-        .from('backlot_project_updates')
-        .select('*')
-        .eq('project_id', projectId)
-        .eq('is_public', true)
-        .order('created_at', { ascending: false })
-        .limit(limit);
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/updates/public?limit=${limit}`
+      );
 
-      if (error) throw error;
-      if (!updatesData || updatesData.length === 0) return [];
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch public updates' }));
+        throw new Error(error.detail);
+      }
 
-      // Fetch author profiles
-      const authorIds = [...new Set(updatesData.map(u => u.created_by))];
-      const { data: profiles } = await supabase
-        .from('profiles')
-        .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-        .in('id', authorIds);
-
-      const profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-
-      return updatesData.map(update => ({
-        ...update,
-        author: profileMap.get(update.created_by) || null,
-      })) as BacklotProjectUpdate[];
+      return (await response.json()) as BacklotProjectUpdate[];
     },
     enabled: !!projectId,
   });

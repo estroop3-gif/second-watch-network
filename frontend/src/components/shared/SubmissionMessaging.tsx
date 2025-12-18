@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -7,6 +7,7 @@ import { Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
 import { Skeleton } from '../ui/skeleton';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 
 interface Message {
   id: string;
@@ -26,100 +27,56 @@ interface SubmissionMessagingProps {
 }
 
 const SubmissionMessaging = ({ submissionId, submissionUserId }: SubmissionMessagingProps) => {
-  const { user, profile } = useAuth();
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { profileId, profile } = useAuth();
+  const queryClient = useQueryClient();
   const [newMessage, setNewMessage] = useState('');
-  const [loading, setLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const { data: messages = [], isLoading } = useQuery({
+    queryKey: ['submission-messages', submissionId],
+    queryFn: async () => {
+      const data = await api.listSubmissionMessages(submissionId);
+      return data as Message[];
+    },
+  });
+
+  // Polling for new messages
   useEffect(() => {
-    const fetchMessages = async () => {
-      setLoading(true);
-      const { data, error } = await supabase
-        .from('submission_messages')
-        .select(`
-          id,
-          content,
-          created_at,
-          sender_id,
-          profiles (avatar_url, full_name, username)
-        `)
-        .eq('submission_id', submissionId)
-        .order('created_at', { ascending: true });
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['submission-messages', submissionId] });
+    }, 5000); // Poll every 5 seconds
 
-      if (error) {
-        toast.error('Failed to load messages.');
-        console.error(error);
-      } else {
-        setMessages(data as any);
-      }
-      setLoading(false);
-    };
-
-    fetchMessages();
-  }, [submissionId]);
+    return () => clearInterval(interval);
+  }, [submissionId, queryClient]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  useEffect(() => {
-    const channel = supabase
-      .channel(`submission-messages-${submissionId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'submission_messages',
-          filter: `submission_id=eq.${submissionId}`,
-        },
-        async (payload) => {
-          const { data: profileData, error } = await supabase
-            .from('profiles')
-            .select('avatar_url, full_name, username')
-            .eq('id', payload.new.sender_id)
-            .single();
-          
-          if (error) {
-            console.error("Error fetching profile for new message", error);
-            setMessages((prev) => [...prev, payload.new as Message]);
-          } else {
-            const newMessageWithProfile = {
-              ...payload.new,
-              profiles: profileData,
-            };
-            setMessages((prev) => [...prev, newMessageWithProfile as Message]);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [submissionId]);
+  const sendMutation = useMutation({
+    mutationFn: async (content: string) => {
+      if (!profileId) throw new Error("Not authenticated");
+      return await api.createSubmissionMessage(submissionId, profileId, content);
+    },
+    onSuccess: (newMsg) => {
+      queryClient.setQueryData(['submission-messages', submissionId], (old: Message[] | undefined) => {
+        return [...(old || []), newMsg];
+      });
+      setNewMessage('');
+    },
+    onError: (error: any) => {
+      toast.error('Failed to send message: ' + error.message);
+    },
+  });
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !user) return;
+    if (!newMessage.trim() || !profileId) return;
 
-    const messageContent = newMessage;
-    setNewMessage('');
-
-    const { error } = await supabase.from('submission_messages').insert({
-      submission_id: submissionId,
-      sender_id: user.id,
-      content: messageContent,
-    });
-
-    if (error) {
-      toast.error('Failed to send message.');
-      setNewMessage(messageContent); // Restore message on failure
-    }
+    sendMutation.mutate(newMessage);
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div className="space-y-4 p-4">
         <Skeleton className="h-16 w-3/4" />
@@ -133,7 +90,7 @@ const SubmissionMessaging = ({ submissionId, submissionUserId }: SubmissionMessa
     <div className="flex flex-col h-full">
       <div className="flex-grow overflow-y-auto p-4 space-y-4">
         {messages.map((message) => {
-          const isSender = message.sender_id === user?.id;
+          const isSender = message.sender_id === profileId;
           return (
             <div key={message.id} className={`flex items-end gap-2 ${isSender ? 'justify-end' : 'justify-start'}`}>
               {!isSender && (
@@ -175,7 +132,7 @@ const SubmissionMessaging = ({ submissionId, submissionUserId }: SubmissionMessa
             }
           }}
         />
-        <Button type="submit" size="icon" disabled={!newMessage.trim()}>
+        <Button type="submit" size="icon" disabled={!newMessage.trim() || sendMutation.isPending}>
           <Send className="h-4 w-4" />
         </Button>
       </form>

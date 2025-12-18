@@ -11,7 +11,7 @@
 import React, { createContext, useContext, useMemo } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { orderAPI } from '@/lib/api/order';
 import {
@@ -75,18 +75,18 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
     queryKey: ['filmmaker-profile-exists', user?.id],
     queryFn: async () => {
       if (!user) return false;
-      const { data, error } = await supabase
-        .from('filmmaker_profiles')
-        .select('id')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      return !error && !!data;
+      try {
+        const profile = await api.getFilmmakerProfile(user.id);
+        return !!profile;
+      } catch {
+        return false;
+      }
     },
     enabled: !!user,
     staleTime: 60000, // Cache for 1 minute
   });
 
-  // Partner profile check - disabled until partner_profiles table is created in Supabase
+  // Partner profile check - disabled until partner_profiles table is created
   const hasPartnerProfile = false;
   const partnerLoading = false;
 

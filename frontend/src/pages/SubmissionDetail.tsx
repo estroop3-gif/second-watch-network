@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,13 +37,8 @@ export default function SubmissionDetail() {
     queryKey: ["submission", submissionId],
     enabled: !!submissionId,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("submissions")
-        .select("*")
-        .eq("id", submissionId)
-        .maybeSingle();
-      if (error) throw new Error(error.message);
-      return data as Submission | null;
+      const result = await api.getSubmission(submissionId!);
+      return result as Submission | null;
     },
   });
 
@@ -122,7 +117,7 @@ export default function SubmissionDetail() {
               )}
             </>
           ) : (
-            <p className="text-muted-foreground">Submission not found or you don’t have access.</p>
+            <p className="text-muted-foreground">Submission not found or you don't have access.</p>
           )}
         </CardContent>
       </Card>

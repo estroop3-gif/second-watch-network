@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import {
   Table,
@@ -37,19 +37,11 @@ interface User {
   };
 }
 
-const fetchUsers = async (): Promise<User[]> => {
-  const { data, error } = await supabase.functions.invoke('get-all-users');
-  if (error) {
-    throw new Error(error.message);
-  }
-  return data;
-};
-
 const UserManagement = () => {
   const queryClient = useQueryClient();
   const { data: users, isLoading, error } = useQuery<User[]>({
     queryKey: ['admin-users'],
-    queryFn: fetchUsers,
+    queryFn: () => api.getAllUsersAdmin(),
   });
   const [isRolesDialogOpen, setIsRolesDialogOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -68,10 +60,7 @@ const UserManagement = () => {
 
   const banUserMutation = useMutation({
     mutationFn: async ({ userId, ban }: { userId: string; ban: boolean }) => {
-      const { error } = await supabase.functions.invoke('ban-user', {
-        body: { userId, ban },
-      });
-      if (error) throw new Error(error.message);
+      await api.banUser(userId, ban);
     },
     onSuccess: (_, { ban }) => {
       toast.success(`User has been successfully ${ban ? 'banned' : 'unbanned'}.`);
@@ -84,10 +73,7 @@ const UserManagement = () => {
 
   const deleteUserMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const { error } = await supabase.functions.invoke('delete-user', {
-        body: { userId },
-      });
-      if (error) throw new Error(error.message);
+      await api.deleteUser(userId);
     },
     onSuccess: () => {
       toast.success('User has been permanently deleted.');
@@ -111,7 +97,7 @@ const UserManagement = () => {
   }
 
   if (error) {
-    toast.error(`Failed to fetch users: ${error.message}`);
+    toast.error(`Failed to fetch users: ${(error as Error).message}`);
     return <div className="text-center text-primary-red">Error loading users.</div>;
   }
 
@@ -170,7 +156,7 @@ const UserManagement = () => {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="bg-charcoal-black border-muted-gray text-bone-white">
                       <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="cursor-pointer focus:bg-muted-gray/50"
                         onSelect={() => handleOpenRolesDialog(user)}
                       >
@@ -178,7 +164,7 @@ const UserManagement = () => {
                       </DropdownMenuItem>
                       <DropdownMenuItem className="cursor-pointer focus:bg-muted-gray/50">Reset Password</DropdownMenuItem>
                       <DropdownMenuSeparator className="bg-muted-gray" />
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="cursor-pointer focus:bg-primary-red/20 text-primary-red focus:text-primary-red focus:bg-primary-red/30"
                         onSelect={(e) => {
                           e.preventDefault();
@@ -187,7 +173,7 @@ const UserManagement = () => {
                       >
                         {user.profile?.is_banned ? 'Unban User' : 'Ban User'}
                       </DropdownMenuItem>
-                      <DropdownMenuItem 
+                      <DropdownMenuItem
                         className="cursor-pointer focus:bg-primary-red/20 text-primary-red focus:text-primary-red focus:bg-primary-red/30"
                         onSelect={() => handleOpenDeleteDialog(user)}
                       >

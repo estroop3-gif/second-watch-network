@@ -2,7 +2,7 @@
  * useContacts - Hook for managing project contacts pipeline
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotProjectContact,
   ProjectContactInput,
@@ -10,6 +10,8 @@ import {
   BacklotContactType,
   BacklotContactStatus,
 } from '@/types/backlot';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface UseContactsOptions extends ContactFilters {
   projectId: string | null;
@@ -33,82 +35,59 @@ export function useContacts(options: UseContactsOptions) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      let query = supabase
-        .from('backlot_project_contacts')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('created_at', { ascending: false })
-        .limit(limit);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (contact_type !== 'all') {
-        query = query.eq('contact_type', contact_type);
+      const params = new URLSearchParams();
+      params.append('limit', String(limit));
+      if (contact_type !== 'all') params.append('contact_type', contact_type);
+      if (status !== 'all') params.append('status', status);
+      if (search) params.append('search', search);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/contacts?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch contacts' }));
+        throw new Error(error.detail);
       }
 
-      if (status !== 'all') {
-        query = query.eq('status', status);
-      }
-
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%`);
-      }
-
-      const { data: contactsData, error } = await query;
-      if (error) throw error;
-      if (!contactsData || contactsData.length === 0) return [];
-
-      // Fetch profiles for linked users and creators
-      const userIds = new Set<string>();
-      contactsData.forEach(c => {
-        if (c.user_id) userIds.add(c.user_id);
-        if (c.created_by) userIds.add(c.created_by);
-      });
-
-      let profileMap = new Map<string, any>();
-      if (userIds.size > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .in('id', Array.from(userIds));
-        profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
-      }
-
-      return contactsData.map(contact => ({
-        ...contact,
-        linked_user: contact.user_id ? profileMap.get(contact.user_id) : null,
-        creator: contact.created_by ? profileMap.get(contact.created_by) : null,
-      })) as BacklotProjectContact[];
+      const result = await response.json();
+      return (result.contacts || []) as BacklotProjectContact[];
     },
     enabled: !!projectId,
   });
 
   const createContact = useMutation({
     mutationFn: async ({ projectId, ...input }: ProjectContactInput & { projectId: string }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_contacts')
-        .insert({
-          project_id: projectId,
-          contact_type: input.contact_type || 'other',
-          status: input.status || 'new',
-          name: input.name,
-          company: input.company || null,
-          email: input.email || null,
-          phone: input.phone || null,
-          role_interest: input.role_interest || null,
-          notes: input.notes || null,
-          last_contact_date: input.last_contact_date || null,
-          next_follow_up_date: input.next_follow_up_date || null,
-          user_id: input.user_id || null,
-          source: input.source || null,
-          created_by: userData.user.id,
-        })
-        .select()
-        .single();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/contacts`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
 
-      if (error) throw error;
-      return data as BacklotProjectContact;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create contact' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.contact as BacklotProjectContact;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
@@ -117,29 +96,25 @@ export function useContacts(options: UseContactsOptions) {
 
   const updateContact = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ProjectContactInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.contact_type !== undefined) updateData.contact_type = input.contact_type;
-      if (input.status !== undefined) updateData.status = input.status;
-      if (input.name !== undefined) updateData.name = input.name;
-      if (input.company !== undefined) updateData.company = input.company;
-      if (input.email !== undefined) updateData.email = input.email;
-      if (input.phone !== undefined) updateData.phone = input.phone;
-      if (input.role_interest !== undefined) updateData.role_interest = input.role_interest;
-      if (input.notes !== undefined) updateData.notes = input.notes;
-      if (input.last_contact_date !== undefined) updateData.last_contact_date = input.last_contact_date;
-      if (input.next_follow_up_date !== undefined) updateData.next_follow_up_date = input.next_follow_up_date;
-      if (input.user_id !== undefined) updateData.user_id = input.user_id;
-      if (input.source !== undefined) updateData.source = input.source;
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('backlot_project_contacts')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/contacts/${id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
 
-      if (error) throw error;
-      return data as BacklotProjectContact;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update contact' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.contact as BacklotProjectContact;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
@@ -148,15 +123,24 @@ export function useContacts(options: UseContactsOptions) {
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: BacklotContactStatus }) => {
-      const { data, error } = await supabase
-        .from('backlot_project_contacts')
-        .update({ status })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
-      return data as BacklotProjectContact;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/contacts/${id}/status?status=${status}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update status' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.contact as BacklotProjectContact;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
@@ -165,33 +149,25 @@ export function useContacts(options: UseContactsOptions) {
 
   const logContact = useMutation({
     mutationFn: async ({ id, notes }: { id: string; notes?: string }) => {
-      const updateData: Record<string, any> = {
-        last_contact_date: new Date().toISOString().split('T')[0],
-      };
-      if (notes) {
-        // Append to existing notes
-        const { data: existing } = await supabase
-          .from('backlot_project_contacts')
-          .select('notes')
-          .eq('id', id)
-          .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-        const timestamp = new Date().toLocaleDateString();
-        const newNote = `[${timestamp}] ${notes}`;
-        updateData.notes = existing?.notes
-          ? `${existing.notes}\n\n${newNote}`
-          : newNote;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/contacts/${id}/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(notes || null),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to log contact' }));
+        throw new Error(error.detail);
       }
 
-      const { data, error } = await supabase
-        .from('backlot_project_contacts')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-      return data as BacklotProjectContact;
+      const result = await response.json();
+      return result.contact as BacklotProjectContact;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
@@ -200,12 +176,18 @@ export function useContacts(options: UseContactsOptions) {
 
   const deleteContact = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_project_contacts')
-        .delete()
-        .eq('id', id);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/contacts/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete contact' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
@@ -232,33 +214,22 @@ export function useContact(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data: contact, error } = await supabase
-        .from('backlot_project_contacts')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/contacts/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch profiles
-      const userIds = new Set<string>();
-      if (contact.user_id) userIds.add(contact.user_id);
-      if (contact.created_by) userIds.add(contact.created_by);
-
-      let profileMap = new Map<string, any>();
-      if (userIds.size > 0) {
-        const { data: profiles } = await supabase
-          .from('profiles')
-          .select('id, username, full_name, display_name, avatar_url, role, is_order_member')
-          .in('id', Array.from(userIds));
-        profileMap = new Map(profiles?.map(p => [p.id, p]) || []);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch contact' }));
+        throw new Error(error.detail);
       }
 
-      return {
-        ...contact,
-        linked_user: contact.user_id ? profileMap.get(contact.user_id) : null,
-        creator: contact.created_by ? profileMap.get(contact.created_by) : null,
-      } as BacklotProjectContact;
+      const result = await response.json();
+      return result.contact as BacklotProjectContact;
     },
     enabled: !!id,
   });
@@ -271,39 +242,24 @@ export function useContactStats(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: contacts, error } = await supabase
-        .from('backlot_project_contacts')
-        .select('contact_type, status')
-        .eq('project_id', projectId);
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
 
-      if (error) throw error;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/contacts/stats`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
 
-      const stats = {
-        total: contacts?.length || 0,
-        by_type: {
-          investor: contacts?.filter(c => c.contact_type === 'investor').length || 0,
-          crew: contacts?.filter(c => c.contact_type === 'crew').length || 0,
-          collaborator: contacts?.filter(c => c.contact_type === 'collaborator').length || 0,
-          vendor: contacts?.filter(c => c.contact_type === 'vendor').length || 0,
-          talent: contacts?.filter(c => c.contact_type === 'talent').length || 0,
-          other: contacts?.filter(c => c.contact_type === 'other').length || 0,
-        },
-        by_status: {
-          new: contacts?.filter(c => c.status === 'new').length || 0,
-          contacted: contacts?.filter(c => c.status === 'contacted').length || 0,
-          in_discussion: contacts?.filter(c => c.status === 'in_discussion').length || 0,
-          confirmed: contacts?.filter(c => c.status === 'confirmed').length || 0,
-          declined: contacts?.filter(c => c.status === 'declined').length || 0,
-          archived: contacts?.filter(c => c.status === 'archived').length || 0,
-        },
-        needs_followup: contacts?.filter(c =>
-          c.status !== 'confirmed' &&
-          c.status !== 'declined' &&
-          c.status !== 'archived'
-        ).length || 0,
-      };
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch stats' }));
+        throw new Error(error.detail);
+      }
 
-      return stats;
+      return response.json();
     },
     enabled: !!projectId,
   });

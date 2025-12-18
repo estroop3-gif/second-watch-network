@@ -3,7 +3,7 @@
  * Includes budgets, categories, line items, daily budgets, and receipts
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotBudget,
   BacklotBudgetCategory,
@@ -47,14 +47,14 @@ const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
 
 /**
- * Helper to get auth token
+ * Helper to get auth token (uses Cognito via api module)
  */
-async function getAuthToken(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session?.access_token) {
+function getAuthToken(): string {
+  const token = api.getToken();
+  if (!token) {
     throw new Error('Not authenticated');
   }
-  return data.session.access_token;
+  return token;
 }
 
 // =====================================================
@@ -70,7 +70,7 @@ export function useBudget(projectId: string | null) {
     queryFn: async (): Promise<BacklotBudget | null> => {
       if (!projectId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget`, {
         headers: {
@@ -101,7 +101,7 @@ export function useBudgetSummary(projectId: string | null) {
     queryFn: async (): Promise<BudgetSummary | null> => {
       if (!projectId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/summary`, {
         headers: {
@@ -132,7 +132,7 @@ export function useBudgetStats(projectId: string | null) {
     queryFn: async (): Promise<BudgetStats | null> => {
       if (!projectId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/stats`, {
         headers: {
@@ -168,7 +168,7 @@ export function useCreateBudget() {
       projectId: string;
       input?: BudgetInput;
     }): Promise<BacklotBudget> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget`, {
         method: 'POST',
@@ -208,7 +208,7 @@ export function useUpdateBudget() {
       projectId: string;
       input: BudgetInput;
     }): Promise<BacklotBudget> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget`, {
         method: 'PUT',
@@ -242,7 +242,7 @@ export function useLockBudget() {
 
   return useMutation({
     mutationFn: async ({ projectId }: { projectId: string }): Promise<BacklotBudget> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/lock`, {
         method: 'POST',
@@ -274,7 +274,7 @@ export function useProjectBudgets(projectId: string | null) {
     queryFn: async (): Promise<BacklotBudget[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budgets`, {
         headers: {
@@ -306,7 +306,7 @@ export function useDeleteBudget() {
       budgetId: string;
       projectId: string;
     }): Promise<{ success: boolean; message: string }> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}`, {
         method: 'DELETE',
@@ -345,7 +345,7 @@ export function useBudgetCategories(budgetId: string | null) {
     queryFn: async (): Promise<BacklotBudgetCategory[]> => {
       if (!budgetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/categories`, {
         headers: {
@@ -373,7 +373,7 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     mutationFn: async (input: BudgetCategoryInput): Promise<BacklotBudgetCategory> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/categories`, {
         method: 'POST',
@@ -407,7 +407,7 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     }): Promise<BacklotBudgetCategory> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/categories/${categoryId}`, {
         method: 'PUT',
@@ -435,7 +435,7 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     mutationFn: async (categoryId: string): Promise<void> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/categories/${categoryId}`, {
         method: 'DELETE',
@@ -471,7 +471,7 @@ export function useBudgetLineItems(budgetId: string | null, categoryId?: string)
     queryFn: async (): Promise<BacklotBudgetLineItem[]> => {
       if (!budgetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (categoryId) {
@@ -506,7 +506,7 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     mutationFn: async (input: BudgetLineItemInput): Promise<BacklotBudgetLineItem> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/line-items`, {
         method: 'POST',
@@ -542,7 +542,7 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     }): Promise<BacklotBudgetLineItem> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/line-items/${lineItemId}`, {
         method: 'PUT',
@@ -572,7 +572,7 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     mutationFn: async (lineItemId: string): Promise<void> => {
       if (!budgetId) throw new Error('Budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budgets/${budgetId}/line-items/${lineItemId}`, {
         method: 'DELETE',
@@ -610,7 +610,7 @@ export function useDailyBudgets(projectId: string | null) {
     queryFn: async (): Promise<DailyBudgetSummary[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/daily-budgets`, {
         headers: {
@@ -637,7 +637,7 @@ export function useDailyBudget(dailyBudgetId: string | null) {
     queryFn: async (): Promise<BacklotDailyBudget | null> => {
       if (!dailyBudgetId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}`, {
         headers: {
@@ -668,7 +668,7 @@ export function useDailyBudgetForDay(productionDayId: string | null) {
     queryFn: async (): Promise<BacklotDailyBudget | null> => {
       if (!productionDayId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/production-days/${productionDayId}/daily-budget`, {
         headers: {
@@ -704,7 +704,7 @@ export function useUpdateDailyBudget() {
       dailyBudgetId: string;
       input: DailyBudgetInput;
     }): Promise<BacklotDailyBudget> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}`, {
         method: 'PUT',
@@ -739,7 +739,7 @@ export function useSuggestedLineItems(productionDayId: string | null) {
     queryFn: async (): Promise<SuggestedLineItemsForDay | null> => {
       if (!productionDayId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/production-days/${productionDayId}/suggested-line-items`, {
         headers: {
@@ -775,7 +775,7 @@ export function useAutoPopulateDailyBudget() {
       dailyBudgetId: string;
       lineItemIds: string[];
     }): Promise<BacklotDailyBudgetItem[]> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/auto-populate`, {
         method: 'POST',
@@ -814,7 +814,7 @@ export function useDailyBudgetItems(dailyBudgetId: string | null) {
     queryFn: async (): Promise<BacklotDailyBudgetItem[]> => {
       if (!dailyBudgetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/items`, {
         headers: {
@@ -842,7 +842,7 @@ export function useDailyBudgetItemMutations(dailyBudgetId: string | null, projec
     mutationFn: async (input: DailyBudgetItemInput): Promise<BacklotDailyBudgetItem> => {
       if (!dailyBudgetId) throw new Error('Daily budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/items`, {
         method: 'POST',
@@ -878,7 +878,7 @@ export function useDailyBudgetItemMutations(dailyBudgetId: string | null, projec
     }): Promise<BacklotDailyBudgetItem> => {
       if (!dailyBudgetId) throw new Error('Daily budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/items/${itemId}`, {
         method: 'PUT',
@@ -908,7 +908,7 @@ export function useDailyBudgetItemMutations(dailyBudgetId: string | null, projec
     mutationFn: async (itemId: string): Promise<void> => {
       if (!dailyBudgetId) throw new Error('Daily budget ID required');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/items/${itemId}`, {
         method: 'DELETE',
@@ -946,7 +946,7 @@ export function useReceipts(projectId: string | null, filters?: ReceiptFilters) 
     queryFn: async (): Promise<BacklotReceipt[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (filters?.is_mapped !== undefined) {
@@ -998,7 +998,7 @@ export function useReceipt(receiptId: string | null) {
     queryFn: async (): Promise<BacklotReceipt | null> => {
       if (!receiptId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}`, {
         headers: {
@@ -1040,7 +1040,7 @@ export function useRegisterReceipt() {
       fileType?: string;
       fileSizeBytes?: number;
     }): Promise<BacklotReceipt> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/receipts/register`, {
         method: 'POST',
@@ -1083,7 +1083,7 @@ export function useReprocessReceiptOcr() {
       receiptId: string;
       projectId: string;
     }): Promise<BacklotReceipt> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}/reprocess-ocr`, {
         method: 'POST',
@@ -1122,7 +1122,7 @@ export function useUpdateReceipt() {
       projectId: string;
       input: ReceiptInput;
     }): Promise<BacklotReceipt> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}`, {
         method: 'PUT',
@@ -1164,7 +1164,7 @@ export function useMapReceipt() {
       projectId: string;
       mapping: ReceiptMappingInput;
     }): Promise<BacklotReceipt> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}/map`, {
         method: 'PUT',
@@ -1207,7 +1207,7 @@ export function useVerifyReceipt() {
       receiptId: string;
       projectId: string;
     }): Promise<BacklotReceipt> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}/verify`, {
         method: 'PUT',
@@ -1244,7 +1244,7 @@ export function useDeleteReceipt() {
       receiptId: string;
       projectId: string;
     }): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}`, {
         method: 'DELETE',
@@ -1277,7 +1277,7 @@ export function useExportReceipts() {
       projectId: string;
       filters?: ReceiptFilters;
     }): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (filters?.date_from) {
@@ -1335,7 +1335,7 @@ export function useBudgetTemplateTypes() {
   return useQuery({
     queryKey: ['backlot-budget-template-types'],
     queryFn: async (): Promise<BacklotBudgetProjectType[]> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/budget-templates`, {
         headers: {
@@ -1361,7 +1361,7 @@ export function useBudgetTemplateAccounts(projectType: BacklotBudgetProjectType 
     queryFn: async (): Promise<BacklotBudgetAccount[]> => {
       if (!projectType) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (includeAll) {
@@ -1395,7 +1395,7 @@ export function useBudgetTemplatePreview(projectType: BacklotBudgetProjectType |
     queryFn: async (): Promise<BudgetTemplate | null> => {
       if (!projectType) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       params.append('include_common_only', String(includeCommonOnly));
@@ -1430,7 +1430,7 @@ export function useCreateBudgetFromTemplate() {
       projectId: string;
       input: CreateBudgetFromTemplateInput;
     }): Promise<BacklotBudget> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/from-template`, {
         method: 'POST',
@@ -1465,7 +1465,7 @@ export function useTopSheet(projectId: string | null) {
     queryFn: async (): Promise<TopSheetData | null> => {
       if (!projectId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/top-sheet`, {
         headers: {
@@ -1495,7 +1495,7 @@ export function useComputeTopSheet() {
 
   return useMutation({
     mutationFn: async ({ projectId }: { projectId: string }): Promise<TopSheetData> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/compute-top-sheet`, {
         method: 'POST',
@@ -1537,7 +1537,7 @@ export function useSyncBudgetToDaily() {
       projectId: string;
       config?: Partial<BudgetToDailySyncConfig>;
     }): Promise<BudgetSyncSummary> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/sync-to-daily`, {
         method: 'POST',
@@ -1582,7 +1582,7 @@ export function useSyncBudgetToDay() {
       phases?: BacklotBudgetPhase[];
       departments?: string[];
     }): Promise<DailyBudgetSyncResult> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (phases && phases.length > 0) {
@@ -1634,7 +1634,7 @@ export function useExportBudgetPdf() {
       projectId: string;
       options?: Partial<BudgetPdfExportOptions>;
     }): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams();
       if (options?.include_top_sheet !== undefined) {
@@ -1779,7 +1779,7 @@ export function useCreateBudgetFromBundles() {
       projectId: string;
       options: CreateBudgetFromBundlesInput;
     }): Promise<BudgetCreationResult> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/from-bundles`, {
         method: 'POST',
@@ -1825,7 +1825,7 @@ export function useAddBundleToBudget() {
       bundleId: string;
       essentialsOnly?: boolean;
     }): Promise<AddBundleResult> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
       const params = new URLSearchParams({
         bundle_id: bundleId,

@@ -9,7 +9,7 @@
  */
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
 import { orderAPI, OrderMemberProfile, LodgeMembership, OrderProfileSettings } from '@/lib/api/order';
 import { getOrderProfileSettings } from '@/lib/api/orderSettings';
@@ -122,51 +122,32 @@ export function useMyProfileData(): MyProfileData {
   const { user } = useAuth();
   const { profile: baseProfile, isLoading: profileLoading, isError: profileError, refetch: refetchProfile } = useProfile();
 
-  // Fetch filmmaker profile
+  // Fetch filmmaker profile via API
   const { data: filmmakerProfile, isLoading: filmmakerLoading } = useQuery({
     queryKey: ['filmmaker-profile', user?.id],
     queryFn: async () => {
       if (!user) return null;
-      const { data, error } = await supabase
-        .from('filmmaker_profiles')
-        .select('*')
-        .eq('user_id', user.id)
-        .single();
-
-      if (error) {
-        if (error.code === 'PGRST116') return null; // No row found
-        console.error('Error fetching filmmaker profile:', error);
+      try {
+        const data = await api.getFilmmakerProfile(user.id);
+        return data as FilmmakerProfileDB;
+      } catch (error) {
+        // Profile doesn't exist
         return null;
       }
-      return data as FilmmakerProfileDB;
     },
     enabled: !!user,
   });
 
-  // Fetch partner profile (table may not exist yet - handle gracefully)
+  // Fetch partner profile via API
   const { data: partnerProfile, isLoading: partnerLoading } = useQuery({
     queryKey: ['partner-profile', user?.id],
     queryFn: async () => {
       if (!user) return null;
       try {
-        const { data, error } = await supabase
-          .from('partner_profiles')
-          .select('*')
-          .eq('user_id', user.id)
-          .single();
-
-        if (error) {
-          // PGRST116 = no row found, 42P01 = table doesn't exist
-          if (error.code === 'PGRST116' || error.code === '42P01') return null;
-          // Don't log errors for missing table - it's expected until schema is created
-          if (!error.message?.includes('partner_profiles')) {
-            console.error('Error fetching partner profile:', error);
-          }
-          return null;
-        }
+        const data = await api.getPartnerProfile(user.id);
         return data as PartnerProfileDB;
-      } catch {
-        // Silently handle if table doesn't exist
+      } catch (error) {
+        // Profile doesn't exist
         return null;
       }
     },
@@ -218,34 +199,14 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
-  // Fetch credits with production titles
+  // Fetch credits via API
   const { data: credits, isLoading: creditsLoading } = useQuery({
     queryKey: ['credits', user?.id],
     queryFn: async () => {
       if (!user) return [];
       try {
-        const { data, error } = await supabase
-          .from('credits')
-          .select('*, productions(id, title)')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
-
-        if (error) {
-          if (error.code === '42P01' || error.code === '42703') return [];
-          console.error('Error fetching credits:', error);
-          return [];
-        }
-        // Map to expected format
-        return (data || []).map((c: any) => ({
-          id: c.id,
-          user_id: c.user_id,
-          title: c.productions?.title || 'Unknown Production',
-          role: c.position,
-          year: c.production_date ? new Date(c.production_date).getFullYear() : undefined,
-          description: c.description,
-          created_at: c.created_at,
-          updated_at: c.updated_at,
-        })) as CreditDB[];
+        const data = await api.getUserCredits(user.id);
+        return (data || []) as CreditDB[];
       } catch {
         return [];
       }

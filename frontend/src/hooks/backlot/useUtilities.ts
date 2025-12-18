@@ -3,7 +3,7 @@
  * Sun/Weather Widget, QR Check-in, Personal Notes & Bookmarks
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
@@ -159,12 +159,12 @@ export interface CreateUserBookmarkInput {
 // HELPERS
 // =============================================================================
 
-async function getAuthToken(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session?.access_token) {
+function getAuthToken(): string {
+  const token = api.getToken();
+  if (!token) {
     throw new Error('Not authenticated');
   }
-  return data.session.access_token;
+  return token;
 }
 
 // =============================================================================
@@ -177,7 +177,7 @@ export function useDaySettings(projectId: string | null) {
     queryFn: async (): Promise<DaySettings[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/day-settings`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -196,7 +196,7 @@ export function useDaySettingsForDate(projectId: string | null, shootDate: strin
     queryFn: async (): Promise<DaySettings | null> => {
       if (!projectId || !shootDate) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/day-settings/${shootDate}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -215,7 +215,7 @@ export function useSunWeather(projectId: string | null, shootDate: string | null
     queryFn: async (): Promise<SunWeatherData | null> => {
       if (!projectId || !shootDate) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/sun-weather/${shootDate}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -235,7 +235,7 @@ export function useCreateDaySettings(projectId: string | null) {
     mutationFn: async (input: CreateDaySettingsInput): Promise<DaySettings> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/day-settings`, {
         method: 'POST',
         headers: {
@@ -263,7 +263,7 @@ export function useUpdateDaySettings(projectId: string | null) {
     mutationFn: async ({ shootDate, updates }: { shootDate: string; updates: Partial<CreateDaySettingsInput & DaySettings> }): Promise<DaySettings> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/day-settings/${shootDate}`, {
         method: 'PATCH',
         headers: {
@@ -294,7 +294,7 @@ export function useCheckinSessions(projectId: string | null, activeOnly?: boolea
     queryFn: async (): Promise<CheckinSession[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const url = `${API_BASE}/backlot/projects/${projectId}/checkin-sessions${activeOnly ? '?active_only=true' : ''}`;
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${token}` },
@@ -314,7 +314,7 @@ export function useCheckinSession(projectId: string | null, sessionId: string | 
     queryFn: async (): Promise<CheckinSession | null> => {
       if (!projectId || !sessionId) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/checkin-sessions/${sessionId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -334,7 +334,7 @@ export function useCreateCheckinSession(projectId: string | null) {
     mutationFn: async (input: CreateCheckinSessionInput): Promise<CheckinSession> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/checkin-sessions`, {
         method: 'POST',
         headers: {
@@ -361,7 +361,7 @@ export function useDeactivateCheckinSession(projectId: string | null) {
     mutationFn: async (sessionId: string): Promise<CheckinSession> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/checkin-sessions/${sessionId}/deactivate`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
@@ -384,7 +384,7 @@ export function useActivateCheckinSession(projectId: string | null) {
     mutationFn: async (sessionId: string): Promise<CheckinSession> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/checkin-sessions/${sessionId}/activate`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}` },
@@ -406,7 +406,7 @@ export function useSessionCheckins(projectId: string | null, sessionId: string |
     queryFn: async (): Promise<CheckinRecord[]> => {
       if (!projectId || !sessionId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/checkin-sessions/${sessionId}/checkins`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -429,7 +429,7 @@ export function useSessionByToken(qrToken: string | null) {
     queryFn: async (): Promise<{ session: CheckinSession; already_checked_in: boolean; project: any } | null> => {
       if (!qrToken) return null;
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/checkin/session/${qrToken}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -450,7 +450,7 @@ export function usePerformCheckin() {
 
   return useMutation({
     mutationFn: async (input: PerformCheckinInput): Promise<{ checkin: CheckinRecord; success: boolean }> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/checkin/perform`, {
         method: 'POST',
         headers: {
@@ -483,7 +483,7 @@ export function useMyNotes(projectId: string | null) {
     queryFn: async (): Promise<UserNote[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-notes`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -503,7 +503,7 @@ export function useCreateNote(projectId: string | null) {
     mutationFn: async (input: CreateUserNoteInput): Promise<UserNote> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-notes`, {
         method: 'POST',
         headers: {
@@ -530,7 +530,7 @@ export function useUpdateNote(projectId: string | null) {
     mutationFn: async ({ noteId, updates }: { noteId: string; updates: Partial<CreateUserNoteInput> }): Promise<UserNote> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-notes/${noteId}`, {
         method: 'PATCH',
         headers: {
@@ -557,7 +557,7 @@ export function useDeleteNote(projectId: string | null) {
     mutationFn: async (noteId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-notes/${noteId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -581,7 +581,7 @@ export function useMyBookmarks(projectId: string | null, entityType?: string) {
     queryFn: async (): Promise<UserBookmark[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const url = entityType
         ? `${API_BASE}/backlot/projects/${projectId}/my-bookmarks?entity_type=${entityType}`
         : `${API_BASE}/backlot/projects/${projectId}/my-bookmarks`;
@@ -604,7 +604,7 @@ export function useCreateBookmark(projectId: string | null) {
     mutationFn: async (input: CreateUserBookmarkInput): Promise<{ bookmark: UserBookmark; already_exists?: boolean }> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-bookmarks`, {
         method: 'POST',
         headers: {
@@ -630,7 +630,7 @@ export function useDeleteBookmark(projectId: string | null) {
     mutationFn: async (bookmarkId: string): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-bookmarks/${bookmarkId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
@@ -651,7 +651,7 @@ export function useDeleteBookmarkByEntity(projectId: string | null) {
     mutationFn: async ({ entityType, entityId }: { entityType: string; entityId: string }): Promise<void> => {
       if (!projectId) throw new Error('No project ID');
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(
         `${API_BASE}/backlot/projects/${projectId}/my-bookmarks/by-entity?entity_type=${entityType}&entity_id=${entityId}`,
         {
@@ -674,7 +674,7 @@ export function useCheckBookmark(projectId: string | null, entityType: string | 
     queryFn: async (): Promise<{ exists: boolean; bookmark_id?: string }> => {
       if (!projectId || !entityType || !entityId) return { exists: false };
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
       const response = await fetch(
         `${API_BASE}/backlot/projects/${projectId}/my-bookmarks/check?entity_type=${entityType}&entity_id=${entityId}`,
         { headers: { Authorization: `Bearer ${token}` } }

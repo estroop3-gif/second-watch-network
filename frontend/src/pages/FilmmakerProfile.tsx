@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -14,81 +14,43 @@ import ProfileStatus from '@/components/profile/ProfileStatus';
 import ProfileStatusUpdates from '@/components/profile/ProfileStatusUpdates';
 import ProfileAvailability from '@/components/profile/ProfileAvailability';
 import ProfileHeaderConnect from '@/components/profile/ProfileHeaderConnect';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 const FilmmakerProfile = () => {
   const { username } = useParams<{ username: string }>();
-  const { user } = useAuth();
-  const [profile, setProfile] = useState<FilmmakerProfileData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [profileNotFound, setProfileNotFound] = useState(false);
+  const { user, profile: authProfile } = useAuth();
+  const queryClient = useQueryClient();
 
   // Check if this is the current user's own profile
-  const isOwnProfile = user?.user_metadata?.username === username || user?.email?.split('@')[0] === username;
+  const isOwnProfile = authProfile?.username === username || user?.email?.split('@')[0] === username;
 
-  useEffect(() => {
-    const fetchProfile = async () => {
-      if (!username) return;
-      setLoading(true);
-      setError(null);
-      setProfileNotFound(false);
-
+  const { data: profile, isLoading: loading, error: queryError } = useQuery<FilmmakerProfileData | null>({
+    queryKey: ['filmmaker-profile-by-username', username],
+    queryFn: async () => {
+      if (!username) return null;
       try {
-        const { data, error: functionError } = await supabase.functions.invoke('get-filmmaker-profile', {
-          body: { username: username },
-        });
-
-        if (functionError) throw new Error(functionError.message);
-        if (data.error) throw new Error(data.error);
-
-        if (!data.profile) {
-          // Profile not found - this is not an error, just means profile doesn't exist
-          setProfileNotFound(true);
-          setProfile(null);
-        } else {
-          setProfile(data.profile);
-        }
-      } catch (e: any) {
-        setError(e.message || "An unexpected error occurred.");
-        console.error(e);
-      } finally {
-        setLoading(false);
+        const data = await api.getFilmmakerProfileByUsername(username);
+        return data;
+      } catch {
+        return null;
       }
-    };
+    },
+    enabled: !!username,
+  });
 
-    fetchProfile();
-  }, [username]);
+  const error = queryError ? (queryError as Error).message : null;
+  const profileNotFound = !loading && !error && !profile;
 
+  // Polling fallback for profile updates (replacing realtime)
   useEffect(() => {
     if (!profile?.user_id) return;
 
-    const channel = supabase
-      .channel(`profile-and-credits:${profile.user_id}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'profiles', filter: `id=eq.${profile.user_id}` }, () => {
-        // refetch profile from edge function
-        (async () => {
-          const { data } = await supabase.functions.invoke('get-filmmaker-profile', { body: { username } });
-          if (data?.profile) setProfile(data.profile);
-        })();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'filmmaker_profiles', filter: `user_id=eq.${profile.user_id}` }, () => {
-        (async () => {
-          const { data } = await supabase.functions.invoke('get-filmmaker-profile', { body: { username } });
-          if (data?.profile) setProfile(data.profile);
-        })();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'credits', filter: `user_id=eq.${profile.user_id}` }, () => {
-        (async () => {
-          const { data } = await supabase.functions.invoke('get-filmmaker-profile', { body: { username } });
-          if (data?.profile) setProfile(data.profile);
-        })();
-      })
-      .subscribe();
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['filmmaker-profile-by-username', username] });
+    }, 30000); // Poll every 30 seconds
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [profile?.user_id, username]);
+    return () => clearInterval(interval);
+  }, [profile?.user_id, username, queryClient]);
 
   if (loading) {
     return (

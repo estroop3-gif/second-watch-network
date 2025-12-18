@@ -3,7 +3,7 @@
  * Service Plans, Volunteers, Training, Content Requests, Events, Gear, and Readiness
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 
 const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
@@ -433,19 +433,19 @@ export interface MacroCommand {
 // HELPER FUNCTIONS
 // =============================================================================
 
-async function getAuthHeaders() {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) {
+function getAuthHeaders() {
+  const token = api.getToken();
+  if (!token) {
     throw new Error('No authentication token available');
   }
   return {
-    'Authorization': `Bearer ${session.access_token}`,
+    'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
   };
 }
 
 async function fetchWithAuth(url: string, options: RequestInit = {}) {
-  const headers = await getAuthHeaders();
+  const headers = getAuthHeaders();
   const response = await fetch(url, {
     ...options,
     headers: { ...headers, ...options.headers },

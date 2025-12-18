@@ -58,3 +58,28 @@ async def update_connection(connection_id: str, update: ConnectionUpdate):
         return response.data[0]
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/{connection_id}")
+async def delete_connection(connection_id: str):
+    """Delete/cancel a connection request"""
+    try:
+        client = get_client()
+        client.table("connections").delete().eq("id", connection_id).execute()
+        return {"message": "Connection deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/relationship/{peer_id}")
+async def get_connection_relationship(peer_id: str, user_id: str):
+    """Get connection relationship between current user and a peer"""
+    try:
+        client = get_client()
+        response = client.table("connections").select("*").or_(
+            f"and(requester_id.eq.{user_id},addressee_id.eq.{peer_id}),and(requester_id.eq.{peer_id},addressee_id.eq.{user_id})"
+        ).order("created_at", desc=True).limit(1).execute()
+
+        return response.data[0] if response.data else None
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

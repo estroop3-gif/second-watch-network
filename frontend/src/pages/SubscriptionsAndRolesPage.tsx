@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import FilmmakerApplicationForm from '@/components/forms/FilmmakerApplicationForm';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { track } from '@/utils/telemetry';
 
@@ -63,35 +63,17 @@ const SubscriptionsAndRolesPage = () => {
     setSubmitting(true);
     try {
       try { track('premium_subscribe_click'); } catch {}
-      const { data: { session: s } } = await supabase.auth.getSession();
-      const token = s?.access_token;
       const returnTo = window.location.pathname + window.location.search;
-      const resp = await fetch(
-        "https://twjlkyaocvgfkbwbefja.supabase.co/functions/v1/billing-create-checkout-session",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ plan: "premium", returnTo }),
-        }
-      );
-      if (!resp.ok) {
-        toast.error("Couldn’t start checkout. Try again.");
-        setSubmitting(false);
-        return;
-      }
-      const { url } = await resp.json();
+      const result = await api.createCheckoutSession('premium', undefined, returnTo);
       try { track('checkout_session_created', { plan: 'premium' }); } catch {}
-      if (url) {
-        window.location.href = url as string;
+      if (result?.url) {
+        window.location.href = result.url;
       } else {
-        toast.error("Couldn’t start checkout. Try again.");
+        toast.error("Couldn't start checkout. Try again.");
         setSubmitting(false);
       }
     } catch {
-      toast.error("Couldn’t start checkout. Try again.");
+      toast.error("Couldn't start checkout. Try again.");
       setSubmitting(false);
     }
   };

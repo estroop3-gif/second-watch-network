@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,12 +55,7 @@ const MetricsTab = () => {
   const { data: cycles } = useQuery({
     queryKey: ['greenroom-cycles-metrics'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_cycles')
-        .select('id, name, status')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await api.listGreenroomCycles();
       return data;
     },
   });
@@ -69,20 +64,30 @@ const MetricsTab = () => {
   const { data: overallMetrics, isLoading } = useQuery({
     queryKey: ['greenroom-overall-metrics'],
     queryFn: async () => {
-      const [cyclesRes, projectsRes, votesRes, ticketsRes] = await Promise.all([
-        supabase.from('greenroom_cycles').select('id, status', { count: 'exact' }),
-        supabase.from('greenroom_projects').select('id, status', { count: 'exact' }),
-        supabase.from('greenroom_votes').select('id', { count: 'exact' }),
-        supabase.from('greenroom_voting_tickets').select('id, tickets_used'),
-      ]);
+      const cyclesList = await api.listGreenroomCycles();
+      const activeCycles = (cyclesList || []).filter((c: any) => c.status === 'active').length;
 
-      const totalTicketsUsed = ticketsRes.data?.reduce((sum, t) => sum + (t.tickets_used || 0), 0) || 0;
+      // Count projects and tickets across all cycles
+      let totalProjects = 0;
+      let totalVotes = 0;
+      let totalTicketsUsed = 0;
+
+      for (const cycle of (cyclesList || [])) {
+        try {
+          const stats = await api.getGreenroomCycleStats(cycle.id);
+          totalProjects += stats?.total_projects || 0;
+          totalVotes += stats?.total_votes_cast || 0;
+          totalTicketsUsed += stats?.total_tickets_sold || 0;
+        } catch {
+          // Cycle may not have stats
+        }
+      }
 
       return {
-        totalCycles: cyclesRes.count || 0,
-        activeCycles: cyclesRes.data?.filter(c => c.status === 'active').length || 0,
-        totalProjects: projectsRes.count || 0,
-        totalVotes: votesRes.count || 0,
+        totalCycles: (cyclesList || []).length,
+        activeCycles,
+        totalProjects,
+        totalVotes,
         totalTicketsUsed,
       };
     },
@@ -95,13 +100,13 @@ const MetricsTab = () => {
       if (selectedCycleId === 'all') {
         // Aggregate all cycles
         const cyclesList = cycles || [];
-        const metricsPromises = cyclesList.map(async (cycle) => {
+        const metricsPromises = cyclesList.map(async (cycle: any) => {
           return await fetchCycleMetrics(cycle.id, cycle.name, cycle.status);
         });
 
         return Promise.all(metricsPromises);
       } else {
-        const cycle = cycles?.find(c => c.id === selectedCycleId);
+        const cycle = cycles?.find((c: any) => c.id === selectedCycleId);
         if (!cycle) return [];
         return [await fetchCycleMetrics(cycle.id, cycle.name, cycle.status)];
       }
@@ -110,57 +115,48 @@ const MetricsTab = () => {
   });
 
   const fetchCycleMetrics = async (cycleId: string, cycleName: string, cycleStatus: string): Promise<CycleMetrics> => {
-    const [projectsRes, votesRes, ticketsRes] = await Promise.all([
-      supabase.from('greenroom_projects').select('id, status').eq('cycle_id', cycleId),
-      supabase.from('greenroom_votes').select('id, user_id').eq('cycle_id', cycleId),
-      supabase.from('greenroom_voting_tickets').select('id, user_id, tickets_remaining, tickets_used').eq('cycle_id', cycleId),
-    ]);
+    try {
+      const stats = await api.getGreenroomCycleStats(cycleId);
 
-    const projects = projectsRes.data || [];
-    const votes = votesRes.data || [];
-    const tickets = ticketsRes.data || [];
-
-    const totalTickets = tickets.reduce((sum, t) => sum + (t.tickets_remaining || 0) + (t.tickets_used || 0), 0);
-    const usedTickets = tickets.reduce((sum, t) => sum + (t.tickets_used || 0), 0);
-    const uniqueVoters = new Set(votes.map(v => v.user_id)).size;
-    const participationRate = totalTickets > 0 ? Math.round((usedTickets / totalTickets) * 100) : 0;
-
-    return {
-      id: cycleId,
-      name: cycleName,
-      status: cycleStatus,
-      totalSubmissions: projects.length,
-      approvedSubmissions: projects.filter(p => p.status === 'approved').length,
-      shortlistedSubmissions: projects.filter(p => p.status === 'shortlisted').length,
-      rejectedSubmissions: projects.filter(p => p.status === 'rejected').length,
-      totalVotes: votes.length,
-      uniqueVoters,
-      totalTicketsIssued: totalTickets,
-      ticketsUsed: usedTickets,
-      participationRate,
-    };
+      return {
+        id: cycleId,
+        name: cycleName,
+        status: cycleStatus,
+        totalSubmissions: stats?.total_projects || 0,
+        approvedSubmissions: stats?.approved_projects || 0,
+        shortlistedSubmissions: 0, // Not in stats
+        rejectedSubmissions: stats?.rejected_projects || 0,
+        totalVotes: stats?.total_votes_cast || 0,
+        uniqueVoters: stats?.unique_voters || 0,
+        totalTicketsIssued: stats?.total_tickets_sold || 0,
+        ticketsUsed: stats?.total_votes_cast || 0,
+        participationRate: stats?.total_tickets_sold > 0
+          ? Math.round((stats.total_votes_cast / stats.total_tickets_sold) * 100)
+          : 0,
+      };
+    } catch {
+      return {
+        id: cycleId,
+        name: cycleName,
+        status: cycleStatus,
+        totalSubmissions: 0,
+        approvedSubmissions: 0,
+        shortlistedSubmissions: 0,
+        rejectedSubmissions: 0,
+        totalVotes: 0,
+        uniqueVoters: 0,
+        totalTicketsIssued: 0,
+        ticketsUsed: 0,
+        participationRate: 0,
+      };
+    }
   };
 
   // Export functions
   const exportToJSON = async (type: 'cycles' | 'projects' | 'votes') => {
     try {
-      let data;
-      if (type === 'cycles') {
-        const { data: result } = await supabase.from('greenroom_cycles').select('*');
-        data = result;
-      } else if (type === 'projects') {
-        const { data: result } = await supabase
-          .from('greenroom_projects')
-          .select('*, cycle:greenroom_cycles(name)')
-          .order('created_at', { ascending: false });
-        data = result;
-      } else {
-        const { data: result } = await supabase
-          .from('greenroom_votes')
-          .select('*, project:greenroom_projects(title), cycle:greenroom_cycles(name)')
-          .order('created_at', { ascending: false });
-        data = result;
-      }
+      const result = await api.exportGreenroomData(type);
+      const data = result?.data || [];
 
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -177,24 +173,15 @@ const MetricsTab = () => {
 
   const exportToCSV = async (type: 'cycles' | 'projects' | 'votes') => {
     try {
-      let data: any[];
-      let headers: string[];
+      const result = await api.exportGreenroomData(type);
+      const data: any[] = result?.data || [];
 
+      let headers: string[];
       if (type === 'cycles') {
-        const { data: result } = await supabase.from('greenroom_cycles').select('*');
-        data = result || [];
         headers = ['id', 'name', 'status', 'current_phase', 'submission_start', 'submission_end', 'voting_start', 'voting_end', 'created_at'];
       } else if (type === 'projects') {
-        const { data: result } = await supabase
-          .from('greenroom_projects')
-          .select('id, title, logline, genre, format, status, is_featured, created_at, cycle_id');
-        data = result || [];
         headers = ['id', 'title', 'logline', 'genre', 'format', 'status', 'is_featured', 'created_at', 'cycle_id'];
       } else {
-        const { data: result } = await supabase
-          .from('greenroom_votes')
-          .select('id, user_id, project_id, cycle_id, tickets_used, created_at');
-        data = result || [];
         headers = ['id', 'user_id', 'project_id', 'cycle_id', 'tickets_used', 'created_at'];
       }
 

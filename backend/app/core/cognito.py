@@ -148,6 +148,28 @@ class CognitoAuth:
             return {'success': False, 'error': {'message': e.response['Error']['Message']}}
 
     @staticmethod
+    def resend_confirmation_code(email: str) -> Dict[str, Any]:
+        """
+        Resend email confirmation code.
+        """
+        try:
+            params = {
+                'ClientId': COGNITO_CLIENT_ID,
+                'Username': email,
+            }
+
+            secret_hash = get_secret_hash(email)
+            if secret_hash:
+                params['SecretHash'] = secret_hash
+
+            cognito_client.resend_confirmation_code(**params)
+
+            return {'success': True, 'error': None}
+
+        except ClientError as e:
+            return {'success': False, 'error': {'message': e.response['Error']['Message']}}
+
+    @staticmethod
     def sign_in(email: str, password: str) -> Dict[str, Any]:
         """
         Sign in a user and return tokens.

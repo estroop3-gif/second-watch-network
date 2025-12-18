@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import {
@@ -80,14 +80,11 @@ const RoundsTab = () => {
   const { data: cycles } = useQuery({
     queryKey: ['greenroom-cycles-voting'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_cycles')
-        .select('id, name, status, current_phase, tickets_per_user, voting_start, voting_end')
-        .in('status', ['active', 'voting', 'completed'])
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data as CycleWithStats[];
+      const data = await api.listGreenroomCycles();
+      // Filter to active, voting, or completed statuses
+      return (data || []).filter((c: any) =>
+        ['active', 'voting', 'completed'].includes(c.status)
+      ) as CycleWithStats[];
     },
   });
 
@@ -104,22 +101,13 @@ const RoundsTab = () => {
     queryFn: async () => {
       if (!selectedCycleId) return null;
 
-      // Get total tickets issued for this cycle
-      const { data: tickets, error: ticketsError } = await supabase
-        .from('greenroom_voting_tickets')
-        .select('id, user_id, tickets_remaining, tickets_used')
-        .eq('cycle_id', selectedCycleId);
-
-      if (ticketsError) throw ticketsError;
-
-      const total = tickets?.reduce((sum, t) => sum + (t.tickets_remaining || 0) + (t.tickets_used || 0), 0) || 0;
-      const used = tickets?.reduce((sum, t) => sum + (t.tickets_used || 0), 0) || 0;
-      const uniqueVoters = new Set(tickets?.filter(t => (t.tickets_used || 0) > 0).map(t => t.user_id)).size;
+      // Get cycle stats from the API
+      const stats = await api.getGreenroomCycleStats(selectedCycleId);
 
       return {
-        total_tickets: total,
-        used_tickets: used,
-        unique_voters: uniqueVoters,
+        total_tickets: stats?.total_tickets_sold || 0,
+        used_tickets: stats?.total_votes_cast || 0,
+        unique_voters: stats?.unique_voters || 0,
       } as TicketStats;
     },
     enabled: !!selectedCycleId,
@@ -131,17 +119,8 @@ const RoundsTab = () => {
     queryFn: async () => {
       if (!selectedCycleId) return [];
 
-      const { data, error } = await supabase
-        .from('greenroom_voting_tickets')
-        .select(`
-          *,
-          profile:profiles(display_name, avatar_url)
-        `)
-        .eq('cycle_id', selectedCycleId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      return data;
+      const ticketsData = await api.listGreenroomVotingTickets(selectedCycleId);
+      return ticketsData?.data || [];
     },
     enabled: !!selectedCycleId,
   });
@@ -152,33 +131,13 @@ const RoundsTab = () => {
     queryFn: async () => {
       if (!selectedCycleId) return [];
 
-      const { data, error } = await supabase
-        .from('greenroom_votes')
-        .select(`
-          project_id,
-          tickets_used,
-          project:greenroom_projects(title)
-        `)
-        .eq('cycle_id', selectedCycleId);
-
-      if (error) throw error;
-
-      // Aggregate votes by project
-      const projectVotes: Record<string, { title: string; votes: number }> = {};
-      data?.forEach(vote => {
-        const projectId = vote.project_id;
-        if (!projectVotes[projectId]) {
-          projectVotes[projectId] = {
-            title: vote.project?.title || 'Unknown',
-            votes: 0,
-          };
-        }
-        projectVotes[projectId].votes += vote.tickets_used || 1;
-      });
-
-      return Object.entries(projectVotes)
-        .map(([id, data]) => ({ id, ...data }))
-        .sort((a, b) => b.votes - a.votes);
+      // Get results which include vote counts
+      const results = await api.getGreenroomCycleResults(selectedCycleId);
+      return (results?.projects || []).map((p: any) => ({
+        id: p.project_id,
+        title: p.title,
+        votes: p.vote_count,
+      }));
     },
     enabled: !!selectedCycleId,
   });
@@ -186,37 +145,12 @@ const RoundsTab = () => {
   // Adjust tickets mutation
   const adjustTicketsMutation = useMutation({
     mutationFn: async (data: typeof adjustmentData) => {
-      // First check if user has tickets for this cycle
-      const { data: existing } = await supabase
-        .from('greenroom_voting_tickets')
-        .select('id, tickets_remaining')
-        .eq('cycle_id', selectedCycleId)
-        .eq('user_id', data.user_id)
-        .single();
-
-      if (existing) {
-        // Update existing
-        const { error } = await supabase
-          .from('greenroom_voting_tickets')
-          .update({
-            tickets_remaining: (existing.tickets_remaining || 0) + data.tickets_to_add,
-          })
-          .eq('id', existing.id);
-
-        if (error) throw error;
-      } else {
-        // Create new
-        const { error } = await supabase
-          .from('greenroom_voting_tickets')
-          .insert({
-            cycle_id: selectedCycleId,
-            user_id: data.user_id,
-            tickets_remaining: data.tickets_to_add,
-            tickets_used: 0,
-          });
-
-        if (error) throw error;
-      }
+      await api.adjustGreenroomTickets(
+        data.user_id,
+        parseInt(selectedCycleId),
+        data.tickets_to_add,
+        data.reason || undefined
+      );
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-ticket-stats'] });
@@ -233,12 +167,7 @@ const RoundsTab = () => {
   // Update cycle phase mutation
   const updatePhaseMutation = useMutation({
     mutationFn: async ({ cycleId, phase }: { cycleId: string; phase: string }) => {
-      const { error } = await supabase
-        .from('greenroom_cycles')
-        .update({ current_phase: phase })
-        .eq('id', cycleId);
-
-      if (error) throw error;
+      await api.updateGreenroomCyclePhase(cycleId, phase);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-cycles-voting'] });

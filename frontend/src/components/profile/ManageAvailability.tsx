@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -33,60 +33,48 @@ const availabilitySchema = z.object({
 type AvailabilityFormValues = z.infer<typeof availabilitySchema>;
 
 const ManageAvailability = () => {
-  const { user } = useAuth();
+  const { profileId } = useAuth();
   const queryClient = useQueryClient();
   const [showCalendar, setShowCalendar] = useState(true);
 
-  const fetchAvailability = async () => {
-    if (!user) return [];
-    const { data, error } = await supabase
-      .from('availability')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('start_date', { ascending: true });
-    if (error) throw new Error(error.message);
-    return data as Availability[];
-  };
-
   const { data: availabilities, isLoading } = useQuery({
-    queryKey: ['availability', user?.id],
-    queryFn: fetchAvailability,
-    enabled: !!user,
+    queryKey: ['availability', profileId],
+    queryFn: async () => {
+      if (!profileId) return [];
+      const data = await api.listAvailability(profileId);
+      return data as Availability[];
+    },
+    enabled: !!profileId,
   });
 
   const addMutation = useMutation({
     mutationFn: async (newAvailability: AvailabilityFormValues) => {
-      if (!user) throw new Error("Not authenticated");
-      const { error } = await supabase.from('availability').insert({
-        user_id: user.id,
-        ...newAvailability,
-      });
-      if (error) throw error;
+      if (!profileId) throw new Error("Not authenticated");
+      await api.createAvailability(profileId, newAvailability);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['availability', user?.id] });
-      queryClient.invalidateQueries({ queryKey: ['public_availability', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['availability', profileId] });
+      queryClient.invalidateQueries({ queryKey: ['public_availability', profileId] });
       queryClient.invalidateQueries({ queryKey: ['adminDashboardStats'] });
       toast.success("Availability added!");
       form.reset();
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(`Failed to add availability: ${error.message}`);
     },
   });
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('availability').delete().eq('id', id);
-      if (error) throw error;
+      await api.deleteAvailability(id);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['availability', user?.id] });
-      queryClient.invalidateQueries({ queryKey: ['public_availability', user?.id] });
+      queryClient.invalidateQueries({ queryKey: ['availability', profileId] });
+      queryClient.invalidateQueries({ queryKey: ['public_availability', profileId] });
       queryClient.invalidateQueries({ queryKey: ['adminDashboardStats'] });
       toast.success("Availability removed.");
     },
-    onError: (error) => {
+    onError: (error: any) => {
       toast.error(`Failed to remove availability: ${error.message}`);
     },
   });

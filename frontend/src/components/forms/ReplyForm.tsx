@@ -1,7 +1,7 @@
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -39,12 +39,10 @@ export const ReplyForm = ({ threadId }: ReplyFormProps) => {
   const replyMutation = useMutation({
     mutationFn: withUpgradeGate(hasPermission, 'forum_reply', async (newReply: ReplyFormData) => {
       if (!user) throw new Error('You must be logged in to reply.');
-      const { error } = await supabase.from('forum_replies').insert({
+      await api.createForumReply({
         thread_id: threadId,
-        user_id: user.id,
         body: newReply.body,
-      });
-      if (error) throw error;
+      }, user.id);
     }),
     onSuccess: () => {
       toast.success('Reply posted!');

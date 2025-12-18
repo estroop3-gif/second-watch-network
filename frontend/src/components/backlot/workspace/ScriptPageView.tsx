@@ -44,10 +44,26 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// Screenplay page constants (industry standard)
+// Screenplay page constants (industry standard at 72 DPI)
 const LINES_PER_PAGE = 55;
 const PAGE_WIDTH_PX = 612; // 8.5" at 72dpi
 const PAGE_HEIGHT_PX = 792; // 11" at 72dpi
+
+// Industry standard margins (in pixels at 72 DPI)
+const MARGIN_LEFT = 108;   // 1.5" left margin (for binding)
+const MARGIN_RIGHT = 72;   // 1" right margin
+const MARGIN_TOP = 72;     // 1" top margin
+const MARGIN_BOTTOM = 72;  // 1" bottom margin
+const CONTENT_WIDTH = PAGE_WIDTH_PX - MARGIN_LEFT - MARGIN_RIGHT; // 432px = 6"
+
+// Element positioning from LEFT EDGE of page (in pixels at 72 DPI)
+// These match standard screenplay formatting software
+const CHAR_LEFT = 266;     // 3.7" - Character name position
+const DIALOGUE_LEFT = 180; // 2.5" - Dialogue start
+const DIALOGUE_RIGHT = 432; // 6" - Dialogue end
+const PAREN_LEFT = 223;    // 3.1" - Parenthetical start
+const PAREN_RIGHT = 403;   // 5.6" - Parenthetical end
+const TRANSITION_RIGHT = MARGIN_RIGHT; // Right-aligned to 1" margin
 
 // Element types
 type ScriptElementType =
@@ -80,64 +96,89 @@ const ELEMENT_PATTERNS = {
   parenthetical: /^\(.+\)$/,
 };
 
-// Element styling for editing
+// Element styling config (positioning is calculated separately based on page measurements)
 const ELEMENT_CONFIG: Record<ScriptElementType, {
   label: string;
   shortcut: string;
   icon: any;
-  style: React.CSSProperties;
+  textStyle: React.CSSProperties; // Only text styling, not positioning
   placeholder: string;
 }> = {
   scene_heading: {
     label: 'Scene Heading',
     shortcut: 'Ctrl+1',
     icon: Clapperboard,
-    style: { fontWeight: 'bold', textTransform: 'uppercase' as const, marginTop: '24px' },
+    textStyle: { fontWeight: 'bold', textTransform: 'uppercase' as const },
     placeholder: 'INT. LOCATION - DAY',
   },
   action: {
     label: 'Action',
     shortcut: 'Ctrl+2',
     icon: AlignLeft,
-    style: {},
+    textStyle: {},
     placeholder: 'Description of action...',
   },
   character: {
     label: 'Character',
     shortcut: 'Ctrl+3',
     icon: Users,
-    style: { textTransform: 'uppercase' as const, marginLeft: '40%' },
+    textStyle: { textTransform: 'uppercase' as const },
     placeholder: 'CHARACTER NAME',
   },
   dialogue: {
     label: 'Dialogue',
     shortcut: 'Ctrl+4',
     icon: MessageSquare,
-    style: { marginLeft: '15%', marginRight: '15%' },
+    textStyle: {},
     placeholder: 'Dialogue text...',
   },
   parenthetical: {
     label: 'Parenthetical',
     shortcut: 'Ctrl+5',
     icon: Type,
-    style: { marginLeft: '25%', marginRight: '25%', fontStyle: 'italic' as const },
+    textStyle: {},
     placeholder: '(direction)',
   },
   transition: {
     label: 'Transition',
     shortcut: 'Ctrl+6',
     icon: ArrowRight,
-    style: { textAlign: 'right' as const, textTransform: 'uppercase' as const },
+    textStyle: { textTransform: 'uppercase' as const },
     placeholder: 'CUT TO:',
   },
   general: {
     label: 'General',
     shortcut: 'Ctrl+0',
     icon: AlignLeft,
-    style: {},
+    textStyle: {},
     placeholder: '',
   },
 };
+
+// Calculate element positioning based on type (returns left offset and width in pixels at base scale)
+function getElementPosition(type: ScriptElementType): { left: number; width: number; textAlign?: 'left' | 'right' | 'center' } {
+  switch (type) {
+    case 'scene_heading':
+    case 'action':
+    case 'general':
+      // Full width from left margin to right margin
+      return { left: 0, width: CONTENT_WIDTH };
+    case 'character':
+      // Centered, starting at 3.7" from page left (158px from content left)
+      return { left: CHAR_LEFT - MARGIN_LEFT, width: CONTENT_WIDTH - (CHAR_LEFT - MARGIN_LEFT) };
+    case 'dialogue':
+      // 2.5" to 6" from page left
+      return { left: DIALOGUE_LEFT - MARGIN_LEFT, width: DIALOGUE_RIGHT - DIALOGUE_LEFT };
+    case 'parenthetical':
+      // 3.1" to 5.6" from page left
+      return { left: PAREN_LEFT - MARGIN_LEFT, width: PAREN_RIGHT - PAREN_LEFT };
+    case 'transition':
+      // Right-aligned
+      return { left: 0, width: CONTENT_WIDTH, textAlign: 'right' };
+    default:
+      return { left: 0, width: CONTENT_WIDTH };
+  }
+}
 
 // Detect element type from content
 function detectElementType(line: string, prevType?: ScriptElementType): ScriptElementType {
@@ -536,32 +577,43 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
         <div
           className="absolute overflow-hidden"
           style={{
-            top: (72 * zoom) / 100,
-            left: (108 * zoom) / 100,
-            right: (72 * zoom) / 100,
-            bottom: (72 * zoom) / 100,
+            top: (MARGIN_TOP * zoom) / 100,
+            left: (MARGIN_LEFT * zoom) / 100,
+            right: (MARGIN_RIGHT * zoom) / 100,
+            bottom: (MARGIN_BOTTOM * zoom) / 100,
             color: '#000',
+            position: 'absolute',
           }}
         >
           {page.lines.map((line, idx) => {
             const globalLineIndex = page.startLineIndex + idx;
             const config = ELEMENT_CONFIG[line.type] || ELEMENT_CONFIG.general;
+            const position = getElementPosition(line.type);
             const isEditingThis = isEditing && editingLineIndex === globalLineIndex;
             const fontSize = (12 * zoom) / 100;
+            const lineHeight = 1.5; // Standard screenplay line height
+
+            // Calculate scaled position values
+            const scaledLeft = (position.left * zoom) / 100;
+            const scaledWidth = (position.width * zoom) / 100;
 
             return (
               <div
                 key={idx}
                 className={cn(
-                  "relative cursor-text",
-                  isEditingThis && "bg-yellow-100"
+                  "absolute cursor-text",
+                  isEditingThis && "bg-yellow-100/50"
                 )}
                 style={{
-                  ...config.style,
+                  ...config.textStyle,
+                  left: `${scaledLeft}px`,
+                  width: `${scaledWidth}px`,
+                  top: `${idx * fontSize * lineHeight}px`,
                   fontSize: `${fontSize}px`,
-                  lineHeight: 1.5,
-                  minHeight: `${fontSize * 1.5}px`,
+                  lineHeight: lineHeight,
+                  minHeight: `${fontSize * lineHeight}px`,
                   fontFamily: 'Courier New, Courier, monospace',
+                  textAlign: position.textAlign || 'left',
                 }}
                 onClick={() => {
                   if (isEditing) {
@@ -586,9 +638,10 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                     className="w-full bg-transparent border-none outline-none resize-none overflow-hidden p-0 m-0"
                     style={{
                       fontSize: `${fontSize}px`,
-                      lineHeight: 1.5,
+                      lineHeight: lineHeight,
                       fontFamily: 'Courier New, Courier, monospace',
                       color: '#000',
+                      textAlign: position.textAlign || 'left',
                     }}
                     rows={1}
                   />
@@ -602,8 +655,12 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           {/* Add new line button at end of page content */}
           {isEditing && page.pageNumber === totalPages && (
             <div
-              className="text-gray-400 cursor-pointer hover:text-gray-600 mt-2"
-              style={{ fontSize: `${(12 * zoom) / 100}px` }}
+              className="absolute text-gray-400 cursor-pointer hover:text-gray-600"
+              style={{
+                fontSize: `${(12 * zoom) / 100}px`,
+                top: `${page.lines.length * (12 * zoom / 100) * 1.5 + 8}px`,
+                left: 0,
+              }}
               onClick={() => insertLine(lines.length - 1, '')}
             >
               + Click to add line
@@ -611,29 +668,28 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           )}
         </div>
 
-        {/* Page number */}
+        {/* Page number - right aligned at top like standard screenplay */}
         <div
-          className="absolute text-black text-center"
+          className="absolute text-black"
           style={{
-            bottom: (36 * zoom) / 100,
-            left: 0,
-            right: 0,
-            fontSize: `${(10 * zoom) / 100}px`,
-            fontFamily: 'Courier New, monospace',
+            top: (36 * zoom) / 100,
+            right: (MARGIN_RIGHT * zoom) / 100,
+            fontSize: `${(12 * zoom) / 100}px`,
+            fontFamily: 'Courier New, Courier, monospace',
           }}
         >
           {page.pageNumber}.
         </div>
 
-        {/* Header on subsequent pages */}
+        {/* Header on subsequent pages - title in header */}
         {page.pageNumber > 1 && title && (
           <div
             className="absolute text-black"
             style={{
               top: (36 * zoom) / 100,
-              right: (72 * zoom) / 100,
-              fontSize: `${(10 * zoom) / 100}px`,
-              fontFamily: 'Courier New, monospace',
+              left: (MARGIN_LEFT * zoom) / 100,
+              fontSize: `${(12 * zoom) / 100}px`,
+              fontFamily: 'Courier New, Courier, monospace',
             }}
           >
             {title}

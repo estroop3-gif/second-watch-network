@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import {
   Table,
@@ -34,7 +34,7 @@ type Submission = {
 };
 
 const MySubmissions = () => {
-  const { user } = useAuth();
+  const { user, profileId } = useAuth();
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loading, setLoading] = useState(true);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
@@ -42,22 +42,17 @@ const MySubmissions = () => {
   const [selectedSubmission, setSelectedSubmission] = useState<Submission | null>(null);
 
   const fetchSubmissions = useCallback(async () => {
-    if (!user) return;
-    
-    setLoading(true);
-    const { data, error } = await supabase
-      .from("submissions")
-      .select("id, project_title, status, project_type, created_at, name, email, logline, description, youtube_link, has_unread_user_messages")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+    if (!user && !profileId) return;
 
-    if (error) {
+    setLoading(true);
+    try {
+      const data = await api.getMySubmissions();
+      setSubmissions(data || []);
+    } catch (error) {
       console.error("Error fetching submissions:", error);
-    } else if (data) {
-      setSubmissions(data as Submission[]);
     }
     setLoading(false);
-  }, [user]);
+  }, [user, profileId]);
 
   useEffect(() => {
     fetchSubmissions();
@@ -68,19 +63,16 @@ const MySubmissions = () => {
     setIsEditModalOpen(true);
   };
 
-  const handleConversationClick = (submission: Submission) => {
+  const handleConversationClick = async (submission: Submission) => {
     setSelectedSubmission(submission);
     setIsConversationModalOpen(true);
     if (submission.has_unread_user_messages) {
-      supabase
-        .from('submissions')
-        .update({ has_unread_user_messages: false })
-        .eq('id', submission.id)
-        .then(({ error }) => {
-          if (!error) {
-            fetchSubmissions();
-          }
-        });
+      try {
+        await api.markSubmissionRead(submission.id);
+        fetchSubmissions();
+      } catch (error) {
+        console.error("Error marking submission read:", error);
+      }
     }
   };
 

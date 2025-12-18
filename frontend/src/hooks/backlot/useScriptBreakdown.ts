@@ -3,7 +3,7 @@
  * Provides data fetching and mutations for the Breakdown tab
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from '@/lib/api';
 import {
   BacklotSceneBreakdownItem,
   BreakdownItemInput,
@@ -52,8 +52,8 @@ export function useProjectBreakdown(options: UseProjectBreakdownOptions) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const params = new URLSearchParams();
       if (sceneId) params.append("scene_id", sceneId);
@@ -66,7 +66,7 @@ export function useProjectBreakdown(options: UseProjectBreakdownOptions) {
 
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${session.session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -113,14 +113,14 @@ export function useBreakdownSummary(options: UseBreakdownSummaryOptions) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/script/breakdown/summary`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -167,14 +167,14 @@ export function useSceneBreakdown(options: UseSceneBreakdownOptions) {
     queryFn: async () => {
       if (!sceneId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -225,8 +225,8 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
       sceneId: string;
       input: BreakdownItemInput;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown`,
@@ -234,7 +234,7 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -271,8 +271,8 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
       itemId: string;
       input: BreakdownItemInput;
     }) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/breakdown-items/${itemId}`,
@@ -280,7 +280,7 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(input),
         }
@@ -311,15 +311,15 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
 
   const deleteItem = useMutation({
     mutationFn: async (itemId: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/breakdown-items/${itemId}`,
         {
           method: "DELETE",
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -372,8 +372,8 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
     }) => {
       if (!projectId) throw new Error("No project selected");
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const urlParams = new URLSearchParams();
       if (params?.sceneId) urlParams.append("scene_id", params.sceneId);
@@ -385,7 +385,7 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
 
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${session.session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -421,14 +421,14 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
 
   const exportSceneBreakdown = useMutation({
     mutationFn: async (sceneId: string) => {
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scenes/${sceneId}/breakdown/pdf`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );

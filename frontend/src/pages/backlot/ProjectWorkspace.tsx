@@ -1,8 +1,9 @@
 /**
  * ProjectWorkspace - Main workspace for a Backlot project
  * Contains sidebar navigation and content area for different views
+ * Uses lazy loading for view components to improve initial page load performance
  */
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy, startTransition } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -47,49 +48,74 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
-// View Components
+// Lazy loading fallback component
+const ViewSkeleton = () => (
+  <div className="space-y-4">
+    <Skeleton className="h-8 w-48 bg-muted-gray/20" />
+    <Skeleton className="h-4 w-64 bg-muted-gray/10" />
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-6">
+      {[1, 2, 3].map((i) => (
+        <Skeleton key={i} className="h-48 bg-muted-gray/20" />
+      ))}
+    </div>
+  </div>
+);
+
+// Eagerly loaded components (needed immediately or for modals)
 import ProjectOverview from '@/components/backlot/workspace/ProjectOverview';
-import ScheduleView from '@/components/backlot/workspace/ScheduleView';
-import CallSheetsView from '@/components/backlot/workspace/CallSheetsView';
-import TasksView from '@/components/backlot/workspace/TasksView';
-import LocationsView from '@/components/backlot/workspace/LocationsView';
-import GearView from '@/components/backlot/workspace/GearView';
-import BudgetView from '@/components/backlot/workspace/BudgetView';
-import DailyBudgetView from '@/components/backlot/workspace/DailyBudgetView';
-import ReceiptsView from '@/components/backlot/workspace/ReceiptsView';
-import ClearancesView from '@/components/backlot/workspace/ClearancesView';
-import UpdatesView from '@/components/backlot/workspace/UpdatesView';
-import ContactsView from '@/components/backlot/workspace/ContactsView';
-import ProjectSettings from '@/components/backlot/workspace/ProjectSettings';
-import CreditsView from '@/components/backlot/workspace/CreditsView';
 import AICopilotPanel from '@/components/backlot/workspace/AICopilotPanel';
-import ScriptView from '@/components/backlot/workspace/ScriptView';
 import SceneDetailModal from '@/components/backlot/workspace/SceneDetailModal';
 import ScriptImportModal from '@/components/backlot/workspace/ScriptImportModal';
-import { CastingCrewTab } from '@/components/backlot/workspace/CastingCrewTab';
-import ShotListsView from '@/components/backlot/workspace/ShotListsView';
-import ShotListDetailView from '@/components/backlot/workspace/ShotListDetailView';
-import CoverageView from '@/components/backlot/workspace/CoverageView';
-import AssetsView from '@/components/backlot/workspace/AssetsView';
-import AnalyticsView from '@/components/backlot/workspace/AnalyticsView';
-import TaskListDetailView from '@/components/backlot/workspace/TaskListDetailView';
 import TaskDetailDrawer from '@/components/backlot/workspace/TaskDetailDrawer';
 import TaskListShareModal from '@/components/backlot/workspace/TaskListShareModal';
-import { ReviewsView, ReviewDetailView } from '@/components/backlot/review';
-import DailiesView from '@/components/backlot/workspace/DailiesView';
-import RolesManagementView from '@/components/backlot/workspace/RolesManagementView';
-import ScenesView from '@/components/backlot/workspace/ScenesView';
-import SceneDetailView from '@/components/backlot/workspace/SceneDetailView';
-import DaysView from '@/components/backlot/workspace/DaysView';
-import DayDetailView from '@/components/backlot/workspace/DayDetailView';
-import PeopleView from '@/components/backlot/workspace/PeopleView';
-import PersonDetailView from '@/components/backlot/workspace/PersonDetailView';
-import TimecardsView from '@/components/backlot/workspace/TimecardsView';
-import TeamAccessView from '@/components/backlot/workspace/TeamAccessView';
-import CameraAndContinuityView from '@/components/backlot/workspace/CameraAndContinuityView';
-import CheckInView from '@/components/backlot/workspace/CheckInView';
-import MySpacePanel from '@/components/backlot/workspace/MySpacePanel';
-import ChurchToolsView from '@/components/backlot/workspace/ChurchToolsView';
+
+// Lazy loaded view components - only loaded when the tab is accessed
+const ScheduleView = lazy(() => import('@/components/backlot/workspace/ScheduleView'));
+const CallSheetsView = lazy(() => import('@/components/backlot/workspace/CallSheetsView'));
+const TasksView = lazy(() => import('@/components/backlot/workspace/TasksView'));
+const LocationsView = lazy(() => import('@/components/backlot/workspace/LocationsView'));
+const GearView = lazy(() => import('@/components/backlot/workspace/GearView'));
+const BudgetView = lazy(() => import('@/components/backlot/workspace/BudgetView'));
+const DailyBudgetView = lazy(() => import('@/components/backlot/workspace/DailyBudgetView'));
+const ReceiptsView = lazy(() => import('@/components/backlot/workspace/ReceiptsView'));
+const ClearancesView = lazy(() => import('@/components/backlot/workspace/ClearancesView'));
+const UpdatesView = lazy(() => import('@/components/backlot/workspace/UpdatesView'));
+const ContactsView = lazy(() => import('@/components/backlot/workspace/ContactsView'));
+const ProjectSettings = lazy(() => import('@/components/backlot/workspace/ProjectSettings'));
+const CreditsView = lazy(() => import('@/components/backlot/workspace/CreditsView'));
+const ScriptView = lazy(() => import('@/components/backlot/workspace/ScriptView'));
+const ShotListsView = lazy(() => import('@/components/backlot/workspace/ShotListsView'));
+const ShotListDetailView = lazy(() => import('@/components/backlot/workspace/ShotListDetailView'));
+const CoverageView = lazy(() => import('@/components/backlot/workspace/CoverageView'));
+const AssetsView = lazy(() => import('@/components/backlot/workspace/AssetsView'));
+const AnalyticsView = lazy(() => import('@/components/backlot/workspace/AnalyticsView'));
+const TaskListDetailView = lazy(() => import('@/components/backlot/workspace/TaskListDetailView'));
+const DailiesView = lazy(() => import('@/components/backlot/workspace/DailiesView'));
+const RolesManagementView = lazy(() => import('@/components/backlot/workspace/RolesManagementView'));
+const ScenesView = lazy(() => import('@/components/backlot/workspace/ScenesView'));
+const SceneDetailView = lazy(() => import('@/components/backlot/workspace/SceneDetailView'));
+const DaysView = lazy(() => import('@/components/backlot/workspace/DaysView'));
+const DayDetailView = lazy(() => import('@/components/backlot/workspace/DayDetailView'));
+const PeopleView = lazy(() => import('@/components/backlot/workspace/PeopleView'));
+const PersonDetailView = lazy(() => import('@/components/backlot/workspace/PersonDetailView'));
+const TimecardsView = lazy(() => import('@/components/backlot/workspace/TimecardsView'));
+const TeamAccessView = lazy(() => import('@/components/backlot/workspace/TeamAccessView'));
+const CameraAndContinuityView = lazy(() => import('@/components/backlot/workspace/CameraAndContinuityView'));
+const CheckInView = lazy(() => import('@/components/backlot/workspace/CheckInView'));
+const MySpacePanel = lazy(() => import('@/components/backlot/workspace/MySpacePanel'));
+const ChurchToolsView = lazy(() => import('@/components/backlot/workspace/ChurchToolsView'));
+
+// Lazy loaded named exports (need wrapper)
+const CastingCrewTab = lazy(() =>
+  import('@/components/backlot/workspace/CastingCrewTab').then(m => ({ default: m.CastingCrewTab }))
+);
+const ReviewsView = lazy(() =>
+  import('@/components/backlot/review').then(m => ({ default: m.ReviewsView }))
+);
+const ReviewDetailView = lazy(() =>
+  import('@/components/backlot/review').then(m => ({ default: m.ReviewDetailView }))
+);
+
 import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
 import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church } from 'lucide-react';
 
@@ -299,7 +325,11 @@ const ProjectWorkspace: React.FC = () => {
   });
 
   const handleNavClick = (view: BacklotWorkspaceView) => {
-    setActiveView(view);
+    // Use startTransition to avoid "suspended while responding to synchronous input" error
+    // when lazy-loaded components are being loaded
+    startTransition(() => {
+      setActiveView(view);
+    });
     setSidebarOpen(false);
   };
 
@@ -494,6 +524,7 @@ const ProjectWorkspace: React.FC = () => {
 
         {/* Main Content - add lg:ml-64 to account for fixed sidebar */}
         <main className="flex-1 min-w-0 p-4 lg:p-6 lg:ml-64">
+          <Suspense fallback={<ViewSkeleton />}>
           {activeView === 'overview' && (
             <ProjectOverview project={project} permission={permission} />
           )}
@@ -678,6 +709,7 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'church-tools' && (
             <ChurchToolsView projectId={project.id} />
           )}
+          </Suspense>
         </main>
 
         {/* AI Co-pilot Panel */}
@@ -708,7 +740,13 @@ const ProjectWorkspace: React.FC = () => {
         projectId={project.id}
         isOpen={showScriptImportModal}
         onClose={() => setShowScriptImportModal(false)}
-        onSuccess={() => setShowScriptImportModal(false)}
+        onSuccess={() => {
+          setShowScriptImportModal(false);
+          // Navigate to script view to show the imported script
+          startTransition(() => {
+            setActiveView('script');
+          });
+        }}
       />
 
       {/* Task Modals */}

@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { useEffect, useState } from "react";
 
 type Submission = {
@@ -94,20 +94,15 @@ export function EditSubmissionModal({ submission, isOpen, onOpenChange, onSubmis
       logline: values.logline,
       description: values.description,
       youtube_link: values.youtubeLink,
-      updated_at: new Date().toISOString(),
     };
 
-    const { error } = await supabase
-      .from("submissions")
-      .update(updatedData)
-      .eq("id", submission.id);
-
-    if (error) {
-      toast.error(`Update failed: ${error.message}`);
-    } else {
+    try {
+      await api.updateSubmission(submission.id, updatedData);
       toast.success("Submission updated successfully!");
       onSubmissionUpdated();
       onOpenChange(false);
+    } catch (error: any) {
+      toast.error(`Update failed: ${error?.message || 'Unknown error'}`);
     }
     setIsSubmitting(false);
   }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 
 type NotificationRow = {
@@ -16,11 +16,10 @@ type NotificationRow = {
 };
 
 type NotificationCounts = {
-  unread_total: number;
-  unread_messages: number;
-  unread_requests: number;
-  unread_submissions: number;
-  updated_at?: string;
+  total: number;
+  messages: number;
+  connection_requests: number;
+  submission_updates: number;
 };
 
 export function useNotifications() {
@@ -32,13 +31,7 @@ export function useNotifications() {
     enabled: !!user?.id,
     queryFn: async () => {
       if (!user) return [];
-      const { data, error } = await supabase
-        .from('notifications')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(200);
-      if (error) throw error;
+      const data = await api.listNotifications(user.id, { limit: 200 });
       return data || [];
     },
   });
@@ -47,8 +40,8 @@ export function useNotifications() {
     queryKey: ['notificationCounts', user?.id],
     enabled: !!user?.id,
     queryFn: async () => {
-      const { data, error } = await supabase.functions.invoke('notifications-counts');
-      if (error) throw new Error(error.message);
+      if (!user) return { total: 0, messages: 0, connection_requests: 0, submission_updates: 0 };
+      const data = await api.getNotificationCounts(user.id);
       return data as NotificationCounts;
     },
     // keep counts relatively fresh
@@ -56,42 +49,35 @@ export function useNotifications() {
   });
 
   const unreadCount = useMemo(
-    () => countsQuery.data?.unread_total ?? (notesQuery.data || []).filter(n => n.status === 'unread').length,
+    () => countsQuery.data?.total ?? (notesQuery.data || []).filter(n => n.status === 'unread').length,
     [countsQuery.data, notesQuery.data]
   );
 
-  // Realtime invalidate for both list and counts
+  // Polling fallback for realtime updates (since we no longer have Supabase realtime)
   useEffect(() => {
     if (!user?.id) return;
-    const channel = supabase
-      .channel(`notifications:user:${user.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, () => {
-        queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
-        queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, () => {
-        queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
-        queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
-      })
-      .subscribe();
+
+    // Poll every 30 seconds for new notifications
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
+      queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
+    }, 30000);
 
     return () => {
-      supabase.removeChannel(channel);
+      clearInterval(interval);
     };
   }, [user?.id, queryClient]);
 
   const markAsRead = async (id: string) => {
     if (!user?.id) return;
-    const { error } = await supabase.functions.invoke('notifications-read', { body: { ids: [id] } });
-    if (error) throw new Error(error.message);
+    await api.markNotificationsRead([id]);
     queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
     queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
   };
 
   const markAllAsRead = async (tab: 'all' | 'unread' | 'messages' | 'requests' | 'submissions' = 'all') => {
     if (!user?.id) return;
-    const { error } = await supabase.functions.invoke('notifications-read', { body: { tab } });
-    if (error) throw new Error(error.message);
+    await api.markAllNotificationsRead(user.id, tab);
     queryClient.invalidateQueries({ queryKey: ['notifications', user.id] });
     queryClient.invalidateQueries({ queryKey: ['notificationCounts', user.id] });
   };

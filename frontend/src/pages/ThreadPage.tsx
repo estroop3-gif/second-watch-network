@@ -1,6 +1,6 @@
 import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ForumThread, ForumReply } from '@/types';
 import { ReplyCard } from '@/components/backlot/ReplyCard';
@@ -14,24 +14,12 @@ import { User, ShieldQuestion, MessageSquare, Pin } from 'lucide-react';
 import { useEffect } from 'react';
 
 const fetchThread = async (threadId: string) => {
-  const { data, error } = await supabase
-    .from('forum_threads_with_details')
-    .select('*')
-    .eq('id', threadId)
-    .single();
-  
-  if (error) throw new Error(error.message);
+  const data = await api.getForumThreadWithDetails(threadId);
   return data as ForumThread;
 };
 
 const fetchReplies = async (threadId: string) => {
-  const { data, error } = await supabase
-    .from('forum_replies_with_profiles')
-    .select('*')
-    .eq('thread_id', threadId)
-    .order('created_at', { ascending: true });
-
-  if (error) throw new Error(error.message);
+  const data = await api.getForumRepliesWithProfiles(threadId);
   return data as ForumReply[];
 };
 
@@ -94,12 +82,12 @@ const ThreadPage = () => {
   if (isErrorThread || !thread) {
     return <div className="text-center py-12 text-bone-white">Could not load thread. It might not exist or there was an error.</div>;
   }
-  
+
   const isAnonymous = thread.is_anonymous;
   const authorProfileLink = !isAnonymous && thread.username ? `/profile/${thread.username}` : '#';
   const isAuthorClickable = !isAnonymous && !!thread.username;
-  const nameToDisplay = isAnonymous 
-    ? 'Anonymous' 
+  const nameToDisplay = isAnonymous
+    ? 'Anonymous'
     : thread.display_name || thread.full_name || thread.username || 'Unknown User';
 
   return (
@@ -148,7 +136,7 @@ const ThreadPage = () => {
       <div className="prose prose-invert max-w-none prose-p:text-bone-white prose-headings:text-bone-white prose-strong:text-bone-white prose-a:text-accent-yellow">
         <p>{thread.body}</p>
       </div>
-      
+
       <div className="flex gap-2 flex-wrap mt-4">
         {thread.tags?.map(tag => <Badge key={tag} variant="secondary">{tag}</Badge>)}
       </div>

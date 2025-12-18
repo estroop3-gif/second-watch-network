@@ -78,20 +78,66 @@ async def get_unread_count(user_id: str):
     """Get unread message count"""
     try:
         client = get_client()
-        
+
         # Get conversations where user is participant
         conversations = client.rpc("get_user_conversations", {"user_id": user_id}).execute()
-        
+
         if not conversations.data:
             return {"count": 0}
-        
+
         conversation_ids = [conv["id"] for conv in conversations.data]
-        
+
         # Count unread messages
         unread = client.table("messages").select("id", count="exact").in_(
             "conversation_id", conversation_ids
         ).eq("is_read", False).neq("sender_id", user_id).execute()
-        
+
         return {"count": unread.count or 0}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/conversations/create")
+async def create_private_conversation(user_id: str, other_user_id: str):
+    """Create or get existing private conversation between two users"""
+    try:
+        client = get_client()
+
+        # Use RPC to get or create conversation
+        response = client.rpc("create_private_conversation", {
+            "other_user_id": other_user_id
+        }).execute()
+
+        if response.data:
+            return {"conversation_id": response.data}
+
+        # Fallback: try get_or_create_conversation RPC
+        fallback = client.rpc("get_or_create_conversation", {
+            "user1_id": user_id,
+            "user2_id": other_user_id
+        }).execute()
+
+        if fallback.data and len(fallback.data) > 0:
+            return {"conversation_id": fallback.data[0].get("id")}
+
+        raise HTTPException(status_code=400, detail="Could not create or find conversation")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/conversations/{conversation_id}/mark-read")
+async def mark_conversation_read(conversation_id: str, user_id: str):
+    """Mark all messages in a conversation as read for current user"""
+    try:
+        client = get_client()
+
+        # Update all unread messages in the conversation that were NOT sent by the current user
+        client.table("messages").update({"is_read": True}).eq(
+            "conversation_id", conversation_id
+        ).neq("sender_id", user_id).eq("is_read", False).execute()
+
+        return {"message": "Messages marked as read"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

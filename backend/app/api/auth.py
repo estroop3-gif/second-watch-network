@@ -309,6 +309,34 @@ async def reset_password(request: ResetPasswordRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class ResendConfirmationRequest(BaseModel):
+    email: EmailStr
+
+
+@router.post("/resend-confirmation")
+async def resend_confirmation(request: ResendConfirmationRequest):
+    """Resend email confirmation code"""
+    try:
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+
+            result = CognitoAuth.resend_confirmation_code(email=request.email)
+
+            if result.get("error"):
+                # Don't reveal if email exists for security
+                pass
+
+            return {"message": "If an account exists with this email, a new confirmation code has been sent."}
+        else:
+            # For Supabase, there's no direct resend - user needs to sign up again
+            # or we could call the Supabase edge function
+            return {"message": "If an account exists with this email, a new confirmation code has been sent."}
+
+    except Exception as e:
+        # Don't reveal errors for security
+        return {"message": "If an account exists with this email, a new confirmation code has been sent."}
+
+
 @router.get("/me")
 async def get_user_info(user=Depends(get_current_user)):
     """Get current authenticated user"""
@@ -330,3 +358,168 @@ async def get_user_info(user=Depends(get_current_user)):
             print(f"Profile lookup error: {e}")
 
     return user.model_dump() if hasattr(user, 'model_dump') else user
+
+
+@router.post("/ensure-profile")
+async def ensure_profile(user=Depends(get_current_user)):
+    """
+    Ensure a profile exists for the authenticated user.
+    Creates one if it doesn't exist. Returns profile and newly_created flag.
+    """
+    from app.core.database import execute_single, execute_insert
+
+    user_id = user.get("id")
+    email = user.get("email")
+
+    # Check if profile exists
+    try:
+        profile = execute_single("""
+            SELECT * FROM profiles WHERE cognito_user_id = :user_id OR email = :email
+        """, {
+            "user_id": user_id,
+            "email": email
+        })
+
+        if profile:
+            # Update cognito_user_id if missing
+            if not profile.get("cognito_user_id"):
+                from app.core.database import execute_update
+                execute_update("""
+                    UPDATE profiles SET cognito_user_id = :cognito_user_id WHERE id = :id
+                """, {
+                    "cognito_user_id": user_id,
+                    "id": profile["id"]
+                })
+            return {"profile": profile, "newly_created": False}
+
+        # Create new profile
+        profile = execute_insert("""
+            INSERT INTO profiles (cognito_user_id, email, full_name, display_name)
+            VALUES (:cognito_user_id, :email, :full_name, :display_name)
+            RETURNING *
+        """, {
+            "cognito_user_id": user_id,
+            "email": email,
+            "full_name": user.get("name") or email.split("@")[0] if email else "User",
+            "display_name": user.get("name") or email.split("@")[0] if email else "User",
+        })
+
+        return {"profile": profile, "newly_created": True}
+
+    except Exception as e:
+        print(f"ensure_profile error: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to ensure profile: {str(e)}")
+
+
+class OAuthCallbackRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+
+@router.post("/oauth/callback", response_model=AuthResponse)
+async def oauth_callback(request: OAuthCallbackRequest):
+    """
+    Exchange OAuth authorization code for tokens.
+    Used for Cognito hosted UI OAuth flows.
+    """
+    if not USE_AWS:
+        raise HTTPException(status_code=400, detail="OAuth callback only available with AWS Cognito")
+
+    try:
+        from app.core.cognito import CognitoAuth
+        from app.core.database import execute_single
+
+        # Exchange code for tokens
+        result = CognitoAuth.exchange_code_for_tokens(
+            code=request.code,
+            redirect_uri=request.redirect_uri
+        )
+
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"]["message"])
+
+        session = result["session"]
+        cognito_user = result["user"]
+
+        # Get or create profile
+        profile = None
+        if cognito_user:
+            try:
+                profile = execute_single("""
+                    SELECT * FROM profiles WHERE cognito_user_id = :cognito_user_id OR email = :email
+                """, {
+                    "cognito_user_id": cognito_user.get("id"),
+                    "email": cognito_user.get("email")
+                })
+            except Exception as e:
+                print(f"Profile lookup error: {e}")
+
+        user_data = {
+            "id": profile["id"] if profile else cognito_user.get("id"),
+            "email": cognito_user.get("email"),
+            "full_name": cognito_user.get("name"),
+            "cognito_user_id": cognito_user.get("id"),
+        }
+
+        if profile:
+            user_data.update({
+                "username": profile.get("username"),
+                "avatar_url": profile.get("avatar_url"),
+                "role": profile.get("role"),
+            })
+
+        return {
+            "access_token": session["access_token"],
+            "refresh_token": session.get("refresh_token"),
+            "user": user_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_token(request: RefreshTokenRequest):
+    """Refresh access token using refresh token"""
+    try:
+        if USE_AWS:
+            from app.core.cognito import CognitoAuth
+
+            result = CognitoAuth.refresh_tokens(refresh_token=request.refresh_token)
+
+            if result.get("error"):
+                raise HTTPException(status_code=401, detail=result["error"]["message"])
+
+            session = result["session"]
+            user = result.get("user", {})
+
+            return {
+                "access_token": session["access_token"],
+                "refresh_token": session.get("refresh_token") or request.refresh_token,
+                "user": user
+            }
+        else:
+            from app.core.supabase import get_supabase_client
+
+            supabase = get_supabase_client()
+            response = supabase.auth.refresh_session(request.refresh_token)
+
+            if response.session is None:
+                raise HTTPException(status_code=401, detail="Failed to refresh session")
+
+            return {
+                "access_token": response.session.access_token,
+                "refresh_token": response.session.refresh_token,
+                "user": response.user.model_dump() if hasattr(response.user, 'model_dump') else response.user.__dict__
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))

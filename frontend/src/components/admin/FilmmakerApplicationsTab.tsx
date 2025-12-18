@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { FilmmakerApplication } from '@/types';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
@@ -12,38 +12,23 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 type ApplicationWithProfile = FilmmakerApplication & { profiles: { roles: string[] } | null };
 
-const fetchApplications = async (): Promise<ApplicationWithProfile[]> => {
-  const { data, error } = await supabase
-    .from('filmmaker_applications')
-    .select(`
-      *,
-      profiles (
-        roles
-      )
-    `)
-    .order('created_at', { ascending: false });
-
-  if (error) throw new Error(error.message);
-  // The join returns an object, but we want to flatten it for easier use.
-  return data.map(app => ({ ...app, profile: app.profiles as any })) as ApplicationWithProfile[];
-};
-
 const FilmmakerApplicationsTab = () => {
   const queryClient = useQueryClient();
   const [selectedApp, setSelectedApp] = useState<FilmmakerApplication | null>(null);
 
   const { data: applications, isLoading, error } = useQuery<ApplicationWithProfile[], Error>({
     queryKey: ['filmmakerApplications'],
-    queryFn: fetchApplications,
+    queryFn: async () => {
+      const data = await api.listFilmmakerApplications();
+      return data as ApplicationWithProfile[];
+    },
   });
 
   const updateApplication = async ({ id, status }: { id: string; status: 'approved' | 'rejected' }) => {
     if (status === 'approved') {
-      const { error } = await supabase.rpc('approve_filmmaker_application', { p_application_id: id });
-      if (error) throw new Error(error.message);
+      await api.approveFilmmakerApplication(id);
     } else {
-      const { error } = await supabase.from('filmmaker_applications').update({ status: 'rejected' }).eq('id', id);
-      if (error) throw new Error(error.message);
+      await api.rejectFilmmakerApplication(id);
     }
   };
 
@@ -52,7 +37,7 @@ const FilmmakerApplicationsTab = () => {
     onSuccess: (_, variables) => {
       toast.success(`Application ${variables.status}.`);
       queryClient.invalidateQueries({ queryKey: ['filmmakerApplications'] });
-      queryClient.invalidateQueries({ queryKey: ['filmmaker_profiles'] }); // Invalidate profiles too
+      queryClient.invalidateQueries({ queryKey: ['filmmaker_profiles'] });
     },
     onError: (error: Error) => {
       toast.error(`Error: ${error.message}`);

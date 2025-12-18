@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { Users, FileText, AlertCircle } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Skeleton } from '@/components/ui/skeleton';
 import NewlyAvailableFilmmakers from '@/components/admin/NewlyAvailableFilmmakers';
 import AdminNotificationsFeed from '@/components/admin/AdminNotificationsFeed';
@@ -40,65 +40,21 @@ const StatCardSkeleton = ({ delay }: { delay: number }) => (
     </motion.div>
 );
 
-const fetchAdminStats = async () => {
-  const { count: pendingSubmissions, error: submissionsError } = await supabase
-    .from('submissions')
-    .select('*', { count: 'exact', head: true })
-    .eq('status', 'pending');
-
-  if (submissionsError) {
-    console.error('Error fetching pending submissions count:', submissionsError);
-    throw new Error(submissionsError.message);
-  }
-
-  const { count: totalUsers, error: usersError } = await supabase
-    .from('profiles')
-    .select('*', { count: 'exact', head: true });
-
-  if (usersError) {
-    console.error('Error fetching total users count:', usersError);
-    throw new Error(usersError.message);
-  }
-
-  // NOTE: 'reports' feature is not implemented yet.
-  const openReports = 0;
-
-  const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  const { data: newlyAvailable, error: availableError } = await supabase
-    .from('availability')
-    .select(`
-      *,
-      profiles!inner (
-        full_name,
-        username,
-        avatar_url,
-        filmmaker_profiles!inner (
-          department
-        )
-      )
-    `)
-    .gte('created_at', twoDaysAgo)
-    .order('created_at', { ascending: false });
-
-  if (availableError) {
-    console.error('Error fetching newly available filmmakers:', availableError.message);
-  }
-
-  return {
-    pendingSubmissions: pendingSubmissions ?? 0,
-    totalUsers: totalUsers ?? 0,
-    openReports,
-    newlyAvailable: newlyAvailable ?? [],
-  };
-};
-
-
 const AdminDashboard = () => {
-  const { data: stats, isLoading, error } = useQuery({
+  const { data: stats, isLoading: statsLoading, error: statsError } = useQuery({
     queryKey: ['adminDashboardStats'],
-    queryFn: fetchAdminStats,
+    queryFn: () => api.getAdminDashboardStats(),
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
+
+  const { data: newlyAvailable } = useQuery({
+    queryKey: ['newlyAvailableFilmmakers'],
+    queryFn: () => api.getNewlyAvailableFilmmakers(48),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const isLoading = statsLoading;
+  const error = statsError;
 
   return (
     <div>
@@ -122,21 +78,21 @@ const AdminDashboard = () => {
             <StatCard
               icon={<FileText className="w-12 h-12 text-accent-yellow" />}
               title="Pending Submissions"
-              value={stats?.pendingSubmissions ?? 0}
+              value={stats?.pending_submissions ?? 0}
               linkTo="/admin/submissions?status=pending"
               delay={0}
             />
             <StatCard
               icon={<Users className="w-12 h-12 text-accent-yellow" />}
               title="Total Users"
-              value={stats?.totalUsers ?? 0}
+              value={stats?.total_users ?? 0}
               linkTo="/admin/users"
               delay={0.2}
             />
             <StatCard
               icon={<AlertCircle className="w-12 h-12 text-accent-yellow" />}
               title="Open Reports"
-              value={stats?.openReports ?? 0}
+              value={0}
               linkTo="#"
               delay={0.4}
             />
@@ -154,7 +110,7 @@ const AdminDashboard = () => {
       <div className="mt-16">
         <AdminNotificationsFeed />
       </div>
-      <NewlyAvailableFilmmakers filmmakers={stats?.newlyAvailable} />
+      <NewlyAvailableFilmmakers filmmakers={newlyAvailable} />
     </div>
   );
 };

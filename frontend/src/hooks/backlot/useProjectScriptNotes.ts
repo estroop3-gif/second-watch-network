@@ -3,7 +3,7 @@
  * Provides data fetching for the Notes tab with filtering, grouping, and PDF export
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from '@/lib/api';
 import {
   BacklotScriptPageNote,
   BacklotScriptPageNoteType,
@@ -95,8 +95,8 @@ export function useProjectScriptNotes(options: UseProjectScriptNotesOptions) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const params = new URLSearchParams();
       if (scriptId) params.append("script_id", scriptId);
@@ -111,7 +111,7 @@ export function useProjectScriptNotes(options: UseProjectScriptNotesOptions) {
 
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${session.session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 
@@ -160,14 +160,14 @@ export function useProjectNotesSummary(options: UseProjectNotesSummaryOptions) {
     queryFn: async () => {
       if (!projectId) return null;
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/script/notes/summary`,
         {
           headers: {
-            Authorization: `Bearer ${session.session.access_token}`,
+            Authorization: `Bearer ${token}`,
           },
         }
       );
@@ -219,8 +219,8 @@ export function useProjectNotesPdfExport(options: UseProjectNotesPdfExportOption
     }) => {
       if (!projectId) throw new Error("No project selected");
 
-      const { data: session } = await supabase.auth.getSession();
-      if (!session.session) throw new Error("Not authenticated");
+      const token = api.getToken();
+      if (!token) throw new Error("Not authenticated");
 
       const urlParams = new URLSearchParams();
       if (params?.scriptId) urlParams.append("script_id", params.scriptId);
@@ -234,7 +234,7 @@ export function useProjectNotesPdfExport(options: UseProjectNotesPdfExportOption
 
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${session.session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 

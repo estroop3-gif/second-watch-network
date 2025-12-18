@@ -183,7 +183,7 @@ class OrderApplication(SQLModel, table=True):
     portfolio_links: Optional[str] = None  # JSON array as string
     statement: Optional[str] = None  # Personal statement / why they want to join
     years_experience: Optional[int] = None
-    current_role: Optional[str] = Field(default=None, max_length=200)  # Current job title/role
+    applicant_role: Optional[str] = Field(default=None, max_length=200)  # Current job title/role
 
     # Application status
     status: OrderApplicationStatus = Field(default=OrderApplicationStatus.PENDING, index=True)

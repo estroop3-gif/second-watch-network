@@ -8,7 +8,7 @@ import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Star, CheckCircle2, MessageSquarePlus, Paperclip, Film, Shield } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { track } from "@/utils/telemetry";
 
 type UpgradeGateProps = {
@@ -64,27 +64,13 @@ export function UpgradeGate({ requiredPerm, children, disabledHint = "Premium re
       track("gate_checkout_click", { perm: requiredPerm });
     } catch {}
     const returnTo = location.pathname + location.search;
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    const resp = await fetch(
-      "https://twjlkyaocvgfkbwbefja.supabase.co/functions/v1/billing-create-checkout-session",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ context: requiredPerm, returnTo }),
+    try {
+      const result = await api.createCheckoutSession('premium', requiredPerm, returnTo);
+      if (result?.url) {
+        window.location.href = result.url;
       }
-    );
-    if (!resp.ok) {
-      const err = await resp.text();
-      console.error("Checkout session error", err);
-      return;
-    }
-    const { url } = await resp.json();
-    if (url) {
-      window.location.href = url as string;
+    } catch (error) {
+      console.error("Checkout session error", error);
     }
   };
 

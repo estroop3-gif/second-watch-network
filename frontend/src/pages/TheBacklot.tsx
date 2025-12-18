@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Plus } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -19,11 +19,7 @@ import {
 } from '@/components/ui/select';
 
 const fetchCategories = async () => {
-  const { data, error } = await supabase
-    .from('forum_categories')
-    .select('*')
-    .order('name', { ascending: true });
-  if (error) throw new Error(error.message);
+  const data = await api.listForumCategories();
   return data;
 };
 
@@ -135,7 +131,7 @@ const TheBacklot = () => {
               ))
             )}
           </TabsList>
-          
+
           <TabsContent value="all" className="mt-6">
             <ThreadList />
           </TabsContent>
@@ -148,7 +144,7 @@ const TheBacklot = () => {
       </div>
 
       <UpgradeGateButton requiredPerm="forum_post" onClickAllowed={() => setIsModalOpen(true)}>
-        <Button 
+        <Button
           className="fixed bottom-8 right-8 rounded-full h-16 w-16 bg-accent-yellow text-charcoal-black hover:bg-bone-white shadow-lg transform transition-transform hover:scale-110"
         >
           <Plus className="h-8 w-8" />

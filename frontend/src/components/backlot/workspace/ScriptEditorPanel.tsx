@@ -346,18 +346,26 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
 
   const handleSave = useCallback(async () => {
     try {
-      await updateScriptText.mutateAsync({
+      // Always create a new revision when saving, with the next color in sequence
+      const nextColor = getNextColor();
+      const result = await updateScriptText.mutateAsync({
         scriptId: activeScript.id,
         textContent: editContent,
+        createNewVersion: true,
+        colorCode: nextColor,
+        revisionNotes: `Edited from ${SCRIPT_COLOR_CODE_LABELS[(activeScript.color_code || 'white') as BacklotScriptColorCode]} revision`,
       });
       setIsEditing(false);
       setHasUnsavedChanges(false);
       await refetch();
-      // Notify parent to refresh script data
+      // Notify parent to refresh script data and switch to new version
       onScriptUpdated?.();
+      if (result?.script && onVersionCreated) {
+        onVersionCreated(result.script);
+      }
       toast({
-        title: 'Script Saved',
-        description: 'Your changes have been saved.',
+        title: 'New Revision Created',
+        description: `${SCRIPT_COLOR_CODE_LABELS[nextColor]} revision created with all highlights preserved.`,
       });
     } catch (error: any) {
       toast({
@@ -366,7 +374,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
         variant: 'destructive',
       });
     }
-  }, [activeScript, editContent, updateScriptText, refetch, toast, onScriptUpdated]);
+  }, [activeScript, editContent, updateScriptText, refetch, toast, onScriptUpdated, onVersionCreated, getNextColor]);
 
   const handleCreateNewVersion = useCallback(async () => {
     try {

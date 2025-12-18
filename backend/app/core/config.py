@@ -91,6 +91,13 @@ class Settings(BaseSettings):
     # Frontend URL (for email links)
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:8080")
 
+    # Stripe Billing
+    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
+    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    STRIPE_PREMIUM_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_PRICE_ID", "")
+    STRIPE_PREMIUM_YEARLY_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_YEARLY_PRICE_ID", "")
+
     class Config:
         env_file = ".env"
         case_sensitive = True

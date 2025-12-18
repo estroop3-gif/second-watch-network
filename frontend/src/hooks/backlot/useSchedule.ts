@@ -2,7 +2,7 @@
  * useSchedule - Hook for managing production days and call sheets
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   BacklotProductionDay,
   BacklotCallSheet,
@@ -24,7 +24,18 @@ import {
   CallSheetSyncResponse,
 } from '@/types/backlot';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+/**
+ * Helper to get auth token
+ */
+function getAuthToken(): string {
+  const token = api.getToken();
+  if (!token) {
+    throw new Error('Not authenticated');
+  }
+  return token;
+}
 
 // =====================================================
 // Production Days
@@ -38,41 +49,51 @@ export function useProductionDays(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: daysData, error } = await supabase
-        .from('backlot_production_days')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('day_number', { ascending: true });
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return (daysData || []) as BacklotProductionDay[];
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/production-days`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch production days' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.days || []) as BacklotProductionDay[];
     },
     enabled: !!projectId,
   });
 
   const createDay = useMutation({
     mutationFn: async ({ projectId, ...input }: ProductionDayInput & { projectId: string }) => {
-      const { data, error } = await supabase
-        .from('backlot_production_days')
-        .insert({
-          project_id: projectId,
-          day_number: input.day_number,
-          date: input.date,
-          title: input.title || null,
-          description: input.description || null,
-          general_call_time: input.general_call_time || null,
-          wrap_time: input.wrap_time || null,
-          location_id: input.location_id || null,
-          location_name: input.location_name || null,
-          location_address: input.location_address || null,
-          notes: input.notes || null,
-          weather_notes: input.weather_notes || null,
-        })
-        .select()
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return data as BacklotProductionDay;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/production-days`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create day' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.day || result) as BacklotProductionDay;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-production-days', projectId] });
@@ -81,28 +102,24 @@ export function useProductionDays(projectId: string | null) {
 
   const updateDay = useMutation({
     mutationFn: async ({ id, ...input }: Partial<ProductionDayInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.day_number !== undefined) updateData.day_number = input.day_number;
-      if (input.date !== undefined) updateData.date = input.date;
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.description !== undefined) updateData.description = input.description;
-      if (input.general_call_time !== undefined) updateData.general_call_time = input.general_call_time;
-      if (input.wrap_time !== undefined) updateData.wrap_time = input.wrap_time;
-      if (input.location_id !== undefined) updateData.location_id = input.location_id;
-      if (input.location_name !== undefined) updateData.location_name = input.location_name;
-      if (input.location_address !== undefined) updateData.location_address = input.location_address;
-      if (input.notes !== undefined) updateData.notes = input.notes;
-      if (input.weather_notes !== undefined) updateData.weather_notes = input.weather_notes;
+      const token = getAuthToken();
 
-      const { data, error } = await supabase
-        .from('backlot_production_days')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
 
-      if (error) throw error;
-      return data as BacklotProductionDay;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update day' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.day || result) as BacklotProductionDay;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-production-days', projectId] });
@@ -111,15 +128,23 @@ export function useProductionDays(projectId: string | null) {
 
   const markCompleted = useMutation({
     mutationFn: async ({ id, completed }: { id: string; completed: boolean }) => {
-      const { data, error } = await supabase
-        .from('backlot_production_days')
-        .update({ is_completed: completed })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return data as BacklotProductionDay;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${id}/completed?completed=${completed}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update completion' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.day || result) as BacklotProductionDay;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-production-days', projectId] });
@@ -128,12 +153,17 @@ export function useProductionDays(projectId: string | null) {
 
   const deleteDay = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_production_days')
-        .delete()
-        .eq('id', id);
+      const token = getAuthToken();
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete day' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-production-days', projectId] });
@@ -159,14 +189,21 @@ export function useProductionDay(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data, error } = await supabase
-        .from('backlot_production_days')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return data as BacklotProductionDay;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch day' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.day || result) as BacklotProductionDay;
     },
     enabled: !!id,
   });
@@ -184,50 +221,51 @@ export function useCallSheets(projectId: string | null) {
     queryFn: async () => {
       if (!projectId) return [];
 
-      const { data: sheetsData, error } = await supabase
-        .from('backlot_call_sheets')
-        .select('*')
-        .eq('project_id', projectId)
-        .order('date', { ascending: true });
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return (sheetsData || []) as BacklotCallSheet[];
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/call-sheets`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch call sheets' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.call_sheets || []) as BacklotCallSheet[];
     },
     enabled: !!projectId,
   });
 
   const createCallSheet = useMutation({
     mutationFn: async ({ projectId, ...input }: CallSheetInput & { projectId: string }) => {
-      const { data: userData } = await supabase.auth.getUser();
-      if (!userData.user) throw new Error('Not authenticated');
+      const token = getAuthToken();
 
-      const { data, error } = await supabase
-        .from('backlot_call_sheets')
-        .insert({
-          project_id: projectId,
-          production_day_id: input.production_day_id || null,
-          title: input.title,
-          date: input.date,
-          general_call_time: input.general_call_time || null,
-          location_name: input.location_name || null,
-          location_address: input.location_address || null,
-          parking_notes: input.parking_notes || null,
-          production_contact: input.production_contact || null,
-          production_phone: input.production_phone || null,
-          schedule_blocks: input.schedule_blocks || [],
-          weather_info: input.weather_info || null,
-          special_instructions: input.special_instructions || null,
-          safety_notes: input.safety_notes || null,
-          hospital_name: input.hospital_name || null,
-          hospital_address: input.hospital_address || null,
-          hospital_phone: input.hospital_phone || null,
-          created_by: userData.user.id,
-        })
-        .select()
-        .single();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/call-sheets`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
 
-      if (error) throw error;
-      return data as BacklotCallSheet;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.call_sheet || result) as BacklotCallSheet;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets', projectId] });
@@ -236,33 +274,24 @@ export function useCallSheets(projectId: string | null) {
 
   const updateCallSheet = useMutation({
     mutationFn: async ({ id, ...input }: Partial<CallSheetInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.production_day_id !== undefined) updateData.production_day_id = input.production_day_id;
-      if (input.title !== undefined) updateData.title = input.title;
-      if (input.date !== undefined) updateData.date = input.date;
-      if (input.general_call_time !== undefined) updateData.general_call_time = input.general_call_time;
-      if (input.location_name !== undefined) updateData.location_name = input.location_name;
-      if (input.location_address !== undefined) updateData.location_address = input.location_address;
-      if (input.parking_notes !== undefined) updateData.parking_notes = input.parking_notes;
-      if (input.production_contact !== undefined) updateData.production_contact = input.production_contact;
-      if (input.production_phone !== undefined) updateData.production_phone = input.production_phone;
-      if (input.schedule_blocks !== undefined) updateData.schedule_blocks = input.schedule_blocks;
-      if (input.weather_info !== undefined) updateData.weather_info = input.weather_info;
-      if (input.special_instructions !== undefined) updateData.special_instructions = input.special_instructions;
-      if (input.safety_notes !== undefined) updateData.safety_notes = input.safety_notes;
-      if (input.hospital_name !== undefined) updateData.hospital_name = input.hospital_name;
-      if (input.hospital_address !== undefined) updateData.hospital_address = input.hospital_address;
-      if (input.hospital_phone !== undefined) updateData.hospital_phone = input.hospital_phone;
+      const token = getAuthToken();
 
-      const { data, error } = await supabase
-        .from('backlot_call_sheets')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
 
-      if (error) throw error;
-      return data as BacklotCallSheet;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.call_sheet || result) as BacklotCallSheet;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets', projectId] });
@@ -271,18 +300,23 @@ export function useCallSheets(projectId: string | null) {
 
   const publishCallSheet = useMutation({
     mutationFn: async ({ id, publish }: { id: string; publish: boolean }) => {
-      const { data, error } = await supabase
-        .from('backlot_call_sheets')
-        .update({
-          is_published: publish,
-          published_at: publish ? new Date().toISOString() : null,
-        })
-        .eq('id', id)
-        .select()
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return data as BacklotCallSheet;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${id}/publish?publish=${publish}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to publish call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.call_sheet || result) as BacklotCallSheet;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets', projectId] });
@@ -291,12 +325,17 @@ export function useCallSheets(projectId: string | null) {
 
   const deleteCallSheet = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_call_sheets')
-        .delete()
-        .eq('id', id);
+      const token = getAuthToken();
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete call sheet' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets', projectId] });
@@ -322,41 +361,21 @@ export function useCallSheet(id: string | null) {
     queryFn: async () => {
       if (!id) return null;
 
-      const { data: sheet, error } = await supabase
-        .from('backlot_call_sheets')
-        .select('*')
-        .eq('id', id)
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
-      // Fetch people
-      const { data: people } = await supabase
-        .from('backlot_call_sheet_people')
-        .select('*')
-        .eq('call_sheet_id', id)
-        .order('sort_order', { ascending: true });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch call sheet' }));
+        throw new Error(error.detail);
+      }
 
-      // Fetch scenes
-      const { data: scenes } = await supabase
-        .from('backlot_call_sheet_scenes')
-        .select('*')
-        .eq('call_sheet_id', id)
-        .order('sort_order', { ascending: true });
-
-      // Fetch locations
-      const { data: locations } = await supabase
-        .from('backlot_call_sheet_locations')
-        .select('*')
-        .eq('call_sheet_id', id)
-        .order('location_number', { ascending: true });
-
-      return {
-        ...sheet,
-        people: people || [],
-        scenes: scenes || [],
-        locations: locations || [],
-      } as BacklotCallSheet;
+      const result = await response.json();
+      return (result.call_sheet || result) as BacklotCallSheet;
     },
     enabled: !!id,
   });
@@ -374,41 +393,51 @@ export function useCallSheetPeople(callSheetId: string | null) {
     queryFn: async () => {
       if (!callSheetId) return [];
 
-      const { data: peopleData, error } = await supabase
-        .from('backlot_call_sheet_people')
-        .select('*')
-        .eq('call_sheet_id', callSheetId)
-        .order('sort_order', { ascending: true });
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return (peopleData || []) as BacklotCallSheetPerson[];
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch people' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.people || []) as BacklotCallSheetPerson[];
     },
     enabled: !!callSheetId,
   });
 
   const addPerson = useMutation({
     mutationFn: async ({ callSheetId, ...input }: CallSheetPersonInput & { callSheetId: string }) => {
-      const { data, error } = await supabase
-        .from('backlot_call_sheet_people')
-        .insert({
-          call_sheet_id: callSheetId,
-          member_id: input.member_id || null,
-          name: input.name,
-          role: input.role || null,
-          department: input.department || null,
-          call_time: input.call_time,
-          phone: input.phone || null,
-          email: input.email || null,
-          notes: input.notes || null,
-          makeup_time: input.makeup_time || null,
-          wardrobe_notes: input.wardrobe_notes || null,
-          sort_order: input.sort_order || 0,
-        })
-        .select()
-        .single();
+      const token = getAuthToken();
 
-      if (error) throw error;
-      return data as BacklotCallSheetPerson;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to add person' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.person || result) as BacklotCallSheetPerson;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', callSheetId] });
@@ -418,28 +447,27 @@ export function useCallSheetPeople(callSheetId: string | null) {
 
   const updatePerson = useMutation({
     mutationFn: async ({ id, ...input }: Partial<CallSheetPersonInput> & { id: string }) => {
-      const updateData: Record<string, any> = {};
-      if (input.member_id !== undefined) updateData.member_id = input.member_id;
-      if (input.name !== undefined) updateData.name = input.name;
-      if (input.role !== undefined) updateData.role = input.role;
-      if (input.department !== undefined) updateData.department = input.department;
-      if (input.call_time !== undefined) updateData.call_time = input.call_time;
-      if (input.phone !== undefined) updateData.phone = input.phone;
-      if (input.email !== undefined) updateData.email = input.email;
-      if (input.notes !== undefined) updateData.notes = input.notes;
-      if (input.makeup_time !== undefined) updateData.makeup_time = input.makeup_time;
-      if (input.wardrobe_notes !== undefined) updateData.wardrobe_notes = input.wardrobe_notes;
-      if (input.sort_order !== undefined) updateData.sort_order = input.sort_order;
+      const token = getAuthToken();
 
-      const { data, error } = await supabase
-        .from('backlot_call_sheet_people')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people/${id}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
 
-      if (error) throw error;
-      return data as BacklotCallSheetPerson;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update person' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.person || result) as BacklotCallSheetPerson;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', callSheetId] });
@@ -449,12 +477,20 @@ export function useCallSheetPeople(callSheetId: string | null) {
 
   const removePerson = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('backlot_call_sheet_people')
-        .delete()
-        .eq('id', id);
+      const token = getAuthToken();
 
-      if (error) throw error;
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people/${id}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove person' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', callSheetId] });
@@ -464,15 +500,24 @@ export function useCallSheetPeople(callSheetId: string | null) {
 
   const reorderPeople = useMutation({
     mutationFn: async (orderedIds: string[]) => {
-      // Update each person's sort_order
-      const updates = orderedIds.map((id, index) =>
-        supabase
-          .from('backlot_call_sheet_people')
-          .update({ sort_order: index })
-          .eq('id', id)
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people/reorder`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(orderedIds),
+        }
       );
 
-      await Promise.all(updates);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder people' }));
+        throw new Error(error.detail);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', callSheetId] });
@@ -496,17 +541,6 @@ export function useCallSheetPeople(callSheetId: string | null) {
 // =====================================================
 
 /**
- * Helper to get auth token
- */
-async function getAuthToken(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  if (!data.session?.access_token) {
-    throw new Error('Not authenticated');
-  }
-  return data.session.access_token;
-}
-
-/**
  * Send a call sheet to recipients
  */
 export function useSendCallSheet() {
@@ -520,9 +554,9 @@ export function useSendCallSheet() {
       callSheetId: string;
       request: CallSheetSendRequest;
     }): Promise<CallSheetSendResponse> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/send`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/send`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -556,9 +590,9 @@ export function useCallSheetSendHistory(callSheetId: string | null) {
     queryFn: async (): Promise<CallSheetSendHistory[]> => {
       if (!callSheetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/send-history`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/send-history`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -583,9 +617,9 @@ export function useProjectMembersForSend(projectId: string | null) {
     queryFn: async (): Promise<ProjectMemberForSend[]> => {
       if (!projectId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/members-for-send`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/members-for-send`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -616,9 +650,9 @@ export function useCallSheetScenes(callSheetId: string | null) {
     queryFn: async (): Promise<BacklotCallSheetScene[]> => {
       if (!callSheetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/scenes`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -635,9 +669,9 @@ export function useCallSheetScenes(callSheetId: string | null) {
 
   const addScene = useMutation({
     mutationFn: async (scene: CallSheetSceneInput): Promise<BacklotCallSheetScene> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/scenes`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -661,9 +695,9 @@ export function useCallSheetScenes(callSheetId: string | null) {
 
   const updateScene = useMutation({
     mutationFn: async ({ id, ...scene }: CallSheetSceneInput & { id: string }): Promise<BacklotCallSheetScene> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes/${id}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/scenes/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -687,9 +721,9 @@ export function useCallSheetScenes(callSheetId: string | null) {
 
   const removeScene = useMutation({
     mutationFn: async (sceneId: string): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes/${sceneId}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/scenes/${sceneId}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -708,9 +742,9 @@ export function useCallSheetScenes(callSheetId: string | null) {
 
   const reorderScenes = useMutation({
     mutationFn: async (sceneIds: string[]): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/scenes/reorder`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/scenes/reorder`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -755,9 +789,9 @@ export function useCallSheetLocations(callSheetId: string | null) {
     queryFn: async (): Promise<BacklotCallSheetLocation[]> => {
       if (!callSheetId) return [];
 
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/locations`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/locations`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -774,9 +808,9 @@ export function useCallSheetLocations(callSheetId: string | null) {
 
   const addLocation = useMutation({
     mutationFn: async (location: CallSheetLocationInput): Promise<BacklotCallSheetLocation> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/locations`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/locations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -800,9 +834,9 @@ export function useCallSheetLocations(callSheetId: string | null) {
 
   const updateLocation = useMutation({
     mutationFn: async ({ id, ...location }: CallSheetLocationInput & { id: string }): Promise<BacklotCallSheetLocation> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/locations/${id}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/locations/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -826,9 +860,9 @@ export function useCallSheetLocations(callSheetId: string | null) {
 
   const removeLocation = useMutation({
     mutationFn: async (locationId: string): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/locations/${locationId}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/locations/${locationId}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -874,9 +908,9 @@ export function useGenerateCallSheetPdf() {
       callSheetId: string;
       request?: CallSheetPdfGenerateRequest;
     }): Promise<CallSheetPdfGenerateResponse> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/generate-pdf`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/generate-pdf`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -906,9 +940,9 @@ export function useGenerateCallSheetPdf() {
 export function useDownloadCallSheetPdf() {
   return useMutation({
     mutationFn: async (callSheetId: string): Promise<void> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/download-pdf`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/download-pdf`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -964,9 +998,9 @@ export function useSetProjectLogo() {
       projectId: string;
       logoUrl: string;
     }): Promise<{ success: boolean; logo_url: string; message: string }> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/set-logo`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/set-logo`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1006,9 +1040,9 @@ export function useSyncCallSheet() {
       callSheetId: string;
       request?: CallSheetSyncRequest;
     }): Promise<CallSheetSyncResponse> => {
-      const token = await getAuthToken();
+      const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/call-sheets/${callSheetId}/sync`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/sync`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import {
@@ -109,12 +109,7 @@ const CyclesTab = () => {
   const { data: cycles, isLoading } = useQuery({
     queryKey: ['greenroom-cycles-admin'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('greenroom_cycles')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
+      const data = await api.listGreenroomCycles();
       return data as Cycle[];
     },
   });
@@ -122,22 +117,16 @@ const CyclesTab = () => {
   // Create cycle mutation
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const { error } = await supabase
-        .from('greenroom_cycles')
-        .insert({
-          name: data.name,
-          description: data.description || null,
-          status: 'draft',
-          current_phase: 'submission',
-          submission_start: data.submission_start || null,
-          submission_end: data.submission_end || null,
-          voting_start: data.voting_start || null,
-          voting_end: data.voting_end || null,
-          max_submissions_per_user: data.max_submissions_per_user,
-          tickets_per_user: data.tickets_per_user,
-        });
-
-      if (error) throw error;
+      await api.createGreenroomCycle({
+        name: data.name,
+        description: data.description || null,
+        submission_start: data.submission_start || null,
+        submission_end: data.submission_end || null,
+        voting_start: data.voting_start || null,
+        voting_end: data.voting_end || null,
+        max_submissions_per_user: data.max_submissions_per_user,
+        tickets_per_user: data.tickets_per_user,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-cycles-admin'] });
@@ -154,12 +143,7 @@ const CyclesTab = () => {
   // Update cycle mutation
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<Cycle> }) => {
-      const { error } = await supabase
-        .from('greenroom_cycles')
-        .update(data)
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.updateGreenroomCycle(id, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-cycles-admin'] });
@@ -176,12 +160,7 @@ const CyclesTab = () => {
   // Delete cycle mutation
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('greenroom_cycles')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.deleteGreenroomCycle(id);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['greenroom-cycles-admin'] });

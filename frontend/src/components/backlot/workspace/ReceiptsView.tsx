@@ -53,7 +53,9 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 import { format } from 'date-fns';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 import {
   useReceipts,
   useReceipt,
@@ -295,30 +297,39 @@ const UploadZone: React.FC<{
 
     setIsUploading(true);
     try {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         setUploadProgress(`Uploading ${i + 1}/${files.length}: ${file.name}`);
 
-        // Upload to Supabase Storage
-        const ext = file.name.split('.').pop() || 'jpg';
-        const filename = `${Date.now()}-${Math.random().toString(36).substring(7)}.${ext}`;
-        const path = `receipts/${projectId}/${filename}`;
+        // Upload to S3 via API
+        const formData = new FormData();
+        formData.append('file', file);
 
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('backlot')
-          .upload(path, file, {
-            contentType: file.type,
-          });
+        const uploadResponse = await fetch(
+          `${API_BASE}/api/v1/backlot/projects/${projectId}/upload-receipt`,
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+            body: formData,
+          }
+        );
 
-        if (uploadError) throw uploadError;
+        if (!uploadResponse.ok) {
+          const error = await uploadResponse.json().catch(() => ({ detail: 'Upload failed' }));
+          throw new Error(error.detail);
+        }
 
-        // Get public URL
-        const { data: urlData } = supabase.storage.from('backlot').getPublicUrl(path);
+        const uploadResult = await uploadResponse.json();
 
         // Register the receipt and trigger OCR
         await registerReceipt.mutateAsync({
           projectId,
-          fileUrl: urlData.publicUrl,
+          fileUrl: uploadResult.file_url,
           originalFilename: file.name,
           fileType: file.type,
           fileSizeBytes: file.size,

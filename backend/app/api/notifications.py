@@ -38,15 +38,15 @@ async def get_notification_counts(user_id: str):
     """Get notification counts by type"""
     try:
         client = get_client()
-        
-        # Get total unread
-        total_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").execute()
-        
+
+        # Get total unread - use is_read=false instead of status='unread'
+        total_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).execute()
+
         # Get counts by type
-        messages_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "message").execute()
-        requests_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "connection_request").execute()
-        submissions_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("status", "unread").eq("type", "submission_update").execute()
-        
+        messages_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "message").execute()
+        requests_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "connection_request").execute()
+        submissions_response = client.table("notifications").select("id", count="exact").eq("user_id", user_id).eq("is_read", False).eq("type", "submission_update").execute()
+
         return {
             "total": total_response.count or 0,
             "messages": messages_response.count or 0,
@@ -75,5 +75,68 @@ async def create_notification(notification: NotificationCreate):
         client = get_client()
         response = client.table("notifications").insert(notification.model_dump()).execute()
         return response.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/mark-all-read")
+async def mark_all_notifications_read(user_id: str, tab: str = "all"):
+    """Mark all notifications as read, optionally filtered by tab/type"""
+    try:
+        client = get_client()
+        query = client.table("notifications").update({"status": "read"}).eq("user_id", user_id).eq("status", "unread")
+
+        # Filter by type based on tab
+        if tab == "messages":
+            query = query.eq("type", "message")
+        elif tab == "requests":
+            query = query.eq("type", "connection_request")
+        elif tab == "submissions":
+            query = query.eq("type", "submission_update")
+        # else tab == "all" or "unread" - no type filter
+
+        query.execute()
+        return {"message": f"Marked all {tab} notifications as read"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/settings/{user_id}")
+async def get_notification_settings(user_id: str):
+    """Get user notification settings"""
+    try:
+        client = get_client()
+        response = client.table("user_notification_settings").select("*").eq("user_id", user_id).single().execute()
+        return response.data
+    except Exception as e:
+        # If no settings exist, return None (frontend will use defaults)
+        return None
+
+
+@router.put("/settings/{user_id}")
+async def update_notification_settings(
+    user_id: str,
+    settings: dict
+):
+    """Update user notification settings (upsert)"""
+    try:
+        client = get_client()
+
+        # Prepare the data with user_id
+        data = {
+            "user_id": user_id,
+            "email_digest_enabled": settings.get("email_digest_enabled", False),
+            "email_on_submission_updates": settings.get("email_on_submission_updates", True),
+            "email_on_connection_accepts": settings.get("email_on_connection_accepts", True),
+            "digest_hour_utc": settings.get("digest_hour_utc", 13),
+        }
+
+        # Upsert - insert or update on conflict
+        response = client.table("user_notification_settings").upsert(
+            data,
+            on_conflict="user_id"
+        ).execute()
+
+        return response.data[0] if response.data else data
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

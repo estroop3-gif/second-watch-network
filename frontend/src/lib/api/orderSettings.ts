@@ -1,9 +1,9 @@
 /**
  * Order Profile Settings API
- * Direct Supabase client for managing Order profile visibility settings
+ * Uses the backend API for managing Order profile visibility settings
  */
 
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import {
   OrderProfileSettings,
   OrderProfileSettingsUpdate,
@@ -15,42 +15,16 @@ import {
  * Creates default settings if none exist
  */
 export async function getOrderProfileSettings(): Promise<OrderProfileSettings | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  try {
+    const token = api.getToken();
+    if (!token) return null;
 
-  // Try to fetch existing settings
-  const { data, error } = await supabase
-    .from('order_profile_settings')
-    .select('*')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (error && error.code !== 'PGRST116') {
+    const data = await api.getOrderProfileSettings();
+    return data as OrderProfileSettings;
+  } catch (error) {
     console.error('Error fetching order profile settings:', error);
     return null;
   }
-
-  // If settings exist, return them
-  if (data) {
-    return data as OrderProfileSettings;
-  }
-
-  // Create default settings for this user
-  const { data: newSettings, error: insertError } = await supabase
-    .from('order_profile_settings')
-    .insert({
-      user_id: user.id,
-      ...DEFAULT_ORDER_PROFILE_SETTINGS,
-    })
-    .select()
-    .single();
-
-  if (insertError) {
-    console.error('Error creating default order profile settings:', insertError);
-    return null;
-  }
-
-  return newSettings as OrderProfileSettings;
 }
 
 /**
@@ -59,30 +33,16 @@ export async function getOrderProfileSettings(): Promise<OrderProfileSettings | 
 export async function updateOrderProfileSettings(
   updates: OrderProfileSettingsUpdate
 ): Promise<OrderProfileSettings | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  try {
+    const token = api.getToken();
+    if (!token) return null;
 
-  // Upsert the settings
-  const { data, error } = await supabase
-    .from('order_profile_settings')
-    .upsert(
-      {
-        user_id: user.id,
-        ...updates,
-      },
-      {
-        onConflict: 'user_id',
-      }
-    )
-    .select()
-    .single();
-
-  if (error) {
+    const data = await api.updateOrderProfileSettings(updates);
+    return data as OrderProfileSettings;
+  } catch (error) {
     console.error('Error updating order profile settings:', error);
     throw new Error('Failed to update order profile settings');
   }
-
-  return data as OrderProfileSettings;
 }
 
 /**
@@ -92,18 +52,13 @@ export async function updateOrderProfileSettings(
 export async function getOrderProfileSettingsForUser(
   userId: string
 ): Promise<OrderProfileSettings | null> {
-  const { data, error } = await supabase
-    .from('order_profile_settings')
-    .select('*')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  if (error) {
+  try {
+    const data = await api.getOrderProfileSettingsForUser(userId);
+    return data as OrderProfileSettings | null;
+  } catch (error) {
     // RLS will block access if user doesn't have permission
     return null;
   }
-
-  return data as OrderProfileSettings | null;
 }
 
 /**
@@ -114,10 +69,13 @@ export async function canViewOrderSection(
   targetUserId: string,
   viewerIsOrderMember: boolean
 ): Promise<boolean> {
-  const { data: { user } } = await supabase.auth.getUser();
+  const token = api.getToken();
+
+  // Get current user's profile ID to check if it's their own profile
+  const currentProfileId = localStorage.getItem('profile_id');
 
   // Owner can always see their own section
-  if (user?.id === targetUserId) {
+  if (currentProfileId === targetUserId) {
     return true;
   }
 

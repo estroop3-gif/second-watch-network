@@ -4,7 +4,7 @@
  */
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from '@/components/ui/badge';
@@ -33,16 +33,27 @@ const GreenRoomManagement = () => {
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['greenroom-admin-stats'],
     queryFn: async () => {
-      const [cyclesRes, projectsRes, ticketsRes] = await Promise.all([
-        supabase.from('greenroom_cycles').select('id', { count: 'exact' }),
-        supabase.from('greenroom_projects').select('id', { count: 'exact' }),
-        supabase.from('greenroom_voting_tickets').select('id', { count: 'exact' }),
-      ]);
+      // Get cycles count
+      const cycles = await api.listGreenroomCycles();
+      const cycleCount = cycles?.length || 0;
+
+      // Get projects count by getting first cycle's projects
+      let projectCount = 0;
+      if (cycles && cycles.length > 0) {
+        for (const cycle of cycles) {
+          const projects = await api.listGreenroomProjects(cycle.id);
+          projectCount += projects?.length || 0;
+        }
+      }
+
+      // Get tickets data from export
+      const ticketsData = await api.exportGreenroomData('tickets');
+      const ticketCount = ticketsData?.data?.length || 0;
 
       return {
-        totalCycles: cyclesRes.count || 0,
-        totalProjects: projectsRes.count || 0,
-        totalTickets: ticketsRes.count || 0,
+        totalCycles: cycleCount,
+        totalProjects: projectCount,
+        totalTickets: ticketCount,
       };
     },
   });
@@ -51,12 +62,8 @@ const GreenRoomManagement = () => {
   const { data: activeCycle } = useQuery({
     queryKey: ['greenroom-active-cycle'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('greenroom_cycles')
-        .select('*')
-        .eq('status', 'active')
-        .single();
-      return data;
+      const cycles = await api.listGreenroomCycles('active');
+      return cycles && cycles.length > 0 ? cycles[0] : null;
     },
   });
 

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { ConfirmationDialog } from "@/components/modals/ConfirmationDialog";
 import { toast } from "sonner";
 import { SubscriptionActivityLog } from "@/components/subscriptions/SubscriptionActivityLog";
-import { supabase } from "@/integrations/supabase/client";
+import { api } from "@/lib/api";
 import { track } from "@/utils/telemetry";
 
 const SubscriptionSettingsPage = () => {
@@ -32,8 +32,11 @@ const SubscriptionSettingsPage = () => {
     if (checkout === "success") {
       (async () => {
         try {
-          // Ensure user receives updated roles
-          await supabase.auth.refreshSession();
+          // Ensure user receives updated roles via token refresh
+          const refreshToken = localStorage.getItem('refresh_token');
+          if (refreshToken) {
+            await api.refreshToken(refreshToken);
+          }
         } finally {
           toast.success("Premium activated");
           try { track("checkout_success", { returnTo }); } catch {}
@@ -85,19 +88,16 @@ const SubscriptionSettingsPage = () => {
 
   const openBillingPortal = async () => {
     try { track("portal_open_click"); } catch {}
-    const { data, error } = await supabase.functions.invoke("billing-create-portal-session", {
-      body: { returnTo: "/account/billing" },
-    });
-    if (error) {
-      toast.error(error.message || "Couldn’t open billing portal. Please try again.");
-      return;
+    try {
+      const result = await api.createPortalSession("/account/billing");
+      if (result?.url) {
+        window.location.href = result.url;
+      } else {
+        toast.error("Couldn't open billing portal. Please try again.");
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "Couldn't open billing portal. Please try again.");
     }
-    const url = (data as { url?: string } | null)?.url;
-    if (!url) {
-      toast.error("Couldn’t open billing portal. Please try again.");
-      return;
-    }
-    window.location.href = url;
   };
 
   return (

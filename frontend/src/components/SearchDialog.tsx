@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { allContent, Content } from '@/data/content';
 import Fuse from 'fuse.js';
 import { FileVideo, Tv, User } from 'lucide-react';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 
 const fuse = new Fuse(allContent, {
   keys: ['title', 'tagline', 'description', 'creator', 'tags'],
@@ -47,15 +47,12 @@ export function SearchDialog({ open, setOpen }: SearchDialogProps) {
     }
 
     const searchPeople = async () => {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('username, full_name, avatar_url')
-        .or(`username.ilike.%${query}%,full_name.ilike.%${query}%`)
-        .eq('has_completed_filmmaker_onboarding', true)
-        .limit(5);
-      
-      if (!error && data) {
-        setPeopleResults(data);
+      try {
+        const data = await api.searchUsers(query, 5);
+        setPeopleResults(data || []);
+      } catch (error) {
+        console.error('Search error:', error);
+        setPeopleResults([]);
       }
     };
 
