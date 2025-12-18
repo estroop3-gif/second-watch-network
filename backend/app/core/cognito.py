@@ -274,13 +274,19 @@ class CognitoAuth:
 
             signing_key = jwks_client.get_signing_key_from_jwt(token)
 
+            # Access tokens don't have 'aud' claim, only 'client_id'
+            # We need to verify without audience and manually check client_id
             claims = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=['RS256'],
-                audience=COGNITO_CLIENT_ID,
-                issuer=COGNITO_ISSUER
+                issuer=COGNITO_ISSUER,
+                options={"verify_aud": False}
             )
+
+            # Verify client_id for access tokens
+            if claims.get('client_id') != COGNITO_CLIENT_ID:
+                return None
 
             return {
                 'id': claims.get('sub'),
