@@ -499,12 +499,12 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
 
       {/* Contact Form Modal */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
             <DialogTitle>{editingContact ? 'Edit Contact' : 'Add Contact'}</DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+          <form onSubmit={handleSubmit} className="space-y-4 mt-4 overflow-y-auto flex-1 pr-2">
             <div className="space-y-2">
               <Label htmlFor="name">Name *</Label>
               <Input
@@ -626,7 +626,7 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
               />
             </div>
 
-            <div className="flex justify-end gap-3 pt-4">
+            <div className="flex justify-end gap-3 pt-4 pb-1 sticky bottom-0 bg-background border-t border-muted-gray/10 mt-4 -mx-2 px-2">
               <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>
                 Cancel
               </Button>

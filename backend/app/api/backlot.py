@@ -13926,26 +13926,30 @@ async def create_clearance_item(
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {CLEARANCE_STATUSES}")
 
     try:
+        # Helper to convert empty strings to None for UUID/date fields
+        def empty_to_none(val):
+            return None if val == "" else val
+
         clearance_data = {
             "project_id": project_id,
             "type": item.type,
             "title": item.title,
-            "description": item.description,
-            "related_person_id": item.related_person_id,
-            "related_person_name": item.related_person_name,
-            "related_location_id": item.related_location_id,
-            "related_project_location_id": item.related_project_location_id,
-            "related_asset_label": item.related_asset_label,
-            "file_url": item.file_url,
-            "file_name": item.file_name,
+            "description": item.description or None,
+            "related_person_id": empty_to_none(item.related_person_id),
+            "related_person_name": item.related_person_name or None,
+            "related_location_id": empty_to_none(item.related_location_id),
+            "related_project_location_id": empty_to_none(item.related_project_location_id),
+            "related_asset_label": item.related_asset_label or None,
+            "file_url": empty_to_none(item.file_url),
+            "file_name": item.file_name or None,
             "file_is_sensitive": item.file_is_sensitive or False,
             "status": item.status or "not_started",
-            "requested_date": item.requested_date,
-            "signed_date": item.signed_date,
-            "expiration_date": item.expiration_date,
-            "notes": item.notes,
-            "contact_email": item.contact_email,
-            "contact_phone": item.contact_phone,
+            "requested_date": empty_to_none(item.requested_date),
+            "signed_date": empty_to_none(item.signed_date),
+            "expiration_date": empty_to_none(item.expiration_date),
+            "notes": item.notes or None,
+            "contact_email": item.contact_email or None,
+            "contact_phone": item.contact_phone or None,
             "created_by_user_id": user_id,
         }
 
