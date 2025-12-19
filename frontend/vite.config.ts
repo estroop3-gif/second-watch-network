@@ -22,29 +22,7 @@ export default defineConfig(() => ({
     },
   },
   build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (id.includes('node_modules')) {
-            // React core must be in the same chunk as react-dom
-            if (id.includes('/react/') || id.includes('react-dom') || id.includes('react-router') || id.includes('scheduler')) {
-              return 'vendor-react';
-            }
-            if (id.includes('@radix-ui')) {
-              return 'vendor-radix';
-            }
-            if (id.includes('@tanstack')) {
-              return 'vendor-tanstack';
-            }
-            if (id.includes('lucide-react')) {
-              return 'vendor-icons';
-            }
-            // Note: Removed recharts/d3 chunking - let Vite handle it automatically
-            // to avoid circular dependency issues
-          }
-        },
-      },
-    },
+    // Let Vite handle code splitting automatically to avoid initialization order issues
     chunkSizeWarningLimit: 1000,
   },
 }));
