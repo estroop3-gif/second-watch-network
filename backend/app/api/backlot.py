@@ -22738,7 +22738,7 @@ async def create_call_sheet(
 
         sheet_data = {
             "project_id": project_id,
-            "created_by": user_id,
+            "created_by_user_id": user_id,
         }
 
         # Copy all allowed fields from input
