@@ -1410,11 +1410,14 @@ async def submit_receipt_for_reimbursement(
     project_id: str,
     receipt_id: str,
     request: ReceiptReimbursementRequest = ReceiptReimbursementRequest(),
-    user: dict = Depends(get_current_user),
+    authorization: str = Header(None),
 ):
     """Submit a receipt for reimbursement"""
-    client = get_supabase_client()
-    await verify_project_access(client, project_id, user["id"])
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Get the receipt
     resp = client.table("backlot_receipts").select("*").eq("id", receipt_id).eq("project_id", project_id).single().execute()
@@ -1447,11 +1450,14 @@ async def submit_receipt_for_reimbursement(
 async def approve_receipt_reimbursement(
     project_id: str,
     receipt_id: str,
-    user: dict = Depends(get_current_user),
+    authorization: str = Header(None),
 ):
     """Approve a receipt for reimbursement"""
-    client = get_supabase_client()
-    await verify_project_access(client, project_id, user["id"])
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Check if user can approve
     if not await can_approve_expenses(client, project_id, user["id"]):
@@ -1483,11 +1489,14 @@ async def reject_receipt_reimbursement(
     project_id: str,
     receipt_id: str,
     request: ApproveRejectRequest,
-    user: dict = Depends(get_current_user),
+    authorization: str = Header(None),
 ):
     """Reject a receipt reimbursement request"""
-    client = get_supabase_client()
-    await verify_project_access(client, project_id, user["id"])
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Check if user can approve/reject
     if not await can_approve_expenses(client, project_id, user["id"]):
@@ -1520,11 +1529,14 @@ async def reject_receipt_reimbursement(
 async def mark_receipt_reimbursed(
     project_id: str,
     receipt_id: str,
-    user: dict = Depends(get_current_user),
+    authorization: str = Header(None),
 ):
     """Mark an approved receipt as reimbursed (paid)"""
-    client = get_supabase_client()
-    await verify_project_access(client, project_id, user["id"])
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     # Check if user can approve
     if not await can_approve_expenses(client, project_id, user["id"]):
