@@ -56,8 +56,11 @@ export function CallSheetSourcePicker({
   selectedSource,
 }: CallSheetSourcePickerProps) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { templates, isLoading: isLoadingTemplates, deleteTemplate } = useCallSheetTemplates();
+  const { templates: rawTemplates, isLoading: isLoadingTemplates, deleteTemplate } = useCallSheetTemplates();
   const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null);
+
+  // Ensure templates is always an array (defensive coding)
+  const templates = Array.isArray(rawTemplates) ? rawTemplates : [];
 
   // Filter recent call sheets to only show ones from this project (up to 5 most recent)
   const projectCallSheets = recentCallSheets
