@@ -78,9 +78,13 @@ const UpdateCard: React.FC<{
   const TypeIcon = typeConfig.icon;
   const visibleRoles = update.visible_to_roles || [];
 
+  // Track if we've already attempted to mark as read (prevents infinite loops on failure)
+  const hasAttemptedMarkRead = React.useRef<Set<string>>(new Set());
+
   // Auto-mark as read when rendered (if not already read)
   React.useEffect(() => {
-    if (!update.has_read) {
+    if (!update.has_read && !hasAttemptedMarkRead.current.has(update.id)) {
+      hasAttemptedMarkRead.current.add(update.id);
       onMarkRead(update.id);
     }
   }, [update.id, update.has_read, onMarkRead]);
