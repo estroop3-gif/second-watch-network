@@ -26,7 +26,7 @@ export default defineConfig(() => ({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
-            // React core must be in the same chunk as react-dom to ensure proper load order
+            // React core must be in the same chunk as react-dom
             if (id.includes('/react/') || id.includes('react-dom') || id.includes('react-router') || id.includes('scheduler')) {
               return 'vendor-react';
             }
@@ -39,12 +39,8 @@ export default defineConfig(() => ({
             if (id.includes('lucide-react')) {
               return 'vendor-icons';
             }
-            if (id.includes('@supabase')) {
-              return 'vendor-supabase';
-            }
-            if (id.includes('recharts') || id.includes('d3')) {
-              return 'vendor-charts';
-            }
+            // Note: Removed recharts/d3 chunking - let Vite handle it automatically
+            // to avoid circular dependency issues
           }
         },
       },
