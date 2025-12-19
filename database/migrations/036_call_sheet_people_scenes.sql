@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS backlot_call_sheet_send_history (
   call_sheet_id UUID NOT NULL REFERENCES backlot_call_sheets(id) ON DELETE CASCADE,
 
   -- Send details
-  sent_by UUID REFERENCES profiles(id) ON DELETE SET NULL,
+  sent_by_user_id UUID REFERENCES profiles(id) ON DELETE SET NULL,
   sent_at TIMESTAMPTZ DEFAULT NOW(),
   channel TEXT NOT NULL DEFAULT 'email',
   recipient_count INTEGER DEFAULT 0,

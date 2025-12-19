@@ -953,7 +953,7 @@ async def send_call_sheet(
         "notifications_sent": notifications_sent
     }
 
-    log_response = client.table("backlot_call_sheet_sends").insert(send_log).execute()
+    log_response = client.table("backlot_call_sheet_send_history").insert(send_log).execute()
     send_id = log_response.data[0]["id"] if log_response.data else None
 
     # Auto-publish if not already published
@@ -996,8 +996,8 @@ async def get_call_sheet_send_history(
     # Verify access
     await verify_project_access(client, project_id, user_id)
 
-    # Get send history
-    history_response = client.table("backlot_call_sheet_sends").select("*, profiles:sent_by_user_id(full_name, display_name)").eq("call_sheet_id", call_sheet_id).order("sent_at", desc=True).execute()
+    # Get send history - use simple query without foreign key embedding
+    history_response = client.table("backlot_call_sheet_send_history").select("*").eq("call_sheet_id", call_sheet_id).order("sent_at", desc=True).execute()
 
     result = []
     for record in history_response.data or []:
