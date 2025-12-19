@@ -22671,7 +22671,20 @@ async def create_call_sheet(
     client = get_client()
 
     try:
-        await verify_project_access(client, project_id, user["id"])
+        # Resolve Cognito ID to profile ID
+        token_user_id = user["id"]
+        profile_result = client.table("profiles").select("id").eq(
+            "cognito_user_id", token_user_id
+        ).limit(1).execute()
+        if not profile_result.data:
+            profile_result = client.table("profiles").select("id").eq(
+                "id", token_user_id
+            ).limit(1).execute()
+        if not profile_result.data:
+            raise HTTPException(status_code=404, detail="User profile not found")
+        user_id = str(profile_result.data[0]["id"])
+
+        await verify_project_access(client, project_id, user_id)
 
         # All supported call sheet fields
         allowed_fields = [
@@ -22725,7 +22738,7 @@ async def create_call_sheet(
 
         sheet_data = {
             "project_id": project_id,
-            "created_by": user["id"],
+            "created_by": user_id,
         }
 
         # Copy all allowed fields from input
