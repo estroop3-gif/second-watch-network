@@ -22696,6 +22696,12 @@ async def mark_update_as_read(
     client = get_client()
 
     try:
+        # First check if the update exists
+        update_check = client.table("backlot_project_updates").select("id").eq("id", update_id).execute()
+        if not update_check.data:
+            # Update doesn't exist - just return success to prevent frontend retries
+            return {"success": True, "message": "Update not found, skipped"}
+
         # Upsert read record
         client.table("backlot_project_update_reads").upsert({
             "update_id": update_id,
