@@ -12,7 +12,7 @@ type InvokeOptions = {
  */
 export async function invokeEdge<T = any>(name: string, options: InvokeOptions = {}) {
   const { method = "POST", body, headers = {} } = options;
-  const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  const baseUrl = import.meta.env.VITE_API_URL || '';
   const url = `${baseUrl}/api/v1/edge/${name}`;
 
   const accessToken = api.getToken();

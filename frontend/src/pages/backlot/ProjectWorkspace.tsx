@@ -77,7 +77,7 @@ const LocationsView = lazy(() => import('@/components/backlot/workspace/Location
 const GearView = lazy(() => import('@/components/backlot/workspace/GearView'));
 const BudgetView = lazy(() => import('@/components/backlot/workspace/BudgetView'));
 const DailyBudgetView = lazy(() => import('@/components/backlot/workspace/DailyBudgetView'));
-const ReceiptsView = lazy(() => import('@/components/backlot/workspace/ReceiptsView'));
+const ExpensesView = lazy(() => import('@/components/backlot/workspace/ExpensesView'));
 const ClearancesView = lazy(() => import('@/components/backlot/workspace/ClearancesView'));
 const UpdatesView = lazy(() => import('@/components/backlot/workspace/UpdatesView'));
 const ContactsView = lazy(() => import('@/components/backlot/workspace/ContactsView'));
@@ -211,7 +211,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'budget', label: 'Budget', icon: DollarSign },
       { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
       { id: 'timecards', label: 'Timecards', icon: Timer },
-      { id: 'receipts', label: 'Receipts', icon: Receipt },
+      { id: 'expenses', label: 'Expenses', icon: Receipt },
       { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
     ],
   },
@@ -712,8 +712,8 @@ const ProjectWorkspace: React.FC = () => {
               canReview={permission?.isAdmin || false}
             />
           )}
-          {activeView === 'receipts' && (
-            <ReceiptsView projectId={project.id} canEdit={permission?.canEdit || false} />
+          {activeView === 'expenses' && (
+            <ExpensesView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'analytics' && (
             <AnalyticsView projectId={project.id} />

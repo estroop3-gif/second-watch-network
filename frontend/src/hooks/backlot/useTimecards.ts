@@ -229,6 +229,88 @@ export function useDeleteTimecardEntry(projectId: string | null, timecardId: str
   });
 }
 
+export interface ImportCheckinsResponse {
+  imported_count: number;
+  skipped_count: number;
+  entries: Array<{
+    shoot_date: string;
+    call_time: string | null;
+    wrap_time: string | null;
+    hours_worked: number | null;
+  }>;
+}
+
+/**
+ * Import check-ins to a timecard
+ */
+export function useImportCheckinsToTimecard(projectId: string | null, timecardId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (overwriteExisting: boolean = false): Promise<ImportCheckinsResponse> => {
+      if (!projectId || !timecardId) throw new Error('Project and timecard ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/import-checkins`, {
+        overwrite_existing: overwriteExisting,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, timecardId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'me'] });
+    },
+  });
+}
+
+// Preview types
+export interface TimecardWarning {
+  type: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+  date?: string;
+}
+
+export interface TimecardPreviewEntry {
+  date: string;
+  day_name: string;
+  call_time: string | null;
+  wrap_time: string | null;
+  hours_worked: number | null;
+  overtime_hours: number | null;
+  double_time_hours: number | null;
+  is_travel_day: boolean;
+  is_prep_day: boolean;
+  is_wrap_day: boolean;
+  is_holiday: boolean;
+  has_entry: boolean;
+}
+
+export interface TimecardPreview {
+  timecard_id: string;
+  week_start_date: string;
+  status: string;
+  total_hours: number;
+  total_overtime: number;
+  total_double_time: number;
+  days_worked: number;
+  entries: TimecardPreviewEntry[];
+  warnings: TimecardWarning[];
+  is_valid: boolean;
+  can_submit: boolean;
+}
+
+/**
+ * Get timecard preview with validation
+ */
+export function useTimecardPreview(projectId: string | null, timecardId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'timecards', projectId, timecardId, 'preview'],
+    queryFn: async () => {
+      if (!projectId || !timecardId) return null;
+      return apiClient.get<TimecardPreview>(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/preview`);
+    },
+    enabled: !!projectId && !!timecardId,
+  });
+}
+
 /**
  * Submit a timecard for approval
  */

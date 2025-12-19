@@ -169,12 +169,12 @@ export default function PeopleView({ projectId, canEdit, onSelectPerson }: Peopl
       {/* Filters */}
       <div className="flex flex-wrap gap-2">
         {viewMode !== 'contacts' && (
-          <Select value={roleFilter} onValueChange={setRoleFilter}>
+          <Select value={roleFilter || 'all'} onValueChange={(v) => setRoleFilter(v === 'all' ? '' : v)}>
             <SelectTrigger className="w-40 bg-charcoal-black border-muted-gray/30">
               <SelectValue placeholder="All roles" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All roles</SelectItem>
+              <SelectItem value="all">All roles</SelectItem>
               {Object.entries(BACKLOT_ROLE_LABELS).map(([value, label]) => (
                 <SelectItem key={value} value={value}>{label}</SelectItem>
               ))}
@@ -182,12 +182,12 @@ export default function PeopleView({ projectId, canEdit, onSelectPerson }: Peopl
           </Select>
         )}
         {viewMode === 'team' && (
-          <Select value={deptFilter} onValueChange={setDeptFilter}>
+          <Select value={deptFilter || 'all'} onValueChange={(v) => setDeptFilter(v === 'all' ? '' : v)}>
             <SelectTrigger className="w-40 bg-charcoal-black border-muted-gray/30">
               <SelectValue placeholder="All departments" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All departments</SelectItem>
+              <SelectItem value="all">All departments</SelectItem>
               {DEPARTMENTS.map(dept => (
                 <SelectItem key={dept} value={dept}>{dept}</SelectItem>
               ))}

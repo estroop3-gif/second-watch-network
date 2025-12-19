@@ -93,7 +93,7 @@ import Analytics from "./pages/partner/Analytics";
 import PartnerPromotions from "./pages/partner/Promotions";
 
 // Backlot Production Hub Pages
-import { BacklotHome, ProjectWorkspace, PublicProjectPage } from "./pages/backlot";
+import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage } from "./pages/backlot";
 
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
@@ -135,6 +135,7 @@ const App = () => (
                   <Route path="/terms" element={<Terms />} />
                   <Route path="/profile/:username" element={<FilmmakerProfile />} />
                   <Route path="/projects/:slug" element={<PublicProjectPage />} />
+                  <Route path="/share/:shareToken" element={<PublicCallSheetPage />} />
                   <Route path="/login" element={<Login />} />
                   <Route path="/signin" element={<Login />} />
                   <Route path="/signup" element={<Signup />} />

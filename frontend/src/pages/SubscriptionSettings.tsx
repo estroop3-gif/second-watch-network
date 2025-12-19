@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { ConfirmationDialog } from "@/components/modals/ConfirmationDialog";
 import { toast } from "sonner";
 import { SubscriptionActivityLog } from "@/components/subscriptions/SubscriptionActivityLog";
-import { api } from "@/lib/api";
+import { api, safeStorage } from "@/lib/api";
 import { track } from "@/utils/telemetry";
 
 const SubscriptionSettingsPage = () => {
@@ -33,7 +33,7 @@ const SubscriptionSettingsPage = () => {
       (async () => {
         try {
           // Ensure user receives updated roles via token refresh
-          const refreshToken = localStorage.getItem('refresh_token');
+          const refreshToken = safeStorage.getItem('refresh_token');
           if (refreshToken) {
             await api.refreshToken(refreshToken);
           }

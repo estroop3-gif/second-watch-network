@@ -102,9 +102,9 @@ async def search_directory_users(
             # Search across username, full_name, and display_name
             response = base_query.or_(
                 f"username.ilike.%{search_term}%,full_name.ilike.%{search_term}%,display_name.ilike.%{search_term}%"
-            ).order("full_name", desc=False, nullsfirst=False).execute()
+            ).order("full_name", desc=False).execute()
         else:
-            response = base_query.order("full_name", desc=False, nullsfirst=False).execute()
+            response = base_query.order("full_name", desc=False).execute()
 
         # Filter results:
         # 1. Must be community_visible=true OR be a filmmaker

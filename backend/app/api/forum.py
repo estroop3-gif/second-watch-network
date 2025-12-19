@@ -93,7 +93,7 @@ async def list_threads_with_details(
             query = query.order("created_at", desc=True)
         else:
             # "active" - sort by last reply, with fallback to created_at
-            query = query.order("last_reply_at", desc=True, nullsfirst=False)
+            query = query.order("last_reply_at", desc=True)
 
         response = query.range(skip, skip + limit - 1).execute()
         return response.data or []

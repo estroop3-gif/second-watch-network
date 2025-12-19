@@ -59,14 +59,18 @@ import {
   Truck,
   ChevronRight,
   RefreshCw,
+  Link2,
+  FileSpreadsheet,
 } from 'lucide-react';
-import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf, useCallSheetSceneLinks } from '@/hooks/backlot';
+import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf, useDownloadCallSheetExcel, useCallSheetSceneLinks, useCallSheetComments } from '@/hooks/backlot';
 import { useToast } from '@/hooks/use-toast';
 import { BacklotCallSheet, BacklotCallSheetPerson, CallSheetSendHistory, BacklotCallSheetTemplate } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import CallSheetSyncModal from './CallSheetSyncModal';
 import CallSheetSceneLinkModal from './CallSheetSceneLinkModal';
+import CallSheetShareModal from './CallSheetShareModal';
+import CallSheetCommentsPanel from './CallSheetCommentsPanel';
 import { ScoutPreviewWidget } from '@/components/backlot/scout-photos';
 
 interface CallSheetDetailViewProps {
@@ -119,10 +123,13 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
   const { sendHistory, isLoading: historyLoading } = useCallSheetSendHistory(callSheet.id);
   const { locations } = useCallSheetLocations(callSheet.id);
   const { data: linkedScenes } = useCallSheetSceneLinks(callSheet.id);
+  const { unresolvedCount: unresolvedCommentsCount } = useCallSheetComments(callSheet.id);
   const downloadPdf = useDownloadCallSheetPdf();
+  const downloadExcel = useDownloadCallSheetExcel();
   const [activeTab, setActiveTab] = useState('details');
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [showSceneLinkModal, setShowSceneLinkModal] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
 
   // Group people by department
   const peopleByDepartment = people.reduce((acc, person) => {
@@ -151,6 +158,22 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
       toast({
         title: 'Download Failed',
         description: error.message || 'Failed to download PDF',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDownloadExcel = async () => {
+    try {
+      await downloadExcel.mutateAsync(callSheet.id);
+      toast({
+        title: 'Excel Downloaded',
+        description: 'Call sheet Excel file has been downloaded.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Download Failed',
+        description: error.message || 'Failed to download Excel',
         variant: 'destructive',
       });
     }
@@ -237,6 +260,14 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
             </TabsTrigger>
             <TabsTrigger value="history">
               History {sendHistory.length > 0 && `(${sendHistory.length})`}
+            </TabsTrigger>
+            <TabsTrigger value="comments" className="relative">
+              Comments
+              {unresolvedCommentsCount > 0 && (
+                <span className="ml-1 px-1.5 py-0.5 text-xs bg-orange-500/20 text-orange-400 rounded-full">
+                  {unresolvedCommentsCount}
+                </span>
+              )}
             </TabsTrigger>
           </TabsList>
 
@@ -956,6 +987,11 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
                 </div>
               )}
             </TabsContent>
+
+            {/* Comments Tab */}
+            <TabsContent value="comments" className="space-y-4">
+              <CallSheetCommentsPanel callSheetId={callSheet.id} canEdit={canEdit} />
+            </TabsContent>
           </ScrollArea>
         </Tabs>
 
@@ -1098,6 +1134,19 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
               )}
               PDF
             </Button>
+            <Button
+              variant="outline"
+              onClick={handleDownloadExcel}
+              disabled={downloadExcel.isPending}
+              className="border-muted-gray/30"
+            >
+              {downloadExcel.isPending ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+              )}
+              Excel
+            </Button>
             {canEdit && (
               <Button
                 variant="outline"
@@ -1106,6 +1155,16 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
               >
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Sync
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant="outline"
+                onClick={() => setShowShareModal(true)}
+                className="border-muted-gray/30"
+              >
+                <Link2 className="w-4 h-4 mr-2" />
+                Share
               </Button>
             )}
           </div>
@@ -1139,6 +1198,14 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
           callSheetId={callSheet.id}
           projectId={projectId}
           canEdit={canEdit}
+        />
+
+        {/* Share Modal */}
+        <CallSheetShareModal
+          callSheetId={callSheet.id}
+          callSheetTitle={callSheet.title}
+          open={showShareModal}
+          onOpenChange={setShowShareModal}
         />
       </DialogContent>
     </Dialog>

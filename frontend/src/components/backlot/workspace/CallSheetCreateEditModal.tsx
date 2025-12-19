@@ -79,7 +79,7 @@ import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetSc
 import { CallSheetSourcePicker } from './CallSheetSourcePicker';
 import { api } from '@/lib/api';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 import { useToast } from '@/hooks/use-toast';
 import {
   BacklotCallSheet,
@@ -1779,7 +1779,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   // Helper function to save scenes via API
   const saveScenes = async (callSheetId: string) => {
     const token = await getAuthToken();
-    const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+    const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1';
 
     // Get existing scenes from the call sheet (if edit mode)
     const existingSceneIds = new Set(

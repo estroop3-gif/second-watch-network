@@ -26,6 +26,18 @@ class ProfileUpdate(ProfileBase):
 class Profile(ProfileBase):
     id: str
     email: str
+    display_name: Optional[str] = None
+    cognito_user_id: Optional[str] = None
+    is_admin: Optional[bool] = False
+    is_superadmin: Optional[bool] = False
+    is_premium: Optional[bool] = False
+    is_filmmaker: Optional[bool] = False
+    is_partner: Optional[bool] = False
+    is_moderator: Optional[bool] = False
+    is_order_member: Optional[bool] = False
+    is_lodge_officer: Optional[bool] = False
+    subscription_tier: Optional[str] = None
+    subscription_status: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 

@@ -149,7 +149,7 @@ const FeaturedTab = () => {
       });
       if (reason) params.append('reason', reason);
 
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/greenroom/admin/projects/${id}/suspend?${params}`, {
+      await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/greenroom/admin/projects/${id}/suspend?${params}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${api.getToken()}`,

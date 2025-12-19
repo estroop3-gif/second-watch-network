@@ -5,7 +5,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const RAW_API_URL = import.meta.env.VITE_API_URL || '';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
 
 // =============================================================================
@@ -470,6 +470,72 @@ export function usePerformCheckin() {
       queryClient.invalidateQueries({ queryKey: ['backlot-checkin-by-token', variables.qr_token] });
       queryClient.invalidateQueries({ queryKey: ['backlot-session-checkins'] });
     },
+  });
+}
+
+export interface PerformCheckoutInput {
+  session_id: string;
+  latitude?: number;
+  longitude?: number;
+  device_info?: string;
+}
+
+export function usePerformCheckout() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: PerformCheckoutInput): Promise<{ checkin: CheckinRecord; success: boolean }> => {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/backlot/checkin/checkout`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(input),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Failed to check out');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-session-checkins'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-my-checkins'] });
+    },
+  });
+}
+
+export interface MyCheckinRecord {
+  id: string;
+  project_id: string;
+  session_id: string;
+  session_title: string | null;
+  shoot_date: string | null;
+  checked_in_at: string;
+  checked_out_at: string | null;
+  hours_worked: number | null;
+}
+
+export function useMyCheckins(projectId: string | null, weekStart?: string) {
+  return useQuery({
+    queryKey: ['backlot-my-checkins', projectId, weekStart],
+    queryFn: async (): Promise<MyCheckinRecord[]> => {
+      if (!projectId) return [];
+
+      const token = getAuthToken();
+      const params = weekStart ? `?week_start=${weekStart}` : '';
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/my-checkins${params}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) throw new Error('Failed to fetch check-ins');
+      const data = await response.json();
+      return data.checkins || [];
+    },
+    enabled: !!projectId,
   });
 }
 

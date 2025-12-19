@@ -5,8 +5,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
+// api.get/post/etc already prepend the base URL, so we just need the path prefix
+const API_BASE = '/api/v1';
 
 // =============================================================================
 // TYPES

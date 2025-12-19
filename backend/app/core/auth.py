@@ -16,7 +16,7 @@ async def get_current_user(
 ) -> Dict[str, Any]:
     """
     Dependency to get current authenticated user from Bearer token.
-    Validates the token with AWS Cognito.
+    Validates the token with AWS Cognito and returns profile ID.
     """
     # Get token from credentials or header
     token = None
@@ -38,6 +38,7 @@ async def get_current_user(
     try:
         # Use AWS Cognito authentication
         from app.core.cognito import CognitoAuth
+        from app.core.database import get_client
 
         user = CognitoAuth.verify_token(token)
         if not user:
@@ -47,12 +48,44 @@ async def get_current_user(
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        # Return user dict compatible with existing code
+        cognito_id = user.get("id")
+        email = user.get("email")
+
+        # Look up profile by cognito_user_id to get the profile ID
+        client = get_client()
+        profile_result = client.table("profiles").select("id, full_name").eq(
+            "cognito_user_id", cognito_id
+        ).execute()
+
+        profile_id = None
+        full_name = None
+        if profile_result.data:
+            profile_id = profile_result.data[0]["id"]
+            full_name = profile_result.data[0].get("full_name")
+        else:
+            # Fallback: try lookup by email
+            if email:
+                profile_result = client.table("profiles").select("id, full_name").eq(
+                    "email", email
+                ).execute()
+                if profile_result.data:
+                    profile_id = profile_result.data[0]["id"]
+                    full_name = profile_result.data[0].get("full_name")
+
+        if not profile_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User profile not found",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+        # Return user dict with profile ID (compatible with existing code)
         return {
-            "id": user.get("id"),
-            "email": user.get("email"),
+            "id": profile_id,
+            "cognito_id": cognito_id,
+            "email": email,
             "user_metadata": {
-                "full_name": user.get("name"),
+                "full_name": full_name or user.get("name"),
             },
         }
 

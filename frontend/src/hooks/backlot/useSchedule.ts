@@ -24,7 +24,7 @@ import {
   CallSheetSyncResponse,
 } from '@/types/backlot';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /**
  * Helper to get auth token
@@ -890,6 +890,424 @@ export function useCallSheetSendHistory(callSheetId: string | null) {
   };
 }
 
+// =====================================================
+// CALL SHEET COMMENTS
+// =====================================================
+
+export interface CallSheetComment {
+  id: string;
+  call_sheet_id: string;
+  parent_comment_id: string | null;
+  user_id: string;
+  content: string;
+  field_reference: string | null;
+  is_resolved: boolean;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  user_name: string;
+  user_avatar_url: string | null;
+  replies: CallSheetComment[];
+}
+
+export interface CallSheetCommentsResponse {
+  comments: CallSheetComment[];
+  total: number;
+  unresolved_count: number;
+}
+
+/**
+ * Fetch comments for a call sheet
+ */
+export function useCallSheetComments(callSheetId: string | null) {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['backlot-call-sheet-comments', callSheetId],
+    queryFn: async (): Promise<CallSheetCommentsResponse> => {
+      if (!callSheetId) return { comments: [], total: 0, unresolved_count: 0 };
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/comments`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch comments');
+      }
+
+      return response.json();
+    },
+    enabled: !!callSheetId,
+  });
+
+  const createComment = useMutation({
+    mutationFn: async (data: { content: string; parent_comment_id?: string; field_reference?: string }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create comment');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-comments', callSheetId] });
+    },
+  });
+
+  const updateComment = useMutation({
+    mutationFn: async ({ commentId, content }: { commentId: string; content: string }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/comments/${commentId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ content }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update comment');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-comments', callSheetId] });
+    },
+  });
+
+  const deleteComment = useMutation({
+    mutationFn: async (commentId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/comments/${commentId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete comment');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-comments', callSheetId] });
+    },
+  });
+
+  const resolveComment = useMutation({
+    mutationFn: async (commentId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/comments/${commentId}/resolve`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to resolve comment');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-comments', callSheetId] });
+    },
+  });
+
+  return {
+    comments: query.data?.comments || [],
+    total: query.data?.total || 0,
+    unresolvedCount: query.data?.unresolved_count || 0,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createComment,
+    updateComment,
+    deleteComment,
+    resolveComment,
+  };
+}
+
+// =====================================================
+// CALL SHEET VERSION HISTORY
+// =====================================================
+
+export interface CallSheetVersion {
+  id: string;
+  version_number: number;
+  changed_fields: string[];
+  change_summary: string | null;
+  created_at: string;
+  created_by_name: string;
+  created_by_avatar_url: string | null;
+}
+
+export interface CallSheetVersionsResponse {
+  versions: CallSheetVersion[];
+  current_version: number;
+}
+
+/**
+ * Fetch version history for a call sheet
+ */
+export function useCallSheetVersions(callSheetId: string | null) {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['backlot-call-sheet-versions', callSheetId],
+    queryFn: async (): Promise<CallSheetVersionsResponse> => {
+      if (!callSheetId) return { versions: [], current_version: 1 };
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/versions`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch versions');
+      }
+
+      return response.json();
+    },
+    enabled: !!callSheetId,
+  });
+
+  const revertToVersion = useMutation({
+    mutationFn: async (versionNumber: number) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/revert/${versionNumber}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to revert version');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate both versions and call sheet data
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-versions', callSheetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet', callSheetId] });
+    },
+  });
+
+  return {
+    versions: query.data?.versions || [],
+    currentVersion: query.data?.current_version || 1,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    revertToVersion,
+  };
+}
+
+// =====================================================
+// Call Sheet Shares
+// =====================================================
+
+export interface CallSheetShare {
+  id: string;
+  call_sheet_id: string;
+  share_token: string;
+  share_url: string;
+  name: string | null;
+  expires_at: string;
+  is_active: boolean;
+  has_password: boolean;
+  view_count: number;
+  last_viewed_at: string | null;
+  allowed_actions: string[];
+  created_at: string;
+  created_by_name: string | null;
+}
+
+export interface CreateShareInput {
+  name?: string;
+  expires_in_days?: number;
+  password?: string;
+  allowed_actions?: string[];
+}
+
+/**
+ * Manage share links for a call sheet
+ */
+export function useCallSheetShares(callSheetId: string | null) {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['backlot-call-sheet-shares', callSheetId],
+    queryFn: async (): Promise<{ shares: CallSheetShare[] }> => {
+      if (!callSheetId) return { shares: [] };
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/shares`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch shares');
+      }
+
+      return response.json();
+    },
+    enabled: !!callSheetId,
+  });
+
+  const createShare = useMutation({
+    mutationFn: async (input: CreateShareInput): Promise<CallSheetShare> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/shares`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: input.name,
+          expires_in_days: input.expires_in_days || 7,
+          password: input.password,
+          allowed_actions: input.allowed_actions || ['view'],
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create share link');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-shares', callSheetId] });
+    },
+  });
+
+  const revokeShare = useMutation({
+    mutationFn: async (shareId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/shares/${shareId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to revoke share link');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-shares', callSheetId] });
+    },
+  });
+
+  const deleteShare = useMutation({
+    mutationFn: async (shareId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/shares/${shareId}/permanent`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to delete share link');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-shares', callSheetId] });
+    },
+  });
+
+  return {
+    shares: query.data?.shares || [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createShare,
+    revokeShare,
+    deleteShare,
+  };
+}
+
+/**
+ * Fetch public call sheet by share token (no auth required)
+ */
+export function usePublicCallSheet(shareToken: string | null, password?: string) {
+  return useQuery({
+    queryKey: ['public-call-sheet', shareToken, password],
+    queryFn: async () => {
+      if (!shareToken) throw new Error('No share token');
+
+      const url = new URL(`${API_BASE}/api/v1/backlot/public/call-sheet/${shareToken}`);
+      if (password) {
+        url.searchParams.set('password', password);
+      }
+
+      const response = await fetch(url.toString());
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch call sheet');
+      }
+
+      return response.json();
+    },
+    enabled: !!shareToken,
+    retry: false,
+  });
+}
+
 /**
  * Get project members for send modal
  */
@@ -1243,6 +1661,52 @@ export function useDownloadCallSheetPdf() {
       // Extract filename from Content-Disposition header if available
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = 'call-sheet.pdf';
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="(.+?)"/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      // Create a download link and click it
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    },
+  });
+}
+
+/**
+ * Download call sheet as Excel file
+ */
+export function useDownloadCallSheetExcel() {
+  return useMutation({
+    mutationFn: async (callSheetId: string): Promise<void> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/download-excel`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to download Excel' }));
+        throw new Error(error.detail || 'Failed to download Excel');
+      }
+
+      // Get the blob and create download link
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      // Extract filename from Content-Disposition header if available
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'call-sheet.xlsx';
       if (contentDisposition) {
         const filenameMatch = contentDisposition.match(/filename="(.+?)"/);
         if (filenameMatch) {

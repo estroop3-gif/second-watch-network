@@ -27,7 +27,7 @@ export function useAssets(projectId: string | null) {
     queryKey: ['backlot', 'assets', projectId],
     queryFn: async (): Promise<BacklotAsset[]> => {
       if (!projectId) return [];
-      return api.get<BacklotAsset[]>(`/api/backlot/projects/${projectId}/assets`);
+      return api.get<BacklotAsset[]>(`/api/v1/backlot/projects/${projectId}/assets`);
     },
     enabled: !!projectId,
   });
@@ -39,7 +39,7 @@ export function useAsset(assetId: string | null) {
     queryKey: ['backlot', 'asset', assetId],
     queryFn: async (): Promise<BacklotAsset | null> => {
       if (!assetId) return null;
-      return api.get<BacklotAsset>(`/api/backlot/assets/${assetId}`);
+      return api.get<BacklotAsset>(`/api/v1/backlot/assets/${assetId}`);
     },
     enabled: !!assetId,
   });
@@ -51,7 +51,7 @@ export function useAssetsSummary(projectId: string | null) {
     queryKey: ['backlot', 'assets', 'summary', projectId],
     queryFn: async (): Promise<AssetsSummary | null> => {
       if (!projectId) return null;
-      return api.get<AssetsSummary>(`/api/backlot/projects/${projectId}/assets/summary`);
+      return api.get<AssetsSummary>(`/api/v1/backlot/projects/${projectId}/assets/summary`);
     },
     enabled: !!projectId,
   });
@@ -68,14 +68,14 @@ export function useAssetMutations(projectId: string) {
 
   const createAsset = useMutation({
     mutationFn: async (input: AssetInput): Promise<BacklotAsset> => {
-      return api.post<BacklotAsset>(`/api/backlot/projects/${projectId}/assets`, input);
+      return api.post<BacklotAsset>(`/api/v1/backlot/projects/${projectId}/assets`, input);
     },
     onSuccess: invalidate,
   });
 
   const updateAsset = useMutation({
     mutationFn: async ({ assetId, input }: { assetId: string; input: Partial<AssetInput> }): Promise<BacklotAsset> => {
-      return api.put<BacklotAsset>(`/api/backlot/assets/${assetId}`, input);
+      return api.put<BacklotAsset>(`/api/v1/backlot/assets/${assetId}`, input);
     },
     onSuccess: (_, variables) => {
       invalidate();
@@ -85,7 +85,7 @@ export function useAssetMutations(projectId: string) {
 
   const updateAssetStatus = useMutation({
     mutationFn: async ({ assetId, status }: { assetId: string; status: BacklotDeliverableStatus }): Promise<BacklotAsset> => {
-      return api.patch<BacklotAsset>(`/api/backlot/assets/${assetId}/status`, { status });
+      return api.patch<BacklotAsset>(`/api/v1/backlot/assets/${assetId}/status`, { status });
     },
     onSuccess: (_, variables) => {
       invalidate();
@@ -95,7 +95,7 @@ export function useAssetMutations(projectId: string) {
 
   const deleteAsset = useMutation({
     mutationFn: async (assetId: string): Promise<void> => {
-      await api.delete(`/api/backlot/assets/${assetId}`);
+      await api.delete(`/api/v1/backlot/assets/${assetId}`);
     },
     onSuccess: invalidate,
   });
@@ -117,7 +117,7 @@ export function useDeliverableTemplates() {
   return useQuery({
     queryKey: ['backlot', 'deliverable-templates'],
     queryFn: async (): Promise<BacklotDeliverableTemplate[]> => {
-      return api.get<BacklotDeliverableTemplate[]>('/api/backlot/deliverable-templates');
+      return api.get<BacklotDeliverableTemplate[]>('/api/v1/backlot/deliverable-templates');
     },
   });
 }
@@ -128,7 +128,7 @@ export function useDeliverableTemplate(templateId: string | null) {
     queryKey: ['backlot', 'deliverable-template', templateId],
     queryFn: async (): Promise<BacklotDeliverableTemplate | null> => {
       if (!templateId) return null;
-      return api.get<BacklotDeliverableTemplate>(`/api/backlot/deliverable-templates/${templateId}`);
+      return api.get<BacklotDeliverableTemplate>(`/api/v1/backlot/deliverable-templates/${templateId}`);
     },
     enabled: !!templateId,
   });
@@ -139,7 +139,7 @@ export function useDeliverablePlatforms() {
   return useQuery({
     queryKey: ['backlot', 'deliverable-platforms'],
     queryFn: async (): Promise<string[]> => {
-      return api.get<string[]>('/api/backlot/deliverable-templates/platforms/list');
+      return api.get<string[]>('/api/v1/backlot/deliverable-templates/platforms/list');
     },
   });
 }
@@ -155,14 +155,14 @@ export function useDeliverableTemplateMutations() {
 
   const createTemplate = useMutation({
     mutationFn: async (input: DeliverableTemplateInput): Promise<BacklotDeliverableTemplate> => {
-      return api.post<BacklotDeliverableTemplate>('/api/backlot/deliverable-templates', input);
+      return api.post<BacklotDeliverableTemplate>('/api/v1/backlot/deliverable-templates', input);
     },
     onSuccess: invalidate,
   });
 
   const updateTemplate = useMutation({
     mutationFn: async ({ templateId, input }: { templateId: string; input: Partial<DeliverableTemplateInput> }): Promise<BacklotDeliverableTemplate> => {
-      return api.put<BacklotDeliverableTemplate>(`/api/backlot/deliverable-templates/${templateId}`, input);
+      return api.put<BacklotDeliverableTemplate>(`/api/v1/backlot/deliverable-templates/${templateId}`, input);
     },
     onSuccess: (_, variables) => {
       invalidate();
@@ -172,7 +172,7 @@ export function useDeliverableTemplateMutations() {
 
   const deleteTemplate = useMutation({
     mutationFn: async (templateId: string): Promise<void> => {
-      await api.delete(`/api/backlot/deliverable-templates/${templateId}`);
+      await api.delete(`/api/v1/backlot/deliverable-templates/${templateId}`);
     },
     onSuccess: invalidate,
   });
@@ -194,7 +194,7 @@ export function useProjectDeliverables(projectId: string | null) {
     queryKey: ['backlot', 'deliverables', projectId],
     queryFn: async (): Promise<BacklotProjectDeliverable[]> => {
       if (!projectId) return [];
-      return api.get<BacklotProjectDeliverable[]>(`/api/backlot/projects/${projectId}/deliverables`);
+      return api.get<BacklotProjectDeliverable[]>(`/api/v1/backlot/projects/${projectId}/deliverables`);
     },
     enabled: !!projectId,
   });
@@ -206,7 +206,7 @@ export function useProjectDeliverable(deliverableId: string | null) {
     queryKey: ['backlot', 'deliverable', deliverableId],
     queryFn: async (): Promise<BacklotProjectDeliverable | null> => {
       if (!deliverableId) return null;
-      return api.get<BacklotProjectDeliverable>(`/api/backlot/deliverables/${deliverableId}`);
+      return api.get<BacklotProjectDeliverable>(`/api/v1/backlot/deliverables/${deliverableId}`);
     },
     enabled: !!deliverableId,
   });
@@ -218,7 +218,7 @@ export function useDeliverablesSummary(projectId: string | null) {
     queryKey: ['backlot', 'deliverables', 'summary', projectId],
     queryFn: async (): Promise<DeliverablesSummary | null> => {
       if (!projectId) return null;
-      return api.get<DeliverablesSummary>(`/api/backlot/projects/${projectId}/deliverables/summary`);
+      return api.get<DeliverablesSummary>(`/api/v1/backlot/projects/${projectId}/deliverables/summary`);
     },
     enabled: !!projectId,
   });
@@ -237,14 +237,14 @@ export function useDeliverableMutations(projectId: string) {
 
   const createDeliverable = useMutation({
     mutationFn: async (input: ProjectDeliverableInput): Promise<BacklotProjectDeliverable> => {
-      return api.post<BacklotProjectDeliverable>(`/api/backlot/projects/${projectId}/deliverables`, input);
+      return api.post<BacklotProjectDeliverable>(`/api/v1/backlot/projects/${projectId}/deliverables`, input);
     },
     onSuccess: invalidate,
   });
 
   const updateDeliverable = useMutation({
     mutationFn: async ({ deliverableId, input }: { deliverableId: string; input: Partial<ProjectDeliverableInput> }): Promise<BacklotProjectDeliverable> => {
-      return api.put<BacklotProjectDeliverable>(`/api/backlot/deliverables/${deliverableId}`, input);
+      return api.put<BacklotProjectDeliverable>(`/api/v1/backlot/deliverables/${deliverableId}`, input);
     },
     onSuccess: (_, variables) => {
       invalidate();
@@ -254,7 +254,7 @@ export function useDeliverableMutations(projectId: string) {
 
   const updateDeliverableStatus = useMutation({
     mutationFn: async ({ deliverableId, status }: { deliverableId: string; status: BacklotDeliverableStatus }): Promise<BacklotProjectDeliverable> => {
-      return api.patch<BacklotProjectDeliverable>(`/api/backlot/deliverables/${deliverableId}/status`, { status });
+      return api.patch<BacklotProjectDeliverable>(`/api/v1/backlot/deliverables/${deliverableId}/status`, { status });
     },
     onSuccess: (_, variables) => {
       invalidate();
@@ -264,14 +264,14 @@ export function useDeliverableMutations(projectId: string) {
 
   const deleteDeliverable = useMutation({
     mutationFn: async (deliverableId: string): Promise<void> => {
-      await api.delete(`/api/backlot/deliverables/${deliverableId}`);
+      await api.delete(`/api/v1/backlot/deliverables/${deliverableId}`);
     },
     onSuccess: invalidate,
   });
 
   const bulkCreateDeliverables = useMutation({
     mutationFn: async ({ assetId, input }: { assetId: string; input: BulkDeliverableInput }): Promise<BacklotProjectDeliverable[]> => {
-      return api.post<BacklotProjectDeliverable[]>(`/api/backlot/assets/${assetId}/deliverables/bulk`, input);
+      return api.post<BacklotProjectDeliverable[]>(`/api/v1/backlot/assets/${assetId}/deliverables/bulk`, input);
     },
     onSuccess: invalidate,
   });

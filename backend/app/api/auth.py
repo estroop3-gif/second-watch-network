@@ -264,18 +264,29 @@ async def resend_confirmation(request: ResendConfirmationRequest):
 async def get_user_info(user=Depends(get_current_user)):
     """Get current authenticated user"""
     from app.core.database import execute_single
+    from uuid import UUID
+
+    user_id = str(user.get("id", ""))
+    cognito_id = str(user.get("cognito_id") or user_id)
 
     # Get full profile from database
     try:
         profile = execute_single("""
             SELECT * FROM profiles WHERE cognito_user_id = :cognito_user_id OR id::text = :user_id
         """, {
-            "cognito_user_id": user.get("id"),
-            "user_id": user.get("id")
+            "cognito_user_id": cognito_id,
+            "user_id": user_id
         })
 
         if profile:
-            return profile
+            # Convert UUID fields to strings for JSON serialization
+            result = {}
+            for key, value in profile.items():
+                if isinstance(value, UUID):
+                    result[key] = str(value)
+                else:
+                    result[key] = value
+            return result
     except Exception as e:
         print(f"Profile lookup error: {e}")
 

@@ -15,7 +15,7 @@ import {
 // Legacy type alias for backwards compatibility
 type LocationInput = BacklotLocationInput;
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export function useLocations(projectId: string | null) {
   const queryClient = useQueryClient();
@@ -304,12 +304,12 @@ export function useProjectLocations(projectId: string | null) {
 
       // Use PATCH with query params (as defined in the API)
       const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/backlot/projects/${projectId}/locations/${locationId}?${queryParams.toString()}`,
+        `${import.meta.env.VITE_API_URL || ''}/api/v1/backlot/projects/${projectId}/locations/${locationId}?${queryParams.toString()}`,
         {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
         }
       );
@@ -385,12 +385,12 @@ export function useUpdateGlobalLocation() {
     mutationFn: async ({ locationId, ...input }: BacklotLocationInput & { locationId: string }) => {
       // Use fetch directly since we need PATCH
       const response = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/backlot/locations/${locationId}`,
+        `${import.meta.env.VITE_API_URL || ''}/api/v1/backlot/locations/${locationId}`,
         {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
           body: JSON.stringify(input),
         }

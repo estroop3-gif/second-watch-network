@@ -3,10 +3,45 @@
  * Complete API client for Second Watch Network
  */
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 interface RequestOptions extends RequestInit {
   token?: string
+}
+
+/**
+ * Safe localStorage wrapper that handles private browsing mode
+ * and other scenarios where localStorage might be unavailable
+ */
+const safeStorage = {
+  getItem(key: string): string | null {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        return localStorage.getItem(key)
+      }
+    } catch (e) {
+      console.warn('localStorage not available:', e)
+    }
+    return null
+  },
+  setItem(key: string, value: string): void {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem(key, value)
+      }
+    } catch (e) {
+      console.warn('localStorage not available:', e)
+    }
+  },
+  removeItem(key: string): void {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem(key)
+      }
+    } catch (e) {
+      console.warn('localStorage not available:', e)
+    }
+  }
 }
 
 class APIClient {
@@ -19,19 +54,15 @@ class APIClient {
   }
 
   private loadToken() {
-    if (typeof window !== 'undefined') {
-      this.token = localStorage.getItem('access_token')
-    }
+    this.token = safeStorage.getItem('access_token')
   }
 
   setToken(token: string | null) {
     this.token = token
-    if (typeof window !== 'undefined') {
-      if (token) {
-        localStorage.setItem('access_token', token)
-      } else {
-        localStorage.removeItem('access_token')
-      }
+    if (token) {
+      safeStorage.setItem('access_token', token)
+    } else {
+      safeStorage.removeItem('access_token')
     }
   }
 
@@ -69,9 +100,7 @@ class APIClient {
 
   clearToken() {
     this.token = null
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('access_token')
-    }
+    safeStorage.removeItem('access_token')
   }
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
@@ -208,7 +237,7 @@ class APIClient {
     if (response.access_token) {
       this.setToken(response.access_token)
       if (response.refresh_token) {
-        localStorage.setItem('refresh_token', response.refresh_token)
+        safeStorage.setItem('refresh_token', response.refresh_token)
       }
     }
     return response
@@ -222,7 +251,7 @@ class APIClient {
     if (response.access_token) {
       this.setToken(response.access_token)
       if (response.refresh_token) {
-        localStorage.setItem('refresh_token', response.refresh_token)
+        safeStorage.setItem('refresh_token', response.refresh_token)
       }
     }
     return response
@@ -1520,4 +1549,5 @@ class APIClient {
 // Export singleton instance
 export const api = new APIClient()
 export const apiClient = api // Alias for hooks that use apiClient
+export { safeStorage } // Export for use in AuthContext
 export default api

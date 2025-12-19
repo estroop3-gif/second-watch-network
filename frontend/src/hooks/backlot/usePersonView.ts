@@ -107,7 +107,7 @@ export function usePeopleList(projectId: string | null, params?: PeopleListParam
       if (params?.role) queryParams.append('role', params.role);
       if (params?.search) queryParams.append('search', params.search);
       const queryString = queryParams.toString();
-      const url = `/api/v1/backlot/projects/${projectId}/people${queryString ? `?${queryString}` : ''}`;
+      const url = `/api/v1/backlot/projects/${projectId}/people/team-list${queryString ? `?${queryString}` : ''}`;
       return apiClient.get<PersonListItem[]>(url);
     },
     enabled: !!projectId,

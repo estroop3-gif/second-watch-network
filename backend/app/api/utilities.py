@@ -139,6 +139,24 @@ class PerformCheckinRequest(BaseModel):
     longitude: Optional[float] = None
 
 
+class PerformCheckoutRequest(BaseModel):
+    session_id: str  # The session ID to check out from
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    device_info: Optional[str] = None
+
+
+class MyCheckinRecord(BaseModel):
+    id: str
+    project_id: str
+    session_id: str
+    session_title: Optional[str] = None
+    shoot_date: Optional[str] = None
+    checked_in_at: str
+    checked_out_at: Optional[str] = None
+    hours_worked: Optional[float] = None
+
+
 # =============================================================================
 # MODELS - Personal Notes & Bookmarks
 # =============================================================================
@@ -200,12 +218,25 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     token = authorization.replace("Bearer ", "")
 
     try:
-
         from app.core.cognito import CognitoAuth
+        from app.core.database import execute_single
+
         user = CognitoAuth.verify_token(token)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user.get("id"), "email": user.get("email")}
+
+        cognito_id = user.get("id")
+        email = user.get("email")
+
+        # Convert Cognito ID to profile ID
+        profile = execute_single("""
+            SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1
+        """, {"cuid": cognito_id, "uid": cognito_id})
+
+        if not profile:
+            raise HTTPException(status_code=401, detail="User profile not found")
+
+        return {"id": str(profile["id"]), "cognito_id": cognito_id, "email": email}
     except HTTPException:
         raise
     except Exception as e:
@@ -636,6 +667,100 @@ async def perform_checkin(
         raise HTTPException(status_code=500, detail="Failed to check in")
 
     return {"checkin": response.data[0], "success": True}
+
+
+@router.post("/checkin/checkout")
+async def perform_checkout(
+    data: PerformCheckoutRequest,
+    authorization: str = Header(None)
+):
+    """Perform check-out (wrap time) for current user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Find user's check-in for this session
+    checkin_resp = client.table("backlot_checkins").select("*").eq("session_id", data.session_id).eq("user_id", user["id"]).execute()
+
+    if not checkin_resp.data:
+        raise HTTPException(status_code=404, detail="No check-in found for this session")
+
+    checkin = checkin_resp.data[0]
+
+    if checkin.get("checked_out_at"):
+        raise HTTPException(status_code=400, detail="You have already checked out from this session")
+
+    # Update with checkout time
+    from datetime import datetime
+    checkout_data = {
+        "checked_out_at": datetime.utcnow().isoformat(),
+        "checkout_latitude": data.latitude,
+        "checkout_longitude": data.longitude,
+        "checkout_device_info": data.device_info,
+    }
+
+    response = client.table("backlot_checkins").update(checkout_data).eq("id", checkin["id"]).execute()
+
+    if not response.data:
+        raise HTTPException(status_code=500, detail="Failed to check out")
+
+    return {"checkin": response.data[0], "success": True}
+
+
+@router.get("/projects/{project_id}/my-checkins")
+async def get_my_checkins(
+    project_id: str,
+    week_start: Optional[str] = Query(None, description="Filter by week start date (YYYY-MM-DD)"),
+    authorization: str = Header(None)
+):
+    """Get current user's check-in/check-out records for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not a project member")
+
+    # Get check-ins with session info
+    query = client.table("backlot_checkins").select(
+        "*, backlot_checkin_sessions!inner(title, shoot_date)"
+    ).eq("project_id", project_id).eq("user_id", user["id"])
+
+    if week_start:
+        # Filter to week (Monday to Sunday)
+        from datetime import datetime, timedelta
+        start_date = datetime.strptime(week_start, "%Y-%m-%d").date()
+        end_date = start_date + timedelta(days=6)
+        query = query.gte("backlot_checkin_sessions.shoot_date", start_date.isoformat())
+        query = query.lte("backlot_checkin_sessions.shoot_date", end_date.isoformat())
+
+    response = query.order("checked_in_at", desc=True).execute()
+
+    checkins = []
+    for row in (response.data or []):
+        session = row.get("backlot_checkin_sessions") or {}
+
+        # Calculate hours worked if both check-in and check-out exist
+        hours_worked = None
+        if row.get("checked_in_at") and row.get("checked_out_at"):
+            try:
+                from datetime import datetime
+                check_in = datetime.fromisoformat(row["checked_in_at"].replace("Z", "+00:00"))
+                check_out = datetime.fromisoformat(row["checked_out_at"].replace("Z", "+00:00"))
+                hours_worked = round((check_out - check_in).total_seconds() / 3600, 2)
+            except:
+                pass
+
+        checkins.append({
+            "id": row["id"],
+            "project_id": row["project_id"],
+            "session_id": row["session_id"],
+            "session_title": session.get("title"),
+            "shoot_date": session.get("shoot_date"),
+            "checked_in_at": row["checked_in_at"],
+            "checked_out_at": row.get("checked_out_at"),
+            "hours_worked": hours_worked,
+        })
+
+    return {"checkins": checkins}
 
 
 @router.get("/projects/{project_id}/checkin-sessions/{session_id}/checkins")

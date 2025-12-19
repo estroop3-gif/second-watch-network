@@ -6,7 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { BacklotProjectUpdate, ProjectUpdateInput, BacklotUpdateType } from '@/types/backlot';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 interface UseUpdatesOptions {
   projectId: string | null;

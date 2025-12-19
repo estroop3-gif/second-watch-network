@@ -1,5 +1,5 @@
 import { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
-import { api } from '@/lib/api';
+import { api, safeStorage } from '@/lib/api';
 
 // Custom types to replace Supabase types
 interface AuthUser {
@@ -47,13 +47,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const checkSession = async () => {
       setLoading(true);
-      const token = localStorage.getItem('access_token');
+      const token = safeStorage.getItem('access_token');
 
       if (token) {
         api.setToken(token);
         try {
           const userData = await api.getCurrentUser();
-          const refreshToken = localStorage.getItem('refresh_token') || '';
+          const refreshToken = safeStorage.getItem('refresh_token') || '';
 
           // Create a session object
           const authSession: AuthSession = {
@@ -72,16 +72,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             const profileData = await api.getProfile();
             setProfile(profileData);
             if (profileData?.id) {
-              localStorage.setItem('profile_id', profileData.id);
+              safeStorage.setItem('profile_id', profileData.id);
             }
           } catch {
             // Profile may not exist yet
           }
         } catch (error) {
           // Token is invalid, clear it
-          localStorage.removeItem('access_token');
-          localStorage.removeItem('refresh_token');
-          localStorage.removeItem('profile_id');
+          safeStorage.removeItem('access_token');
+          safeStorage.removeItem('refresh_token');
+          safeStorage.removeItem('profile_id');
           api.setToken(null);
           setSession(null);
           setUser(null);
@@ -101,9 +101,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const data = await api.signIn(email, password);
 
       // Store tokens
-      localStorage.setItem('access_token', data.access_token);
+      safeStorage.setItem('access_token', data.access_token);
       if (data.refresh_token) {
-        localStorage.setItem('refresh_token', data.refresh_token);
+        safeStorage.setItem('refresh_token', data.refresh_token);
       }
 
       api.setToken(data.access_token);
@@ -125,7 +125,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         const profileData = await api.getProfile();
         setProfile(profileData);
         if (profileData?.id) {
-          localStorage.setItem('profile_id', profileData.id);
+          safeStorage.setItem('profile_id', profileData.id);
         }
       } catch {
         // Profile may not exist yet
@@ -149,9 +149,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
 
       // Store tokens
-      localStorage.setItem('access_token', data.access_token);
+      safeStorage.setItem('access_token', data.access_token);
       if (data.refresh_token) {
-        localStorage.setItem('refresh_token', data.refresh_token);
+        safeStorage.setItem('refresh_token', data.refresh_token);
       }
 
       api.setToken(data.access_token);
@@ -186,9 +186,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const signOut = async () => {
     // Clear local state first to ensure UI updates immediately
-    localStorage.removeItem('access_token');
-    localStorage.removeItem('refresh_token');
-    localStorage.removeItem('profile_id');
+    safeStorage.removeItem('access_token');
+    safeStorage.removeItem('refresh_token');
+    safeStorage.removeItem('profile_id');
     api.setToken(null);
     setSession(null);
     setUser(null);
@@ -202,7 +202,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const profileId = profile?.id || localStorage.getItem('profile_id') || null;
+  const profileId = profile?.id || safeStorage.getItem('profile_id') || null;
 
   return (
     <AuthContext.Provider value={{

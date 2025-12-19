@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -15,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { useToast } from '@/hooks/use-toast';
 import {
   FileText,
   Plus,
@@ -201,6 +203,7 @@ const CallSheetCard: React.FC<{
 
 const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) => {
   const { callSheets, isLoading, publishCallSheet, deleteCallSheet, cloneCallSheet } = useCallSheets(projectId);
+  const { toast } = useToast();
   const [sendModalSheet, setSendModalSheet] = useState<BacklotCallSheet | null>(null);
   const [viewSheet, setViewSheet] = useState<BacklotCallSheet | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -208,14 +211,47 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
   const [cloneSheet, setCloneSheet] = useState<BacklotCallSheet | null>(null);
   const [cloneDate, setCloneDate] = useState('');
   const [isCloning, setIsCloning] = useState(false);
+  const [cloneOptions, setCloneOptions] = useState({
+    keep_people: true,
+    keep_scenes: true,
+    keep_locations: true,
+    keep_schedule_blocks: true,
+    keep_department_notes: true,
+  });
 
   const handlePublish = async (id: string, publish: boolean) => {
-    await publishCallSheet.mutateAsync({ id, publish });
+    try {
+      await publishCallSheet.mutateAsync({ id, publish });
+      toast({
+        title: publish ? 'Call Sheet Published' : 'Call Sheet Unpublished',
+        description: publish
+          ? 'The call sheet is now visible to team members.'
+          : 'The call sheet has been set to draft.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to update call sheet status',
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this call sheet?')) {
-      await deleteCallSheet.mutateAsync(id);
+    if (confirm('Are you sure you want to delete this call sheet? This action cannot be undone.')) {
+      try {
+        await deleteCallSheet.mutateAsync(id);
+        toast({
+          title: 'Call Sheet Deleted',
+          description: 'The call sheet has been permanently removed.',
+        });
+      } catch (error) {
+        toast({
+          title: 'Error',
+          description: error instanceof Error ? error.message : 'Failed to delete call sheet',
+          variant: 'destructive',
+        });
+      }
     }
   };
 
@@ -240,6 +276,14 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
     const sourceDate = new Date(sheet.date);
     sourceDate.setDate(sourceDate.getDate() + 1);
     setCloneDate(sourceDate.toISOString().split('T')[0]);
+    // Reset options to default
+    setCloneOptions({
+      keep_people: true,
+      keep_scenes: true,
+      keep_locations: true,
+      keep_schedule_blocks: true,
+      keep_department_notes: true,
+    });
     setCloneSheet(sheet);
   };
 
@@ -252,15 +296,21 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
         id: cloneSheet.id,
         options: {
           new_date: cloneDate,
-          keep_people: true,
-          keep_scenes: true,
-          keep_locations: true,
-          keep_schedule_blocks: true,
-          keep_department_notes: true,
+          ...cloneOptions,
         },
+      });
+      toast({
+        title: 'Call Sheet Cloned',
+        description: `Created a copy for ${new Date(cloneDate).toLocaleDateString()}`,
       });
       setCloneSheet(null);
       setCloneDate('');
+    } catch (error) {
+      toast({
+        title: 'Clone Failed',
+        description: error instanceof Error ? error.message : 'Failed to clone call sheet',
+        variant: 'destructive',
+      });
     } finally {
       setIsCloning(false);
     }
@@ -377,7 +427,7 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
           <DialogHeader>
             <DialogTitle className="text-bone-white">Clone Call Sheet</DialogTitle>
             <DialogDescription className="text-muted-gray">
-              Create a copy of "{cloneSheet?.title}" with all cast, crew, scenes, and settings.
+              Create a copy of "{cloneSheet?.title}" with selected data.
             </DialogDescription>
           </DialogHeader>
 
@@ -391,9 +441,72 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
                 className="bg-charcoal-black border-muted-gray/30"
               />
             </div>
-            <p className="text-xs text-muted-gray">
-              The cloned call sheet will include all people, scenes, locations, schedule, and department notes.
-            </p>
+
+            <div className="space-y-3">
+              <Label className="text-muted-gray">Include in Clone</Label>
+              <div className="space-y-2">
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keep_people"
+                    checked={cloneOptions.keep_people}
+                    onCheckedChange={(checked) =>
+                      setCloneOptions((prev) => ({ ...prev, keep_people: !!checked }))
+                    }
+                  />
+                  <label htmlFor="keep_people" className="text-sm text-bone-white cursor-pointer">
+                    Cast & Crew
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keep_scenes"
+                    checked={cloneOptions.keep_scenes}
+                    onCheckedChange={(checked) =>
+                      setCloneOptions((prev) => ({ ...prev, keep_scenes: !!checked }))
+                    }
+                  />
+                  <label htmlFor="keep_scenes" className="text-sm text-bone-white cursor-pointer">
+                    Scenes
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keep_locations"
+                    checked={cloneOptions.keep_locations}
+                    onCheckedChange={(checked) =>
+                      setCloneOptions((prev) => ({ ...prev, keep_locations: !!checked }))
+                    }
+                  />
+                  <label htmlFor="keep_locations" className="text-sm text-bone-white cursor-pointer">
+                    Locations
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keep_schedule_blocks"
+                    checked={cloneOptions.keep_schedule_blocks}
+                    onCheckedChange={(checked) =>
+                      setCloneOptions((prev) => ({ ...prev, keep_schedule_blocks: !!checked }))
+                    }
+                  />
+                  <label htmlFor="keep_schedule_blocks" className="text-sm text-bone-white cursor-pointer">
+                    Schedule Blocks
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Checkbox
+                    id="keep_department_notes"
+                    checked={cloneOptions.keep_department_notes}
+                    onCheckedChange={(checked) =>
+                      setCloneOptions((prev) => ({ ...prev, keep_department_notes: !!checked }))
+                    }
+                  />
+                  <label htmlFor="keep_department_notes" className="text-sm text-bone-white cursor-pointer">
+                    Department Notes
+                  </label>
+                </div>
+              </div>
+            </div>
           </div>
 
           <DialogFooter>

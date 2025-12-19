@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from app.core.database import get_client
+from app.core.database import get_client, execute_single
 from app.core.backlot_permissions import (
     get_effective_view_config,
     can_manage_access,
@@ -16,6 +16,21 @@ from app.core.backlot_permissions import (
 )
 
 router = APIRouter()
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> str:
+    """
+    Look up the profile ID from a Cognito user ID.
+    Returns the profile ID or None if not found.
+    """
+    uid_str = str(cognito_user_id)
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
+        {"cuid": uid_str, "uid": uid_str}
+    )
+    if not profile_row:
+        return None
+    return profile_row["id"]
 
 
 # =============================================================================
@@ -374,7 +389,12 @@ async def add_member(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     # Check if user is already a member
@@ -392,7 +412,7 @@ async def add_member(
         "role": request.role,
         "production_role": request.production_role,
         "department": request.department,
-        "invited_by": user["id"],
+        "invited_by": profile_id,
     }
 
     create_resp = client.table("backlot_project_members").insert(member_data).execute()
@@ -445,7 +465,12 @@ async def update_member(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     update_data = {}
@@ -481,7 +506,12 @@ async def remove_member(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     # Get member to check if they're the owner
@@ -523,7 +553,12 @@ async def assign_role(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage roles")
 
     # Validate role
@@ -583,7 +618,12 @@ async def remove_role(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage roles")
 
     client.table("backlot_project_roles").delete().eq(
@@ -608,7 +648,12 @@ async def list_view_profiles(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to view profiles")
 
     profiles_resp = client.table("backlot_project_view_profiles").select("*").eq(
@@ -653,7 +698,12 @@ async def update_view_profile(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage profiles")
 
     # Validate role
@@ -685,7 +735,7 @@ async def update_view_profile(
             "project_id": project_id,
             "backlot_role": role,
             "is_default": True,
-            "created_by_user_id": user["id"],
+            "created_by_user_id": profile_id,
         })
         create_resp = client.table("backlot_project_view_profiles").insert(profile_data).execute()
         if not create_resp.data:
@@ -705,7 +755,12 @@ async def delete_view_profile(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage profiles")
 
     client.table("backlot_project_view_profiles").delete().eq(
@@ -730,7 +785,12 @@ async def list_overrides(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to view overrides")
 
     # Get overrides without profile join (avoid PostgREST schema cache issues)
@@ -776,8 +836,13 @@ async def get_user_override(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
     # Users can view their own override, admins can view any
-    if user_id != user["id"] and not await can_manage_access(project_id, user["id"]):
+    if user_id != profile_id and not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Get override without profile join (avoid PostgREST schema cache issues)
@@ -818,7 +883,12 @@ async def update_user_override(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage overrides")
 
     # Check if override exists
@@ -860,7 +930,12 @@ async def delete_user_override(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage overrides")
 
     client.table("backlot_project_view_overrides").delete().eq(
@@ -884,7 +959,12 @@ async def get_my_effective_config(
     """
     user = await get_current_user_from_token(authorization)
 
-    config = await get_effective_view_config(project_id, user["id"])
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    config = await get_effective_view_config(project_id, profile_id)
 
     return EffectiveConfig(
         role=config.get("role", "crew"),
@@ -906,7 +986,12 @@ async def get_user_effective_config(
     """
     user = await get_current_user_from_token(authorization)
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="Access denied")
 
     config = await get_effective_view_config(project_id, user_id)
@@ -1163,7 +1248,12 @@ async def add_member_from_contact(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    if not await can_manage_access(project_id, user["id"]):
+    # Convert Cognito user ID to profile ID for permission check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    if not await can_manage_access(project_id, profile_id):
         raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
 
     # Get the contact

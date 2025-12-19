@@ -51,11 +51,16 @@ import {
   DollarSign,
   FileText,
   Image as ImageIcon,
+  Clock,
+  Banknote,
+  ThumbsUp,
+  ThumbsDown,
+  Send,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { api } from '@/lib/api';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 import {
   useReceipts,
   useReceipt,
@@ -70,6 +75,10 @@ import {
   useBudgetLineItems,
   useBudgetCategories,
   useDailyBudgets,
+  useSubmitForReimbursement,
+  useApproveReimbursement,
+  useRejectReimbursement,
+  useMarkReimbursed,
 } from '@/hooks/backlot';
 import {
   BacklotReceipt,
@@ -132,19 +141,67 @@ const PAYMENT_METHOD_LABELS: Record<BacklotPaymentMethod, string> = {
   petty_cash: 'Petty Cash',
 };
 
+// Reimbursement Status Badge
+const getReimbursementStatusBadge = (status: BacklotReimbursementStatus) => {
+  const styles: Record<BacklotReimbursementStatus, { style: string; label: string; icon: React.ReactNode }> = {
+    not_applicable: {
+      style: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+      label: 'No Reimbursement',
+      icon: null,
+    },
+    pending: {
+      style: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+      label: 'Pending',
+      icon: <Clock className="w-3 h-3" />,
+    },
+    approved: {
+      style: 'bg-green-500/20 text-green-400 border-green-500/30',
+      label: 'Approved',
+      icon: <ThumbsUp className="w-3 h-3" />,
+    },
+    reimbursed: {
+      style: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      label: 'Reimbursed',
+      icon: <Banknote className="w-3 h-3" />,
+    },
+  };
+  return styles[status];
+};
+
 // Receipt Card
 const ReceiptCard: React.FC<{
   receipt: BacklotReceipt;
   currency: string;
   canEdit: boolean;
+  isManager: boolean;
   onView: (receipt: BacklotReceipt) => void;
   onEdit: (receipt: BacklotReceipt) => void;
   onMap: (receipt: BacklotReceipt) => void;
   onVerify: (receipt: BacklotReceipt) => void;
   onReprocess: (receipt: BacklotReceipt) => void;
   onDelete: (receipt: BacklotReceipt) => void;
-}> = ({ receipt, currency, canEdit, onView, onEdit, onMap, onVerify, onReprocess, onDelete }) => {
+  onSubmitReimbursement: (receipt: BacklotReceipt) => void;
+  onApproveReimbursement: (receipt: BacklotReceipt) => void;
+  onRejectReimbursement: (receipt: BacklotReceipt) => void;
+  onMarkReimbursed: (receipt: BacklotReceipt) => void;
+}> = ({
+  receipt,
+  currency,
+  canEdit,
+  isManager,
+  onView,
+  onEdit,
+  onMap,
+  onVerify,
+  onReprocess,
+  onDelete,
+  onSubmitReimbursement,
+  onApproveReimbursement,
+  onRejectReimbursement,
+  onMarkReimbursed,
+}) => {
   const ocrStatus = getOcrStatusBadge(receipt.ocr_status);
+  const reimbursementStatus = getReimbursementStatusBadge(receipt.reimbursement_status);
   const isImage = receipt.file_type?.startsWith('image/');
 
   return (
@@ -232,6 +289,16 @@ const ReceiptCard: React.FC<{
           )}
         </div>
 
+        {/* Reimbursement Status */}
+        {receipt.reimbursement_status !== 'not_applicable' && (
+          <div className="flex items-center justify-end">
+            <Badge className={`text-xs ${reimbursementStatus.style}`}>
+              {reimbursementStatus.icon}
+              <span className="ml-1">{reimbursementStatus.label}</span>
+            </Badge>
+          </div>
+        )}
+
         {/* Actions */}
         {canEdit && (
           <div className="flex items-center justify-end pt-1">
@@ -264,6 +331,49 @@ const ReceiptCard: React.FC<{
                     Retry OCR
                   </DropdownMenuItem>
                 )}
+
+                {/* Reimbursement Actions */}
+                <DropdownMenuSeparator />
+
+                {/* User can submit for reimbursement if not already submitted */}
+                {receipt.reimbursement_status === 'not_applicable' && receipt.amount && (
+                  <DropdownMenuItem onClick={() => onSubmitReimbursement(receipt)}>
+                    <Send className="w-4 h-4 mr-2" />
+                    Request Reimbursement
+                  </DropdownMenuItem>
+                )}
+
+                {/* Manager approval actions for pending receipts */}
+                {isManager && receipt.reimbursement_status === 'pending' && (
+                  <>
+                    <DropdownMenuItem
+                      className="text-green-400"
+                      onClick={() => onApproveReimbursement(receipt)}
+                    >
+                      <ThumbsUp className="w-4 h-4 mr-2" />
+                      Approve Reimbursement
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-red-400"
+                      onClick={() => onRejectReimbursement(receipt)}
+                    >
+                      <ThumbsDown className="w-4 h-4 mr-2" />
+                      Reject Reimbursement
+                    </DropdownMenuItem>
+                  </>
+                )}
+
+                {/* Manager can mark approved as reimbursed */}
+                {isManager && receipt.reimbursement_status === 'approved' && (
+                  <DropdownMenuItem
+                    className="text-blue-400"
+                    onClick={() => onMarkReimbursed(receipt)}
+                  >
+                    <Banknote className="w-4 h-4 mr-2" />
+                    Mark as Reimbursed
+                  </DropdownMenuItem>
+                )}
+
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-red-400"
@@ -423,6 +533,16 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   const deleteReceipt = useDeleteReceipt();
   const exportReceipts = useExportReceipts();
 
+  // Reimbursement hooks
+  const submitReimbursement = useSubmitForReimbursement(projectId);
+  const approveReimbursement = useApproveReimbursement(projectId);
+  const rejectReimbursement = useRejectReimbursement(projectId);
+  const markReimbursed = useMarkReimbursed(projectId);
+
+  // For now, treat canEdit as isManager for approval actions
+  // In a real app, this would check the user's role
+  const isManager = canEdit;
+
   // Modal states
   const [showUpload, setShowUpload] = useState(false);
   const [viewingReceipt, setViewingReceipt] = useState<BacklotReceipt | null>(null);
@@ -537,6 +657,40 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  // Reimbursement handlers
+  const handleSubmitReimbursement = async (receipt: BacklotReceipt) => {
+    try {
+      await submitReimbursement.mutateAsync({ receiptId: receipt.id });
+    } catch (err) {
+      console.error('Failed to submit for reimbursement:', err);
+    }
+  };
+
+  const handleApproveReimbursement = async (receipt: BacklotReceipt) => {
+    try {
+      await approveReimbursement.mutateAsync(receipt.id);
+    } catch (err) {
+      console.error('Failed to approve reimbursement:', err);
+    }
+  };
+
+  const handleRejectReimbursement = async (receipt: BacklotReceipt) => {
+    const reason = prompt('Enter rejection reason (optional):');
+    try {
+      await rejectReimbursement.mutateAsync({ receiptId: receipt.id, reason: reason || undefined });
+    } catch (err) {
+      console.error('Failed to reject reimbursement:', err);
+    }
+  };
+
+  const handleMarkReimbursed = async (receipt: BacklotReceipt) => {
+    try {
+      await markReimbursed.mutateAsync(receipt.id);
+    } catch (err) {
+      console.error('Failed to mark as reimbursed:', err);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -648,6 +802,26 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
             <SelectItem value="false">Unverified</SelectItem>
           </SelectContent>
         </Select>
+        <Select
+          value={filters.reimbursement_status || 'all'}
+          onValueChange={(v) =>
+            setFilters({
+              ...filters,
+              reimbursement_status: v === 'all' ? undefined : (v as BacklotReimbursementStatus),
+            })
+          }
+        >
+          <SelectTrigger className="w-[170px]">
+            <SelectValue placeholder="Reimbursement" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Reimbursement</SelectItem>
+            <SelectItem value="pending">Pending Approval</SelectItem>
+            <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="reimbursed">Reimbursed</SelectItem>
+            <SelectItem value="not_applicable">No Reimbursement</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {/* Receipts Grid */}
@@ -659,12 +833,17 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
               receipt={receipt}
               currency={currency}
               canEdit={canEdit}
+              isManager={isManager}
               onView={setViewingReceipt}
               onEdit={handleEditReceipt}
               onMap={handleMapReceipt}
               onVerify={handleVerify}
               onReprocess={handleReprocess}
               onDelete={handleDelete}
+              onSubmitReimbursement={handleSubmitReimbursement}
+              onApproveReimbursement={handleApproveReimbursement}
+              onRejectReimbursement={handleRejectReimbursement}
+              onMarkReimbursed={handleMarkReimbursed}
             />
           ))}
         </div>

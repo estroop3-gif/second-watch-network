@@ -550,10 +550,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const { data: allBudgets } = useProjectBudgets(projectId);
   const [selectedBudgetId, setSelectedBudgetId] = useState<string | null>(null);
 
-  // Use selected budget or first available
+  // Use selected budget or first available - fallback to allBudgets if budget is null
   const activeBudget = selectedBudgetId
     ? allBudgets?.find((b) => b.id === selectedBudgetId) || budget
-    : budget;
+    : (budget || allBudgets?.[0] || null);
 
   const createBudget = useCreateBudget();
   const updateBudget = useUpdateBudget();
@@ -895,8 +895,8 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     );
   }
 
-  // No budget yet - show create prompt
-  if (!budget) {
+  // No budget yet - show create prompt (check activeBudget which includes allBudgets fallback)
+  if (!activeBudget) {
     return (
       <div className="space-y-6">
         <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">

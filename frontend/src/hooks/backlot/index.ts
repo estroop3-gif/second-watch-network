@@ -35,18 +35,28 @@ export {
   // Scenes & Locations
   useCallSheetScenes,
   useCallSheetLocations,
-  // PDF & Sync
+  // PDF, Excel & Sync
   useGenerateCallSheetPdf,
   useDownloadCallSheetPdf,
+  useDownloadCallSheetExcel,
   useSetProjectLogo,
   useSyncCallSheet,
   // Templates (account-level)
   useCallSheetTemplates,
   useCallSheetFullData,
+  // Comments
+  useCallSheetComments,
+  // Version History
+  useCallSheetVersions,
+  // Share Links
+  useCallSheetShares,
+  usePublicCallSheet,
 } from './useSchedule';
 export type {
   BacklotSavedCallSheetTemplate,
   CallSheetFullData,
+  CallSheetShare,
+  CreateShareInput,
 } from './useSchedule';
 
 // Tasks
@@ -142,6 +152,11 @@ export {
   useVerifyReceipt,
   useDeleteReceipt,
   useExportReceipts,
+  // Receipt Reimbursements
+  useSubmitForReimbursement,
+  useApproveReimbursement,
+  useRejectReimbursement,
+  useMarkReimbursed,
   // Professional Budget Templates & Top Sheet
   useBudgetTemplateTypes,
   useBudgetTemplateAccounts,
@@ -476,6 +491,8 @@ export {
   useCreateTimecard,
   useUpsertTimecardEntry,
   useDeleteTimecardEntry,
+  useImportCheckinsToTimecard,
+  useTimecardPreview,
   useSubmitTimecard,
   useApproveTimecard,
   useRejectTimecard,
@@ -493,6 +510,10 @@ export type {
   TimecardListItem,
   TimecardSummary as TimecardSummaryStats,
   CreateEntryData,
+  ImportCheckinsResponse,
+  TimecardWarning,
+  TimecardPreviewEntry,
+  TimecardPreview,
 } from './useTimecards';
 
 // Camera & Continuity Tools
@@ -550,6 +571,8 @@ export {
   // Crew Check-in
   useSessionByToken,
   usePerformCheckin,
+  usePerformCheckout,
+  useMyCheckins,
   // Personal Notes
   useMyNotes,
   useCreateNote,
@@ -570,9 +593,70 @@ export type {
   SunWeatherData,
   CheckinSession,
   CheckinRecord,
+  PerformCheckoutInput,
+  MyCheckinRecord,
   UserNote,
   UserBookmark,
 } from './useUtilities';
+
+// Expenses (Mileage, Kit Rentals, Per Diem)
+export {
+  // Mileage
+  useMileageEntries,
+  useCreateMileage,
+  useUpdateMileage,
+  useDeleteMileage,
+  useApproveMileage,
+  useRejectMileage,
+  useMarkMileageReimbursed,
+  // Kit Rentals
+  useKitRentals,
+  useCreateKitRental,
+  useUpdateKitRental,
+  useDeleteKitRental,
+  useApproveKitRental,
+  useRejectKitRental,
+  useCompleteKitRental,
+  useMarkKitRentalReimbursed,
+  // Per Diem
+  usePerDiemEntries,
+  useClaimPerDiem,
+  useBulkClaimPerDiem,
+  useDeletePerDiem,
+  useApprovePerDiem,
+  useRejectPerDiem,
+  useMarkPerDiemReimbursed,
+  // Settings
+  useExpenseSettings,
+  useUpdateExpenseSettings,
+  // Summary
+  useExpenseSummary,
+  // Constants
+  MILEAGE_PURPOSE_OPTIONS,
+  MEAL_TYPE_OPTIONS,
+  RENTAL_TYPE_OPTIONS,
+  EXPENSE_STATUS_CONFIG,
+  formatCurrency,
+  calculateMileageTotal,
+} from './useExpenses';
+export type {
+  MileageEntry,
+  CreateMileageData,
+  UpdateMileageData,
+  MileageFilters,
+  KitRental,
+  CreateKitRentalData,
+  UpdateKitRentalData,
+  KitRentalFilters,
+  PerDiemEntry,
+  CreatePerDiemData,
+  BulkPerDiemData,
+  PerDiemFilters,
+  ExpenseSettings,
+  UpdateExpenseSettingsData,
+  ExpenseSummary,
+  ExpenseSummaryFilters,
+} from './useExpenses';
 
 // Scripty Workspace (Script Supervisor Continuity)
 export {

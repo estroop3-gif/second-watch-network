@@ -1,0 +1,15 @@
+# AWS SAM Configuration for Second Watch Network API
+# Run: sam deploy --guided (first time) or sam deploy (subsequent times)
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "second-watch-network-api"
+region = "us-east-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+disable_rollback = false
+image_repositories = []
+
+# Parameter overrides - update these values before deploying
+# parameter_overrides = "DatabaseUrl=postgresql://... CognitoUserPoolId=us-east-1_xxx ..."

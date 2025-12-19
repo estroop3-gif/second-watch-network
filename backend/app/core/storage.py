@@ -19,8 +19,6 @@ from app.core.config import settings
 
 # AWS Configuration
 AWS_REGION = getattr(settings, 'AWS_REGION', None) or os.getenv('AWS_REGION', 'us-east-1')
-AWS_ACCESS_KEY_ID = getattr(settings, 'AWS_ACCESS_KEY_ID', None) or os.getenv('AWS_ACCESS_KEY_ID')
-AWS_SECRET_ACCESS_KEY = getattr(settings, 'AWS_SECRET_ACCESS_KEY', None) or os.getenv('AWS_SECRET_ACCESS_KEY')
 
 # S3 Bucket names
 AVATARS_BUCKET = os.getenv('AWS_S3_AVATARS_BUCKET', 'swn-avatars-517220555400')
@@ -41,12 +39,14 @@ s3_config = Config(
     retries={'max_attempts': 3, 'mode': 'standard'}
 )
 
-# Create S3 client
+# Always use boto3's default credential chain - this properly handles:
+# - Lambda execution role (includes AWS_SESSION_TOKEN for presigned URLs)
+# - EC2 instance profile
+# - Local ~/.aws/credentials or environment variables
+# - ECS task role, etc.
 s3_client = boto3.client(
     's3',
     region_name=AWS_REGION,
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
     config=s3_config
 )
 

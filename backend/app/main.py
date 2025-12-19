@@ -2,10 +2,12 @@
 Second Watch Network - FastAPI Backend
 Main Application Entry Point
 """
+import logging
+import traceback
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.startup import on_startup
@@ -14,10 +16,14 @@ from app.api import (
     profiles, submissions, notifications, connections,
     admin, availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
-    camera_continuity, continuity, utilities, billing,
+    camera_continuity, continuity, utilities, billing, expenses,
     church_services, church_people, church_content, church_planning,
-    church_resources, church_readiness
+    church_resources, church_readiness, cast_crew
 )
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class CORSPreflightMiddleware(BaseHTTPMiddleware):
@@ -68,6 +74,24 @@ app.add_middleware(
 )
 
 
+# Global exception handler to ensure CORS headers and logging
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle all unhandled exceptions with proper logging and CORS headers."""
+    print(f"[ERROR] Unhandled exception on {request.method} {request.url.path}: {str(exc)}", flush=True)
+    print(traceback.format_exc(), flush=True)
+
+    origin = request.headers.get("origin", "*")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+
 # Health check endpoint
 @app.get("/")
 async def root():
@@ -109,7 +133,9 @@ app.include_router(scene_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot"
 app.include_router(day_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Day View"])
 app.include_router(person_view.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Person View"])
 app.include_router(timecards.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Timecards"])
+app.include_router(expenses.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Expenses"])
 app.include_router(project_access.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Project Access"])
+app.include_router(cast_crew.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Cast & Crew"])
 app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory", tags=["Directory"])
 
 # Camera & Continuity and Utilities

@@ -3,7 +3,7 @@
  * Uses the backend API for managing Order profile visibility settings
  */
 
-import { api } from '@/lib/api';
+import { api, safeStorage } from '@/lib/api';
 import {
   OrderProfileSettings,
   OrderProfileSettingsUpdate,
@@ -72,7 +72,7 @@ export async function canViewOrderSection(
   const token = api.getToken();
 
   // Get current user's profile ID to check if it's their own profile
-  const currentProfileId = localStorage.getItem('profile_id');
+  const currentProfileId = safeStorage.getItem('profile_id');
 
   // Owner can always see their own section
   if (currentProfileId === targetUserId) {

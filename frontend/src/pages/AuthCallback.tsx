@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api } from '@/lib/api';
+import { api, safeStorage } from '@/lib/api';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -63,7 +63,7 @@ const AuthCallback = () => {
 
       // 3) Try to refresh token to get latest claims
       try {
-        const refreshToken = localStorage.getItem('refresh_token');
+        const refreshToken = safeStorage.getItem('refresh_token');
         if (refreshToken) {
           await api.refreshToken(refreshToken);
         }

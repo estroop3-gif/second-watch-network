@@ -1,8 +1,10 @@
 import { useAuth } from '@/context/AuthContext';
+import { useEnrichedProfileSafe } from '@/context/EnrichedProfileContext';
 import { PERMISSIONS, requirePerm, listPermissionsForRoles, PermKey } from '@/lib/permissions';
 
 export const usePermissions = () => {
   const { session, loading: authLoading } = useAuth();
+  const enrichedProfile = useEnrichedProfileSafe();
 
   const rolesFromMeta = (session?.user?.user_metadata?.roles as string[]) || [];
   const legacyRole = session?.user?.user_metadata?.role as string | undefined;
@@ -12,6 +14,19 @@ export const usePermissions = () => {
   if (legacyRole && !userRolesSet.has(legacyRole)) {
     userRolesSet.add(legacyRole);
   }
+
+  // Also add roles from the database profile
+  if (enrichedProfile.profile) {
+    if (enrichedProfile.isSuperadmin) userRolesSet.add('superadmin');
+    if (enrichedProfile.isAdmin) userRolesSet.add('admin');
+    if (enrichedProfile.isPremium) userRolesSet.add('premium');
+    if (enrichedProfile.isFilmmaker) userRolesSet.add('filmmaker');
+    if (enrichedProfile.isPartner) userRolesSet.add('partner');
+    if (enrichedProfile.isOrderMember) userRolesSet.add('order_member');
+    if (enrichedProfile.isLodgeOfficer) userRolesSet.add('lodge_officer');
+    if (enrichedProfile.isModerator) userRolesSet.add('moderator');
+  }
+
   const roles = Array.from(userRolesSet);
 
   const hasRole = (role: string): boolean => {

@@ -5,6 +5,7 @@ Replaces Supabase client with SQLAlchemy for direct PostgreSQL access.
 """
 
 import os
+import json
 from typing import Generator
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -64,13 +65,39 @@ def get_db_session() -> Generator[Session, None, None]:
         db.close()
 
 
+def _convert_row(row_dict: dict) -> dict:
+    """
+    Convert database row values to JSON-serializable types.
+    - UUID -> str
+    - Decimal -> float
+    - datetime -> ISO string
+    """
+    from uuid import UUID
+    from decimal import Decimal
+    from datetime import datetime, date
+
+    converted = {}
+    for key, value in row_dict.items():
+        if isinstance(value, UUID):
+            converted[key] = str(value)
+        elif isinstance(value, Decimal):
+            converted[key] = float(value)
+        elif isinstance(value, datetime):
+            converted[key] = value.isoformat()
+        elif isinstance(value, date):
+            converted[key] = value.isoformat()
+        else:
+            converted[key] = value
+    return converted
+
+
 def execute_query(query: str, params: dict = None) -> list:
     """
     Execute a raw SQL query and return results.
     """
     with get_db_session() as db:
         result = db.execute(text(query), params or {})
-        return [dict(row._mapping) for row in result.fetchall()]
+        return [_convert_row(dict(row._mapping)) for row in result.fetchall()]
 
 
 def execute_single(query: str, params: dict = None) -> dict:
@@ -80,7 +107,7 @@ def execute_single(query: str, params: dict = None) -> dict:
     with get_db_session() as db:
         result = db.execute(text(query), params or {})
         row = result.fetchone()
-        return dict(row._mapping) if row else None
+        return _convert_row(dict(row._mapping)) if row else None
 
 
 def execute_insert(query: str, params: dict = None) -> dict:
@@ -91,7 +118,7 @@ def execute_insert(query: str, params: dict = None) -> dict:
         result = db.execute(text(query), params or {})
         db.commit()
         row = result.fetchone()
-        return dict(row._mapping) if row else None
+        return _convert_row(dict(row._mapping)) if row else None
 
 
 def execute_update(query: str, params: dict = None) -> int:
@@ -132,6 +159,7 @@ class DatabaseTable:
     """
     Provides Supabase-like query interface for easier migration.
     Usage: db.table("users").select("*").eq("id", user_id).execute()
+    Supports Supabase-style embedded joins: select("*, profile:user_id(name, email)")
     """
 
     def __init__(self, table_name: str):
@@ -144,9 +172,38 @@ class DatabaseTable:
         self._offset = None
         self._single = False
         self._count_mode = None
+        self._embedded_joins = []  # List of (alias, foreign_key_or_table, columns)
+
+    def _parse_select_columns(self, columns: str):
+        """
+        Parse Supabase-style select string and extract embedded joins.
+        Format: "*, alias:foreign_key(col1, col2)" or "*, alias:table_name(col1, col2)"
+        """
+        import re
+        self._embedded_joins = []
+
+        # Pattern to match embedded joins: alias:table_or_fk(columns)
+        pattern = r'(\w+):(\w+)\(([^)]+)\)'
+
+        # Find all embedded joins
+        for match in re.finditer(pattern, columns):
+            alias = match.group(1)
+            fk_or_table = match.group(2)
+            cols = match.group(3)
+            self._embedded_joins.append((alias, fk_or_table, cols.strip()))
+
+        # Remove embedded joins from the select columns
+        clean_cols = re.sub(pattern, '', columns)
+        # Clean up extra commas and whitespace
+        clean_cols = re.sub(r',\s*,', ',', clean_cols)
+        clean_cols = re.sub(r',\s*$', '', clean_cols)
+        clean_cols = re.sub(r'^\s*,', '', clean_cols)
+        clean_cols = clean_cols.strip()
+
+        return clean_cols if clean_cols else "*"
 
     def select(self, columns: str = "*", count: str = None):
-        self._select_cols = columns
+        self._select_cols = self._parse_select_columns(columns)
         self._count_mode = count  # "exact" for Supabase compatibility
         return self
 
@@ -236,6 +293,77 @@ class DatabaseTable:
 
         return query, params
 
+    def _resolve_embedded_joins(self, results: list) -> list:
+        """
+        Fetch related data for embedded joins and attach to results.
+        Supports format: alias:foreign_key(columns) where foreign_key ends with _id
+        """
+        if not self._embedded_joins or not results:
+            return results
+
+        for alias, fk_or_table, cols in self._embedded_joins:
+            # Determine the foreign key column and target table
+            if fk_or_table.endswith("_id"):
+                # foreign_key pattern: profile:user_id(name) -> profiles table via user_id column
+                fk_column = fk_or_table
+                # Derive table name from foreign key (user_id -> users, profile_id -> profiles)
+                # Common patterns in this codebase
+                if fk_column == "user_id":
+                    target_table = "profiles"
+                elif fk_column == "call_sheet_id":
+                    target_table = "backlot_call_sheets"
+                elif fk_column == "task_list_id":
+                    target_table = "backlot_task_lists"
+                elif fk_column == "timecard_id":
+                    target_table = "backlot_timecards"
+                elif fk_column == "label_id":
+                    target_table = "backlot_task_labels"
+                elif fk_column == "created_by":
+                    target_table = "profiles"
+                    fk_column = "created_by"
+                elif fk_column == "assigned_to":
+                    target_table = "profiles"
+                    fk_column = "assigned_to"
+                else:
+                    # Generic: remove _id suffix and pluralize
+                    base = fk_column.replace("_id", "")
+                    target_table = base + "s" if not base.endswith("s") else base
+            else:
+                # Direct table reference: profile:profiles(name)
+                target_table = fk_or_table
+                fk_column = fk_or_table + "_id"  # Assume standard FK naming
+
+            # Collect all foreign key values
+            fk_values = list(set(
+                str(r.get(fk_column)) for r in results
+                if r.get(fk_column) is not None
+            ))
+
+            if not fk_values:
+                # No FK values, set all to empty dict
+                for r in results:
+                    r[alias] = None
+                continue
+
+            # Fetch related records
+            related_query = f"SELECT id, {cols} FROM {target_table} WHERE id IN :ids"
+            try:
+                related_results = execute_query(related_query, {"ids": tuple(fk_values)})
+                related_by_id = {str(rr["id"]): rr for rr in related_results}
+            except Exception as e:
+                # If query fails, set alias to None
+                print(f"Warning: embedded join for {alias} failed: {e}")
+                for r in results:
+                    r[alias] = None
+                continue
+
+            # Attach related data to results
+            for r in results:
+                fk_val = str(r.get(fk_column, ""))
+                r[alias] = related_by_id.get(fk_val)
+
+        return results
+
     def execute(self):
         query, params = self._build_query()
 
@@ -258,13 +386,18 @@ class DatabaseTable:
             count_result = execute_single(count_query, params)
             count_value = count_result["cnt"] if count_result else 0
             results = execute_query(query, params)
+            results = self._resolve_embedded_joins(results)
             return type('Response', (), {'data': results, 'error': None, 'count': count_value})()
 
         if self._single:
             result = execute_single(query, params)
+            if result and self._embedded_joins:
+                results = self._resolve_embedded_joins([result])
+                result = results[0] if results else None
             return type('Response', (), {'data': result, 'error': None, 'count': None})()
         else:
             results = execute_query(query, params)
+            results = self._resolve_embedded_joins(results)
             return type('Response', (), {'data': results, 'error': None, 'count': None})()
 
     def single(self):
@@ -287,13 +420,21 @@ class DatabaseInsertBuilder:
         self.data = data if isinstance(data, list) else [data]
         self._returning = "*"
 
+    def _serialize_value(self, value):
+        """Convert dict/list to JSON string for PostgreSQL."""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
     def execute(self):
         results = []
         for row in self.data:
-            columns = ", ".join(row.keys())
-            placeholders = ", ".join([f":{k}" for k in row.keys()])
+            # Serialize any dict/list values to JSON
+            serialized_row = {k: self._serialize_value(v) for k, v in row.items()}
+            columns = ", ".join(serialized_row.keys())
+            placeholders = ", ".join([f":{k}" for k in serialized_row.keys()])
             query = f"INSERT INTO {self.table_name} ({columns}) VALUES ({placeholders}) RETURNING {self._returning}"
-            result = execute_insert(query, row)
+            result = execute_insert(query, serialized_row)
             if result:
                 results.append(result)
         return type('Response', (), {'data': results, 'error': None})()
@@ -308,6 +449,12 @@ class DatabaseUpdateBuilder:
         self._filters = []
         self._returning = "*"
 
+    def _serialize_value(self, value):
+        """Convert dict/list to JSON string for PostgreSQL."""
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
     def eq(self, column: str, value):
         self._filters.append((column, "=", value))
         return self
@@ -321,7 +468,7 @@ class DatabaseUpdateBuilder:
             raise ValueError("UPDATE requires at least one filter (eq, neq, etc.)")
 
         set_clause = ", ".join([f"{k} = :set_{k}" for k in self.data.keys()])
-        params = {f"set_{k}": v for k, v in self.data.items()}
+        params = {f"set_{k}": self._serialize_value(v) for k, v in self.data.items()}
 
         conditions = []
         for i, (col, op, val) in enumerate(self._filters):
@@ -335,7 +482,7 @@ class DatabaseUpdateBuilder:
         with get_db_session() as db:
             result = db.execute(text(query), params)
             db.commit()
-            rows = [dict(row._mapping) for row in result.fetchall()]
+            rows = [_convert_row(dict(row._mapping)) for row in result.fetchall()]
             return type('Response', (), {'data': rows, 'error': None})()
 
 

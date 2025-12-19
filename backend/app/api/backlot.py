@@ -5,18 +5,26 @@ Handles AI co-pilot chat, call sheet distribution, and other Backlot-specific fu
 from fastapi import APIRouter, HTTPException, Depends, Header, File, UploadFile, Form, Body, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
-from datetime import datetime
+from datetime import datetime, timezone
 from app.services.ai_service import get_ai_response
 from app.services.email_service import (
     EmailService,
     generate_call_sheet_email_html,
     generate_call_sheet_text
 )
-from app.services.pdf_service import generate_call_sheet_pdf
+from app.services.pdf_service import generate_call_sheet_pdf as create_call_sheet_pdf
 from app.services.breakdown_pdf_service import (
     generate_breakdown_pdf,
     generate_project_breakdown_pdf,
 )
+
+# Excel export is optional - only available if openpyxl is installed
+try:
+    from app.services.excel_service import generate_call_sheet_excel
+    EXCEL_EXPORT_AVAILABLE = True
+except ImportError:
+    EXCEL_EXPORT_AVAILABLE = False
+    generate_call_sheet_excel = None
 from fastapi.responses import Response
 import uuid
 import re
@@ -24,6 +32,8 @@ import os
 import json
 import tempfile
 import requests
+import secrets
+import hashlib
 from pypdf import PdfReader
 from app.core.database import get_client, execute_single, execute_query
 from app.core.config import settings
@@ -615,7 +625,9 @@ class CallSheetSendHistory(BaseModel):
 # =====================================================
 
 async def get_current_user_from_token(authorization: str = Header(None)) -> Dict[str, Any]:
-    """Extract and validate user from Bearer token using AWS Cognito"""
+    """Extract and validate user from Bearer token using AWS Cognito.
+    Returns the profile ID (not Cognito ID) for database lookups.
+    """
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
@@ -626,7 +638,16 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         user = CognitoAuth.verify_token(token)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid token")
-        return {"id": user.get("id"), "email": user.get("email")}
+
+        cognito_id = user.get("id")
+        email = user.get("email")
+
+        # Convert Cognito ID to profile ID for database lookups
+        profile_id = get_profile_id_from_cognito_id(cognito_id)
+        if not profile_id:
+            raise HTTPException(status_code=401, detail="User profile not found")
+
+        return {"id": profile_id, "cognito_id": cognito_id, "email": email}
     except HTTPException:
         raise
     except Exception as e:
@@ -981,36 +1002,62 @@ async def get_call_sheet_send_history(
     """Get send history for a call sheet"""
     # Authenticate user
     current_user = await get_current_user_from_token(authorization)
-    user_id = current_user["id"]
+    cognito_user_id = current_user["id"]
 
-    client = get_client()
+    # Resolve profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
 
     # Get call sheet to verify access
-    sheet_response = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    sheet_result = execute_single(
+        "SELECT project_id FROM backlot_call_sheets WHERE id = :call_sheet_id",
+        {"call_sheet_id": call_sheet_id}
+    )
 
-    if not sheet_response.data:
+    if not sheet_result:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
-    project_id = sheet_response.data[0]["project_id"]
+    project_id = sheet_result["project_id"]
 
-    # Verify access
-    await verify_project_access(client, project_id, user_id)
+    # Verify access - check if owner or member
+    project_result = execute_single(
+        "SELECT owner_id FROM backlot_projects WHERE id = :project_id",
+        {"project_id": str(project_id)}
+    )
+    if not project_result:
+        raise HTTPException(status_code=404, detail="Project not found")
 
-    # Get send history - use simple query without foreign key embedding
-    history_response = client.table("backlot_call_sheet_send_history").select("*").eq("call_sheet_id", call_sheet_id).order("sent_at", desc=True).execute()
+    is_owner = str(project_result.get("owner_id")) == profile_id
+    if not is_owner:
+        member_result = execute_single(
+            "SELECT role FROM backlot_project_members WHERE project_id = :project_id AND user_id = :user_id",
+            {"project_id": str(project_id), "user_id": profile_id}
+        )
+        if not member_result:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get send history with sender name using SQLAlchemy
+    history = execute_query(
+        """
+        SELECT h.*, p.full_name, p.display_name
+        FROM backlot_call_sheet_send_history h
+        LEFT JOIN profiles p ON h.sent_by_user_id = p.id
+        WHERE h.call_sheet_id = :call_sheet_id
+        ORDER BY h.sent_at DESC
+        """,
+        {"call_sheet_id": call_sheet_id}
+    )
 
     result = []
-    for record in history_response.data or []:
-        profile = record.get("profiles")
-        sent_by_name = None
-        if profile:
-            sent_by_name = profile.get("display_name") or profile.get("full_name")
+    for record in history or []:
+        sent_by_name = record.get("display_name") or record.get("full_name")
 
         result.append(CallSheetSendHistory(
-            id=record["id"],
-            sent_at=record["sent_at"],
+            id=str(record["id"]),
+            sent_at=str(record["sent_at"]) if record.get("sent_at") else None,
             sent_by_name=sent_by_name,
-            channel=record["channel"],
+            channel=record.get("channel", "email"),
             recipient_count=record.get("recipient_count", 0),
             emails_sent=record.get("emails_sent", 0),
             notifications_sent=record.get("notifications_sent", 0),
@@ -1035,15 +1082,26 @@ async def get_project_members_for_send(
     # Verify access
     project = await verify_project_access(client, project_id, user_id)
 
-    # Get all project members with profiles
-    members_response = client.table("backlot_project_members").select("*, profiles:user_id(id, email, full_name, display_name, avatar_url)").eq("project_id", project_id).execute()
+    # Get all project members
+    members_response = client.table("backlot_project_members").select("*").eq("project_id", project_id).execute()
+
+    # Get user profiles for all members
+    user_ids = [m["user_id"] for m in (members_response.data or []) if m.get("user_id")]
+    user_ids.append(str(project["owner_id"]))  # Include owner
+    user_ids = list(set(user_ids))  # Deduplicate
+
+    profiles_map = {}
+    if user_ids:
+        profiles_response = client.table("profiles").select("id, email, full_name, display_name, avatar_url").in_("id", user_ids).execute()
+        for p in (profiles_response.data or []):
+            profiles_map[str(p["id"])] = p
 
     result = []
 
     # Add owner
-    owner_response = client.table("profiles").select("id, email, full_name, display_name, avatar_url").eq("id", project["owner_id"]).execute()
-    if owner_response.data:
-        owner = owner_response.data[0]
+    owner_id = str(project["owner_id"])
+    owner = profiles_map.get(owner_id)
+    if owner:
         result.append({
             "user_id": owner["id"],
             "name": owner.get("display_name") or owner.get("full_name") or owner.get("email"),
@@ -1055,8 +1113,9 @@ async def get_project_members_for_send(
 
     # Add members
     for member in members_response.data or []:
-        profile = member.get("profiles")
-        if profile and profile["id"] != project["owner_id"]:
+        member_user_id = str(member.get("user_id", ""))
+        profile = profiles_map.get(member_user_id)
+        if profile and member_user_id != owner_id:
             result.append({
                 "user_id": profile["id"],
                 "name": profile.get("display_name") or profile.get("full_name") or profile.get("email"),
@@ -1229,6 +1288,905 @@ class CallSheetCloneInput(BaseModel):
     keep_locations: bool = True  # Clone locations
     keep_schedule_blocks: bool = True  # Clone schedule blocks
     keep_department_notes: bool = True  # Clone department notes
+
+
+class CallSheetCommentInput(BaseModel):
+    """Request body for creating/updating a comment"""
+    content: str
+    parent_comment_id: Optional[str] = None
+    field_reference: Optional[str] = None
+
+
+class CallSheetCommentResponse(BaseModel):
+    """Response for a comment"""
+    id: str
+    call_sheet_id: str
+    parent_comment_id: Optional[str] = None
+    user_id: str
+    content: str
+    field_reference: Optional[str] = None
+    is_resolved: bool = False
+    resolved_by: Optional[str] = None
+    resolved_at: Optional[str] = None
+    created_at: str
+    updated_at: str
+    # Joined user data
+    user_name: Optional[str] = None
+    user_avatar_url: Optional[str] = None
+    replies: Optional[List["CallSheetCommentResponse"]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CallSheetShareInput(BaseModel):
+    """Request body for creating a share link"""
+    name: Optional[str] = None
+    expires_in_days: int = 7
+    password: Optional[str] = None
+    allowed_actions: List[str] = ["view"]
+
+
+class CallSheetShareResponse(BaseModel):
+    """Response for a share link"""
+    id: str
+    call_sheet_id: str
+    share_token: str
+    share_url: str
+    name: Optional[str] = None
+    expires_at: str
+    is_active: bool = True
+    has_password: bool = False
+    view_count: int = 0
+    last_viewed_at: Optional[str] = None
+    allowed_actions: List[str] = ["view"]
+    created_at: str
+    created_by_name: Optional[str] = None
+
+
+# =====================================================
+# Call Sheet Comment Endpoints
+# =====================================================
+
+@router.get("/call-sheets/{call_sheet_id}/comments")
+async def get_call_sheet_comments(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get all comments for a call sheet with user info and nested replies"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access to call sheet
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"])
+
+        # Get all comments
+        comments_result = client.table("backlot_call_sheet_comments").select("*").eq("call_sheet_id", call_sheet_id).order("created_at").execute()
+
+        comments = comments_result.data or []
+
+        # Get user profiles for all comment authors
+        user_ids = list(set(c["user_id"] for c in comments if c.get("user_id")))
+        profiles_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select("id, full_name, display_name, avatar_url").in_("id", user_ids).execute()
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = p
+
+        # Organize into tree structure (top-level and replies)
+        comment_map = {}
+        top_level = []
+
+        for comment in comments:
+            profile = profiles_map.get(str(comment.get("user_id")), {})
+            comment_data = {
+                **comment,
+                "user_name": profile.get("display_name") or profile.get("full_name") or "Unknown",
+                "user_avatar_url": profile.get("avatar_url"),
+                "replies": []
+            }
+            comment_map[comment["id"]] = comment_data
+
+        for comment_id, comment in comment_map.items():
+            if comment.get("parent_comment_id"):
+                parent = comment_map.get(comment["parent_comment_id"])
+                if parent:
+                    parent["replies"].append(comment)
+            else:
+                top_level.append(comment)
+
+        # Count unresolved
+        unresolved_count = sum(1 for c in comments if not c.get("is_resolved") and not c.get("parent_comment_id"))
+
+        return {
+            "comments": top_level,
+            "total": len(comments),
+            "unresolved_count": unresolved_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching comments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/comments")
+async def create_call_sheet_comment(
+    call_sheet_id: str,
+    comment_input: CallSheetCommentInput,
+    authorization: str = Header(None)
+):
+    """Create a new comment on a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"])
+
+        # Get profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        # Create comment
+        comment_data = {
+            "call_sheet_id": call_sheet_id,
+            "user_id": profile_id,
+            "content": comment_input.content,
+            "parent_comment_id": comment_input.parent_comment_id,
+            "field_reference": comment_input.field_reference,
+        }
+
+        result = client.table("backlot_call_sheet_comments").insert(comment_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create comment")
+
+        # Get user info
+        profile = client.table("profiles").select("full_name, display_name, avatar_url").eq("id", profile_id).single().execute()
+
+        comment = result.data[0]
+        comment["user_name"] = profile.data.get("display_name") or profile.data.get("full_name") or "Unknown"
+        comment["user_avatar_url"] = profile.data.get("avatar_url")
+        comment["replies"] = []
+
+        return {"comment": comment}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/call-sheets/{call_sheet_id}/comments/{comment_id}")
+async def update_call_sheet_comment(
+    call_sheet_id: str,
+    comment_id: str,
+    comment_input: CallSheetCommentInput,
+    authorization: str = Header(None)
+):
+    """Update an existing comment (only the author can update)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get comment and verify ownership
+        comment = client.table("backlot_call_sheet_comments").select("*").eq("id", comment_id).single().execute()
+        if not comment.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if str(comment.data["user_id"]) != str(profile_id):
+            raise HTTPException(status_code=403, detail="You can only edit your own comments")
+
+        # Update
+        result = client.table("backlot_call_sheet_comments").update({
+            "content": comment_input.content,
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", comment_id).execute()
+
+        return {"comment": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/call-sheets/{call_sheet_id}/comments/{comment_id}")
+async def delete_call_sheet_comment(
+    call_sheet_id: str,
+    comment_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a comment (author or project admin can delete)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get comment
+        comment = client.table("backlot_call_sheet_comments").select("*, backlot_call_sheets!call_sheet_id(project_id)").eq("id", comment_id).single().execute()
+        if not comment.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        is_author = str(comment.data["user_id"]) == str(profile_id)
+
+        # Check if admin/owner
+        project_id = comment.data.get("backlot_call_sheets", {}).get("project_id")
+        is_admin = False
+        if project_id:
+            project = client.table("backlot_projects").select("owner_id").eq("id", project_id).single().execute()
+            if project.data and str(project.data["owner_id"]) == str(profile_id):
+                is_admin = True
+            else:
+                member = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).single().execute()
+                if member.data and member.data.get("role") in ["owner", "admin"]:
+                    is_admin = True
+
+        if not is_author and not is_admin:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete this comment")
+
+        # Delete comment (will cascade to replies)
+        client.table("backlot_call_sheet_comments").delete().eq("id", comment_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/comments/{comment_id}/resolve")
+async def resolve_call_sheet_comment(
+    call_sheet_id: str,
+    comment_id: str,
+    authorization: str = Header(None)
+):
+    """Mark a comment as resolved (any editor can resolve)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get comment and call sheet
+        comment = client.table("backlot_call_sheet_comments").select("*").eq("id", comment_id).single().execute()
+        if not comment.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).single().execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        # Verify edit access
+        await verify_project_access(client, cs.data["project_id"], user["id"], require_edit=True)
+
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+
+        # Toggle resolved status
+        new_resolved = not comment.data.get("is_resolved", False)
+
+        update_data = {
+            "is_resolved": new_resolved,
+            "resolved_by": profile_id if new_resolved else None,
+            "resolved_at": datetime.utcnow().isoformat() if new_resolved else None,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        result = client.table("backlot_call_sheet_comments").update(update_data).eq("id", comment_id).execute()
+
+        return {"comment": result.data[0] if result.data else None, "is_resolved": new_resolved}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resolving comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Call Sheet Version History Endpoints
+# =====================================================
+
+@router.get("/call-sheets/{call_sheet_id}/versions")
+async def get_call_sheet_versions(
+    call_sheet_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    authorization: str = Header(None)
+):
+    """Get version history for a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        cs = client.table("backlot_call_sheets").select("project_id, current_version").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"])
+
+        # Get versions
+        versions_result = client.table("backlot_call_sheet_versions").select(
+            "id, version_number, changed_fields, change_summary, created_at, created_by_user_id"
+        ).eq("call_sheet_id", call_sheet_id).order("version_number", desc=True).limit(limit).execute()
+
+        # Get creator profiles
+        user_ids = list(set(v["created_by_user_id"] for v in (versions_result.data or []) if v.get("created_by_user_id")))
+        profiles_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select("id, full_name, display_name, avatar_url").in_("id", user_ids).execute()
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = p
+
+        versions = []
+        for v in versions_result.data or []:
+            profile = profiles_map.get(str(v.get("created_by_user_id")), {})
+            versions.append({
+                "id": v["id"],
+                "version_number": v["version_number"],
+                "changed_fields": v.get("changed_fields") or [],
+                "change_summary": v.get("change_summary"),
+                "created_at": v["created_at"],
+                "created_by_name": profile.get("display_name") or profile.get("full_name") or "Unknown",
+                "created_by_avatar_url": profile.get("avatar_url"),
+            })
+
+        return {
+            "versions": versions,
+            "current_version": cs.data[0].get("current_version", 1)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching versions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/call-sheets/{call_sheet_id}/versions/{version_number}")
+async def get_call_sheet_version(
+    call_sheet_id: str,
+    version_number: int,
+    authorization: str = Header(None)
+):
+    """Get a specific version snapshot"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"])
+
+        # Get specific version
+        version = client.table("backlot_call_sheet_versions").select("*").eq("call_sheet_id", call_sheet_id).eq("version_number", version_number).single().execute()
+
+        if not version.data:
+            raise HTTPException(status_code=404, detail=f"Version {version_number} not found")
+
+        return {"version": version.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/revert/{version_number}")
+async def revert_call_sheet_to_version(
+    call_sheet_id: str,
+    version_number: int,
+    authorization: str = Header(None)
+):
+    """Revert a call sheet to a previous version"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access (require edit)
+        cs = client.table("backlot_call_sheets").select("project_id, current_version").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"], require_edit=True)
+
+        # Get the version to revert to
+        version = client.table("backlot_call_sheet_versions").select("snapshot").eq("call_sheet_id", call_sheet_id).eq("version_number", version_number).single().execute()
+
+        if not version.data:
+            raise HTTPException(status_code=404, detail=f"Version {version_number} not found")
+
+        snapshot = version.data.get("snapshot", {})
+        if not snapshot:
+            raise HTTPException(status_code=400, detail="Version snapshot is empty")
+
+        # Get profile ID for tracking
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+
+        # Create a new version with current state before reverting
+        current_cs = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).single().execute()
+        current_version = cs.data[0].get("current_version", 1)
+
+        # Save current state as new version
+        client.table("backlot_call_sheet_versions").insert({
+            "call_sheet_id": call_sheet_id,
+            "version_number": current_version + 1,
+            "snapshot": current_cs.data,
+            "changed_fields": ["reverted"],
+            "change_summary": f"Reverted to version {version_number}",
+            "created_by_user_id": profile_id,
+        }).execute()
+
+        # Apply the snapshot (filter out non-updatable fields)
+        update_fields = {k: v for k, v in snapshot.items() if k not in ["id", "created_at", "project_id"]}
+        update_fields["current_version"] = current_version + 2
+        update_fields["last_modified_by"] = profile_id
+        update_fields["updated_at"] = datetime.utcnow().isoformat()
+
+        result = client.table("backlot_call_sheets").update(update_fields).eq("id", call_sheet_id).execute()
+
+        # Create another version after revert
+        client.table("backlot_call_sheet_versions").insert({
+            "call_sheet_id": call_sheet_id,
+            "version_number": current_version + 2,
+            "snapshot": result.data[0] if result.data else {},
+            "changed_fields": list(update_fields.keys()),
+            "change_summary": f"State after reverting to version {version_number}",
+            "created_by_user_id": profile_id,
+        }).execute()
+
+        return {
+            "success": True,
+            "reverted_to": version_number,
+            "new_version": current_version + 2,
+            "call_sheet": result.data[0] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reverting version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def create_call_sheet_version(client, call_sheet_id: str, call_sheet_data: dict, profile_id: str, changed_fields: list = None, summary: str = None):
+    """Helper function to create a new version snapshot"""
+    try:
+        # Get current version number
+        cs = client.table("backlot_call_sheets").select("current_version").eq("id", call_sheet_id).single().execute()
+        current_version = (cs.data.get("current_version") or 0) if cs.data else 0
+
+        # Create version snapshot
+        client.table("backlot_call_sheet_versions").insert({
+            "call_sheet_id": call_sheet_id,
+            "version_number": current_version + 1,
+            "snapshot": call_sheet_data,
+            "changed_fields": changed_fields or [],
+            "change_summary": summary or "Updated call sheet",
+            "created_by_user_id": profile_id,
+        }).execute()
+
+        # Update version number on call sheet
+        client.table("backlot_call_sheets").update({
+            "current_version": current_version + 1,
+            "last_modified_by": profile_id,
+        }).eq("id", call_sheet_id).execute()
+
+        return current_version + 1
+    except Exception as e:
+        print(f"Error creating version: {e}")
+        # Don't fail the main operation if versioning fails
+        return None
+
+
+# =====================================================
+# Call Sheet Share Link Endpoints
+# =====================================================
+
+def generate_share_token():
+    """Generate a secure random token for share links"""
+    return secrets.token_urlsafe(32)
+
+
+def hash_password(password: str) -> str:
+    """Hash a password for share link protection"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def verify_share_password(password: str, password_hash: str) -> bool:
+    """Verify a password against its hash"""
+    return hash_password(password) == password_hash
+
+
+@router.post("/call-sheets/{call_sheet_id}/shares")
+async def create_call_sheet_share(
+    call_sheet_id: str,
+    share_input: CallSheetShareInput,
+    authorization: str = Header(None)
+):
+    """Create a share link for a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access (require edit permission to share)
+        cs = client.table("backlot_call_sheets").select("project_id, title").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"], require_edit=True)
+
+        # Get profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=400, detail="User profile not found")
+
+        # Generate token
+        share_token = generate_share_token()
+
+        # Calculate expiration
+        from datetime import timedelta
+        expires_at = datetime.utcnow() + timedelta(days=share_input.expires_in_days)
+
+        # Hash password if provided
+        password_hash = hash_password(share_input.password) if share_input.password else None
+
+        # Create share record
+        share_data = {
+            "call_sheet_id": call_sheet_id,
+            "share_token": share_token,
+            "created_by": profile_id,
+            "expires_at": expires_at.isoformat(),
+            "is_active": True,
+            "password_hash": password_hash,
+            "allowed_actions": share_input.allowed_actions,
+            "name": share_input.name or f"Share - {cs.data[0].get('title', 'Call Sheet')}",
+        }
+
+        result = client.table("backlot_call_sheet_shares").insert(share_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create share link")
+
+        share = result.data[0]
+
+        # Get creator name
+        creator = client.table("profiles").select("full_name").eq("id", profile_id).single().execute()
+        creator_name = creator.data.get("full_name") if creator.data else None
+
+        # Build share URL (frontend URL)
+        share_url = f"{settings.FRONTEND_URL}/share/{share_token}"
+
+        return {
+            "id": share["id"],
+            "call_sheet_id": share["call_sheet_id"],
+            "share_token": share["share_token"],
+            "share_url": share_url,
+            "name": share["name"],
+            "expires_at": share["expires_at"],
+            "is_active": share["is_active"],
+            "has_password": password_hash is not None,
+            "view_count": 0,
+            "last_viewed_at": None,
+            "allowed_actions": share["allowed_actions"],
+            "created_at": share["created_at"],
+            "created_by_name": creator_name,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating share link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/call-sheets/{call_sheet_id}/shares")
+async def get_call_sheet_shares(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get all share links for a call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"])
+
+        # Get shares
+        shares = client.table("backlot_call_sheet_shares").select("*").eq("call_sheet_id", call_sheet_id).order("created_at", desc=True).execute()
+
+        # Get creator profiles
+        creator_ids = list(set(s["created_by"] for s in (shares.data or []) if s.get("created_by")))
+        profiles_map = {}
+        if creator_ids:
+            profiles_result = client.table("profiles").select("id, full_name").in_("id", creator_ids).execute()
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = p
+
+        result = []
+        for share in (shares.data or []):
+            share_url = f"{settings.FRONTEND_URL}/share/{share['share_token']}"
+            profile_data = profiles_map.get(str(share.get("created_by")), {})
+            result.append({
+                "id": share["id"],
+                "call_sheet_id": share["call_sheet_id"],
+                "share_token": share["share_token"],
+                "share_url": share_url,
+                "name": share["name"],
+                "expires_at": share["expires_at"],
+                "is_active": share["is_active"],
+                "has_password": share["password_hash"] is not None,
+                "view_count": share["view_count"],
+                "last_viewed_at": share["last_viewed_at"],
+                "allowed_actions": share["allowed_actions"],
+                "created_at": share["created_at"],
+                "created_by_name": profile_data.get("full_name"),
+            })
+
+        return {"shares": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching shares: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shares/{share_id}")
+async def revoke_share_link(
+    share_id: str,
+    authorization: str = Header(None)
+):
+    """Revoke (deactivate) a share link"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get share and verify access
+        share = client.table("backlot_call_sheet_shares").select("call_sheet_id").eq("id", share_id).single().execute()
+        if not share.data:
+            raise HTTPException(status_code=404, detail="Share link not found")
+
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", share.data["call_sheet_id"]).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"], require_edit=True)
+
+        # Deactivate share
+        client.table("backlot_call_sheet_shares").update({"is_active": False}).eq("id", share_id).execute()
+
+        return {"success": True, "message": "Share link revoked"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error revoking share: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shares/{share_id}/permanent")
+async def delete_share_link(
+    share_id: str,
+    authorization: str = Header(None)
+):
+    """Permanently delete a share link"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get share and verify access
+        share = client.table("backlot_call_sheet_shares").select("call_sheet_id").eq("id", share_id).single().execute()
+        if not share.data:
+            raise HTTPException(status_code=404, detail="Share link not found")
+
+        cs = client.table("backlot_call_sheets").select("project_id").eq("id", share.data["call_sheet_id"]).execute()
+        if not cs.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, cs.data[0]["project_id"], user["id"], require_edit=True)
+
+        # Delete share
+        client.table("backlot_call_sheet_shares").delete().eq("id", share_id).execute()
+
+        return {"success": True, "message": "Share link deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting share: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Public Share Endpoints (No Auth Required)
+# =====================================================
+
+@router.get("/public/call-sheet/{share_token}")
+async def get_public_call_sheet(
+    share_token: str,
+    password: Optional[str] = Query(None)
+):
+    """Get a call sheet via share token (public, no auth required)"""
+    client = get_client()
+
+    try:
+        # Find share by token
+        share = client.table("backlot_call_sheet_shares").select("*").eq("share_token", share_token).single().execute()
+
+        if not share.data:
+            raise HTTPException(status_code=404, detail="Share link not found or expired")
+
+        # Check if active
+        if not share.data.get("is_active"):
+            raise HTTPException(status_code=410, detail="This share link has been revoked")
+
+        # Check expiration
+        expires_at_raw = share.data["expires_at"]
+        if isinstance(expires_at_raw, str):
+            expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
+        else:
+            expires_at = expires_at_raw
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at < datetime.now(timezone.utc):
+            raise HTTPException(status_code=410, detail="This share link has expired")
+
+        # Check password if required
+        if share.data.get("password_hash"):
+            if not password:
+                raise HTTPException(status_code=401, detail="Password required", headers={"X-Requires-Password": "true"})
+            if not verify_share_password(password, share.data["password_hash"]):
+                raise HTTPException(status_code=401, detail="Invalid password")
+
+        call_sheet_id = str(share.data["call_sheet_id"])
+
+        # Get call sheet data
+        call_sheet = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).single().execute()
+        if not call_sheet.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        # Get related data
+        people = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        scenes = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        locations = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+
+        # Get project info
+        project = client.table("backlot_projects").select("title, logo_url").eq("id", str(call_sheet.data["project_id"])).single().execute()
+
+        # Update view count
+        view_count = share.data.get("view_count")
+        new_count = (int(view_count) if view_count is not None else 0) + 1
+        client.table("backlot_call_sheet_shares").update({
+            "view_count": new_count,
+            "last_viewed_at": datetime.utcnow().isoformat()
+        }).eq("id", str(share.data["id"])).execute()
+
+        # Log view
+        client.table("backlot_call_sheet_share_views").insert({
+            "share_id": str(share.data["id"]),
+        }).execute()
+
+        return {
+            "call_sheet": call_sheet.data,
+            "people": people.data,
+            "scenes": scenes.data,
+            "locations": locations.data,
+            "project": project.data if project.data else {},
+            "allowed_actions": share.data.get("allowed_actions", ["view"]),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"Error fetching public call sheet: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/public/call-sheet/{share_token}/pdf")
+async def get_public_call_sheet_pdf(
+    share_token: str,
+    password: Optional[str] = Query(None)
+):
+    """Download PDF of a call sheet via share token (public, no auth required)"""
+    client = get_client()
+
+    try:
+        # Find share by token
+        share = client.table("backlot_call_sheet_shares").select("*").eq("share_token", share_token).single().execute()
+
+        if not share.data:
+            raise HTTPException(status_code=404, detail="Share link not found or expired")
+
+        # Check if active
+        if not share.data.get("is_active"):
+            raise HTTPException(status_code=410, detail="This share link has been revoked")
+
+        # Check expiration
+        expires_at = datetime.fromisoformat(share.data["expires_at"].replace("Z", "+00:00"))
+        if expires_at < datetime.now(expires_at.tzinfo):
+            raise HTTPException(status_code=410, detail="This share link has expired")
+
+        # Check password if required
+        if share.data.get("password_hash"):
+            if not password:
+                raise HTTPException(status_code=401, detail="Password required")
+            if not verify_share_password(password, share.data["password_hash"]):
+                raise HTTPException(status_code=401, detail="Invalid password")
+
+        # Check if download is allowed
+        allowed_actions = share.data.get("allowed_actions", ["view"])
+        if "download" not in allowed_actions and "view" not in allowed_actions:
+            raise HTTPException(status_code=403, detail="Download not allowed for this share link")
+
+        call_sheet_id = share.data["call_sheet_id"]
+
+        # Get call sheet data
+        call_sheet = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).single().execute()
+        if not call_sheet.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        # Get related data
+        people = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        scenes = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        locations = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+
+        # Get project info
+        project = client.table("backlot_projects").select("*").eq("id", call_sheet.data["project_id"]).single().execute()
+
+        # Generate PDF
+        pdf_bytes = await create_call_sheet_pdf(
+            call_sheet=call_sheet.data,
+            people=people.data,
+            scenes=scenes.data,
+            locations=locations.data,
+            project=project.data if project.data else {}
+        )
+
+        # Create filename
+        title = call_sheet.data.get("title", "call-sheet")
+        date = call_sheet.data.get("shoot_date", "")
+        filename = f"{title.replace(' ', '_')}_{date}.pdf" if date else f"{title.replace(' ', '_')}.pdf"
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating public PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =====================================================
@@ -1532,7 +2490,7 @@ class PdfGenerateResponse(BaseModel):
 
 
 @router.post("/call-sheets/{call_sheet_id}/generate-pdf", response_model=PdfGenerateResponse)
-async def generate_call_sheet_pdf(
+async def generate_call_sheet_pdf_endpoint(
     call_sheet_id: str,
     request: PdfGenerateRequest = PdfGenerateRequest(),
     authorization: str = Header(None)
@@ -1543,21 +2501,49 @@ async def generate_call_sheet_pdf(
     This endpoint generates a professional PDF from the call sheet data
     and stores it for download.
     """
+    import io
+
     current_user = await get_current_user_from_token(authorization)
-    user_id = current_user["id"]
+    cognito_user_id = current_user["id"]
 
-    client = get_client()
+    # Resolve profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
 
-    # Get call sheet with all related data
-    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
-    if not sheet_response.data:
+    # Get call sheet using SQLAlchemy
+    call_sheet_result = execute_single(
+        "SELECT * FROM backlot_call_sheets WHERE id = :call_sheet_id",
+        {"call_sheet_id": call_sheet_id}
+    )
+    if not call_sheet_result:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
-    call_sheet = sheet_response.data[0]
+    call_sheet = dict(call_sheet_result)
     project_id = call_sheet["project_id"]
 
-    # Verify access
-    project = await verify_project_access(client, project_id, user_id, require_edit=True)
+    # Get project
+    project_result = execute_single(
+        "SELECT * FROM backlot_projects WHERE id = :project_id",
+        {"project_id": str(project_id)}
+    )
+    if not project_result:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = dict(project_result)
+
+    # Verify access - check if owner or member with edit access
+    is_owner = str(project.get("owner_id")) == profile_id
+    if not is_owner:
+        member_result = execute_single(
+            "SELECT role FROM backlot_project_members WHERE project_id = :project_id AND user_id = :user_id",
+            {"project_id": str(project_id), "user_id": profile_id}
+        )
+        if not member_result:
+            raise HTTPException(status_code=403, detail="Access denied")
+        role = member_result["role"]
+        if role not in ("admin", "editor", "owner"):
+            raise HTTPException(status_code=403, detail="Edit access required")
 
     # Check if PDF already exists and regenerate not requested
     if call_sheet.get("pdf_url") and not request.regenerate:
@@ -1568,17 +2554,24 @@ async def generate_call_sheet_pdf(
             message="PDF already exists. Use regenerate=true to create a new one."
         )
 
-    # Get scenes
-    scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    scenes = scenes_response.data or []
+    # Get related data using SQLAlchemy
+    scenes = execute_query(
+        "SELECT * FROM backlot_call_sheet_scenes WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    scenes = [dict(s) for s in scenes] if scenes else []
 
-    # Get people
-    people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    people = people_response.data or []
+    people = execute_query(
+        "SELECT * FROM backlot_call_sheet_people WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    people = [dict(p) for p in people] if people else []
 
-    # Get locations
-    locations_response = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    locations = locations_response.data or []
+    locations = execute_query(
+        "SELECT * FROM backlot_call_sheet_locations WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    locations = [dict(loc) for loc in locations] if locations else []
 
     # Get logo if requested
     logo_url = None
@@ -1587,7 +2580,7 @@ async def generate_call_sheet_pdf(
 
     try:
         # Generate PDF using WeasyPrint
-        pdf_bytes = await generate_call_sheet_pdf(
+        pdf_bytes = await create_call_sheet_pdf(
             call_sheet=call_sheet,
             project=project,
             scenes=scenes,
@@ -1601,26 +2594,27 @@ async def generate_call_sheet_pdf(
         safe_title = "".join(c if c.isalnum() else "_" for c in call_sheet.get("title", "callsheet"))
         filename = f"{safe_title}_{call_date}_{uuid.uuid4().hex[:8]}.pdf"
 
-        # Upload to S3 Storage
+        # Upload to AWS S3
         storage_path = f"call-sheets/{project_id}/{filename}"
 
-        # Upload the PDF to storage
-        storage_response = client.storage.from_("backlot-files").upload(
+        # Upload the PDF to S3 storage
+        upload_file(
+            bucket="backlot-files",
             path=storage_path,
-            file=pdf_bytes,
-            file_options={"content-type": "application/pdf", "upsert": "true"}
+            file=io.BytesIO(pdf_bytes),
+            content_type="application/pdf"
         )
 
-        # Get the public URL
-        pdf_url = client.storage.from_("backlot-files").get_public_url(storage_path)
+        # Get the public URL from S3
+        pdf_url = get_signed_url("backlot-files", storage_path, expires_in=86400)  # 24 hour expiry
 
         generated_at = datetime.utcnow().isoformat()
 
-        # Update the call sheet with the PDF URL
-        client.table("backlot_call_sheets").update({
-            "pdf_url": pdf_url,
-            "pdf_generated_at": generated_at
-        }).eq("id", call_sheet_id).execute()
+        # Update the call sheet with the PDF URL using SQLAlchemy
+        execute_single(
+            "UPDATE backlot_call_sheets SET pdf_url = :pdf_url, pdf_generated_at = :generated_at WHERE id = :call_sheet_id RETURNING id",
+            {"pdf_url": pdf_url, "generated_at": generated_at, "call_sheet_id": call_sheet_id}
+        )
 
         return PdfGenerateResponse(
             success=True,
@@ -1657,38 +2651,78 @@ async def download_call_sheet_pdf(
     Use this for quick downloads; use generate-pdf for persisted storage.
     """
     current_user = await get_current_user_from_token(authorization)
-    user_id = current_user["id"]
+    cognito_user_id = current_user["id"]
 
-    client = get_client()
+    # Resolve profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
 
-    # Get call sheet
-    sheet_response = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
-    if not sheet_response.data:
+    # Get call sheet using SQLAlchemy
+    call_sheet_result = execute_single(
+        "SELECT * FROM backlot_call_sheets WHERE id = :call_sheet_id",
+        {"call_sheet_id": call_sheet_id}
+    )
+    if not call_sheet_result:
         raise HTTPException(status_code=404, detail="Call sheet not found")
 
-    call_sheet = sheet_response.data[0]
+    call_sheet = dict(call_sheet_result)
     project_id = call_sheet["project_id"]
 
-    # Verify access (only need view access for download)
-    project = await verify_project_access(client, project_id, user_id, require_edit=False)
+    # Get project
+    project_result = execute_single(
+        "SELECT * FROM backlot_projects WHERE id = :project_id",
+        {"project_id": str(project_id)}
+    )
+    if not project_result:
+        raise HTTPException(status_code=404, detail="Project not found")
 
-    # Get related data
-    scenes_response = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    scenes = scenes_response.data or []
+    project = dict(project_result)
 
-    people_response = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    people = people_response.data or []
+    # Verify access - check if owner or member
+    is_owner = str(project.get("owner_id")) == profile_id
+    if not is_owner:
+        member_result = execute_single(
+            "SELECT role FROM backlot_project_members WHERE project_id = :project_id AND user_id = :user_id",
+            {"project_id": str(project_id), "user_id": profile_id}
+        )
+        if not member_result:
+            raise HTTPException(status_code=403, detail="Access denied")
 
-    locations_response = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
-    locations = locations_response.data or []
+    # Get related data using SQLAlchemy
+    scenes = execute_query(
+        "SELECT * FROM backlot_call_sheet_scenes WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    scenes = [dict(s) for s in scenes] if scenes else []
+
+    people = execute_query(
+        "SELECT * FROM backlot_call_sheet_people WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    people = [dict(p) for p in people] if people else []
+
+    locations = execute_query(
+        "SELECT * FROM backlot_call_sheet_locations WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    locations = [dict(loc) for loc in locations] if locations else []
 
     # Get logo
     logo_url = call_sheet.get("header_logo_url") or project.get("header_logo_url")
 
     try:
-        # Generate PDF
-        pdf_bytes = await generate_call_sheet_pdf(
-            call_sheet=call_sheet,
+        # Convert date/time objects to strings for PDF generation
+        call_sheet_for_pdf = {}
+        for key, value in call_sheet.items():
+            if hasattr(value, 'isoformat'):
+                call_sheet_for_pdf[key] = str(value)
+            else:
+                call_sheet_for_pdf[key] = value
+
+        # Generate PDF using the renamed import
+        pdf_bytes = await create_call_sheet_pdf(
+            call_sheet=call_sheet_for_pdf,
             project=project,
             scenes=scenes,
             people=people,
@@ -1696,9 +2730,13 @@ async def download_call_sheet_pdf(
             logo_url=logo_url,
         )
 
-        # Create filename
-        call_date = call_sheet.get("date", "").replace("-", "")
-        safe_title = "".join(c if c.isalnum() else "_" for c in call_sheet.get("title", "callsheet"))
+        # Create filename - handle date as string or date object
+        date_val = call_sheet.get("date", "")
+        if hasattr(date_val, 'strftime'):
+            call_date = date_val.strftime("%Y%m%d")
+        else:
+            call_date = str(date_val).replace("-", "") if date_val else ""
+        safe_title = "".join(c if c.isalnum() else "_" for c in str(call_sheet.get("title", "callsheet")))
         filename = f"{safe_title}_{call_date}.pdf"
 
         return Response(
@@ -1710,7 +2748,131 @@ async def download_call_sheet_pdf(
         )
 
     except Exception as e:
+        import traceback
+        print(f"PDF generation error: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+
+
+@router.get("/call-sheets/{call_sheet_id}/download-excel")
+async def download_call_sheet_excel(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Download an Excel file for a call sheet
+
+    Returns a professionally formatted Excel workbook with multiple sheets:
+    - Overview: Summary with call times and general info
+    - Cast & Crew: All personnel with contact info
+    - Scenes: Scene breakdown
+    - Locations: Location details with contacts
+    """
+    # Check if Excel export is available
+    if not EXCEL_EXPORT_AVAILABLE or generate_call_sheet_excel is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Excel export is not available. Please install openpyxl: pip install openpyxl"
+        )
+
+    current_user = await get_current_user_from_token(authorization)
+    cognito_user_id = current_user["id"]
+
+    # Resolve profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # Get call sheet using SQLAlchemy
+    call_sheet_result = execute_single(
+        "SELECT * FROM backlot_call_sheets WHERE id = :call_sheet_id",
+        {"call_sheet_id": call_sheet_id}
+    )
+    if not call_sheet_result:
+        raise HTTPException(status_code=404, detail="Call sheet not found")
+
+    call_sheet = dict(call_sheet_result)
+    project_id = call_sheet["project_id"]
+
+    # Get project
+    project_result = execute_single(
+        "SELECT * FROM backlot_projects WHERE id = :project_id",
+        {"project_id": str(project_id)}
+    )
+    if not project_result:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = dict(project_result)
+
+    # Verify access - check if owner or member
+    is_owner = str(project.get("owner_id")) == profile_id
+    if not is_owner:
+        member_result = execute_single(
+            "SELECT role FROM backlot_project_members WHERE project_id = :project_id AND user_id = :user_id",
+            {"project_id": str(project_id), "user_id": profile_id}
+        )
+        if not member_result:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get related data using SQLAlchemy
+    scenes = execute_query(
+        "SELECT * FROM backlot_call_sheet_scenes WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    scenes = [dict(s) for s in scenes] if scenes else []
+
+    people = execute_query(
+        "SELECT * FROM backlot_call_sheet_people WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    people = [dict(p) for p in people] if people else []
+
+    locations = execute_query(
+        "SELECT * FROM backlot_call_sheet_locations WHERE call_sheet_id = :call_sheet_id ORDER BY sort_order ASC",
+        {"call_sheet_id": call_sheet_id}
+    )
+    locations = [dict(loc) for loc in locations] if locations else []
+
+    try:
+        # Convert date/time objects to strings for Excel generation
+        call_sheet_for_excel = {}
+        for key, value in call_sheet.items():
+            if hasattr(value, 'isoformat'):
+                call_sheet_for_excel[key] = str(value)
+            else:
+                call_sheet_for_excel[key] = value
+
+        # Generate Excel
+        excel_bytes = await generate_call_sheet_excel(
+            call_sheet=call_sheet_for_excel,
+            people=people,
+            scenes=scenes,
+            locations=locations,
+            project=project,
+        )
+
+        # Create filename
+        date_val = call_sheet.get("date", "")
+        if hasattr(date_val, 'strftime'):
+            call_date = date_val.strftime("%Y%m%d")
+        else:
+            call_date = str(date_val).replace("-", "") if date_val else ""
+        safe_title = "".join(c if c.isalnum() else "_" for c in str(call_sheet.get("title", "callsheet")))
+        filename = f"{safe_title}_{call_date}.xlsx"
+
+        return Response(
+            content=excel_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except Exception as e:
+        import traceback
+        print(f"Excel generation error: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Excel generation failed: {str(e)}")
 
 
 # =====================================================
@@ -3272,7 +4434,7 @@ async def get_project_daily_budgets(
     budget_id = budget_response.data[0]["id"]
 
     # Get daily budgets with production day info
-    daily_response = client.table("backlot_daily_budgets").select("*").eq("budget_id", budget_id).order("date").execute()
+    daily_response = client.table("backlot_daily_budgets").select("*").eq("budget_id", budget_id).order("shoot_date").execute()
 
     summaries = []
     for db in daily_response.data or []:
@@ -9583,7 +10745,13 @@ async def get_call_sheet_linked_scenes(
 ):
     """Get scenes linked to a call sheet"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+
+    # Resolve Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -9593,9 +10761,9 @@ async def get_call_sheet_linked_scenes(
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         project_response = client.table("backlot_projects").select("owner_id").eq("id", cs.data["project_id"]).execute()
-        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+        is_owner = str(project_response.data[0]["owner_id"]) == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", cs.data["project_id"]).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", cs.data["project_id"]).eq("user_id", profile_id).execute()
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -9637,7 +10805,13 @@ async def link_scene_to_call_sheet(
 ):
     """Link a scene to a call sheet"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+
+    # Resolve Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -9649,9 +10823,9 @@ async def link_scene_to_call_sheet(
         project_id = cs.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+        is_owner = str(project_response.data[0]["owner_id"]) == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to link scenes")
 
@@ -9697,7 +10871,13 @@ async def unlink_scene_from_call_sheet(
 ):
     """Unlink a scene from a call sheet"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
+
+    # Resolve Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -9709,9 +10889,9 @@ async def unlink_scene_from_call_sheet(
         project_id = cs.data["project_id"]
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
 
-        is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+        is_owner = str(project_response.data[0]["owner_id"]) == profile_id
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to unlink scenes")
 
@@ -11684,7 +12864,7 @@ async def get_project_roles(
 ):
     """Get all roles for a project"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = user["id"]  # This is now the profile ID
     client = get_client()
 
     # Verify project access
@@ -12526,7 +13706,7 @@ async def get_booked_people(
 ):
     """Get all booked cast/crew for a project (for call sheet integration)"""
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = user["id"]  # This is now the profile ID
     client = get_client()
 
     # Verify project access
@@ -12541,9 +13721,10 @@ async def get_booked_people(
             raise HTTPException(status_code=403, detail="Access denied")
 
     try:
-        query = client.table("backlot_project_roles").select(
-            "*, profiles!booked_user_id(id, full_name, username, avatar_url, email)"
-        ).eq("project_id", project_id).eq("status", "booked")
+        # Fetch booked roles without the join (foreign key may not be configured)
+        query = client.table("backlot_project_roles").select("*").eq(
+            "project_id", project_id
+        ).eq("status", "booked")
 
         if type:
             query = query.eq("type", type)
@@ -12552,10 +13733,20 @@ async def get_booked_people(
         # Filter out roles without booked users
         booked_roles = [r for r in (result.data or []) if r.get("booked_user_id")]
 
+        # Fetch profile data for all booked users
+        booked_user_ids = list(set([r["booked_user_id"] for r in booked_roles]))
+        profiles_map = {}
+        if booked_user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, full_name, username, avatar_url, email"
+            ).in_("id", booked_user_ids).execute()
+            for p in (profiles_result.data or []):
+                profiles_map[str(p["id"])] = p
+
         # Format for call sheet use
         booked_people = []
         for role in booked_roles:
-            profile = role.get("profiles") or {}
+            profile = profiles_map.get(str(role["booked_user_id"]), {})
             booked_people.append({
                 "role_id": role["id"],
                 "role_title": role["title"],
@@ -12682,15 +13873,20 @@ async def get_project_clearances(
             query = query.eq("status", status)
 
         result = query.order("created_at", desc=True).execute()
+        clearances = result.data or []
 
-        # Get summary statistics
-        summary_result = client.rpc("get_project_clearance_summary", {"p_project_id": project_id}).execute()
-        summary = summary_result.data if summary_result.data else {}
+        # Compute summary in Python instead of using RPC
+        summary = {"total": len(clearances), "by_status": {}, "by_type": {}}
+        for c in clearances:
+            c_status = c.get("status", "pending")
+            c_type = c.get("type", "other")
+            summary["by_status"][c_status] = summary["by_status"].get(c_status, 0) + 1
+            summary["by_type"][c_type] = summary["by_type"].get(c_type, 0) + 1
 
         return {
             "success": True,
-            "clearances": result.data or [],
-            "count": len(result.data or []),
+            "clearances": clearances,
+            "count": len(clearances),
             "summary": summary
         }
 
@@ -14467,15 +15663,30 @@ async def get_deliverable_templates(
     client = get_client()
 
     try:
-        # Get system templates and user's own templates
-        query = client.table("backlot_deliverable_templates").select("*").eq("is_active", True).or_(f"is_system_template.eq.true,owner_user_id.eq.{user['id']},owner_user_id.is.null").order("target_platform", desc=False).order("name", desc=False)
+        user_id = user["id"]
 
+        # Get system templates
+        system_query = client.table("backlot_deliverable_templates").select("*").eq(
+            "is_active", True
+        ).eq("is_system_template", True)
         if platform:
-            query = query.eq("target_platform", platform)
+            system_query = system_query.eq("target_platform", platform)
+        system_result = system_query.execute()
 
-        result = query.execute()
+        # Get user's own templates
+        user_query = client.table("backlot_deliverable_templates").select("*").eq(
+            "is_active", True
+        ).eq("owner_user_id", user_id)
+        if platform:
+            user_query = user_query.eq("target_platform", platform)
+        user_result = user_query.execute()
 
-        return {"success": True, "templates": result.data or []}
+        # Combine and deduplicate
+        all_templates = (system_result.data or []) + (user_result.data or [])
+        # Sort by platform then name
+        all_templates.sort(key=lambda x: (x.get("target_platform", ""), x.get("name", "")))
+
+        return {"success": True, "templates": all_templates}
 
     except Exception as e:
         print(f"Error fetching templates: {e}")
@@ -14649,7 +15860,7 @@ async def get_project_deliverables(
     client = get_client()
 
     try:
-        query = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("project_id", project_id).order("due_date", desc=False, nullsfirst=False).order("created_at", desc=True)
+        query = client.table("backlot_project_deliverables").select("*").eq("project_id", project_id).order("due_date", desc=False).order("created_at", desc=True)
 
         if asset_id:
             query = query.eq("asset_id", asset_id)
@@ -14709,10 +15920,16 @@ async def create_project_deliverable(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create deliverable")
 
-        # Fetch with relations
-        full_result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", result.data[0]["id"]).single().execute()
+        deliverable = result.data[0]
+        # Manually fetch related data
+        if deliverable.get("asset_id"):
+            asset_resp = client.table("backlot_assets").select("id, title, asset_type, version_label, status").eq("id", deliverable["asset_id"]).execute()
+            deliverable["asset"] = asset_resp.data[0] if asset_resp.data else None
+        if deliverable.get("template_id"):
+            template_resp = client.table("backlot_deliverable_templates").select("id, name, target_platform, specs").eq("id", deliverable["template_id"]).execute()
+            deliverable["template"] = template_resp.data[0] if template_resp.data else None
 
-        return {"success": True, "deliverable": full_result.data}
+        return {"success": True, "deliverable": deliverable}
 
     except HTTPException:
         raise
@@ -14731,12 +15948,21 @@ async def get_deliverable(
     client = get_client()
 
     try:
-        result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+        result = client.table("backlot_project_deliverables").select("*").eq("id", deliverable_id).execute()
 
         if not result.data:
             raise HTTPException(status_code=404, detail="Deliverable not found")
 
-        return {"success": True, "deliverable": result.data}
+        deliverable = result.data[0]
+        # Manually fetch related data
+        if deliverable.get("asset_id"):
+            asset_resp = client.table("backlot_assets").select("id, title, asset_type, version_label, status").eq("id", deliverable["asset_id"]).execute()
+            deliverable["asset"] = asset_resp.data[0] if asset_resp.data else None
+        if deliverable.get("template_id"):
+            template_resp = client.table("backlot_deliverable_templates").select("id, name, target_platform, specs").eq("id", deliverable["template_id"]).execute()
+            deliverable["template"] = template_resp.data[0] if template_resp.data else None
+
+        return {"success": True, "deliverable": deliverable}
 
     except HTTPException:
         raise
@@ -14775,10 +16001,16 @@ async def update_deliverable(
         if not result.data:
             raise HTTPException(status_code=404, detail="Deliverable not found")
 
-        # Fetch with relations
-        full_result = client.table("backlot_project_deliverables").select("*, asset:backlot_assets(id, title, asset_type, version_label, status), template:backlot_deliverable_templates(id, name, target_platform, specs)").eq("id", deliverable_id).single().execute()
+        deliverable = result.data[0]
+        # Manually fetch related data
+        if deliverable.get("asset_id"):
+            asset_resp = client.table("backlot_assets").select("id, title, asset_type, version_label, status").eq("id", deliverable["asset_id"]).execute()
+            deliverable["asset"] = asset_resp.data[0] if asset_resp.data else None
+        if deliverable.get("template_id"):
+            template_resp = client.table("backlot_deliverable_templates").select("id, name, target_platform, specs").eq("id", deliverable["template_id"]).execute()
+            deliverable["template"] = template_resp.data[0] if template_resp.data else None
 
-        return {"success": True, "deliverable": full_result.data}
+        return {"success": True, "deliverable": deliverable}
 
     except HTTPException:
         raise
@@ -14859,7 +16091,7 @@ async def get_deliverables_summary(
         from datetime import date
 
         # Get all deliverables
-        result = client.table("backlot_project_deliverables").select("id, status, due_date, asset:backlot_assets(title), template:backlot_deliverable_templates(name)").eq("project_id", project_id).execute()
+        result = client.table("backlot_project_deliverables").select("id, status, due_date").eq("project_id", project_id).execute()
         deliverables = result.data or []
 
         # Get asset count
@@ -16514,15 +17746,21 @@ async def get_task_list(
                     assignees_by_task[task_id] = []
                 assignees_by_task[task_id].append(a)
 
-            # Get labels
-            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+            # Get labels - fetch links and labels separately
+            links_result = client.table("backlot_task_label_links").select("*").in_("task_id", task_ids).execute()
+            label_ids = list(set(l["label_id"] for l in (links_result.data or []) if l.get("label_id")))
+            labels_map = {}
+            if label_ids:
+                labels_resp = client.table("backlot_task_labels").select("*").in_("id", label_ids).execute()
+                labels_map = {lb["id"]: lb for lb in (labels_resp.data or [])}
             labels_by_task = {}
-            for l in (labels_result.data or []):
+            for l in (links_result.data or []):
                 task_id = l["task_id"]
                 if task_id not in labels_by_task:
                     labels_by_task[task_id] = []
-                if l.get("label"):
-                    labels_by_task[task_id].append(l["label"])
+                label = labels_map.get(l.get("label_id"))
+                if label:
+                    labels_by_task[task_id].append(label)
 
             # Add assignees and labels to tasks
             for task in tasks:
@@ -16799,17 +18037,23 @@ async def get_task_list_tasks(
                     assignees_by_task[task_id] = []
                 assignees_by_task[task_id].append(a)
 
-            # Get labels for all tasks
-            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").in_("task_id", task_ids).execute()
+            # Get labels - fetch links and labels separately
+            links_result = client.table("backlot_task_label_links").select("*").in_("task_id", task_ids).execute()
+            label_ids = list(set(l["label_id"] for l in (links_result.data or []) if l.get("label_id")))
+            labels_map = {}
+            if label_ids:
+                labels_resp = client.table("backlot_task_labels").select("*").in_("id", label_ids).execute()
+                labels_map = {lb["id"]: lb for lb in (labels_resp.data or [])}
 
             # Group labels by task
             labels_by_task = {}
-            for l in (labels_result.data or []):
+            for l in (links_result.data or []):
                 task_id = l["task_id"]
                 if task_id not in labels_by_task:
                     labels_by_task[task_id] = []
-                if l.get("label"):
-                    labels_by_task[task_id].append(l["label"])
+                label = labels_map.get(l.get("label_id"))
+                if label:
+                    labels_by_task[task_id].append(label)
 
             # Add to tasks
             for task in tasks:
@@ -16892,8 +18136,13 @@ async def create_task(
             task["assignees"] = assignees_result.data or []
 
         if request.label_ids:
-            labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task["id"]).execute()
-            task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
+            links_result = client.table("backlot_task_label_links").select("*").eq("task_id", task["id"]).execute()
+            label_ids = [l["label_id"] for l in (links_result.data or []) if l.get("label_id")]
+            if label_ids:
+                labels_resp = client.table("backlot_task_labels").select("*").in_("id", label_ids).execute()
+                task["labels"] = labels_resp.data or []
+            else:
+                task["labels"] = []
 
         return {"success": True, "task": task}
 
@@ -16934,8 +18183,13 @@ async def get_task(
         task["watchers"] = watchers_result.data or []
 
         # Get labels
-        labels_result = client.table("backlot_task_label_links").select("*, label:label_id(*)").eq("task_id", task_id).execute()
-        task["labels"] = [l["label"] for l in (labels_result.data or []) if l.get("label")]
+        links_result = client.table("backlot_task_label_links").select("*").eq("task_id", task_id).execute()
+        label_ids = [l["label_id"] for l in (links_result.data or []) if l.get("label_id")]
+        if label_ids:
+            labels_resp = client.table("backlot_task_labels").select("*").in_("id", label_ids).execute()
+            task["labels"] = labels_resp.data or []
+        else:
+            task["labels"] = []
 
         # Get comment count
         comments_result = client.table("backlot_task_comments").select("id", count="exact").eq("task_id", task_id).execute()
@@ -17942,15 +19196,29 @@ async def list_review_assets(
     try:
         await verify_project_access(client, project_id, user["id"])
 
-        # Get assets with version and note counts
-        assets_response = client.table("backlot_review_assets").select(
-            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
-        ).eq("project_id", project_id).order("created_at", desc=True).execute()
+        # Get assets without FK join (join syntax may not work)
+        assets_response = client.table("backlot_review_assets").select("*").eq(
+            "project_id", project_id
+        ).order("created_at", desc=True).execute()
 
         assets = assets_response.data or []
 
+        # Fetch active versions separately
+        active_version_ids = [a["active_version_id"] for a in assets if a.get("active_version_id")]
+        active_versions_map = {}
+        if active_version_ids:
+            versions_resp = client.table("backlot_review_versions").select("*").in_("id", active_version_ids).execute()
+            for v in (versions_resp.data or []):
+                active_versions_map[str(v["id"])] = v
+
         # Get counts for each asset
         for asset in assets:
+            # Attach active version
+            if asset.get("active_version_id"):
+                asset["active_version"] = active_versions_map.get(str(asset["active_version_id"]))
+            else:
+                asset["active_version"] = None
+
             # Get version count
             versions_count = client.table("backlot_review_versions").select("id", count="exact").eq("asset_id", asset["id"]).execute()
             asset["version_count"] = versions_count.count or 0
@@ -18024,11 +19292,15 @@ async def create_review_asset(
         client.table("backlot_review_versions").insert(version_data).execute()
 
         # Return the created asset with version
-        result = client.table("backlot_review_assets").select(
-            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
-        ).eq("id", asset_id).execute()
+        result = client.table("backlot_review_assets").select("*").eq("id", asset_id).execute()
+        asset = result.data[0] if result.data else None
+        if asset and asset.get("active_version_id"):
+            version_resp = client.table("backlot_review_versions").select("*").eq("id", asset["active_version_id"]).execute()
+            asset["active_version"] = version_resp.data[0] if version_resp.data else None
+        elif asset:
+            asset["active_version"] = None
 
-        return {"asset": result.data[0] if result.data else None}
+        return {"asset": asset}
 
     except HTTPException:
         raise
@@ -18095,11 +19367,15 @@ async def update_review_asset(
         if update_data:
             client.table("backlot_review_assets").update(update_data).eq("id", asset_id).execute()
 
-        result = client.table("backlot_review_assets").select(
-            "*, active_version:backlot_review_versions!backlot_review_assets_active_version_id_fkey(*)"
-        ).eq("id", asset_id).execute()
+        result = client.table("backlot_review_assets").select("*").eq("id", asset_id).execute()
+        asset = result.data[0] if result.data else None
+        if asset and asset.get("active_version_id"):
+            version_resp = client.table("backlot_review_versions").select("*").eq("id", asset["active_version_id"]).execute()
+            asset["active_version"] = version_resp.data[0] if version_resp.data else None
+        elif asset:
+            asset["active_version"] = None
 
-        return {"asset": result.data[0] if result.data else None}
+        return {"asset": asset}
 
     except HTTPException:
         raise
@@ -18258,7 +19534,7 @@ async def list_version_notes(
     try:
         await verify_review_version_access(client, version_id, user["id"])
 
-        notes_response = client.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False, nullsfirst=False).execute()
+        notes_response = client.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False).execute()
 
         notes = notes_response.data or []
 
@@ -20344,7 +21620,7 @@ async def get_clip_notes(
         if not include_resolved:
             query = query.eq("is_resolved", False)
 
-        notes_result = query.order("time_seconds", nullsfirst=False).order("created_at").execute()
+        notes_result = query.order("time_seconds", desc=False).order("created_at").execute()
         notes = notes_result.data or []
 
         # Fetch author profiles
@@ -20718,17 +21994,20 @@ async def get_dailies_summary(
         # Verify project access
         await verify_project_access(client, project_id, user["id"])
 
-        # Count days
+        # Get days with their IDs
         days_result = client.table("backlot_dailies_days").select(
-            "id", count="exact"
+            "id"
         ).eq("project_id", project_id).execute()
-        total_days = days_result.count or 0
+        day_ids = [d["id"] for d in (days_result.data or [])]
+        total_days = len(day_ids)
 
-        # Count cards
-        cards_result = client.table("backlot_dailies_cards").select(
-            "id", count="exact"
-        ).eq("project_id", project_id).execute()
-        total_cards = cards_result.count or 0
+        # Count cards through days (cards don't have project_id directly)
+        total_cards = 0
+        if day_ids:
+            cards_result = client.table("backlot_dailies_cards").select(
+                "id", count="exact"
+            ).in_("dailies_day_id", day_ids).execute()
+            total_cards = cards_result.count or 0
 
         # Get clips with details
         clips_result = client.table("backlot_dailies_clips").select(
@@ -21896,25 +23175,31 @@ async def create_gear_item(
     client = get_client()
 
     try:
-        await verify_project_access(client, project_id, user["id"])
+        # Convert Cognito user ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"]) or user["id"]
+        await verify_project_access(client, project_id, profile_id)
+
+        # Helper to convert empty strings to None for date fields
+        def to_nullable(val):
+            return val if val else None
 
         gear_data = {
             "project_id": project_id,
             "name": gear.get("name"),
-            "category": gear.get("category"),
-            "description": gear.get("description"),
-            "serial_number": gear.get("serial_number"),
-            "asset_tag": gear.get("asset_tag"),
+            "category": to_nullable(gear.get("category")),
+            "description": to_nullable(gear.get("description")),
+            "serial_number": to_nullable(gear.get("serial_number")),
+            "asset_tag": to_nullable(gear.get("asset_tag")),
             "status": gear.get("status", "available"),
             "is_owned": gear.get("is_owned", False),
-            "rental_house": gear.get("rental_house"),
+            "rental_house": to_nullable(gear.get("rental_house")),
             "rental_cost_per_day": gear.get("rental_cost_per_day"),
-            "assigned_to": gear.get("assigned_to"),
-            "assigned_production_day_id": gear.get("assigned_production_day_id"),
-            "pickup_date": gear.get("pickup_date"),
-            "return_date": gear.get("return_date"),
-            "notes": gear.get("notes"),
-            "condition_notes": gear.get("condition_notes"),
+            "assigned_to": to_nullable(gear.get("assigned_to")),
+            "assigned_production_day_id": to_nullable(gear.get("assigned_production_day_id")),
+            "pickup_date": to_nullable(gear.get("pickup_date")),
+            "return_date": to_nullable(gear.get("return_date")),
+            "notes": to_nullable(gear.get("notes")),
+            "condition_notes": to_nullable(gear.get("condition_notes")),
         }
 
         result = client.table("backlot_gear_items").insert(gear_data).execute()
@@ -21943,7 +23228,17 @@ async def update_gear_item(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Gear item not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        # Convert Cognito user ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"]) or user["id"]
+        await verify_project_access(client, existing.data[0]["project_id"], profile_id)
+
+        # Helper to convert empty strings to None for date/nullable fields
+        def to_nullable(val):
+            return val if val else None
+
+        nullable_fields = ["category", "description", "serial_number", "asset_tag",
+                          "rental_house", "assigned_to", "assigned_production_day_id",
+                          "pickup_date", "return_date", "notes", "condition_notes"]
 
         update_data = {}
         for field in ["name", "category", "description", "serial_number", "asset_tag",
@@ -21951,7 +23246,10 @@ async def update_gear_item(
                       "assigned_to", "assigned_production_day_id", "pickup_date",
                       "return_date", "notes", "condition_notes"]:
             if field in gear:
-                update_data[field] = gear[field]
+                if field in nullable_fields:
+                    update_data[field] = to_nullable(gear[field])
+                else:
+                    update_data[field] = gear[field]
 
         result = client.table("backlot_gear_items").update(update_data).eq("id", gear_id).execute()
 
@@ -21979,7 +23277,9 @@ async def update_gear_status(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Gear item not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        # Convert Cognito user ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"]) or user["id"]
+        await verify_project_access(client, existing.data[0]["project_id"], profile_id)
 
         result = client.table("backlot_gear_items").update({"status": status}).eq("id", gear_id).execute()
 
@@ -22006,7 +23306,9 @@ async def delete_gear_item(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Gear item not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        # Convert Cognito user ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(user["id"]) or user["id"]
+        await verify_project_access(client, existing.data[0]["project_id"], profile_id)
 
         client.table("backlot_gear_items").delete().eq("id", gear_id).execute()
 
@@ -22865,7 +24167,7 @@ async def publish_call_sheet(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"], require_edit=True)
 
         update_data = {
             "is_published": publish,
@@ -22888,7 +24190,7 @@ async def delete_call_sheet(
     call_sheet_id: str,
     authorization: str = Header(None)
 ):
-    """Delete a call sheet"""
+    """Delete a call sheet and all related data"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -22897,8 +24199,16 @@ async def delete_call_sheet(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"], require_edit=True)
 
+        # Delete related data first (cascading deletes)
+        client.table("backlot_call_sheet_people").delete().eq("call_sheet_id", call_sheet_id).execute()
+        client.table("backlot_call_sheet_scenes").delete().eq("call_sheet_id", call_sheet_id).execute()
+        client.table("backlot_call_sheet_locations").delete().eq("call_sheet_id", call_sheet_id).execute()
+        client.table("backlot_call_sheet_scene_links").delete().eq("call_sheet_id", call_sheet_id).execute()
+        client.table("backlot_call_sheet_send_history").delete().eq("call_sheet_id", call_sheet_id).execute()
+
+        # Now delete the call sheet itself
         client.table("backlot_call_sheets").delete().eq("id", call_sheet_id).execute()
 
         return {"success": True}
@@ -22927,42 +24237,67 @@ async def clone_call_sheet(
             raise HTTPException(status_code=404, detail="Call sheet not found")
 
         source = source_result.data[0]
-        await verify_project_access(client, source["project_id"], user["id"])
+        await verify_project_access(client, source["project_id"], user["id"], require_edit=True)
 
-        # Prepare the new call sheet data
+        # Prepare the new call sheet data (using correct column names from schema)
         new_call_sheet = {
             "project_id": source["project_id"],
             "production_day_id": source.get("production_day_id"),
             "template_type": source.get("template_type", "feature"),
-            "shoot_date": clone_input.new_date,
-            "day_number": clone_input.new_day_number or source.get("day_number"),
+            "date": clone_input.new_date,
+            "shoot_day_number": clone_input.new_day_number or source.get("shoot_day_number"),
             "title": clone_input.new_title or f"Copy of {source.get('title', 'Call Sheet')}",
-            "status": "draft",  # Always start as draft
+            "is_published": False,  # Always start as unpublished
             # Core info
-            "general_crew_call": source.get("general_crew_call"),
+            "crew_call_time": source.get("crew_call_time"),
+            "general_call_time": source.get("general_call_time"),
             "first_shot_time": source.get("first_shot_time"),
             "breakfast_time": source.get("breakfast_time"),
             "lunch_time": source.get("lunch_time"),
             "dinner_time": source.get("dinner_time"),
-            "estimated_wrap": source.get("estimated_wrap"),
+            "estimated_wrap_time": source.get("estimated_wrap_time"),
             "sunrise_time": source.get("sunrise_time"),
             "sunset_time": source.get("sunset_time"),
             # Weather and notes
             "weather_forecast": source.get("weather_forecast"),
+            "weather_info": source.get("weather_info"),
             "special_instructions": source.get("special_instructions"),
             # Contacts
             "production_office_phone": source.get("production_office_phone"),
-            "set_phone": source.get("set_phone"),
+            "production_phone": source.get("production_phone"),
+            "production_contact": source.get("production_contact"),
+            "production_email": source.get("production_email"),
             # Safety info
             "nearest_hospital": source.get("nearest_hospital"),
+            "hospital_name": source.get("hospital_name"),
             "hospital_address": source.get("hospital_address"),
+            "hospital_phone": source.get("hospital_phone"),
             "set_medic": source.get("set_medic"),
-            "covid_officer": source.get("covid_officer"),
             "fire_safety_officer": source.get("fire_safety_officer"),
-            # Additional info
-            "walkies_channel": source.get("walkies_channel"),
-            "meal_vendor": source.get("meal_vendor"),
+            "safety_notes": source.get("safety_notes"),
+            # Location info
+            "location_name": source.get("location_name"),
+            "location_address": source.get("location_address"),
+            "parking_notes": source.get("parking_notes"),
+            "parking_instructions": source.get("parking_instructions"),
+            "basecamp_location": source.get("basecamp_location"),
+            # Production info
+            "production_title": source.get("production_title"),
+            "production_company": source.get("production_company"),
+            "total_shoot_days": source.get("total_shoot_days"),
             "header_logo_url": source.get("header_logo_url"),
+            # Key contacts
+            "upm_name": source.get("upm_name"),
+            "upm_phone": source.get("upm_phone"),
+            "first_ad_name": source.get("first_ad_name"),
+            "first_ad_phone": source.get("first_ad_phone"),
+            "director_name": source.get("director_name"),
+            "director_phone": source.get("director_phone"),
+            "producer_name": source.get("producer_name"),
+            "producer_phone": source.get("producer_phone"),
+            # Additional
+            "general_notes": source.get("general_notes"),
+            "advance_schedule": source.get("advance_schedule"),
         }
 
         # Copy department notes if requested
@@ -22985,56 +24320,8 @@ async def clone_call_sheet(
             new_call_sheet["schedule_blocks"] = source.get("schedule_blocks")
             new_call_sheet["custom_contacts"] = source.get("custom_contacts")
 
-        # Copy template-specific fields for medical/corporate
-        if source.get("template_type") == "medical_corporate":
-            new_call_sheet.update({
-                "hipaa_officer": source.get("hipaa_officer"),
-                "privacy_notes": source.get("privacy_notes"),
-                "release_status": source.get("release_status"),
-                "dress_code": source.get("dress_code"),
-                "restricted_areas": source.get("restricted_areas"),
-                "client_name": source.get("client_name"),
-                "client_phone": source.get("client_phone"),
-                "facility_contact": source.get("facility_contact"),
-                "facility_phone": source.get("facility_phone"),
-            })
-
-        # Copy template-specific fields for news/eng
-        if source.get("template_type") == "news_eng":
-            new_call_sheet.update({
-                "deadline_time": source.get("deadline_time"),
-                "story_angle": source.get("story_angle"),
-                "reporter_name": source.get("reporter_name"),
-                "reporter_phone": source.get("reporter_phone"),
-                "subject_notes": source.get("subject_notes"),
-                "location_2_name": source.get("location_2_name"),
-                "location_2_address": source.get("location_2_address"),
-                "location_3_name": source.get("location_3_name"),
-                "location_3_address": source.get("location_3_address"),
-            })
-
-        # Copy template-specific fields for live events
-        if source.get("template_type") == "live_event":
-            new_call_sheet.update({
-                "load_in_time": source.get("load_in_time"),
-                "doors_time": source.get("doors_time"),
-                "rehearsal_time": source.get("rehearsal_time"),
-                "intermission_time": source.get("intermission_time"),
-                "strike_time": source.get("strike_time"),
-                "truck_location": source.get("truck_location"),
-                "video_village": source.get("video_village"),
-                "comm_channel": source.get("comm_channel"),
-                "td_name": source.get("td_name"),
-                "td_phone": source.get("td_phone"),
-                "stage_manager_name": source.get("stage_manager_name"),
-                "stage_manager_phone": source.get("stage_manager_phone"),
-                "camera_plot": source.get("camera_plot"),
-                "show_rundown": source.get("show_rundown"),
-                "rain_plan": source.get("rain_plan"),
-                "client_notes": source.get("client_notes"),
-                "broadcast_notes": source.get("broadcast_notes"),
-                "playback_notes": source.get("playback_notes"),
-            })
+        # Note: Template-specific fields (medical_corporate, news_eng, live_event)
+        # are not yet in the database schema - skipping for now
 
         # Create the new call sheet
         result = client.table("backlot_call_sheets").insert(new_call_sheet).execute()
@@ -24099,30 +25386,23 @@ async def can_manage_roles(
     client = get_client()
 
     try:
-        token_user_id = user["id"]
+        # user["id"] is already the profile ID from get_current_user_from_token
+        user_id = str(user["id"])
 
-        # Resolve Cognito ID to profile ID if needed
-        # First try by cognito_user_id
-        profile_result = client.table("profiles").select("id, role").eq(
-            "cognito_user_id", token_user_id
+        # Get the profile role using profile ID
+        profile_result = client.table("profiles").select("id, role, is_admin, is_superadmin").eq(
+            "id", user_id
         ).limit(1).execute()
 
-        # If not found, try by id directly
         if not profile_result.data:
-            profile_result = client.table("profiles").select("id, role").eq(
-                "id", token_user_id
-            ).limit(1).execute()
-
-        if not profile_result.data:
-            print(f"[can-manage-roles] No profile found for user: {token_user_id}")
+            print(f"[can-manage-roles] No profile found for user: {user_id}")
             return {"can_manage": False}
 
         profile = profile_result.data[0]
-        user_id = str(profile["id"])
         profile_role = profile.get("role")
 
         # Check admin status first
-        if profile_role in ["admin", "superadmin"]:
+        if profile_role in ["admin", "superadmin"] or profile.get("is_admin") or profile.get("is_superadmin"):
             return {"can_manage": True}
 
         # Check if project owner

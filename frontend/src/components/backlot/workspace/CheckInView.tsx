@@ -56,9 +56,12 @@ import {
   useCheckinSession,
   useSessionCheckins,
   usePerformCheckin,
+  usePerformCheckout,
+  useMyCheckins,
   useSessionByToken,
   CheckinSession,
   CheckinRecord,
+  MyCheckinRecord,
 } from '@/hooks/backlot';
 import { useProductionDays } from '@/hooks/backlot';
 import { useAuth } from '@/context/AuthContext';
@@ -96,11 +99,15 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
   );
   const { data: sessionCheckins } = useSessionCheckins(projectId, selectedSessionId);
 
+  // My check-ins query
+  const { data: myCheckins, isLoading: myCheckinsLoading } = useMyCheckins(projectId);
+
   // Mutations
   const createSession = useCreateCheckinSession(projectId);
   const activateSession = useActivateCheckinSession(projectId);
   const deactivateSession = useDeactivateCheckinSession(projectId);
   const performCheckin = usePerformCheckin();
+  const performCheckout = usePerformCheckout();
 
   // Form state
   const [formData, setFormData] = useState({
@@ -141,6 +148,17 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
       sessionId,
       checkInTime: new Date().toISOString(),
     });
+  };
+
+  const handleCheckout = async (sessionId: string) => {
+    await performCheckout.mutateAsync({
+      session_id: sessionId,
+    });
+  };
+
+  // Check if user has checked into a session today
+  const getUserCheckinForSession = (sessionId: string): MyCheckinRecord | undefined => {
+    return myCheckins?.find((c) => c.session_id === sessionId);
   };
 
   const getCheckinUrl = (token: string) => {
@@ -364,15 +382,16 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {activeSessions.map((session) => {
                   const day = productionDays?.find((d) => d.id === session.production_day_id);
-                  // For now, we'll skip the alreadyCheckedIn check since we don't have a my-checkins API
-                  // In production, this would filter sessionCheckins by user
-                  const alreadyCheckedIn = false;
+                  const userCheckin = getUserCheckinForSession(session.id);
+                  const alreadyCheckedIn = !!userCheckin;
+                  const alreadyCheckedOut = !!userCheckin?.checked_out_at;
                   return (
                     <Card
                       key={session.id}
                       className={cn(
                         'bg-soft-black border-muted-gray/20',
-                        alreadyCheckedIn && 'border-green-500/30'
+                        alreadyCheckedIn && !alreadyCheckedOut && 'border-green-500/30',
+                        alreadyCheckedOut && 'border-muted-gray/30'
                       )}
                     >
                       <CardContent className="py-4">
@@ -387,12 +406,33 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
                                 {new Date(day.date).toLocaleDateString()}
                               </div>
                             )}
+                            {userCheckin && (
+                              <div className="text-xs text-muted-gray mt-1">
+                                In: {new Date(userCheckin.checked_in_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                {userCheckin.checked_out_at && (
+                                  <> • Out: {new Date(userCheckin.checked_out_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
+                                )}
+                                {userCheckin.hours_worked && (
+                                  <> • {userCheckin.hours_worked.toFixed(1)}h</>
+                                )}
+                              </div>
+                            )}
                           </div>
-                          {alreadyCheckedIn ? (
-                            <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                          {alreadyCheckedOut ? (
+                            <Badge className="bg-muted-gray/20 text-muted-gray border-muted-gray/30">
                               <CheckCircle2 className="w-4 h-4 mr-1" />
-                              Checked In
+                              Complete
                             </Badge>
+                          ) : alreadyCheckedIn ? (
+                            <Button
+                              onClick={() => handleCheckout(session.id)}
+                              disabled={performCheckout.isPending}
+                              variant="outline"
+                              className="border-orange-500/30 text-orange-400 hover:bg-orange-500/10"
+                            >
+                              <Clock className="w-4 h-4 mr-2" />
+                              Check Out
+                            </Button>
                           ) : (
                             <Button
                               onClick={() => handleCheckin(session.id)}
@@ -415,12 +455,70 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
           {/* My Check-in History */}
           <div>
             <h3 className="text-lg font-medium text-bone-white mb-4">My Check-in History</h3>
-            <Card className="bg-soft-black border-muted-gray/20">
-              <CardContent className="py-8 text-center">
-                <Calendar className="w-10 h-10 mx-auto text-muted-gray mb-3" />
-                <p className="text-muted-gray">Check-in history coming soon</p>
-              </CardContent>
-            </Card>
+            {myCheckinsLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-16" />
+                <Skeleton className="h-16" />
+              </div>
+            ) : !myCheckins || myCheckins.length === 0 ? (
+              <Card className="bg-soft-black border-muted-gray/20">
+                <CardContent className="py-8 text-center">
+                  <Calendar className="w-10 h-10 mx-auto text-muted-gray mb-3" />
+                  <p className="text-muted-gray">No check-in history yet</p>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card className="bg-soft-black border-muted-gray/20 overflow-hidden">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-muted-gray/20">
+                      <TableHead>Date</TableHead>
+                      <TableHead>Session</TableHead>
+                      <TableHead>Check In</TableHead>
+                      <TableHead>Check Out</TableHead>
+                      <TableHead>Hours</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {myCheckins.map((checkin) => (
+                      <TableRow key={checkin.id} className="border-muted-gray/20">
+                        <TableCell>
+                          {checkin.shoot_date
+                            ? new Date(checkin.shoot_date).toLocaleDateString()
+                            : '-'}
+                        </TableCell>
+                        <TableCell className="capitalize">
+                          {checkin.session_title || 'Check-in'}
+                        </TableCell>
+                        <TableCell>
+                          {new Date(checkin.checked_in_at).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </TableCell>
+                        <TableCell>
+                          {checkin.checked_out_at ? (
+                            new Date(checkin.checked_out_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          ) : (
+                            <span className="text-muted-gray">-</span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {checkin.hours_worked ? (
+                            <span className="text-green-400">{checkin.hours_worked.toFixed(1)}h</span>
+                          ) : (
+                            <span className="text-muted-gray">-</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </Card>
+            )}
           </div>
         </TabsContent>
       </Tabs>

@@ -149,7 +149,7 @@ const SubmissionsTab = () => {
     mutationFn: async ({ id, notes }: { id: string; notes: string }) => {
       // Using the admin notes endpoint
       const params = new URLSearchParams({ notes });
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/api/v1/greenroom/admin/projects/${id}/notes?${params}`, {
+      await fetch(`${import.meta.env.VITE_API_URL || ''}/api/v1/greenroom/admin/projects/${id}/notes?${params}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${api.getToken()}`,

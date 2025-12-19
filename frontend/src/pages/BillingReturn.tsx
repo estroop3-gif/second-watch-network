@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, safeStorage } from "@/lib/api";
 import { toast } from "sonner";
 import { track } from "@/utils/telemetry";
 
@@ -21,7 +21,7 @@ export default function BillingReturn() {
           track("upgrade_success_return", { context, returnTo, resume: true });
         } catch {}
         // Refresh session to pick up new roles from webhook update
-        const refreshToken = localStorage.getItem('refresh_token');
+        const refreshToken = safeStorage.getItem('refresh_token');
         if (refreshToken) {
           try {
             await api.refreshToken(refreshToken);

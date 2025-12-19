@@ -24,7 +24,7 @@ export function useCostByDepartmentAnalytics(projectId: string | null) {
     queryKey: ['backlot', 'analytics', 'cost-by-department', projectId],
     queryFn: async (): Promise<CostByDepartmentAnalytics | null> => {
       if (!projectId) return null;
-      return api.get<CostByDepartmentAnalytics>(`/api/backlot/projects/${projectId}/analytics/cost-by-department`);
+      return api.get<CostByDepartmentAnalytics>(`/api/v1/backlot/projects/${projectId}/analytics/cost-by-department`);
     },
     enabled: !!projectId,
     staleTime: 60000, // 1 minute - analytics can be slightly stale
@@ -40,7 +40,7 @@ export function useTimeScheduleAnalytics(projectId: string | null) {
     queryKey: ['backlot', 'analytics', 'time-schedule', projectId],
     queryFn: async (): Promise<TimeScheduleAnalytics | null> => {
       if (!projectId) return null;
-      return api.get<TimeScheduleAnalytics>(`/api/backlot/projects/${projectId}/analytics/time-and-schedule`);
+      return api.get<TimeScheduleAnalytics>(`/api/v1/backlot/projects/${projectId}/analytics/time-and-schedule`);
     },
     enabled: !!projectId,
     staleTime: 60000,
@@ -56,7 +56,7 @@ export function useUtilizationAnalytics(projectId: string | null) {
     queryKey: ['backlot', 'analytics', 'utilization', projectId],
     queryFn: async (): Promise<UtilizationAnalytics | null> => {
       if (!projectId) return null;
-      return api.get<UtilizationAnalytics>(`/api/backlot/projects/${projectId}/analytics/utilization`);
+      return api.get<UtilizationAnalytics>(`/api/v1/backlot/projects/${projectId}/analytics/utilization`);
     },
     enabled: !!projectId,
     staleTime: 60000,
@@ -72,7 +72,7 @@ export function useAnalyticsOverview(projectId: string | null) {
     queryKey: ['backlot', 'analytics', 'overview', projectId],
     queryFn: async (): Promise<AnalyticsOverview | null> => {
       if (!projectId) return null;
-      return api.get<AnalyticsOverview>(`/api/backlot/projects/${projectId}/analytics/overview`);
+      return api.get<AnalyticsOverview>(`/api/v1/backlot/projects/${projectId}/analytics/overview`);
     },
     enabled: !!projectId,
     staleTime: 60000,

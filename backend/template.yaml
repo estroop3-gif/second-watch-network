@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Second Watch Network API - FastAPI on Lambda
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+    Environment:
+      Variables:
+        APP_ENV: production
+        DEBUG: "False"
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    Description: PostgreSQL connection string
+    NoEcho: true
+  CognitoUserPoolId:
+    Type: String
+    Description: AWS Cognito User Pool ID
+  CognitoClientId:
+    Type: String
+    Description: AWS Cognito Client ID
+  CognitoRegion:
+    Type: String
+    Default: us-east-1
+  S3AvatarsBucket:
+    Type: String
+    Description: S3 bucket for avatar uploads
+  S3BacklotBucket:
+    Type: String
+    Description: S3 bucket for backlot files
+  S3BacklotFilesBucket:
+    Type: String
+    Description: S3 bucket for backlot PDF files
+  FrontendUrl:
+    Type: String
+    Default: https://www.secondwatchnetwork.com
+  StripeSecretKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  StripeWebhookSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  ResendApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+Resources:
+  SecondWatchApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: handler.handler
+      Description: Second Watch Network FastAPI Backend
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          COGNITO_REGION: !Ref CognitoRegion
+          AWS_S3_AVATARS_BUCKET: !Ref S3AvatarsBucket
+          AWS_S3_BACKLOT_BUCKET: !Ref S3BacklotBucket
+          AWS_S3_BACKLOT_FILES_BUCKET: !Ref S3BacklotFilesBucket
+          FRONTEND_URL: !Ref FrontendUrl
+          STRIPE_SECRET_KEY: !Ref StripeSecretKey
+          STRIPE_WEBHOOK_SECRET: !Ref StripeWebhookSecret
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          RESEND_API_KEY: !Ref ResendApiKey
+      Events:
+        ApiRoot:
+          Type: HttpApi
+          Properties:
+            Path: /
+            Method: ANY
+        ApiProxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref S3AvatarsBucket
+        - S3CrudPolicy:
+            BucketName: !Ref S3BacklotBucket
+        - S3CrudPolicy:
+            BucketName: !Ref S3BacklotFilesBucket
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:*
+              Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPoolId}"
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

@@ -6,9 +6,24 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.database import get_client
+from app.core.database import get_client, execute_single
 
 router = APIRouter()
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> str:
+    """
+    Look up the profile ID from a Cognito user ID.
+    Returns the profile ID or None if not found.
+    """
+    uid_str = str(cognito_user_id)
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
+        {"cuid": uid_str, "uid": uid_str}
+    )
+    if not profile_row:
+        return None
+    return profile_row["id"]
 
 
 # =============================================================================
@@ -151,7 +166,7 @@ async def can_view_person(client, project_id: str, viewer_id: str, target_user_i
 # ENDPOINTS
 # =============================================================================
 
-@router.get("/projects/{project_id}/people", response_model=List[PersonListItem])
+@router.get("/projects/{project_id}/people/team-list", response_model=List[PersonListItem])
 async def list_project_people(
     project_id: str,
     department: Optional[str] = Query(None, description="Filter by department"),
@@ -165,22 +180,37 @@ async def list_project_people(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    access = await verify_project_access(client, project_id, user["id"])
+    # Convert Cognito user ID to profile ID for access check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    access = await verify_project_access(client, project_id, profile_id)
     if not access.get("has_access"):
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Get project members with profiles
-    members_resp = client.table("backlot_project_members").select(
-        "*, profiles:user_id(id, full_name, display_name, avatar_url)"
-    ).eq("project_id", project_id).execute()
-
+    # Get project members
+    members_resp = client.table("backlot_project_members").select("*").eq("project_id", project_id).execute()
     members = members_resp.data or []
+
+    # Get profiles for all member user_ids
+    user_ids = [m.get("user_id") for m in members if m.get("user_id")]
+    profiles_by_id: Dict[str, Dict] = {}
+    if user_ids:
+        profiles_resp = client.table("profiles").select("id, full_name, display_name, avatar_url").in_("id", user_ids).execute()
+        for p in (profiles_resp.data or []):
+            profiles_by_id[str(p["id"])] = p
+
+    # Attach profiles to members
+    for member in members:
+        uid = str(member.get("user_id", ""))
+        member["profiles"] = profiles_by_id.get(uid, {})
 
     # Get all backlot roles for this project
     roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
     roles_by_user: Dict[str, List[Dict]] = {}
     for r in (roles_resp.data or []):
-        uid = r["user_id"]
+        uid = str(r["user_id"])
         if uid not in roles_by_user:
             roles_by_user[uid] = []
         roles_by_user[uid].append(r)
@@ -191,11 +221,12 @@ async def list_project_people(
     for task in (tasks_resp.data or []):
         aid = task.get("assigned_to")
         if aid:
-            task_counts[aid] = task_counts.get(aid, 0) + 1
+            aid_str = str(aid)
+            task_counts[aid_str] = task_counts.get(aid_str, 0) + 1
 
     # Get pending timecards
     pending_timecards_resp = client.table("backlot_timecards").select("user_id").eq("project_id", project_id).in_("status", ["draft", "submitted"]).execute()
-    users_with_pending = set(t["user_id"] for t in (pending_timecards_resp.data or []))
+    users_with_pending = set(str(t["user_id"]) for t in (pending_timecards_resp.data or []))
 
     # Get scheduled days count per user (from call sheet people)
     # This is simplified - would need a more complex query in production
@@ -208,9 +239,15 @@ async def list_project_people(
         profile = member.get("profiles") or {}
         user_id = member.get("user_id")
 
-        if not user_id or user_id in seen_users:
+        if not user_id:
             continue
-        seen_users.add(user_id)
+
+        # Convert to string for consistent lookups
+        user_id_str = str(user_id)
+
+        if user_id_str in seen_users:
+            continue
+        seen_users.add(user_id_str)
 
         full_name = profile.get("full_name")
         display_name = profile.get("display_name")
@@ -224,7 +261,7 @@ async def list_project_people(
                 continue
 
         # Get primary role
-        user_roles = roles_by_user.get(user_id, [])
+        user_roles = roles_by_user.get(user_id_str, [])
         primary_role = None
         for r in user_roles:
             if r.get("is_primary"):
@@ -245,15 +282,15 @@ async def list_project_people(
             continue
 
         result.append(PersonListItem(
-            user_id=user_id,
+            user_id=user_id_str,
             full_name=full_name,
             display_name=display_name,
             avatar_url=profile.get("avatar_url"),
             primary_role=primary_role,
             department=dept,
-            days_scheduled=days_scheduled.get(user_id, 0),
-            task_count=task_counts.get(user_id, 0),
-            has_pending_timecard=user_id in users_with_pending,
+            days_scheduled=days_scheduled.get(user_id_str, 0),
+            task_count=task_counts.get(user_id_str, 0),
+            has_pending_timecard=user_id_str in users_with_pending,
         ))
 
     return result
@@ -271,12 +308,17 @@ async def get_person_overview(
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
-    access = await verify_project_access(client, project_id, user["id"])
+    # Convert Cognito user ID to profile ID for access check
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    access = await verify_project_access(client, project_id, profile_id)
     if not access.get("has_access"):
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Check if user can view this person's details
-    if not await can_view_person(client, project_id, user["id"], target_user_id):
+    if not await can_view_person(client, project_id, profile_id, target_user_id):
         raise HTTPException(status_code=403, detail="You don't have permission to view this person's details")
 
     # Get profile
@@ -308,13 +350,20 @@ async def get_person_overview(
 
     # Get schedule (days this person is on call sheets)
     schedule = []
-    csp_resp = client.table("backlot_call_sheet_people").select(
-        "call_time, call_sheet:call_sheet_id(id, date, production_day_id, location_name)"
-    ).eq("member_id", target_user_id).execute()
+    csp_resp = client.table("backlot_call_sheet_people").select("call_time, call_sheet_id").eq("member_id", target_user_id).execute()
+
+    # Get all call sheets for these entries
+    call_sheet_ids = list(set(csp.get("call_sheet_id") for csp in (csp_resp.data or []) if csp.get("call_sheet_id")))
+    call_sheets_by_id: Dict[str, Dict] = {}
+    if call_sheet_ids:
+        cs_resp = client.table("backlot_call_sheets").select("id, date, production_day_id, location_name, general_call_time").in_("id", call_sheet_ids).execute()
+        for cs in (cs_resp.data or []):
+            call_sheets_by_id[str(cs["id"])] = cs
 
     seen_days = set()
     for csp in (csp_resp.data or []):
-        cs = csp.get("call_sheet") or {}
+        cs_id = str(csp.get("call_sheet_id", ""))
+        cs = call_sheets_by_id.get(cs_id, {})
         pd_id = cs.get("production_day_id")
         if pd_id and pd_id not in seen_days:
             seen_days.add(pd_id)
@@ -355,13 +404,18 @@ async def get_person_overview(
 
     # Get tasks assigned to this person
     tasks = []
-    tasks_resp = client.table("backlot_tasks").select(
-        "*, task_list:task_list_id(name)"
-    ).eq("project_id", project_id).eq("assigned_to", target_user_id).execute()
+    tasks_resp = client.table("backlot_tasks").select("*").eq("project_id", project_id).eq("assigned_to", target_user_id).execute()
+
+    # Get task list names
+    task_list_ids = list(set(t.get("task_list_id") for t in (tasks_resp.data or []) if t.get("task_list_id")))
+    task_lists_by_id: Dict[str, str] = {}
+    if task_list_ids:
+        tl_resp = client.table("backlot_task_lists").select("id, name").in_("id", task_list_ids).execute()
+        for tl in (tl_resp.data or []):
+            task_lists_by_id[str(tl["id"])] = tl.get("name")
+
     for task in (tasks_resp.data or []):
-        list_name = None
-        if task.get("task_list"):
-            list_name = task["task_list"].get("name")
+        list_name = task_lists_by_id.get(str(task.get("task_list_id", "")))
         tasks.append(TaskSummary(
             id=task["id"],
             title=task.get("title", ""),
@@ -426,4 +480,8 @@ async def get_my_person_overview(
     Get the current user's person overview for this project
     """
     user = await get_current_user_from_token(authorization)
-    return await get_person_overview(project_id, user["id"], authorization)
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+    return await get_person_overview(project_id, profile_id, authorization)

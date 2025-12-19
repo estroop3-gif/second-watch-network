@@ -12,7 +12,7 @@ import {
   BacklotScoutSummary,
 } from '@/types/backlot';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 /**
  * Get all scout photos for a location with optional filters
@@ -100,7 +100,7 @@ export function useScoutPhotoMutations(locationId: string | null) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
           body: JSON.stringify(input),
         }
@@ -134,7 +134,7 @@ export function useScoutPhotoMutations(locationId: string | null) {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
           body: JSON.stringify(input),
         }
@@ -163,7 +163,7 @@ export function useScoutPhotoMutations(locationId: string | null) {
         {
           method: 'DELETE',
           headers: {
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
         }
       );
@@ -190,7 +190,7 @@ export function useScoutPhotoMutations(locationId: string | null) {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${localStorage.getItem('access_token')}`,
+            Authorization: `Bearer ${api.getToken()}`,
           },
           body: JSON.stringify({ is_primary: true }),
         }

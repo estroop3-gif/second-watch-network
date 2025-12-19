@@ -6,7 +6,7 @@ import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { CommunityProfile } from '@/types';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export interface DirectoryUser {
   profile_id: string;

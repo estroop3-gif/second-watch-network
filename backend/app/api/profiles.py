@@ -170,21 +170,31 @@ async def delete_avatar(authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=f"Failed to delete avatar: {str(e)}")
 
 
-@router.get("/me", response_model=Profile)
+@router.get("/me")
 async def get_my_profile(authorization: str = Header(None)):
     """Get current user's profile"""
+    from uuid import UUID
+
     current_user = await get_current_user_from_token(authorization)
-    cognito_user_id = current_user["id"]
+    user_id = current_user["id"]  # This is the profile ID
 
     try:
         client = get_client()
-        # Look up by cognito_user_id, not id
-        response = client.table("profiles").select("*").eq("cognito_user_id", cognito_user_id).execute()
+        # Look up by profile id (get_current_user_from_token returns profile.id)
+        response = client.table("profiles").select("*").eq("id", user_id).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="Profile not found")
 
-        return response.data[0]
+        # Convert UUID fields to strings for JSON serialization
+        profile = response.data[0]
+        result = {}
+        for key, value in profile.items():
+            if isinstance(value, UUID):
+                result[key] = str(value)
+            else:
+                result[key] = value
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -236,17 +246,19 @@ async def get_profile_by_username(username: str):
 
 
 # Filmmaker Profile Endpoints
-@router.get("/filmmaker/{user_id}", response_model=FilmmakerProfile)
+@router.get("/filmmaker/{user_id}")
 async def get_filmmaker_profile(user_id: str):
     """Get filmmaker profile"""
     try:
         client = get_client()
         response = client.table("filmmaker_profiles").select("*").eq("user_id", user_id).execute()
-        
+
         if not response.data:
             raise HTTPException(status_code=404, detail="Filmmaker profile not found")
-        
+
         return response.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

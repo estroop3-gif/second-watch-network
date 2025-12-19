@@ -43,7 +43,7 @@ import {
   AddBundleResult,
 } from '@/types/backlot';
 
-const RAW_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const RAW_API_URL = import.meta.env.VITE_API_URL || '';
 const API_BASE = RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`;
 
 /**
@@ -1800,6 +1800,7 @@ export function useCreateBudgetFromBundles() {
     onSuccess: (data, variables) => {
       // Invalidate all budget queries for this project
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-budgets', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories'] });
@@ -1852,6 +1853,162 @@ export function useAddBundleToBudget() {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', variables.budgetId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', variables.budgetId] });
+    },
+  });
+}
+
+
+// ============================================================================
+// RECEIPT REIMBURSEMENT HOOKS
+// ============================================================================
+
+/**
+ * Submit a receipt for reimbursement
+ */
+export function useSubmitForReimbursement(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      receiptId,
+      reimbursementTo,
+      notes,
+    }: {
+      receiptId: string;
+      reimbursementTo?: string;
+      notes?: string;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/submit-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            reimbursement_to: reimbursementTo,
+            notes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to submit for reimbursement' }));
+        throw new Error(error.detail || 'Failed to submit for reimbursement');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Approve a receipt for reimbursement (manager only)
+ */
+export function useApproveReimbursement(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (receiptId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/approve-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to approve reimbursement' }));
+        throw new Error(error.detail || 'Failed to approve reimbursement');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Reject a receipt reimbursement request (manager only)
+ */
+export function useRejectReimbursement(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ receiptId, reason }: { receiptId: string; reason?: string }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/reject-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ reason }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reject reimbursement' }));
+        throw new Error(error.detail || 'Failed to reject reimbursement');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Mark a receipt as reimbursed/paid (manager only)
+ */
+export function useMarkReimbursed(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (receiptId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/mark-reimbursed`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to mark as reimbursed' }));
+        throw new Error(error.detail || 'Failed to mark as reimbursed');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
     },
   });
 }

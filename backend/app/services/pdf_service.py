@@ -5,8 +5,21 @@ Uses WeasyPrint to convert HTML templates to professional PDFs
 import io
 import base64
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, date, time
 import httpx
+
+
+def _to_string(value: Any) -> str:
+    """Convert date/time/datetime objects to strings for PDF rendering."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, time):
+        return value.strftime("%H:%M")
+    return str(value)
 
 
 def generate_call_sheet_pdf_html(
@@ -773,13 +786,18 @@ async def generate_call_sheet_pdf(
         except Exception as e:
             print(f"Warning: Could not fetch logo: {e}")
 
-    # Format the date
-    call_date_str = call_sheet.get("date", "")
+    # Format the date - handle both date objects and strings
+    call_date_val = call_sheet.get("date", "")
     try:
-        call_date = datetime.strptime(call_date_str, "%Y-%m-%d")
-        call_date_formatted = call_date.strftime("%A, %B %d, %Y")
-    except:
-        call_date_formatted = call_date_str
+        if isinstance(call_date_val, date):
+            call_date_formatted = call_date_val.strftime("%A, %B %d, %Y")
+        elif isinstance(call_date_val, str) and call_date_val:
+            call_date_obj = datetime.strptime(call_date_val, "%Y-%m-%d")
+            call_date_formatted = call_date_obj.strftime("%A, %B %d, %Y")
+        else:
+            call_date_formatted = str(call_date_val) if call_date_val else ""
+    except Exception:
+        call_date_formatted = str(call_date_val) if call_date_val else ""
 
     # Separate cast and crew
     cast = [p for p in people if p.get("person_type") == "cast" or p.get("character_name")]
@@ -789,31 +807,31 @@ async def generate_call_sheet_pdf(
     if not cast and not crew:
         crew = people
 
-    # Generate HTML
+    # Generate HTML - convert all time fields to strings
     html_content = generate_call_sheet_pdf_html(
-        project_title=project.get("title", ""),
-        call_sheet_title=call_sheet.get("title", "Call Sheet"),
+        project_title=str(project.get("title", "")),
+        call_sheet_title=str(call_sheet.get("title", "Call Sheet")),
         call_sheet_number=call_sheet.get("call_sheet_number"),
-        template_type=call_sheet.get("template_type", "feature"),
+        template_type=str(call_sheet.get("template_type", "feature")),
         call_date=call_date_formatted,
         shoot_day=call_sheet.get("shoot_day"),
-        general_call_time=call_sheet.get("general_call_time", ""),
-        crew_call_time=call_sheet.get("crew_call_time"),
-        first_shot_time=call_sheet.get("first_shot_time"),
-        wrap_time=call_sheet.get("estimated_wrap_time"),
+        general_call_time=_to_string(call_sheet.get("general_call_time")),
+        crew_call_time=_to_string(call_sheet.get("crew_call_time")),
+        first_shot_time=_to_string(call_sheet.get("first_shot_time")),
+        wrap_time=_to_string(call_sheet.get("estimated_wrap_time")),
         locations=locations,
         scenes=scenes,
         cast=cast,
         crew=crew,
         schedule_blocks=call_sheet.get("schedule_blocks", []),
-        weather_info=call_sheet.get("weather_info"),
-        sunrise_time=call_sheet.get("sunrise_time"),
-        sunset_time=call_sheet.get("sunset_time"),
-        special_instructions=call_sheet.get("special_instructions"),
-        safety_notes=call_sheet.get("safety_notes"),
-        hospital_name=call_sheet.get("hospital_name"),
-        hospital_address=call_sheet.get("hospital_address"),
-        hospital_phone=call_sheet.get("hospital_phone"),
+        weather_info=_to_string(call_sheet.get("weather_info")),
+        sunrise_time=_to_string(call_sheet.get("sunrise_time")),
+        sunset_time=_to_string(call_sheet.get("sunset_time")),
+        special_instructions=_to_string(call_sheet.get("special_instructions")),
+        safety_notes=_to_string(call_sheet.get("safety_notes")),
+        hospital_name=_to_string(call_sheet.get("hospital_name")),
+        hospital_address=_to_string(call_sheet.get("hospital_address")),
+        hospital_phone=_to_string(call_sheet.get("hospital_phone")),
         key_contacts=call_sheet.get("key_contacts"),
         custom_contacts=call_sheet.get("custom_contacts", []),
         department_notes=call_sheet.get("department_notes"),
