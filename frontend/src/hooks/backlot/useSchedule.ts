@@ -860,7 +860,7 @@ export function useSendCallSheet() {
  * Get call sheet send history
  */
 export function useCallSheetSendHistory(callSheetId: string | null) {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['backlot-call-sheet-send-history', callSheetId],
     queryFn: async (): Promise<CallSheetSendHistory[]> => {
       if (!callSheetId) return [];
@@ -881,6 +881,13 @@ export function useCallSheetSendHistory(callSheetId: string | null) {
     },
     enabled: !!callSheetId,
   });
+
+  return {
+    sendHistory: query.data || [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  };
 }
 
 /**
