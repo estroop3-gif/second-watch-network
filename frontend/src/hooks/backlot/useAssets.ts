@@ -27,7 +27,8 @@ export function useAssets(projectId: string | null) {
     queryKey: ['backlot', 'assets', projectId],
     queryFn: async (): Promise<BacklotAsset[]> => {
       if (!projectId) return [];
-      return api.get<BacklotAsset[]>(`/api/v1/backlot/projects/${projectId}/assets`);
+      const response = await api.get<{ success: boolean; assets: BacklotAsset[] }>(`/api/v1/backlot/projects/${projectId}/assets`);
+      return response.assets || [];
     },
     enabled: !!projectId,
   });
@@ -194,7 +195,8 @@ export function useProjectDeliverables(projectId: string | null) {
     queryKey: ['backlot', 'deliverables', projectId],
     queryFn: async (): Promise<BacklotProjectDeliverable[]> => {
       if (!projectId) return [];
-      return api.get<BacklotProjectDeliverable[]>(`/api/v1/backlot/projects/${projectId}/deliverables`);
+      const response = await api.get<{ success: boolean; deliverables: BacklotProjectDeliverable[] }>(`/api/v1/backlot/projects/${projectId}/deliverables`);
+      return response.deliverables || [];
     },
     enabled: !!projectId,
   });
