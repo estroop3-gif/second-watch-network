@@ -342,6 +342,46 @@ export function useCallSheets(projectId: string | null) {
     },
   });
 
+  const cloneCallSheet = useMutation({
+    mutationFn: async ({
+      id,
+      options,
+    }: {
+      id: string;
+      options: {
+        new_date: string;
+        new_day_number?: number;
+        new_title?: string;
+        keep_people?: boolean;
+        keep_scenes?: boolean;
+        keep_locations?: boolean;
+        keep_schedule_blocks?: boolean;
+        keep_department_notes?: boolean;
+      };
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${id}/clone`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(options),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to clone call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets', projectId] });
+    },
+  });
+
   return {
     callSheets: data || [],
     isLoading,
@@ -351,6 +391,7 @@ export function useCallSheets(projectId: string | null) {
     updateCallSheet,
     publishCallSheet,
     deleteCallSheet,
+    cloneCallSheet,
   };
 }
 
@@ -524,6 +565,42 @@ export function useCallSheetPeople(callSheetId: string | null) {
     },
   });
 
+  // Bulk update times for a department
+  const bulkUpdateDepartmentTimes = useMutation({
+    mutationFn: async (update: {
+      department: string;
+      call_time?: string;
+      makeup_time?: string;
+      pickup_time?: string;
+      on_set_time?: string;
+      apply_to: 'all' | 'empty_only';
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/people/bulk-update-times`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(update),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update times' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', callSheetId] });
+    },
+  });
+
   return {
     people: data || [],
     isLoading,
@@ -533,6 +610,204 @@ export function useCallSheetPeople(callSheetId: string | null) {
     updatePerson,
     removePerson,
     reorderPeople,
+    bulkUpdateDepartmentTimes,
+  };
+}
+
+// =====================================================
+// Crew Presets
+// =====================================================
+
+interface CrewPresetMember {
+  name: string;
+  role?: string;
+  department?: string;
+  default_call_time?: string;
+  phone?: string;
+  email?: string;
+  is_cast?: boolean;
+  cast_number?: string;
+  character_name?: string;
+}
+
+interface CrewPreset {
+  id: string;
+  project_id?: string;
+  user_id?: string;
+  name: string;
+  description?: string;
+  template_type?: string;
+  crew_members: CrewPresetMember[];
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Hook for managing crew presets for a project
+ */
+export function useCrewPresets(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['backlot-crew-presets', projectId],
+    queryFn: async (): Promise<CrewPreset[]> => {
+      if (!projectId) return [];
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/crew-presets`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch crew presets');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+
+  const createPreset = useMutation({
+    mutationFn: async ({
+      name,
+      description,
+      template_type,
+      crew_members,
+      is_personal,
+    }: {
+      name: string;
+      description?: string;
+      template_type?: string;
+      crew_members: CrewPresetMember[];
+      is_personal?: boolean;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/crew-presets?is_personal=${is_personal || false}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ name, description, template_type, crew_members }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to create preset');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-presets', projectId] });
+    },
+  });
+
+  const deletePreset = useMutation({
+    mutationFn: async (presetId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/crew-presets/${presetId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete preset');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-presets', projectId] });
+    },
+  });
+
+  const applyPreset = useMutation({
+    mutationFn: async ({
+      callSheetId,
+      presetId,
+      clearExisting,
+    }: {
+      callSheetId: string;
+      presetId: string;
+      clearExisting?: boolean;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/apply-preset/${presetId}?clear_existing=${clearExisting || false}`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to apply preset');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-people', variables.callSheetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-presets', projectId] });
+    },
+  });
+
+  const saveAsPreset = useMutation({
+    mutationFn: async ({
+      callSheetId,
+      name,
+      description,
+      is_personal,
+    }: {
+      callSheetId: string;
+      name: string;
+      description?: string;
+      is_personal?: boolean;
+    }) => {
+      const token = getAuthToken();
+
+      const params = new URLSearchParams({
+        preset_name: name,
+        is_personal: String(is_personal || false),
+      });
+      if (description) params.set('preset_description', description);
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/save-as-preset?${params}`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to save as preset');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-presets', projectId] });
+    },
+  });
+
+  return {
+    presets: data || [],
+    isLoading,
+    error,
+    refetch,
+    createPreset,
+    deletePreset,
+    applyPreset,
+    saveAsPreset,
   };
 }
 
@@ -1066,5 +1341,200 @@ export function useSyncCallSheet() {
       queryClient.invalidateQueries({ queryKey: ['backlot-locations'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
     },
+  });
+}
+
+// =====================================================
+// Call Sheet Templates
+// =====================================================
+
+export interface BacklotSavedCallSheetTemplate {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  template_type: string | null;
+  call_sheet_data: Record<string, unknown>;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CallSheetFullData extends BacklotCallSheet {
+  people: BacklotCallSheetPerson[];
+  scenes: BacklotCallSheetScene[];
+  locations: BacklotCallSheetLocation[];
+}
+
+/**
+ * Hook for managing call sheet templates (account-level)
+ */
+export function useCallSheetTemplates() {
+  const queryClient = useQueryClient();
+
+  // Fetch user's templates
+  const templatesQuery = useQuery({
+    queryKey: ['backlot-call-sheet-templates'],
+    queryFn: async (): Promise<BacklotSavedCallSheetTemplate[]> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheet-templates`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch call sheet templates');
+      }
+
+      const data = await response.json();
+      return data.templates || [];
+    },
+  });
+
+  // Create a new template
+  const createTemplate = useMutation({
+    mutationFn: async (data: {
+      name: string;
+      description?: string;
+      template_type?: string;
+      call_sheet_data: Record<string, unknown>;
+    }): Promise<BacklotSavedCallSheetTemplate> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheet-templates`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(data),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create template' }));
+        throw new Error(error.detail || 'Failed to create template');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-templates'] });
+    },
+  });
+
+  // Delete a template
+  const deleteTemplate = useMutation({
+    mutationFn: async (templateId: string): Promise<void> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheet-templates/${templateId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete template' }));
+        throw new Error(error.detail || 'Failed to delete template');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-templates'] });
+    },
+  });
+
+  // Save an existing call sheet as a template
+  const saveAsTemplate = useMutation({
+    mutationFn: async (data: {
+      callSheetId: string;
+      name: string;
+      description?: string;
+    }): Promise<BacklotSavedCallSheetTemplate> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${data.callSheetId}/save-as-template`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: data.name,
+          description: data.description,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to save as template' }));
+        throw new Error(error.detail || 'Failed to save as template');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-templates'] });
+    },
+  });
+
+  // Increment use count when a template is used
+  const incrementUseCount = useMutation({
+    mutationFn: async (templateId: string): Promise<void> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheet-templates/${templateId}/use`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        // Don't throw - this is a non-critical operation
+        console.warn('Failed to increment template use count');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet-templates'] });
+    },
+  });
+
+  return {
+    templates: templatesQuery.data || [],
+    isLoading: templatesQuery.isLoading,
+    error: templatesQuery.error,
+    createTemplate,
+    deleteTemplate,
+    saveAsTemplate,
+    incrementUseCount,
+  };
+}
+
+/**
+ * Fetch full call sheet data including people, scenes, and locations
+ * Used for prefilling from a previous call sheet
+ */
+export function useCallSheetFullData(callSheetId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-call-sheet-full', callSheetId],
+    queryFn: async (): Promise<CallSheetFullData> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/call-sheets/${callSheetId}/full`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch call sheet full data');
+      }
+
+      return response.json();
+    },
+    enabled: !!callSheetId,
   });
 }

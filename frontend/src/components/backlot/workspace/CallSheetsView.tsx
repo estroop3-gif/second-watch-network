@@ -5,6 +5,16 @@ import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   FileText,
   Plus,
@@ -20,6 +30,7 @@ import {
   Loader2,
   Mail,
   History,
+  Copy,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -48,7 +59,8 @@ const CallSheetCard: React.FC<{
   onSend: (sheet: BacklotCallSheet) => void;
   onView: (sheet: BacklotCallSheet) => void;
   onEdit: (sheet: BacklotCallSheet) => void;
-}> = ({ sheet, canEdit, onPublish, onDelete, onSend, onView, onEdit }) => {
+  onClone: (sheet: BacklotCallSheet) => void;
+}> = ({ sheet, canEdit, onPublish, onDelete, onSend, onView, onEdit, onClone }) => {
   return (
     <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
       <div className="flex items-start justify-between gap-3">
@@ -160,6 +172,10 @@ const CallSheetCard: React.FC<{
                   <Edit className="w-4 h-4 mr-2" />
                   Edit
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onClone(sheet)}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Clone
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={() => onSend(sheet)}>
                   <Mail className="w-4 h-4 mr-2" />
@@ -184,11 +200,14 @@ const CallSheetCard: React.FC<{
 };
 
 const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) => {
-  const { callSheets, isLoading, publishCallSheet, deleteCallSheet } = useCallSheets(projectId);
+  const { callSheets, isLoading, publishCallSheet, deleteCallSheet, cloneCallSheet } = useCallSheets(projectId);
   const [sendModalSheet, setSendModalSheet] = useState<BacklotCallSheet | null>(null);
   const [viewSheet, setViewSheet] = useState<BacklotCallSheet | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editSheet, setEditSheet] = useState<BacklotCallSheet | null>(null);
+  const [cloneSheet, setCloneSheet] = useState<BacklotCallSheet | null>(null);
+  const [cloneDate, setCloneDate] = useState('');
+  const [isCloning, setIsCloning] = useState(false);
 
   const handlePublish = async (id: string, publish: boolean) => {
     await publishCallSheet.mutateAsync({ id, publish });
@@ -214,6 +233,37 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
 
   const handleCreate = () => {
     setIsCreateModalOpen(true);
+  };
+
+  const handleClone = (sheet: BacklotCallSheet) => {
+    // Set default date to day after the source call sheet
+    const sourceDate = new Date(sheet.date);
+    sourceDate.setDate(sourceDate.getDate() + 1);
+    setCloneDate(sourceDate.toISOString().split('T')[0]);
+    setCloneSheet(sheet);
+  };
+
+  const handleCloneConfirm = async () => {
+    if (!cloneSheet || !cloneDate) return;
+
+    setIsCloning(true);
+    try {
+      await cloneCallSheet.mutateAsync({
+        id: cloneSheet.id,
+        options: {
+          new_date: cloneDate,
+          keep_people: true,
+          keep_scenes: true,
+          keep_locations: true,
+          keep_schedule_blocks: true,
+          keep_department_notes: true,
+        },
+      });
+      setCloneSheet(null);
+      setCloneDate('');
+    } finally {
+      setIsCloning(false);
+    }
   };
 
   if (isLoading) {
@@ -262,6 +312,7 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
               onSend={handleSend}
               onView={handleView}
               onEdit={handleEdit}
+              onClone={handleClone}
             />
           ))}
         </div>
@@ -319,6 +370,56 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
           }}
         />
       )}
+
+      {/* Clone Modal */}
+      <Dialog open={!!cloneSheet} onOpenChange={(open) => !open && setCloneSheet(null)}>
+        <DialogContent className="bg-deep-black border-muted-gray/30 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">Clone Call Sheet</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              Create a copy of "{cloneSheet?.title}" with all cast, crew, scenes, and settings.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-muted-gray">New Date</Label>
+              <Input
+                type="date"
+                value={cloneDate}
+                onChange={(e) => setCloneDate(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+              />
+            </div>
+            <p className="text-xs text-muted-gray">
+              The cloned call sheet will include all people, scenes, locations, schedule, and department notes.
+            </p>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setCloneSheet(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCloneConfirm}
+              disabled={!cloneDate || isCloning}
+              className="bg-accent-yellow text-deep-black hover:bg-accent-yellow/90"
+            >
+              {isCloning ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Cloning...
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Clone Call Sheet
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

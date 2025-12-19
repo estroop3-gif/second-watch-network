@@ -624,7 +624,8 @@ async def is_project_owner(project_id: str, user_id: str) -> bool:
     ).limit(1).execute()
 
     if response.data and len(response.data) > 0:
-        return response.data[0]["owner_id"] == user_id
+        # Convert both to strings to handle UUID objects from database
+        return str(response.data[0]["owner_id"]) == str(user_id)
 
     return False
 

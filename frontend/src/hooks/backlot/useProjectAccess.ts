@@ -589,3 +589,114 @@ export function useCanManageAccess(projectId: string | null) {
     canViewTab(config, 'access')
   );
 }
+
+// ============================================================================
+// UNIFIED PEOPLE
+// ============================================================================
+
+// Unified person interface (mirrors backend)
+export interface UnifiedPerson {
+  id: string;
+  source: 'team' | 'contact' | 'both';
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  access_role?: string | null;
+  backlot_roles: string[];
+  primary_role?: string | null;
+  user_avatar?: string | null;
+  user_username?: string | null;
+  contact_type?: string | null;
+  contact_status?: string | null;
+  company?: string | null;
+  role_interest?: string | null;
+  is_team_member: boolean;
+  has_account: boolean;
+  contact_id?: string | null;
+  member_id?: string | null;
+  user_id?: string | null;
+}
+
+export interface UnifiedPeopleResponse {
+  team: ProjectMemberWithRoles[];
+  contacts: Record<string, unknown>[];
+  unified: UnifiedPerson[];
+}
+
+/**
+ * Get unified view of all people (team members + contacts)
+ */
+export function useUnifiedPeople(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-unified-people', projectId],
+    queryFn: async (): Promise<UnifiedPeopleResponse> => {
+      if (!projectId) {
+        return { team: [], contacts: [], unified: [] };
+      }
+
+      const response = await apiClient.get<UnifiedPeopleResponse>(
+        `/api/v1/backlot/projects/${projectId}/people`
+      );
+      return response;
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Add a team member from an existing contact
+ */
+export function useAddMemberFromContact(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      contactId,
+      role,
+      backlotRole,
+    }: {
+      contactId: string;
+      role?: string;
+      backlotRole?: string;
+    }) => {
+      if (!projectId) throw new Error('Project ID required');
+
+      const response = await apiClient.post<ProjectMemberWithRoles>(
+        `/api/v1/backlot/projects/${projectId}/access/members/from-contact`,
+        {
+          contact_id: contactId,
+          role: role || 'viewer',
+          backlot_role: backlotRole,
+        }
+      );
+      return response;
+    },
+    onSuccess: () => {
+      // Invalidate all relevant queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-members-access', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-members'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-people', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-contacts', projectId] });
+    },
+  });
+}
+
+/**
+ * Get suggested backlot role for a contact
+ */
+export function useSuggestRole(projectId: string | null, contactId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-suggest-role', projectId, contactId],
+    queryFn: async (): Promise<{ role_interest: string | null; suggested_role: string | null }> => {
+      if (!projectId || !contactId) {
+        return { role_interest: null, suggested_role: null };
+      }
+
+      const response = await apiClient.get<{ role_interest: string | null; suggested_role: string | null }>(
+        `/api/v1/backlot/projects/${projectId}/people/suggest-role?contact_id=${contactId}`
+      );
+      return response;
+    },
+    enabled: !!projectId && !!contactId,
+  });
+}

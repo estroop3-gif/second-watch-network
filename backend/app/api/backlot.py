@@ -21,6 +21,7 @@ from fastapi.responses import Response
 import uuid
 import re
 import os
+import json
 import tempfile
 import requests
 from pypdf import PdfReader
@@ -1206,6 +1207,28 @@ class CallSheetLocation(BaseModel):
     sort_order: int = 0
     created_at: datetime
     updated_at: datetime
+
+
+class BulkDepartmentTimeUpdate(BaseModel):
+    """Request body for bulk updating times for a department"""
+    department: str
+    call_time: Optional[str] = None
+    makeup_time: Optional[str] = None  # For cast
+    pickup_time: Optional[str] = None  # For cast
+    on_set_time: Optional[str] = None  # For cast
+    apply_to: str = "all"  # "all" or "empty_only"
+
+
+class CallSheetCloneInput(BaseModel):
+    """Request body for cloning a call sheet"""
+    new_date: str  # ISO date string for the new call sheet
+    new_day_number: Optional[int] = None  # Optional new day number
+    new_title: Optional[str] = None  # Optional new title
+    keep_people: bool = True  # Clone cast & crew
+    keep_scenes: bool = True  # Clone scene list
+    keep_locations: bool = True  # Clone locations
+    keep_schedule_blocks: bool = True  # Clone schedule blocks
+    keep_department_notes: bool = True  # Clone department notes
 
 
 # =====================================================
@@ -6578,18 +6601,26 @@ async def create_project_location(
     and automatically attached to the project.
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    # Convert to string for database comparisons
+    profile_id_str = str(profile_id)
 
     # Verify project membership with edit permissions (check both owner and members)
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+    is_owner = str(project_response.data[0]["owner_id"]) == profile_id_str
 
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id_str).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -6628,7 +6659,7 @@ async def create_project_location(
             "region_tag": location.region_tag,
             "location_type": location.location_type,
             "amenities": location.amenities or [],
-            "created_by_user_id": user_id,
+            "created_by_user_id": profile_id,
             "created_by_project_id": project_id,
             "project_id": None  # Global location, not project-specific
         }
@@ -6644,7 +6675,7 @@ async def create_project_location(
         attachment_data = {
             "project_id": project_id,
             "location_id": new_location["id"],
-            "attached_by_user_id": user_id
+            "attached_by_user_id": profile_id
         }
 
         client.table("backlot_project_locations").insert(attachment_data).execute()
@@ -6672,18 +6703,26 @@ async def attach_location_to_project(
     Attach an existing location from the global library to a project.
     """
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_user_id = user["id"]
     client = get_client()
+
+    # Convert Cognito ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=404, detail="User profile not found")
+
+    # Convert to string for database comparisons
+    profile_id_str = str(profile_id)
 
     # Verify project membership (check both owner and members)
     project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+    is_owner = str(project_response.data[0]["owner_id"]) == profile_id_str
 
     if not is_owner:
-        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id_str).execute()
         if not member_response.data:
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
@@ -6714,7 +6753,7 @@ async def attach_location_to_project(
             "location_id": attachment.location_id,
             "project_notes": attachment.project_notes,
             "scene_description": attachment.scene_description,
-            "attached_by_user_id": user_id
+            "attached_by_user_id": profile_id
         }
 
         result = client.table("backlot_project_locations").insert(attachment_data).execute()
@@ -22634,26 +22673,70 @@ async def create_call_sheet(
     try:
         await verify_project_access(client, project_id, user["id"])
 
+        # All supported call sheet fields
+        allowed_fields = [
+            # Core fields
+            "production_day_id", "title", "date", "template_type",
+            "production_title", "production_company", "header_logo_url",
+            "shoot_day_number", "total_shoot_days",
+            # Timing
+            "crew_call_time", "general_call_time", "first_shot_time",
+            "breakfast_time", "lunch_time", "dinner_time",
+            "estimated_wrap_time", "sunrise_time", "sunset_time",
+            # Location
+            "location_name", "location_address", "parking_notes",
+            "parking_instructions", "basecamp_location",
+            # Contacts
+            "production_office_phone", "production_email",
+            "upm_name", "upm_phone", "first_ad_name", "first_ad_phone",
+            "director_name", "director_phone", "producer_name", "producer_phone",
+            "production_contact", "production_phone",
+            # Department notes
+            "camera_notes", "sound_notes", "grip_electric_notes", "art_notes",
+            "wardrobe_notes", "makeup_hair_notes", "stunts_notes", "vfx_notes",
+            "transport_notes", "catering_notes",
+            # Schedule
+            "schedule_blocks",
+            # Weather
+            "weather_forecast", "weather_info",
+            # Safety
+            "nearest_hospital", "hospital_address", "hospital_name", "hospital_phone",
+            "set_medic", "fire_safety_officer", "safety_notes",
+            # Additional
+            "general_notes", "advance_schedule", "special_instructions",
+            # Medical/Corporate template
+            "hipaa_officer", "privacy_notes", "release_status", "restricted_areas",
+            "dress_code", "client_name", "client_phone", "facility_contact", "facility_phone",
+            # News/ENG template
+            "deadline_time", "story_angle", "reporter_name", "reporter_phone", "subject_notes",
+            "location_2_name", "location_2_address", "location_3_name", "location_3_address",
+            # Live Event template
+            "load_in_time", "rehearsal_time", "doors_time", "intermission_time", "strike_time",
+            "truck_location", "video_village", "comm_channel",
+            "td_name", "td_phone", "stage_manager_name", "stage_manager_phone",
+            "camera_plot", "show_rundown", "rain_plan",
+            "client_notes", "broadcast_notes", "playback_notes",
+            # Custom contacts
+            "custom_contacts",
+        ]
+
+        # Fields that need JSON serialization for JSONB columns
+        jsonb_fields = ["schedule_blocks", "custom_contacts"]
+
         sheet_data = {
             "project_id": project_id,
-            "production_day_id": sheet.get("production_day_id"),
-            "title": sheet.get("title"),
-            "date": sheet.get("date"),
-            "general_call_time": sheet.get("general_call_time"),
-            "location_name": sheet.get("location_name"),
-            "location_address": sheet.get("location_address"),
-            "parking_notes": sheet.get("parking_notes"),
-            "production_contact": sheet.get("production_contact"),
-            "production_phone": sheet.get("production_phone"),
-            "schedule_blocks": sheet.get("schedule_blocks", []),
-            "weather_info": sheet.get("weather_info"),
-            "special_instructions": sheet.get("special_instructions"),
-            "safety_notes": sheet.get("safety_notes"),
-            "hospital_name": sheet.get("hospital_name"),
-            "hospital_address": sheet.get("hospital_address"),
-            "hospital_phone": sheet.get("hospital_phone"),
             "created_by": user["id"],
         }
+
+        # Copy all allowed fields from input
+        for field in allowed_fields:
+            if field in sheet and sheet[field] is not None:
+                value = sheet[field]
+                # Serialize JSONB fields to JSON strings
+                if field in jsonb_fields and isinstance(value, (list, dict)):
+                    sheet_data[field] = json.dumps(value)
+                else:
+                    sheet_data[field] = value
 
         result = client.table("backlot_call_sheets").insert(sheet_data).execute()
 
@@ -22683,14 +22766,65 @@ async def update_call_sheet(
 
         await verify_project_access(client, existing.data[0]["project_id"], user["id"])
 
+        # All supported call sheet fields
+        allowed_fields = [
+            # Core fields
+            "production_day_id", "title", "date", "template_type",
+            "production_title", "production_company", "header_logo_url",
+            "shoot_day_number", "total_shoot_days",
+            # Timing
+            "crew_call_time", "general_call_time", "first_shot_time",
+            "breakfast_time", "lunch_time", "dinner_time",
+            "estimated_wrap_time", "sunrise_time", "sunset_time",
+            # Location
+            "location_name", "location_address", "parking_notes",
+            "parking_instructions", "basecamp_location",
+            # Contacts
+            "production_office_phone", "production_email",
+            "upm_name", "upm_phone", "first_ad_name", "first_ad_phone",
+            "director_name", "director_phone", "producer_name", "producer_phone",
+            "production_contact", "production_phone",
+            # Department notes
+            "camera_notes", "sound_notes", "grip_electric_notes", "art_notes",
+            "wardrobe_notes", "makeup_hair_notes", "stunts_notes", "vfx_notes",
+            "transport_notes", "catering_notes",
+            # Schedule
+            "schedule_blocks",
+            # Weather
+            "weather_forecast", "weather_info",
+            # Safety
+            "nearest_hospital", "hospital_address", "hospital_name", "hospital_phone",
+            "set_medic", "fire_safety_officer", "safety_notes",
+            # Additional
+            "general_notes", "advance_schedule", "special_instructions",
+            # Medical/Corporate template
+            "hipaa_officer", "privacy_notes", "release_status", "restricted_areas",
+            "dress_code", "client_name", "client_phone", "facility_contact", "facility_phone",
+            # News/ENG template
+            "deadline_time", "story_angle", "reporter_name", "reporter_phone", "subject_notes",
+            "location_2_name", "location_2_address", "location_3_name", "location_3_address",
+            # Live Event template
+            "load_in_time", "rehearsal_time", "doors_time", "intermission_time", "strike_time",
+            "truck_location", "video_village", "comm_channel",
+            "td_name", "td_phone", "stage_manager_name", "stage_manager_phone",
+            "camera_plot", "show_rundown", "rain_plan",
+            "client_notes", "broadcast_notes", "playback_notes",
+            # Custom contacts
+            "custom_contacts",
+        ]
+
+        # Fields that need JSON serialization for JSONB columns
+        jsonb_fields = ["schedule_blocks", "custom_contacts"]
+
         update_data = {}
-        for field in ["production_day_id", "title", "date", "general_call_time",
-                      "location_name", "location_address", "parking_notes",
-                      "production_contact", "production_phone", "schedule_blocks",
-                      "weather_info", "special_instructions", "safety_notes",
-                      "hospital_name", "hospital_address", "hospital_phone"]:
+        for field in allowed_fields:
             if field in sheet:
-                update_data[field] = sheet[field]
+                value = sheet[field]
+                # Serialize JSONB fields to JSON strings
+                if field in jsonb_fields and isinstance(value, (list, dict)):
+                    update_data[field] = json.dumps(value)
+                else:
+                    update_data[field] = value
 
         result = client.table("backlot_call_sheets").update(update_data).eq("id", call_sheet_id).execute()
 
@@ -22760,6 +22894,949 @@ async def delete_call_sheet(
         raise
     except Exception as e:
         print(f"Error deleting call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/clone")
+async def clone_call_sheet(
+    call_sheet_id: str,
+    clone_input: CallSheetCloneInput,
+    authorization: str = Header(None)
+):
+    """Clone a call sheet with selected data"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the source call sheet
+        source_result = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+        if not source_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        source = source_result.data[0]
+        await verify_project_access(client, source["project_id"], user["id"])
+
+        # Prepare the new call sheet data
+        new_call_sheet = {
+            "project_id": source["project_id"],
+            "production_day_id": source.get("production_day_id"),
+            "template_type": source.get("template_type", "feature"),
+            "shoot_date": clone_input.new_date,
+            "day_number": clone_input.new_day_number or source.get("day_number"),
+            "title": clone_input.new_title or f"Copy of {source.get('title', 'Call Sheet')}",
+            "status": "draft",  # Always start as draft
+            # Core info
+            "general_crew_call": source.get("general_crew_call"),
+            "first_shot_time": source.get("first_shot_time"),
+            "breakfast_time": source.get("breakfast_time"),
+            "lunch_time": source.get("lunch_time"),
+            "dinner_time": source.get("dinner_time"),
+            "estimated_wrap": source.get("estimated_wrap"),
+            "sunrise_time": source.get("sunrise_time"),
+            "sunset_time": source.get("sunset_time"),
+            # Weather and notes
+            "weather_forecast": source.get("weather_forecast"),
+            "special_instructions": source.get("special_instructions"),
+            # Contacts
+            "production_office_phone": source.get("production_office_phone"),
+            "set_phone": source.get("set_phone"),
+            # Safety info
+            "nearest_hospital": source.get("nearest_hospital"),
+            "hospital_address": source.get("hospital_address"),
+            "set_medic": source.get("set_medic"),
+            "covid_officer": source.get("covid_officer"),
+            "fire_safety_officer": source.get("fire_safety_officer"),
+            # Additional info
+            "walkies_channel": source.get("walkies_channel"),
+            "meal_vendor": source.get("meal_vendor"),
+            "header_logo_url": source.get("header_logo_url"),
+        }
+
+        # Copy department notes if requested
+        if clone_input.keep_department_notes:
+            new_call_sheet.update({
+                "camera_notes": source.get("camera_notes"),
+                "sound_notes": source.get("sound_notes"),
+                "grip_electric_notes": source.get("grip_electric_notes"),
+                "art_notes": source.get("art_notes"),
+                "wardrobe_notes": source.get("wardrobe_notes"),
+                "makeup_hair_notes": source.get("makeup_hair_notes"),
+                "stunts_notes": source.get("stunts_notes"),
+                "vfx_notes": source.get("vfx_notes"),
+                "transport_notes": source.get("transport_notes"),
+                "catering_notes": source.get("catering_notes"),
+            })
+
+        # Copy schedule blocks if requested
+        if clone_input.keep_schedule_blocks:
+            new_call_sheet["schedule_blocks"] = source.get("schedule_blocks")
+            new_call_sheet["custom_contacts"] = source.get("custom_contacts")
+
+        # Copy template-specific fields for medical/corporate
+        if source.get("template_type") == "medical_corporate":
+            new_call_sheet.update({
+                "hipaa_officer": source.get("hipaa_officer"),
+                "privacy_notes": source.get("privacy_notes"),
+                "release_status": source.get("release_status"),
+                "dress_code": source.get("dress_code"),
+                "restricted_areas": source.get("restricted_areas"),
+                "client_name": source.get("client_name"),
+                "client_phone": source.get("client_phone"),
+                "facility_contact": source.get("facility_contact"),
+                "facility_phone": source.get("facility_phone"),
+            })
+
+        # Copy template-specific fields for news/eng
+        if source.get("template_type") == "news_eng":
+            new_call_sheet.update({
+                "deadline_time": source.get("deadline_time"),
+                "story_angle": source.get("story_angle"),
+                "reporter_name": source.get("reporter_name"),
+                "reporter_phone": source.get("reporter_phone"),
+                "subject_notes": source.get("subject_notes"),
+                "location_2_name": source.get("location_2_name"),
+                "location_2_address": source.get("location_2_address"),
+                "location_3_name": source.get("location_3_name"),
+                "location_3_address": source.get("location_3_address"),
+            })
+
+        # Copy template-specific fields for live events
+        if source.get("template_type") == "live_event":
+            new_call_sheet.update({
+                "load_in_time": source.get("load_in_time"),
+                "doors_time": source.get("doors_time"),
+                "rehearsal_time": source.get("rehearsal_time"),
+                "intermission_time": source.get("intermission_time"),
+                "strike_time": source.get("strike_time"),
+                "truck_location": source.get("truck_location"),
+                "video_village": source.get("video_village"),
+                "comm_channel": source.get("comm_channel"),
+                "td_name": source.get("td_name"),
+                "td_phone": source.get("td_phone"),
+                "stage_manager_name": source.get("stage_manager_name"),
+                "stage_manager_phone": source.get("stage_manager_phone"),
+                "camera_plot": source.get("camera_plot"),
+                "show_rundown": source.get("show_rundown"),
+                "rain_plan": source.get("rain_plan"),
+                "client_notes": source.get("client_notes"),
+                "broadcast_notes": source.get("broadcast_notes"),
+                "playback_notes": source.get("playback_notes"),
+            })
+
+        # Create the new call sheet
+        result = client.table("backlot_call_sheets").insert(new_call_sheet).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create cloned call sheet")
+
+        new_call_sheet_id = result.data[0]["id"]
+
+        # Clone people if requested
+        if clone_input.keep_people:
+            people_result = client.table("backlot_call_sheet_people").select("*").eq(
+                "call_sheet_id", call_sheet_id
+            ).execute()
+
+            for person in people_result.data or []:
+                new_person = {
+                    "call_sheet_id": new_call_sheet_id,
+                    "member_id": person.get("member_id"),
+                    "name": person.get("name"),
+                    "role": person.get("role"),
+                    "department": person.get("department"),
+                    "call_time": person.get("call_time"),
+                    "phone": person.get("phone"),
+                    "email": person.get("email"),
+                    "notes": person.get("notes"),
+                    "makeup_time": person.get("makeup_time"),
+                    "pickup_time": person.get("pickup_time"),
+                    "on_set_time": person.get("on_set_time"),
+                    "wardrobe_notes": person.get("wardrobe_notes"),
+                    "sort_order": person.get("sort_order"),
+                    "is_cast": person.get("is_cast"),
+                    "cast_number": person.get("cast_number"),
+                    "character_name": person.get("character_name"),
+                }
+                client.table("backlot_call_sheet_people").insert(new_person).execute()
+
+        # Clone locations if requested
+        if clone_input.keep_locations:
+            locations_result = client.table("backlot_call_sheet_locations").select("*").eq(
+                "call_sheet_id", call_sheet_id
+            ).execute()
+
+            for location in locations_result.data or []:
+                new_location = {
+                    "call_sheet_id": new_call_sheet_id,
+                    "location_id": location.get("location_id"),
+                    "library_location_id": location.get("library_location_id"),
+                    "location_number": location.get("location_number"),
+                    "name": location.get("name"),
+                    "address": location.get("address"),
+                    "parking_instructions": location.get("parking_instructions"),
+                    "basecamp_location": location.get("basecamp_location"),
+                    "call_time": location.get("call_time"),
+                    "notes": location.get("notes"),
+                    "sort_order": location.get("sort_order"),
+                }
+                client.table("backlot_call_sheet_locations").insert(new_location).execute()
+
+        # Clone scenes if requested
+        if clone_input.keep_scenes:
+            scenes_result = client.table("backlot_call_sheet_scenes").select("*").eq(
+                "call_sheet_id", call_sheet_id
+            ).execute()
+
+            for scene in scenes_result.data or []:
+                new_scene = {
+                    "call_sheet_id": new_call_sheet_id,
+                    "scene_number": scene.get("scene_number"),
+                    "setting": scene.get("setting"),
+                    "int_ext": scene.get("int_ext"),
+                    "time_of_day": scene.get("time_of_day"),
+                    "description": scene.get("description"),
+                    "pages": scene.get("pages"),
+                    "cast_ids": scene.get("cast_ids"),
+                    "notes": scene.get("notes"),
+                    "sort_order": scene.get("sort_order"),
+                }
+                client.table("backlot_call_sheet_scenes").insert(new_scene).execute()
+
+        return {
+            "success": True,
+            "call_sheet_id": new_call_sheet_id,
+            "message": f"Call sheet cloned successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error cloning call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CREW PRESETS
+# =====================================================
+
+class CrewPresetMemberInput(BaseModel):
+    """A single crew member in a preset"""
+    name: str
+    role: Optional[str] = None
+    department: Optional[str] = None
+    default_call_time: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    is_cast: bool = False
+    cast_number: Optional[str] = None
+    character_name: Optional[str] = None
+
+
+class CrewPresetInput(BaseModel):
+    """Request body for creating/updating a crew preset"""
+    name: str
+    description: Optional[str] = None
+    template_type: Optional[str] = None  # Optionally associate with a template type
+    crew_members: List[CrewPresetMemberInput]
+
+
+@router.get("/projects/{project_id}/crew-presets")
+async def get_crew_presets(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all crew presets for a project (including user's personal presets)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get project presets and user's personal presets
+        result = client.table("backlot_crew_presets").select("*").or_(
+            f"project_id.eq.{project_id},user_id.eq.{user['id']}"
+        ).order("use_count", desc=True).execute()
+
+        return result.data or []
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting crew presets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/crew-presets")
+async def create_crew_preset(
+    project_id: str,
+    preset: CrewPresetInput,
+    is_personal: bool = False,
+    authorization: str = Header(None)
+):
+    """Create a new crew preset for a project or as a personal preset"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        new_preset = {
+            "name": preset.name,
+            "description": preset.description,
+            "template_type": preset.template_type,
+            "crew_members": [m.dict() for m in preset.crew_members],
+            "use_count": 0,
+        }
+
+        # If personal preset, only set user_id; otherwise set project_id
+        if is_personal:
+            new_preset["user_id"] = user["id"]
+        else:
+            new_preset["project_id"] = project_id
+
+        result = client.table("backlot_crew_presets").insert(new_preset).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create preset")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating crew preset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/crew-presets/{preset_id}")
+async def update_crew_preset(
+    preset_id: str,
+    preset: CrewPresetInput,
+    authorization: str = Header(None)
+):
+    """Update an existing crew preset"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the preset and verify access
+        existing = client.table("backlot_crew_presets").select("*").eq("id", preset_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Preset not found")
+
+        preset_data = existing.data[0]
+
+        # Verify user has access (owns the preset or has project access)
+        if preset_data.get("user_id"):
+            if str(preset_data["user_id"]) != str(user["id"]):
+                raise HTTPException(status_code=403, detail="Not authorized to modify this preset")
+        elif preset_data.get("project_id"):
+            await verify_project_access(client, preset_data["project_id"], user["id"])
+
+        update_data = {
+            "name": preset.name,
+            "description": preset.description,
+            "template_type": preset.template_type,
+            "crew_members": [m.dict() for m in preset.crew_members],
+        }
+
+        result = client.table("backlot_crew_presets").update(update_data).eq("id", preset_id).execute()
+
+        return result.data[0] if result.data else None
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating crew preset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/crew-presets/{preset_id}")
+async def delete_crew_preset(
+    preset_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a crew preset"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the preset and verify access
+        existing = client.table("backlot_crew_presets").select("*").eq("id", preset_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Preset not found")
+
+        preset_data = existing.data[0]
+
+        # Verify user has access
+        if preset_data.get("user_id"):
+            if str(preset_data["user_id"]) != str(user["id"]):
+                raise HTTPException(status_code=403, detail="Not authorized to delete this preset")
+        elif preset_data.get("project_id"):
+            await verify_project_access(client, preset_data["project_id"], user["id"])
+
+        client.table("backlot_crew_presets").delete().eq("id", preset_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting crew preset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/apply-preset/{preset_id}")
+async def apply_crew_preset_to_call_sheet(
+    call_sheet_id: str,
+    preset_id: str,
+    clear_existing: bool = False,
+    authorization: str = Header(None)
+):
+    """Apply a crew preset to a call sheet, adding all crew members from the preset"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify call sheet access
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        # Get the preset
+        preset_result = client.table("backlot_crew_presets").select("*").eq("id", preset_id).execute()
+        if not preset_result.data:
+            raise HTTPException(status_code=404, detail="Preset not found")
+
+        preset = preset_result.data[0]
+        crew_members = preset.get("crew_members", [])
+
+        # If clear_existing, remove all current people
+        if clear_existing:
+            client.table("backlot_call_sheet_people").delete().eq("call_sheet_id", call_sheet_id).execute()
+
+        # Get current max sort_order
+        existing_people = client.table("backlot_call_sheet_people").select("sort_order").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("sort_order", desc=True).limit(1).execute()
+
+        max_sort = 0
+        if existing_people.data:
+            max_sort = existing_people.data[0].get("sort_order", 0)
+
+        # Add each crew member from the preset
+        added_count = 0
+        for i, member in enumerate(crew_members):
+            new_person = {
+                "call_sheet_id": call_sheet_id,
+                "name": member.get("name"),
+                "role": member.get("role"),
+                "department": member.get("department"),
+                "call_time": member.get("default_call_time", "06:00"),
+                "phone": member.get("phone"),
+                "email": member.get("email"),
+                "is_cast": member.get("is_cast", False),
+                "cast_number": member.get("cast_number"),
+                "character_name": member.get("character_name"),
+                "sort_order": max_sort + i + 1,
+            }
+            client.table("backlot_call_sheet_people").insert(new_person).execute()
+            added_count += 1
+
+        # Increment use count on the preset
+        client.table("backlot_crew_presets").update({
+            "use_count": preset.get("use_count", 0) + 1
+        }).eq("id", preset_id).execute()
+
+        return {
+            "success": True,
+            "added_count": added_count,
+            "message": f"Added {added_count} crew members from preset"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error applying crew preset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/save-as-preset")
+async def save_call_sheet_people_as_preset(
+    call_sheet_id: str,
+    preset_name: str,
+    preset_description: Optional[str] = None,
+    is_personal: bool = False,
+    authorization: str = Header(None)
+):
+    """Save the current people on a call sheet as a new crew preset"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify call sheet access
+        sheet_result = client.table("backlot_call_sheets").select("project_id, template_type").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        project_id = sheet_result.data[0]["project_id"]
+        template_type = sheet_result.data[0].get("template_type")
+
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all people from the call sheet
+        people_result = client.table("backlot_call_sheet_people").select("*").eq(
+            "call_sheet_id", call_sheet_id
+        ).order("sort_order").execute()
+
+        # Convert to preset format
+        crew_members = []
+        for person in people_result.data or []:
+            crew_members.append({
+                "name": person.get("name"),
+                "role": person.get("role"),
+                "department": person.get("department"),
+                "default_call_time": person.get("call_time"),
+                "phone": person.get("phone"),
+                "email": person.get("email"),
+                "is_cast": person.get("is_cast", False),
+                "cast_number": person.get("cast_number"),
+                "character_name": person.get("character_name"),
+            })
+
+        new_preset = {
+            "name": preset_name,
+            "description": preset_description,
+            "template_type": template_type,
+            "crew_members": crew_members,
+            "use_count": 0,
+        }
+
+        if is_personal:
+            new_preset["user_id"] = user["id"]
+        else:
+            new_preset["project_id"] = project_id
+
+        result = client.table("backlot_crew_presets").insert(new_preset).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create preset")
+
+        return {
+            "success": True,
+            "preset": result.data[0],
+            "member_count": len(crew_members)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving as preset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CALL SHEET TEMPLATES (Account-Level)
+# =====================================================
+
+@router.get("/call-sheet-templates")
+async def get_call_sheet_templates(
+    authorization: str = Header(None)
+):
+    """Get all call sheet templates for the current user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_call_sheet_templates").select("*").eq(
+            "user_id", user["id"]
+        ).order("use_count", desc=True).execute()
+
+        return {"templates": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching call sheet templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheet-templates")
+async def create_call_sheet_template(
+    template: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Create a new call sheet template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        template_data = {
+            "user_id": user["id"],
+            "name": template.get("name"),
+            "description": template.get("description"),
+            "template_type": template.get("template_type"),
+            "call_sheet_data": json.dumps(template.get("call_sheet_data", {})) if isinstance(template.get("call_sheet_data"), dict) else template.get("call_sheet_data", "{}"),
+            "use_count": 0,
+        }
+
+        result = client.table("backlot_call_sheet_templates").insert(template_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create template")
+
+        return {"template": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating call sheet template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/call-sheet-templates/{template_id}")
+async def update_call_sheet_template(
+    template_id: str,
+    template: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Update a call sheet template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("backlot_call_sheet_templates").select("user_id").eq("id", template_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if existing.data[0]["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to update this template")
+
+        update_data = {}
+        for field in ["name", "description", "template_type"]:
+            if field in template:
+                update_data[field] = template[field]
+
+        if "call_sheet_data" in template:
+            update_data["call_sheet_data"] = json.dumps(template["call_sheet_data"]) if isinstance(template["call_sheet_data"], dict) else template["call_sheet_data"]
+
+        result = client.table("backlot_call_sheet_templates").update(update_data).eq("id", template_id).execute()
+
+        return {"template": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating call sheet template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/call-sheet-templates/{template_id}")
+async def delete_call_sheet_template(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a call sheet template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("backlot_call_sheet_templates").select("user_id").eq("id", template_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if existing.data[0]["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this template")
+
+        client.table("backlot_call_sheet_templates").delete().eq("id", template_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting call sheet template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheets/{call_sheet_id}/save-as-template")
+async def save_call_sheet_as_template(
+    call_sheet_id: str,
+    template_name: str = Query(...),
+    template_description: str = Query(None),
+    authorization: str = Header(None)
+):
+    """Save an existing call sheet as a reusable template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the call sheet with all data
+        sheet_result = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        call_sheet = sheet_result.data[0]
+        await verify_project_access(client, call_sheet["project_id"], user["id"])
+
+        # Get related data
+        people_result = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        scenes_result = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        locations_result = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+
+        # Build template data (strip IDs and project-specific fields)
+        call_sheet_data = {
+            # Basic info
+            "title": call_sheet.get("title"),
+            "template_type": call_sheet.get("template_type"),
+            "production_title": call_sheet.get("production_title"),
+            "production_company": call_sheet.get("production_company"),
+            "header_logo_url": call_sheet.get("header_logo_url"),
+            "shoot_day_number": call_sheet.get("shoot_day_number"),
+            "total_shoot_days": call_sheet.get("total_shoot_days"),
+
+            # Timing
+            "crew_call_time": call_sheet.get("crew_call_time"),
+            "general_call_time": call_sheet.get("general_call_time"),
+            "first_shot_time": call_sheet.get("first_shot_time"),
+            "breakfast_time": call_sheet.get("breakfast_time"),
+            "lunch_time": call_sheet.get("lunch_time"),
+            "dinner_time": call_sheet.get("dinner_time"),
+            "estimated_wrap_time": call_sheet.get("estimated_wrap_time"),
+            "sunrise_time": call_sheet.get("sunrise_time"),
+            "sunset_time": call_sheet.get("sunset_time"),
+
+            # Contacts
+            "production_office_phone": call_sheet.get("production_office_phone"),
+            "production_email": call_sheet.get("production_email"),
+            "upm_name": call_sheet.get("upm_name"),
+            "upm_phone": call_sheet.get("upm_phone"),
+            "first_ad_name": call_sheet.get("first_ad_name"),
+            "first_ad_phone": call_sheet.get("first_ad_phone"),
+            "director_name": call_sheet.get("director_name"),
+            "director_phone": call_sheet.get("director_phone"),
+            "producer_name": call_sheet.get("producer_name"),
+            "producer_phone": call_sheet.get("producer_phone"),
+            "production_contact": call_sheet.get("production_contact"),
+            "production_phone": call_sheet.get("production_phone"),
+
+            # Department notes
+            "camera_notes": call_sheet.get("camera_notes"),
+            "sound_notes": call_sheet.get("sound_notes"),
+            "grip_electric_notes": call_sheet.get("grip_electric_notes"),
+            "art_notes": call_sheet.get("art_notes"),
+            "wardrobe_notes": call_sheet.get("wardrobe_notes"),
+            "makeup_hair_notes": call_sheet.get("makeup_hair_notes"),
+            "stunts_notes": call_sheet.get("stunts_notes"),
+            "vfx_notes": call_sheet.get("vfx_notes"),
+            "transport_notes": call_sheet.get("transport_notes"),
+            "catering_notes": call_sheet.get("catering_notes"),
+
+            # Schedule
+            "schedule_blocks": call_sheet.get("schedule_blocks", []),
+
+            # Custom contacts
+            "custom_contacts": call_sheet.get("custom_contacts", []),
+
+            # Weather/Safety/Notes
+            "weather_forecast": call_sheet.get("weather_forecast"),
+            "weather_info": call_sheet.get("weather_info"),
+            "nearest_hospital": call_sheet.get("nearest_hospital"),
+            "hospital_address": call_sheet.get("hospital_address"),
+            "hospital_name": call_sheet.get("hospital_name"),
+            "hospital_phone": call_sheet.get("hospital_phone"),
+            "set_medic": call_sheet.get("set_medic"),
+            "fire_safety_officer": call_sheet.get("fire_safety_officer"),
+            "safety_notes": call_sheet.get("safety_notes"),
+            "general_notes": call_sheet.get("general_notes"),
+            "advance_schedule": call_sheet.get("advance_schedule"),
+            "special_instructions": call_sheet.get("special_instructions"),
+
+            # Template-specific fields
+            "hipaa_officer": call_sheet.get("hipaa_officer"),
+            "privacy_notes": call_sheet.get("privacy_notes"),
+            "release_status": call_sheet.get("release_status"),
+            "restricted_areas": call_sheet.get("restricted_areas"),
+            "dress_code": call_sheet.get("dress_code"),
+            "client_name": call_sheet.get("client_name"),
+            "client_phone": call_sheet.get("client_phone"),
+            "facility_contact": call_sheet.get("facility_contact"),
+            "facility_phone": call_sheet.get("facility_phone"),
+            "deadline_time": call_sheet.get("deadline_time"),
+            "story_angle": call_sheet.get("story_angle"),
+            "reporter_name": call_sheet.get("reporter_name"),
+            "reporter_phone": call_sheet.get("reporter_phone"),
+            "subject_notes": call_sheet.get("subject_notes"),
+            "load_in_time": call_sheet.get("load_in_time"),
+            "rehearsal_time": call_sheet.get("rehearsal_time"),
+            "doors_time": call_sheet.get("doors_time"),
+            "intermission_time": call_sheet.get("intermission_time"),
+            "strike_time": call_sheet.get("strike_time"),
+            "truck_location": call_sheet.get("truck_location"),
+            "video_village": call_sheet.get("video_village"),
+            "comm_channel": call_sheet.get("comm_channel"),
+            "td_name": call_sheet.get("td_name"),
+            "td_phone": call_sheet.get("td_phone"),
+            "stage_manager_name": call_sheet.get("stage_manager_name"),
+            "stage_manager_phone": call_sheet.get("stage_manager_phone"),
+            "camera_plot": call_sheet.get("camera_plot"),
+            "show_rundown": call_sheet.get("show_rundown"),
+            "rain_plan": call_sheet.get("rain_plan"),
+            "client_notes": call_sheet.get("client_notes"),
+            "broadcast_notes": call_sheet.get("broadcast_notes"),
+            "playback_notes": call_sheet.get("playback_notes"),
+
+            # Nested data (stripped of IDs)
+            "locations": [
+                {
+                    "location_number": loc.get("location_number"),
+                    "name": loc.get("name"),
+                    "address": loc.get("address"),
+                    "parking_instructions": loc.get("parking_instructions"),
+                    "basecamp_location": loc.get("basecamp_location"),
+                    "call_time": loc.get("call_time"),
+                    "notes": loc.get("notes"),
+                    "sort_order": loc.get("sort_order"),
+                }
+                for loc in (locations_result.data or [])
+            ],
+            "scenes": [
+                {
+                    "scene_number": scene.get("scene_number"),
+                    "segment_label": scene.get("segment_label"),
+                    "page_count": scene.get("page_count"),
+                    "set_name": scene.get("set_name"),
+                    "int_ext": scene.get("int_ext"),
+                    "time_of_day": scene.get("time_of_day"),
+                    "description": scene.get("description"),
+                    "cast_ids": scene.get("cast_ids"),
+                    "notes": scene.get("notes"),
+                    "sort_order": scene.get("sort_order"),
+                }
+                for scene in (scenes_result.data or [])
+            ],
+            "people": [
+                {
+                    "name": person.get("name"),
+                    "role": person.get("role"),
+                    "department": person.get("department"),
+                    "call_time": person.get("call_time"),
+                    "phone": person.get("phone"),
+                    "email": person.get("email"),
+                    "notes": person.get("notes"),
+                    "makeup_time": person.get("makeup_time"),
+                    "pickup_time": person.get("pickup_time"),
+                    "on_set_time": person.get("on_set_time"),
+                    "wardrobe_notes": person.get("wardrobe_notes"),
+                    "is_cast": person.get("is_cast", False),
+                    "cast_number": person.get("cast_number"),
+                    "character_name": person.get("character_name"),
+                    "sort_order": person.get("sort_order"),
+                }
+                for person in (people_result.data or [])
+            ],
+        }
+
+        # Remove None values to keep it clean
+        call_sheet_data = {k: v for k, v in call_sheet_data.items() if v is not None}
+
+        # Create the template
+        template_data = {
+            "user_id": user["id"],
+            "name": template_name,
+            "description": template_description,
+            "template_type": call_sheet.get("template_type"),
+            "call_sheet_data": json.dumps(call_sheet_data),
+            "use_count": 0,
+        }
+
+        result = client.table("backlot_call_sheet_templates").insert(template_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create template")
+
+        return {
+            "success": True,
+            "template": result.data[0],
+            "stats": {
+                "locations": len(call_sheet_data.get("locations", [])),
+                "scenes": len(call_sheet_data.get("scenes", [])),
+                "people": len(call_sheet_data.get("people", [])),
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving call sheet as template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/call-sheets/{call_sheet_id}/full")
+async def get_call_sheet_full(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get a call sheet with all related data (people, scenes, locations) for prefilling"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the call sheet
+        sheet_result = client.table("backlot_call_sheets").select("*").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        call_sheet = sheet_result.data[0]
+        await verify_project_access(client, call_sheet["project_id"], user["id"])
+
+        # Get related data
+        people_result = client.table("backlot_call_sheet_people").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        scenes_result = client.table("backlot_call_sheet_scenes").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+        locations_result = client.table("backlot_call_sheet_locations").select("*").eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+
+        # Attach to call sheet
+        call_sheet["people"] = people_result.data or []
+        call_sheet["scenes"] = scenes_result.data or []
+        call_sheet["locations"] = locations_result.data or []
+
+        return {"call_sheet": call_sheet}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching full call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/call-sheet-templates/{template_id}/use")
+async def increment_template_use_count(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Increment the use count for a template (called when a user uses a template)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("backlot_call_sheet_templates").select("user_id, use_count").eq("id", template_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if existing.data[0]["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized")
+
+        new_count = (existing.data[0]["use_count"] or 0) + 1
+        client.table("backlot_call_sheet_templates").update({
+            "use_count": new_count,
+            "last_used_at": datetime.utcnow().isoformat()
+        }).eq("id", template_id).execute()
+
+        return {"success": True, "use_count": new_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error incrementing template use count: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -22933,6 +24010,72 @@ async def reorder_call_sheet_people(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/call-sheets/{call_sheet_id}/people/bulk-update-times")
+async def bulk_update_department_times(
+    call_sheet_id: str,
+    update: BulkDepartmentTimeUpdate,
+    authorization: str = Header(None)
+):
+    """Bulk update call times for all people in a department"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify call sheet exists and user has access
+        sheet_result = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+        if not sheet_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        await verify_project_access(client, sheet_result.data[0]["project_id"], user["id"])
+
+        # Build the query for finding people in this department
+        query = client.table("backlot_call_sheet_people").select("id, call_time, makeup_time, pickup_time, on_set_time").eq(
+            "call_sheet_id", call_sheet_id
+        ).eq("department", update.department)
+
+        people_result = query.execute()
+        if not people_result.data:
+            return {"success": True, "updated_count": 0, "message": "No people found in department"}
+
+        updated_count = 0
+        for person in people_result.data:
+            update_data = {}
+
+            # Only update fields that were provided
+            if update.call_time is not None:
+                if update.apply_to == "all" or not person.get("call_time"):
+                    update_data["call_time"] = update.call_time
+
+            if update.makeup_time is not None:
+                if update.apply_to == "all" or not person.get("makeup_time"):
+                    update_data["makeup_time"] = update.makeup_time
+
+            if update.pickup_time is not None:
+                if update.apply_to == "all" or not person.get("pickup_time"):
+                    update_data["pickup_time"] = update.pickup_time
+
+            if update.on_set_time is not None:
+                if update.apply_to == "all" or not person.get("on_set_time"):
+                    update_data["on_set_time"] = update.on_set_time
+
+            # Only perform update if there's data to update
+            if update_data:
+                client.table("backlot_call_sheet_people").update(update_data).eq("id", person["id"]).execute()
+                updated_count += 1
+
+        return {
+            "success": True,
+            "updated_count": updated_count,
+            "total_in_department": len(people_result.data)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk updating times: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/projects/{project_id}/can-manage-roles")
 async def can_manage_roles(
     project_id: str,
@@ -22943,18 +24086,37 @@ async def can_manage_roles(
     client = get_client()
 
     try:
-        user_id = user["id"]
+        token_user_id = user["id"]
+
+        # Resolve Cognito ID to profile ID if needed
+        # First try by cognito_user_id
+        profile_result = client.table("profiles").select("id, role").eq(
+            "cognito_user_id", token_user_id
+        ).limit(1).execute()
+
+        # If not found, try by id directly
+        if not profile_result.data:
+            profile_result = client.table("profiles").select("id, role").eq(
+                "id", token_user_id
+            ).limit(1).execute()
+
+        if not profile_result.data:
+            print(f"[can-manage-roles] No profile found for user: {token_user_id}")
+            return {"can_manage": False}
+
+        profile = profile_result.data[0]
+        user_id = str(profile["id"])
+        profile_role = profile.get("role")
+
+        # Check admin status first
+        if profile_role in ["admin", "superadmin"]:
+            return {"can_manage": True}
 
         # Check if project owner
         project_result = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        if project_result.data and str(project_result.data[0]["owner_id"]) == str(user_id):
-            return {"can_manage": True}
-
-        # Check admin status
-        profile_result = client.table("profiles").select("role").eq("id", user_id).execute()
-        if profile_result.data:
-            profile_role = profile_result.data[0].get("role")
-            if profile_role in ["admin", "superadmin"]:
+        if project_result.data:
+            owner_id = str(project_result.data[0]["owner_id"])
+            if owner_id == user_id:
                 return {"can_manage": True}
 
         # Check if showrunner

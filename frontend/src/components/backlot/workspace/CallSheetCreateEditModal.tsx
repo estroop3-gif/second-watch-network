@@ -46,6 +46,9 @@ import {
   Video,
   Music,
   Megaphone,
+  Briefcase,
+  Radio,
+  Tv,
   Camera,
   Volume2,
   Lightbulb,
@@ -70,8 +73,10 @@ import {
   Search,
   Check,
   List,
+  BookmarkPlus,
 } from 'lucide-react';
-import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations, useScenesList, useScenes, useCallSheetSceneLinkMutations } from '@/hooks/backlot';
+import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations, useScenesList, useScenes, useCallSheetSceneLinkMutations, useCallSheetTemplates, useCallSheetFullData, BacklotSavedCallSheetTemplate, CallSheetFullData } from '@/hooks/backlot';
+import { CallSheetSourcePicker } from './CallSheetSourcePicker';
 import { api } from '@/lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
@@ -98,6 +103,7 @@ import {
 } from '@/lib/backlot/callSheetTemplates';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { CallSheetPeopleManager } from './CallSheetPeopleManager';
 
 interface CallSheetCreateEditModalProps {
   isOpen: boolean;
@@ -112,6 +118,9 @@ const TEMPLATE_ICONS: Record<BacklotCallSheetTemplate, React.ReactNode> = {
   documentary: <Video className="w-5 h-5" />,
   music_video: <Music className="w-5 h-5" />,
   commercial: <Megaphone className="w-5 h-5" />,
+  medical_corporate: <Briefcase className="w-5 h-5" />,
+  news_eng: <Radio className="w-5 h-5" />,
+  live_event: <Tv className="w-5 h-5" />,
 };
 
 // Icon mapping for department notes
@@ -195,6 +204,25 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const [selectedSceneIds, setSelectedSceneIds] = useState<Set<string>>(new Set());
   const { data: projectScenesData, isLoading: projectScenesLoading } = useScenesList(projectId, { search: sceneSearch || undefined });
   const projectScenes = Array.isArray(projectScenesData) ? projectScenesData : [];
+
+  // Source picker state (for starting from previous call sheet or template)
+  const [selectedSource, setSelectedSource] = useState<{
+    type: 'recent' | 'template';
+    id: string;
+    name: string;
+  } | null>(null);
+  const [sourceCallSheetId, setSourceCallSheetId] = useState<string | null>(null);
+  const { templates: savedTemplates, incrementUseCount, createTemplate } = useCallSheetTemplates();
+  const { data: sourceFullData, isLoading: isLoadingSourceData } = useCallSheetFullData(sourceCallSheetId);
+
+  // All call sheets for source picker (recent ones)
+  const { callSheets: recentCallSheets, isLoading: isLoadingRecentCallSheets } = useCallSheets(projectId);
+
+  // Save as template dialog state
+  const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateDescription, setTemplateDescription] = useState('');
+  const [savingTemplate, setSavingTemplate] = useState(false);
 
   // Template selection
   const [templateType, setTemplateType] = useState<BacklotCallSheetTemplate>('feature');
@@ -281,6 +309,48 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const [hospitalName, setHospitalName] = useState('');
   const [hospitalPhone, setHospitalPhone] = useState('');
 
+  // Medical/Corporate template fields
+  const [hipaaOfficer, setHipaaOfficer] = useState('');
+  const [privacyNotes, setPrivacyNotes] = useState('');
+  const [releaseStatus, setReleaseStatus] = useState('');
+  const [restrictedAreas, setRestrictedAreas] = useState('');
+  const [dressCode, setDressCode] = useState('');
+  const [clientName, setClientName] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const [facilityContact, setFacilityContact] = useState('');
+  const [facilityPhone, setFacilityPhone] = useState('');
+
+  // News/ENG template fields
+  const [deadlineTime, setDeadlineTime] = useState('');
+  const [storyAngle, setStoryAngle] = useState('');
+  const [reporterName, setReporterName] = useState('');
+  const [reporterPhone, setReporterPhone] = useState('');
+  const [subjectNotes, setSubjectNotes] = useState('');
+  const [location2Name, setLocation2Name] = useState('');
+  const [location2Address, setLocation2Address] = useState('');
+  const [location3Name, setLocation3Name] = useState('');
+  const [location3Address, setLocation3Address] = useState('');
+
+  // Live Event template fields
+  const [loadInTime, setLoadInTime] = useState('');
+  const [rehearsalTime, setRehearsalTime] = useState('');
+  const [doorsTime, setDoorsTime] = useState('');
+  const [intermissionTime, setIntermissionTime] = useState('');
+  const [strikeTime, setStrikeTime] = useState('');
+  const [truckLocation, setTruckLocation] = useState('');
+  const [videoVillage, setVideoVillage] = useState('');
+  const [commChannel, setCommChannel] = useState('');
+  const [tdName, setTdName] = useState('');
+  const [tdPhone, setTdPhone] = useState('');
+  const [stageManagerName, setStageManagerName] = useState('');
+  const [stageManagerPhone, setStageManagerPhone] = useState('');
+  const [cameraPlot, setCameraPlot] = useState('');
+  const [showRundown, setShowRundown] = useState('');
+  const [rainPlan, setRainPlan] = useState('');
+  const [clientNotes, setClientNotes] = useState('');
+  const [broadcastNotes, setBroadcastNotes] = useState('');
+  const [playbackNotes, setPlaybackNotes] = useState('');
+
   // Check if form has any data filled in
   const hasFormData = (): boolean => {
     return !!(
@@ -322,6 +392,476 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     );
   };
 
+  // Apply data from a source (previous call sheet or template)
+  const applySourceData = (data: BacklotCallSheet | CallSheetFullData | Record<string, unknown>, isFromSource = true) => {
+    const d = data as Record<string, unknown>;
+
+    // Template type
+    if (d.template_type) {
+      setTemplateType(d.template_type as BacklotCallSheetTemplate);
+      setScheduleBlocks(getDefaultScheduleBlocks(d.template_type as BacklotCallSheetTemplate));
+    }
+
+    // Title - prefix with "Copy of" if from source
+    if (d.title) {
+      setTitle(isFromSource ? `Copy of ${d.title}` : String(d.title));
+    }
+
+    // Date - always set to today when copying
+    if (isFromSource) {
+      setDate(format(new Date(), 'yyyy-MM-dd'));
+    } else if (d.date) {
+      setDate(String(d.date));
+    }
+
+    // Production info
+    if (d.production_title) setProductionTitle(String(d.production_title));
+    if (d.production_company) setProductionCompany(String(d.production_company));
+    if (d.header_logo_url) setHeaderLogoUrl(String(d.header_logo_url));
+
+    // Clear shoot day when copying (will be new day)
+    if (isFromSource) {
+      setShootDayNumber('');
+      setProductionDayId(null);
+    } else {
+      if (d.shoot_day_number) setShootDayNumber(d.shoot_day_number as number);
+      if (d.total_shoot_days) setTotalShootDays(d.total_shoot_days as number);
+    }
+    if (d.total_shoot_days) setTotalShootDays(d.total_shoot_days as number);
+
+    // Timing
+    if (d.crew_call_time) setCrewCallTime(String(d.crew_call_time));
+    if (d.general_call_time) setGeneralCallTime(String(d.general_call_time));
+    if (d.first_shot_time) setFirstShotTime(String(d.first_shot_time));
+    if (d.breakfast_time) setBreakfastTime(String(d.breakfast_time));
+    if (d.lunch_time) setLunchTime(String(d.lunch_time));
+    if (d.dinner_time) setDinnerTime(String(d.dinner_time));
+    if (d.estimated_wrap_time) setEstimatedWrapTime(String(d.estimated_wrap_time));
+    if (d.sunrise_time) setSunriseTime(String(d.sunrise_time));
+    if (d.sunset_time) setSunsetTime(String(d.sunset_time));
+
+    // Locations - copy without IDs to create new entries
+    const locationsData = d.locations as LocalLocation[] | undefined;
+    if (locationsData && locationsData.length > 0) {
+      setLocations(locationsData.map((l, idx) => ({
+        location_number: l.location_number || idx + 1,
+        name: l.name || '',
+        address: l.address || '',
+        parking_instructions: l.parking_instructions || '',
+        basecamp_location: l.basecamp_location || '',
+        call_time: l.call_time || '',
+        notes: l.notes || '',
+        // Don't copy id, location_id, or library_location_id - these will be new entries
+      })));
+    }
+
+    // Legacy location
+    if (d.location_name) setLocationName(String(d.location_name));
+    if (d.location_address) setLocationAddress(String(d.location_address));
+    if (d.parking_notes) setParkingNotes(String(d.parking_notes));
+
+    // Contacts
+    if (d.production_office_phone) setProductionOfficePhone(String(d.production_office_phone));
+    if (d.production_email) setProductionEmail(String(d.production_email));
+    if (d.upm_name) setUpmName(String(d.upm_name));
+    if (d.upm_phone) setUpmPhone(String(d.upm_phone));
+    if (d.first_ad_name) setFirstAdName(String(d.first_ad_name));
+    if (d.first_ad_phone) setFirstAdPhone(String(d.first_ad_phone));
+    if (d.director_name) setDirectorName(String(d.director_name));
+    if (d.director_phone) setDirectorPhone(String(d.director_phone));
+    if (d.producer_name) setProducerName(String(d.producer_name));
+    if (d.producer_phone) setProducerPhone(String(d.producer_phone));
+    if (d.production_contact) setProductionContact(String(d.production_contact));
+    if (d.production_phone) setProductionPhone(String(d.production_phone));
+
+    // Schedule blocks
+    const scheduleData = d.schedule_blocks as ScheduleBlock[] | undefined;
+    if (scheduleData && scheduleData.length > 0) {
+      setScheduleBlocks(scheduleData);
+    }
+
+    // Department notes
+    const notesObj: Record<string, string> = {};
+    const noteFields = ['camera_notes', 'sound_notes', 'grip_electric_notes', 'art_notes',
+                       'wardrobe_notes', 'makeup_hair_notes', 'stunts_notes', 'vfx_notes',
+                       'transport_notes', 'catering_notes'];
+    noteFields.forEach(field => {
+      if (d[field]) notesObj[field] = String(d[field]);
+    });
+    if (Object.keys(notesObj).length > 0) setDepartmentNotes(notesObj);
+
+    // Custom contacts
+    const customContactsData = d.custom_contacts as CallSheetCustomContact[] | undefined;
+    if (customContactsData && customContactsData.length > 0) {
+      setCustomContacts(customContactsData.map(c => ({
+        id: c.id,
+        role: c.role,
+        name: c.name,
+        phone: c.phone,
+        email: c.email,
+      })));
+    }
+
+    // Weather
+    if (d.weather_forecast) setWeatherForecast(String(d.weather_forecast));
+    if (d.weather_info) setWeatherInfo(String(d.weather_info));
+
+    // Safety
+    if (d.nearest_hospital) setNearestHospital(String(d.nearest_hospital));
+    if (d.hospital_address) setHospitalAddress(String(d.hospital_address));
+    if (d.set_medic) setSetMedic(String(d.set_medic));
+    if (d.fire_safety_officer) setFireSafetyOfficer(String(d.fire_safety_officer));
+    if (d.safety_notes) setSafetyNotes(String(d.safety_notes));
+    if (d.hospital_name) setHospitalName(String(d.hospital_name));
+    if (d.hospital_phone) setHospitalPhone(String(d.hospital_phone));
+
+    // Additional
+    if (d.general_notes) setGeneralNotes(String(d.general_notes));
+    if (d.advance_schedule) setAdvanceSchedule(String(d.advance_schedule));
+    if (d.special_instructions) setSpecialInstructions(String(d.special_instructions));
+
+    // Medical/Corporate fields
+    if (d.hipaa_officer) setHipaaOfficer(String(d.hipaa_officer));
+    if (d.privacy_notes) setPrivacyNotes(String(d.privacy_notes));
+    if (d.release_status) setReleaseStatus(String(d.release_status));
+    if (d.restricted_areas) setRestrictedAreas(String(d.restricted_areas));
+    if (d.dress_code) setDressCode(String(d.dress_code));
+    if (d.client_name) setClientName(String(d.client_name));
+    if (d.client_phone) setClientPhone(String(d.client_phone));
+    if (d.facility_contact) setFacilityContact(String(d.facility_contact));
+    if (d.facility_phone) setFacilityPhone(String(d.facility_phone));
+
+    // News/ENG fields
+    if (d.deadline_time) setDeadlineTime(String(d.deadline_time));
+    if (d.story_angle) setStoryAngle(String(d.story_angle));
+    if (d.reporter_name) setReporterName(String(d.reporter_name));
+    if (d.reporter_phone) setReporterPhone(String(d.reporter_phone));
+    if (d.subject_notes) setSubjectNotes(String(d.subject_notes));
+    if (d.location_2_name) setLocation2Name(String(d.location_2_name));
+    if (d.location_2_address) setLocation2Address(String(d.location_2_address));
+    if (d.location_3_name) setLocation3Name(String(d.location_3_name));
+    if (d.location_3_address) setLocation3Address(String(d.location_3_address));
+
+    // Live Event fields
+    if (d.load_in_time) setLoadInTime(String(d.load_in_time));
+    if (d.rehearsal_time) setRehearsalTime(String(d.rehearsal_time));
+    if (d.doors_time) setDoorsTime(String(d.doors_time));
+    if (d.intermission_time) setIntermissionTime(String(d.intermission_time));
+    if (d.strike_time) setStrikeTime(String(d.strike_time));
+    if (d.truck_location) setTruckLocation(String(d.truck_location));
+    if (d.video_village) setVideoVillage(String(d.video_village));
+    if (d.comm_channel) setCommChannel(String(d.comm_channel));
+    if (d.td_name) setTdName(String(d.td_name));
+    if (d.td_phone) setTdPhone(String(d.td_phone));
+    if (d.stage_manager_name) setStageManagerName(String(d.stage_manager_name));
+    if (d.stage_manager_phone) setStageManagerPhone(String(d.stage_manager_phone));
+    if (d.camera_plot) setCameraPlot(String(d.camera_plot));
+    if (d.show_rundown) setShowRundown(String(d.show_rundown));
+    if (d.rain_plan) setRainPlan(String(d.rain_plan));
+    if (d.client_notes) setClientNotes(String(d.client_notes));
+    if (d.broadcast_notes) setBroadcastNotes(String(d.broadcast_notes));
+    if (d.playback_notes) setPlaybackNotes(String(d.playback_notes));
+
+    // Scenes - copy without IDs, not linked
+    const scenesData = d.scenes as LocalScene[] | undefined;
+    if (scenesData && scenesData.length > 0) {
+      setScenes(scenesData.map((s, idx) => ({
+        scene_number: s.scene_number || '',
+        segment_label: s.segment_label || '',
+        page_count: s.page_count || '',
+        set_name: s.set_name || '',
+        int_ext: s.int_ext as BacklotIntExt || '',
+        time_of_day: s.time_of_day as BacklotTimeOfDay || '',
+        description: s.description || '',
+        cast_ids: typeof s.cast_ids === 'string' ? s.cast_ids : (s.cast_ids as string[] || []).join(', '),
+        sort_order: s.sort_order ?? idx,
+        // Don't copy: id, linked_scene_id, is_linked
+      })));
+    }
+
+    toast({
+      title: 'Form prefilled',
+      description: `Data loaded from ${selectedSource?.type === 'template' ? 'template' : 'previous call sheet'}. Review and modify as needed.`,
+    });
+  };
+
+  // Handle selection of a recent call sheet
+  const handleSelectRecentCallSheet = (cs: BacklotCallSheet) => {
+    setSelectedSource({
+      type: 'recent',
+      id: cs.id,
+      name: cs.title || 'Untitled',
+    });
+    setSourceCallSheetId(cs.id);
+  };
+
+  // Handle selection of a saved template
+  const handleSelectTemplate = (template: BacklotSavedCallSheetTemplate) => {
+    setSelectedSource({
+      type: 'template',
+      id: template.id,
+      name: template.name,
+    });
+    // Apply template data directly (it's already in call_sheet_data)
+    applySourceData(template.call_sheet_data, true);
+    // Increment use count
+    incrementUseCount.mutate(template.id);
+  };
+
+  // Handle clearing source selection
+  const handleClearSource = () => {
+    setSelectedSource(null);
+    setSourceCallSheetId(null);
+    // Reset form to defaults
+    setTemplateType('feature');
+    setTitle('');
+    setDate(format(new Date(), 'yyyy-MM-dd'));
+    setProductionDayId(null);
+    setProductionTitle('');
+    setProductionCompany('');
+    setHeaderLogoUrl('');
+    setShootDayNumber('');
+    setTotalShootDays('');
+    setCrewCallTime('06:00');
+    setGeneralCallTime('07:00');
+    setFirstShotTime('08:00');
+    setBreakfastTime('');
+    setLunchTime('12:30');
+    setDinnerTime('');
+    setEstimatedWrapTime('18:00');
+    setSunriseTime('');
+    setSunsetTime('');
+    setLocations([{
+      location_number: 1,
+      name: '',
+      address: '',
+      parking_instructions: '',
+      basecamp_location: '',
+      call_time: '',
+      notes: '',
+    }]);
+    setLocationName('');
+    setLocationAddress('');
+    setParkingNotes('');
+    setProductionOfficePhone('');
+    setProductionEmail('');
+    setUpmName('');
+    setUpmPhone('');
+    setFirstAdName('');
+    setFirstAdPhone('');
+    setDirectorName('');
+    setDirectorPhone('');
+    setProducerName('');
+    setProducerPhone('');
+    setProductionContact('');
+    setProductionPhone('');
+    setScheduleBlocks(getDefaultScheduleBlocks('feature'));
+    setDepartmentNotes({});
+    setCustomContacts([]);
+    setWeatherForecast('');
+    setWeatherInfo('');
+    setNearestHospital('');
+    setHospitalAddress('');
+    setSetMedic('');
+    setFireSafetyOfficer('');
+    setSafetyNotes('');
+    setHospitalName('');
+    setHospitalPhone('');
+    setGeneralNotes('');
+    setAdvanceSchedule('');
+    setSpecialInstructions('');
+    setScenes([]);
+    // Reset template-specific fields...
+    setHipaaOfficer('');
+    setPrivacyNotes('');
+    setReleaseStatus('');
+    setRestrictedAreas('');
+    setDressCode('');
+    setClientName('');
+    setClientPhone('');
+    setFacilityContact('');
+    setFacilityPhone('');
+    setDeadlineTime('');
+    setStoryAngle('');
+    setReporterName('');
+    setReporterPhone('');
+    setSubjectNotes('');
+    setLocation2Name('');
+    setLocation2Address('');
+    setLocation3Name('');
+    setLocation3Address('');
+    setLoadInTime('');
+    setRehearsalTime('');
+    setDoorsTime('');
+    setIntermissionTime('');
+    setStrikeTime('');
+    setTruckLocation('');
+    setVideoVillage('');
+    setCommChannel('');
+    setTdName('');
+    setTdPhone('');
+    setStageManagerName('');
+    setStageManagerPhone('');
+    setCameraPlot('');
+    setShowRundown('');
+    setRainPlan('');
+    setClientNotes('');
+    setBroadcastNotes('');
+    setPlaybackNotes('');
+  };
+
+  // Handle saving current form data as a template
+  const handleSaveAsTemplate = async () => {
+    if (!templateName.trim()) {
+      toast({
+        title: 'Template name required',
+        description: 'Please enter a name for your template.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setSavingTemplate(true);
+    try {
+      // Collect all form data into a template data object
+      const callSheetData: Record<string, unknown> = {
+        template_type: templateType,
+        title: title || 'Template',
+        production_title: productionTitle,
+        production_company: productionCompany,
+        header_logo_url: headerLogoUrl,
+        total_shoot_days: totalShootDays,
+        // Timing
+        crew_call_time: crewCallTime,
+        general_call_time: generalCallTime,
+        first_shot_time: firstShotTime,
+        breakfast_time: breakfastTime,
+        lunch_time: lunchTime,
+        dinner_time: dinnerTime,
+        estimated_wrap_time: estimatedWrapTime,
+        sunrise_time: sunriseTime,
+        sunset_time: sunsetTime,
+        // Locations (without IDs)
+        locations: locations.filter(l => l.name || l.address).map(l => ({
+          location_number: l.location_number,
+          name: l.name,
+          address: l.address,
+          parking_instructions: l.parking_instructions,
+          basecamp_location: l.basecamp_location,
+          call_time: l.call_time,
+          notes: l.notes,
+        })),
+        // Contacts
+        production_office_phone: productionOfficePhone,
+        production_email: productionEmail,
+        upm_name: upmName,
+        upm_phone: upmPhone,
+        first_ad_name: firstAdName,
+        first_ad_phone: firstAdPhone,
+        director_name: directorName,
+        director_phone: directorPhone,
+        producer_name: producerName,
+        producer_phone: producerPhone,
+        production_contact: productionContact,
+        production_phone: productionPhone,
+        // Schedule
+        schedule_blocks: scheduleBlocks.filter(b => b.time || b.activity),
+        // Department notes
+        ...departmentNotes,
+        // Custom contacts
+        custom_contacts: customContacts.filter(c => c.name || c.role),
+        // Weather
+        weather_forecast: weatherForecast,
+        weather_info: weatherInfo,
+        // Safety
+        nearest_hospital: nearestHospital,
+        hospital_address: hospitalAddress,
+        set_medic: setMedic,
+        fire_safety_officer: fireSafetyOfficer,
+        safety_notes: safetyNotes,
+        hospital_name: hospitalName,
+        hospital_phone: hospitalPhone,
+        // Additional
+        general_notes: generalNotes,
+        advance_schedule: advanceSchedule,
+        special_instructions: specialInstructions,
+        // Template-specific fields
+        hipaa_officer: hipaaOfficer,
+        privacy_notes: privacyNotes,
+        release_status: releaseStatus,
+        restricted_areas: restrictedAreas,
+        dress_code: dressCode,
+        client_name: clientName,
+        client_phone: clientPhone,
+        facility_contact: facilityContact,
+        facility_phone: facilityPhone,
+        deadline_time: deadlineTime,
+        story_angle: storyAngle,
+        reporter_name: reporterName,
+        reporter_phone: reporterPhone,
+        subject_notes: subjectNotes,
+        location_2_name: location2Name,
+        location_2_address: location2Address,
+        location_3_name: location3Name,
+        location_3_address: location3Address,
+        load_in_time: loadInTime,
+        rehearsal_time: rehearsalTime,
+        doors_time: doorsTime,
+        intermission_time: intermissionTime,
+        strike_time: strikeTime,
+        truck_location: truckLocation,
+        video_village: videoVillage,
+        comm_channel: commChannel,
+        td_name: tdName,
+        td_phone: tdPhone,
+        stage_manager_name: stageManagerName,
+        stage_manager_phone: stageManagerPhone,
+        camera_plot: cameraPlot,
+        show_rundown: showRundown,
+        rain_plan: rainPlan,
+        client_notes: clientNotes,
+        broadcast_notes: broadcastNotes,
+        playback_notes: playbackNotes,
+        // Scenes (without IDs, not linked)
+        scenes: scenes.filter(s => s.scene_number || s.set_name || s.description).map(s => ({
+          scene_number: s.scene_number,
+          segment_label: s.segment_label,
+          page_count: s.page_count,
+          set_name: s.set_name,
+          int_ext: s.int_ext,
+          time_of_day: s.time_of_day,
+          description: s.description,
+          cast_ids: s.cast_ids,
+          sort_order: s.sort_order,
+        })),
+      };
+
+      await createTemplate.mutateAsync({
+        name: templateName.trim(),
+        description: templateDescription.trim() || undefined,
+        template_type: templateType,
+        call_sheet_data: callSheetData,
+      });
+
+      toast({
+        title: 'Template saved',
+        description: `"${templateName}" has been saved to your templates.`,
+      });
+
+      setShowSaveTemplateDialog(false);
+      setTemplateName('');
+      setTemplateDescription('');
+    } catch (error) {
+      toast({
+        title: 'Failed to save template',
+        description: error instanceof Error ? error.message : 'An error occurred',
+        variant: 'destructive',
+      });
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
   // Custom close handler with double confirmation if data exists
   const handleCloseAttempt = () => {
     if (hasFormData()) {
@@ -346,12 +886,24 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     onClose();
   };
 
-  // Reset confirmation count when modal opens
+  // Reset confirmation count and source selection when modal opens
   useEffect(() => {
     if (isOpen) {
       setCloseConfirmCount(0);
+      // Only reset source on fresh open (not in edit mode)
+      if (!callSheet) {
+        setSelectedSource(null);
+        setSourceCallSheetId(null);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, callSheet]);
+
+  // Apply source data when loaded from a recent call sheet
+  useEffect(() => {
+    if (sourceFullData && selectedSource?.type === 'recent') {
+      applySourceData(sourceFullData, true);
+    }
+  }, [sourceFullData, selectedSource?.type]);
 
   // Update template when type changes
   useEffect(() => {
@@ -470,6 +1022,48 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         setAdvanceSchedule(callSheet.advance_schedule || '');
         setSpecialInstructions(callSheet.special_instructions || '');
 
+        // Medical/Corporate fields
+        setHipaaOfficer(callSheet.hipaa_officer || '');
+        setPrivacyNotes(callSheet.privacy_notes || '');
+        setReleaseStatus(callSheet.release_status || '');
+        setRestrictedAreas(callSheet.restricted_areas || '');
+        setDressCode(callSheet.dress_code || '');
+        setClientName(callSheet.client_name || '');
+        setClientPhone(callSheet.client_phone || '');
+        setFacilityContact(callSheet.facility_contact || '');
+        setFacilityPhone(callSheet.facility_phone || '');
+
+        // News/ENG fields
+        setDeadlineTime(callSheet.deadline_time || '');
+        setStoryAngle(callSheet.story_angle || '');
+        setReporterName(callSheet.reporter_name || '');
+        setReporterPhone(callSheet.reporter_phone || '');
+        setSubjectNotes(callSheet.subject_notes || '');
+        setLocation2Name(callSheet.location_2_name || '');
+        setLocation2Address(callSheet.location_2_address || '');
+        setLocation3Name(callSheet.location_3_name || '');
+        setLocation3Address(callSheet.location_3_address || '');
+
+        // Live Event fields
+        setLoadInTime(callSheet.load_in_time || '');
+        setRehearsalTime(callSheet.rehearsal_time || '');
+        setDoorsTime(callSheet.doors_time || '');
+        setIntermissionTime(callSheet.intermission_time || '');
+        setStrikeTime(callSheet.strike_time || '');
+        setTruckLocation(callSheet.truck_location || '');
+        setVideoVillage(callSheet.video_village || '');
+        setCommChannel(callSheet.comm_channel || '');
+        setTdName(callSheet.td_name || '');
+        setTdPhone(callSheet.td_phone || '');
+        setStageManagerName(callSheet.stage_manager_name || '');
+        setStageManagerPhone(callSheet.stage_manager_phone || '');
+        setCameraPlot(callSheet.camera_plot || '');
+        setShowRundown(callSheet.show_rundown || '');
+        setRainPlan(callSheet.rain_plan || '');
+        setClientNotes(callSheet.client_notes || '');
+        setBroadcastNotes(callSheet.broadcast_notes || '');
+        setPlaybackNotes(callSheet.playback_notes || '');
+
         // Scenes - load from call sheet if available
         if (callSheet.scenes && callSheet.scenes.length > 0) {
           setScenes(callSheet.scenes.map((s, idx) => ({
@@ -564,6 +1158,48 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         setGeneralNotes('');
         setAdvanceSchedule('');
         setSpecialInstructions('');
+
+        // Medical/Corporate fields
+        setHipaaOfficer('');
+        setPrivacyNotes('');
+        setReleaseStatus('');
+        setRestrictedAreas('');
+        setDressCode('');
+        setClientName('');
+        setClientPhone('');
+        setFacilityContact('');
+        setFacilityPhone('');
+
+        // News/ENG fields
+        setDeadlineTime('');
+        setStoryAngle('');
+        setReporterName('');
+        setReporterPhone('');
+        setSubjectNotes('');
+        setLocation2Name('');
+        setLocation2Address('');
+        setLocation3Name('');
+        setLocation3Address('');
+
+        // Live Event fields
+        setLoadInTime('');
+        setRehearsalTime('');
+        setDoorsTime('');
+        setIntermissionTime('');
+        setStrikeTime('');
+        setTruckLocation('');
+        setVideoVillage('');
+        setCommChannel('');
+        setTdName('');
+        setTdPhone('');
+        setStageManagerName('');
+        setStageManagerPhone('');
+        setCameraPlot('');
+        setShowRundown('');
+        setRainPlan('');
+        setClientNotes('');
+        setBroadcastNotes('');
+        setPlaybackNotes('');
 
         // Scenes - start empty
         setScenes([]);
@@ -1061,6 +1697,48 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       advance_schedule: advanceSchedule || undefined,
       special_instructions: specialInstructions || undefined,
 
+      // Medical/Corporate template fields
+      hipaa_officer: hipaaOfficer || undefined,
+      privacy_notes: privacyNotes || undefined,
+      release_status: releaseStatus || undefined,
+      restricted_areas: restrictedAreas || undefined,
+      dress_code: dressCode || undefined,
+      client_name: clientName || undefined,
+      client_phone: clientPhone || undefined,
+      facility_contact: facilityContact || undefined,
+      facility_phone: facilityPhone || undefined,
+
+      // News/ENG template fields
+      deadline_time: deadlineTime || undefined,
+      story_angle: storyAngle || undefined,
+      reporter_name: reporterName || undefined,
+      reporter_phone: reporterPhone || undefined,
+      subject_notes: subjectNotes || undefined,
+      location_2_name: location2Name || undefined,
+      location_2_address: location2Address || undefined,
+      location_3_name: location3Name || undefined,
+      location_3_address: location3Address || undefined,
+
+      // Live Event template fields
+      load_in_time: loadInTime || undefined,
+      rehearsal_time: rehearsalTime || undefined,
+      doors_time: doorsTime || undefined,
+      intermission_time: intermissionTime || undefined,
+      strike_time: strikeTime || undefined,
+      truck_location: truckLocation || undefined,
+      video_village: videoVillage || undefined,
+      comm_channel: commChannel || undefined,
+      td_name: tdName || undefined,
+      td_phone: tdPhone || undefined,
+      stage_manager_name: stageManagerName || undefined,
+      stage_manager_phone: stageManagerPhone || undefined,
+      camera_plot: cameraPlot || undefined,
+      show_rundown: showRundown || undefined,
+      rain_plan: rainPlan || undefined,
+      client_notes: clientNotes || undefined,
+      broadcast_notes: broadcastNotes || undefined,
+      playback_notes: playbackNotes || undefined,
+
       // Custom contacts (filter out empty entries)
       custom_contacts: customContacts.filter(c => c.name.trim() || c.title.trim()).length > 0
         ? customContacts.filter(c => c.name.trim() || c.title.trim())
@@ -1083,9 +1761,18 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         await saveScenes(savedCallSheetId);
       }
 
+      toast({
+        title: isEditMode ? 'Call sheet updated' : 'Call sheet created',
+        description: `"${title}" has been ${isEditMode ? 'saved' : 'created'} successfully.`,
+      });
       onClose();
     } catch (error) {
       console.error('Failed to save call sheet:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to save call sheet. Please try again.',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -1182,7 +1869,9 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   };
 
   const isPending = createCallSheet.isPending || updateCallSheet.isPending;
-  const canSubmit = title.trim() && date && !isPending;
+  const missingTitle = !title.trim();
+  const missingDate = !date;
+  const canSubmit = !missingTitle && !missingDate && !isPending;
   const availableTemplates = getAvailableTemplates();
   const visibleDepartments = template.departmentNotes.filter(d => d.visible);
 
@@ -1209,17 +1898,31 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
         <ScrollArea className="max-h-[65vh] pr-4">
           <Tabs defaultValue="basic" className="w-full">
-            <TabsList className="grid w-full grid-cols-6 bg-muted-gray/20">
+            <TabsList className="grid w-full grid-cols-7 bg-muted-gray/20">
               <TabsTrigger value="basic" className="text-xs">Basic Info</TabsTrigger>
               <TabsTrigger value="timing" className="text-xs">Timing</TabsTrigger>
               <TabsTrigger value="locations" className="text-xs">Locations</TabsTrigger>
               <TabsTrigger value="scenes" className="text-xs">Scenes</TabsTrigger>
+              <TabsTrigger value="people" className="text-xs">Cast & Crew</TabsTrigger>
               <TabsTrigger value="contacts" className="text-xs">Contacts</TabsTrigger>
               <TabsTrigger value="more" className="text-xs">More</TabsTrigger>
             </TabsList>
 
             {/* Basic Info Tab */}
             <TabsContent value="basic" className="space-y-6 mt-4">
+              {/* Source Picker - only show for new call sheets */}
+              {!isEditMode && (
+                <CallSheetSourcePicker
+                  projectId={projectId}
+                  recentCallSheets={recentCallSheets || []}
+                  isLoadingRecent={isLoadingRecentCallSheets}
+                  onSelectRecent={handleSelectRecentCallSheet}
+                  onSelectTemplate={handleSelectTemplate}
+                  onClear={handleClearSource}
+                  selectedSource={selectedSource}
+                />
+              )}
+
               {/* Template Selection - only show for new call sheets */}
               {!isEditMode && (
                 <div className="space-y-3">
@@ -1281,12 +1984,17 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
               {/* Core Fields */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2 col-span-2">
-                  <Label className="text-bone-white">Title *</Label>
+                  <Label className={cn("text-bone-white", missingTitle && "text-red-400")}>
+                    Title * {missingTitle && <span className="text-xs font-normal">(required)</span>}
+                  </Label>
                   <Input
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="Day 1 Call Sheet"
-                    className="bg-charcoal-black border-muted-gray/30"
+                    className={cn(
+                      "bg-charcoal-black",
+                      missingTitle ? "border-red-500/50 focus:border-red-500" : "border-muted-gray/30"
+                    )}
                   />
                 </div>
                 <div className="space-y-2">
@@ -1358,15 +2066,18 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                 </div>
 
                 <div className="space-y-2">
-                  <Label className="text-bone-white flex items-center gap-1">
+                  <Label className={cn("flex items-center gap-1", missingDate ? "text-red-400" : "text-bone-white")}>
                     <Calendar className="w-4 h-4" />
-                    Date *
+                    Date * {missingDate && <span className="text-xs font-normal">(required)</span>}
                   </Label>
                   <Input
                     type="date"
                     value={date}
                     onChange={(e) => setDate(e.target.value)}
-                    className="bg-charcoal-black border-muted-gray/30"
+                    className={cn(
+                      "bg-charcoal-black",
+                      missingDate ? "border-red-500/50 focus:border-red-500" : "border-muted-gray/30"
+                    )}
                   />
                 </div>
                 <div className="space-y-2">
@@ -2245,6 +2956,24 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
               )}
             </TabsContent>
 
+            {/* People (Cast & Crew) Tab */}
+            <TabsContent value="people" className="space-y-6 mt-4">
+              {isEditMode && callSheet ? (
+                <CallSheetPeopleManager
+                  callSheetId={callSheet.id}
+                  projectId={projectId}
+                />
+              ) : (
+                <div className="border border-dashed border-muted-gray/30 rounded-lg p-8 text-center">
+                  <Users className="w-12 h-12 text-muted-gray mx-auto mb-3" />
+                  <p className="text-muted-gray mb-2">Save the call sheet first</p>
+                  <p className="text-xs text-muted-gray">
+                    Cast & crew can be added after creating the call sheet.
+                  </p>
+                </div>
+              )}
+            </TabsContent>
+
             {/* Contacts Tab */}
             <TabsContent value="contacts" className="space-y-6 mt-4">
               <div className="grid grid-cols-2 gap-4">
@@ -2456,6 +3185,416 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                   </AccordionContent>
                 </AccordionItem>
 
+                {/* Medical/Corporate Template Section */}
+                {templateType === 'medical_corporate' && (
+                  <AccordionItem value="medical-corporate" className="border border-muted-gray/30 rounded-lg px-4">
+                    <AccordionTrigger className="text-bone-white hover:no-underline">
+                      <span className="flex items-center gap-2">
+                        <Briefcase className="w-4 h-4 text-blue-400" />
+                        Privacy & Compliance
+                      </span>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-4 pt-2">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">HIPAA Officer</Label>
+                          <Input
+                            value={hipaaOfficer}
+                            onChange={(e) => setHipaaOfficer(e.target.value)}
+                            placeholder="Name and contact"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Release Status</Label>
+                          <select
+                            value={releaseStatus}
+                            onChange={(e) => setReleaseStatus(e.target.value)}
+                            className="w-full bg-charcoal-black border border-muted-gray/30 rounded-md px-3 py-2 text-bone-white"
+                          >
+                            <option value="">Select status...</option>
+                            <option value="pending">Pending</option>
+                            <option value="obtained">Obtained</option>
+                            <option value="not_required">Not Required</option>
+                          </select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Dress Code</Label>
+                          <Input
+                            value={dressCode}
+                            onChange={(e) => setDressCode(e.target.value)}
+                            placeholder="e.g., Business casual, scrubs provided"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Restricted Areas</Label>
+                          <Input
+                            value={restrictedAreas}
+                            onChange={(e) => setRestrictedAreas(e.target.value)}
+                            placeholder="Areas that are off-limits"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-muted-gray">Privacy Notes</Label>
+                        <Textarea
+                          value={privacyNotes}
+                          onChange={(e) => setPrivacyNotes(e.target.value)}
+                          placeholder="Special privacy considerations, patient confidentiality notes..."
+                          className="bg-charcoal-black border-muted-gray/30 min-h-[80px]"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Client Name</Label>
+                          <Input
+                            value={clientName}
+                            onChange={(e) => setClientName(e.target.value)}
+                            placeholder="Client/Company name"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Client Phone</Label>
+                          <Input
+                            value={clientPhone}
+                            onChange={(e) => setClientPhone(e.target.value)}
+                            placeholder="(555) 123-4567"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Facility Contact</Label>
+                          <Input
+                            value={facilityContact}
+                            onChange={(e) => setFacilityContact(e.target.value)}
+                            placeholder="On-site facility contact"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Facility Phone</Label>
+                          <Input
+                            value={facilityPhone}
+                            onChange={(e) => setFacilityPhone(e.target.value)}
+                            placeholder="(555) 123-4567"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
+
+                {/* News/ENG Template Section */}
+                {templateType === 'news_eng' && (
+                  <AccordionItem value="news-eng" className="border border-muted-gray/30 rounded-lg px-4">
+                    <AccordionTrigger className="text-bone-white hover:no-underline">
+                      <span className="flex items-center gap-2">
+                        <Radio className="w-4 h-4 text-orange-400" />
+                        Story & Deadline
+                      </span>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-4 pt-2">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray flex items-center gap-1">
+                            <Clock className="w-4 h-4 text-red-400" />
+                            Deadline Time
+                          </Label>
+                          <Input
+                            type="time"
+                            value={deadlineTime}
+                            onChange={(e) => setDeadlineTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Reporter</Label>
+                          <Input
+                            value={reporterName}
+                            onChange={(e) => setReporterName(e.target.value)}
+                            placeholder="Reporter name"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Reporter Phone</Label>
+                          <Input
+                            value={reporterPhone}
+                            onChange={(e) => setReporterPhone(e.target.value)}
+                            placeholder="(555) 123-4567"
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-muted-gray">Story Angle</Label>
+                        <Textarea
+                          value={storyAngle}
+                          onChange={(e) => setStoryAngle(e.target.value)}
+                          placeholder="Story focus, key interview subjects, main points..."
+                          className="bg-charcoal-black border-muted-gray/30 min-h-[80px]"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label className="text-muted-gray">Subject Notes</Label>
+                        <Textarea
+                          value={subjectNotes}
+                          onChange={(e) => setSubjectNotes(e.target.value)}
+                          placeholder="Interview subjects, availability, contact info..."
+                          className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                        />
+                      </div>
+                      <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                        <Label className="text-bone-white mb-3 block">Additional Locations</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Location 2 Name</Label>
+                            <Input
+                              value={location2Name}
+                              onChange={(e) => setLocation2Name(e.target.value)}
+                              placeholder="Second location"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Location 2 Address</Label>
+                            <Input
+                              value={location2Address}
+                              onChange={(e) => setLocation2Address(e.target.value)}
+                              placeholder="Address"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Location 3 Name</Label>
+                            <Input
+                              value={location3Name}
+                              onChange={(e) => setLocation3Name(e.target.value)}
+                              placeholder="Third location"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Location 3 Address</Label>
+                            <Input
+                              value={location3Address}
+                              onChange={(e) => setLocation3Address(e.target.value)}
+                              placeholder="Address"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
+
+                {/* Live Event Template Section */}
+                {templateType === 'live_event' && (
+                  <AccordionItem value="live-event" className="border border-muted-gray/30 rounded-lg px-4">
+                    <AccordionTrigger className="text-bone-white hover:no-underline">
+                      <span className="flex items-center gap-2">
+                        <Tv className="w-4 h-4 text-purple-400" />
+                        Show Timing & Technical
+                      </span>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-4 pt-2">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Load In Time</Label>
+                          <Input
+                            type="time"
+                            value={loadInTime}
+                            onChange={(e) => setLoadInTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Rehearsal Time</Label>
+                          <Input
+                            type="time"
+                            value={rehearsalTime}
+                            onChange={(e) => setRehearsalTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Doors Time</Label>
+                          <Input
+                            type="time"
+                            value={doorsTime}
+                            onChange={(e) => setDoorsTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Intermission</Label>
+                          <Input
+                            type="time"
+                            value={intermissionTime}
+                            onChange={(e) => setIntermissionTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label className="text-muted-gray">Strike Time</Label>
+                          <Input
+                            type="time"
+                            value={strikeTime}
+                            onChange={(e) => setStrikeTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                        <Label className="text-bone-white mb-3 block">Venue & Technical</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Truck Location</Label>
+                            <Input
+                              value={truckLocation}
+                              onChange={(e) => setTruckLocation(e.target.value)}
+                              placeholder="Loading dock, lot, etc."
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Video Village</Label>
+                            <Input
+                              value={videoVillage}
+                              onChange={(e) => setVideoVillage(e.target.value)}
+                              placeholder="Location of video village"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Comm Channel</Label>
+                            <Input
+                              value={commChannel}
+                              onChange={(e) => setCommChannel(e.target.value)}
+                              placeholder="Radio channel, freq"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                        <Label className="text-bone-white mb-3 block">Key Contacts</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Technical Director</Label>
+                            <Input
+                              value={tdName}
+                              onChange={(e) => setTdName(e.target.value)}
+                              placeholder="TD name"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">TD Phone</Label>
+                            <Input
+                              value={tdPhone}
+                              onChange={(e) => setTdPhone(e.target.value)}
+                              placeholder="(555) 123-4567"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Stage Manager</Label>
+                            <Input
+                              value={stageManagerName}
+                              onChange={(e) => setStageManagerName(e.target.value)}
+                              placeholder="Stage Manager name"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Stage Manager Phone</Label>
+                            <Input
+                              value={stageManagerPhone}
+                              onChange={(e) => setStageManagerPhone(e.target.value)}
+                              placeholder="(555) 123-4567"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                        <Label className="text-bone-white mb-3 block">Show Documents</Label>
+                        <div className="space-y-4">
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Camera Plot</Label>
+                            <Textarea
+                              value={cameraPlot}
+                              onChange={(e) => setCameraPlot(e.target.value)}
+                              placeholder="Camera positions, assignments, ISO feeds..."
+                              className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Show Rundown</Label>
+                            <Textarea
+                              value={showRundown}
+                              onChange={(e) => setShowRundown(e.target.value)}
+                              placeholder="Run of show, segment order, cue list..."
+                              className="bg-charcoal-black border-muted-gray/30 min-h-[80px]"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Rain Plan / Backup</Label>
+                            <Textarea
+                              value={rainPlan}
+                              onChange={(e) => setRainPlan(e.target.value)}
+                              placeholder="Contingency plans for weather or technical issues..."
+                              className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                        <Label className="text-bone-white mb-3 block">Additional Notes</Label>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Client Notes</Label>
+                            <Textarea
+                              value={clientNotes}
+                              onChange={(e) => setClientNotes(e.target.value)}
+                              placeholder="Client requirements, VIP info..."
+                              className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-muted-gray">Broadcast Notes</Label>
+                            <Textarea
+                              value={broadcastNotes}
+                              onChange={(e) => setBroadcastNotes(e.target.value)}
+                              placeholder="Streaming, broadcast requirements..."
+                              className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                            />
+                          </div>
+                        </div>
+                        <div className="space-y-2 mt-4">
+                          <Label className="text-muted-gray">Playback Notes</Label>
+                          <Textarea
+                            value={playbackNotes}
+                            onChange={(e) => setPlaybackNotes(e.target.value)}
+                            placeholder="Video playback, graphics, teleprompter info..."
+                            className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                          />
+                        </div>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
+
                 {/* Safety */}
                 <AccordionItem value="safety" className="border border-muted-gray/30 rounded-lg px-4">
                   <AccordionTrigger className="text-bone-white hover:no-underline">
@@ -2561,7 +3700,27 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
           </Tabs>
         </ScrollArea>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="gap-2 items-center">
+          {!canSubmit && !isPending && (
+            <p className="text-xs text-red-400 mr-auto">
+              Required: {[missingTitle && 'Title', missingDate && 'Date'].filter(Boolean).join(', ')}
+            </p>
+          )}
+          {/* Save as Template button - only show when form has data */}
+          {hasFormData() && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setTemplateName(title || '');
+                setShowSaveTemplateDialog(true);
+              }}
+              disabled={isPending}
+              className="border-muted-gray/30 mr-auto"
+            >
+              <BookmarkPlus className="w-4 h-4 mr-2" />
+              Save as Template
+            </Button>
+          )}
           <Button
             variant="outline"
             onClick={handleCloseAttempt}
@@ -2573,7 +3732,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
           <Button
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            className="bg-accent-yellow text-charcoal-black hover:bg-bone-white disabled:opacity-50"
           >
             {isPending ? (
               <>
@@ -2589,6 +3748,73 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
           </Button>
         </DialogFooter>
       </DialogContent>
+
+      {/* Save as Template Dialog */}
+      <Dialog open={showSaveTemplateDialog} onOpenChange={setShowSaveTemplateDialog}>
+        <DialogContent className="sm:max-w-md bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <BookmarkPlus className="w-5 h-5 text-amber-500" />
+              Save as Template
+            </DialogTitle>
+            <DialogDescription>
+              Save the current call sheet configuration as a reusable template.
+              You can use this template to quickly create new call sheets.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-bone-white">Template Name *</Label>
+              <Input
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder="e.g., Standard Feature Day"
+                className="bg-charcoal-black border-muted-gray/30"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-bone-white">Description (optional)</Label>
+              <Textarea
+                value={templateDescription}
+                onChange={(e) => setTemplateDescription(e.target.value)}
+                placeholder="Brief description of what this template is for..."
+                className="bg-charcoal-black border-muted-gray/30 resize-none"
+                rows={3}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Template type: <span className="capitalize">{templateType.replace('_', ' ')}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowSaveTemplateDialog(false)}
+              disabled={savingTemplate}
+              className="border-muted-gray/30"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSaveAsTemplate}
+              disabled={savingTemplate || !templateName.trim()}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {savingTemplate ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <BookmarkPlus className="w-4 h-4 mr-2" />
+                  Save Template
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 };

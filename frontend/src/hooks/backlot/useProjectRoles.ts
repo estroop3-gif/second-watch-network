@@ -518,13 +518,17 @@ export function useCanManageRoles(projectId: string | null) {
       });
 
       if (!response.ok) {
+        console.error('[useCanManageRoles] Request failed:', response.status);
         return false;
       }
 
       const result = await response.json();
+      console.log('[useCanManageRoles] Result:', result);
       return result.can_manage || false;
     },
     enabled: !!projectId,
+    staleTime: 0, // Always refetch
+    gcTime: 0, // Don't cache (formerly cacheTime)
   });
 }
 

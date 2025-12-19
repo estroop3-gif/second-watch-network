@@ -28,6 +28,7 @@ export {
   useCallSheets,
   useCallSheet,
   useCallSheetPeople,
+  useCrewPresets,
   useSendCallSheet,
   useCallSheetSendHistory,
   useProjectMembersForSend,
@@ -39,6 +40,13 @@ export {
   useDownloadCallSheetPdf,
   useSetProjectLogo,
   useSyncCallSheet,
+  // Templates (account-level)
+  useCallSheetTemplates,
+  useCallSheetFullData,
+} from './useSchedule';
+export type {
+  BacklotSavedCallSheetTemplate,
+  CallSheetFullData,
 } from './useSchedule';
 
 // Tasks

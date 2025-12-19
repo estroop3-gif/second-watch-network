@@ -14,7 +14,14 @@ export type BacklotUpdateType = 'announcement' | 'milestone' | 'schedule_change'
 export type BacklotGearStatus = 'available' | 'in_use' | 'reserved' | 'maintenance' | 'retired';
 
 // Call Sheet Template Types
-export type BacklotCallSheetTemplate = 'feature' | 'documentary' | 'music_video' | 'commercial';
+export type BacklotCallSheetTemplate =
+  | 'feature'
+  | 'documentary'
+  | 'music_video'
+  | 'commercial'
+  | 'medical_corporate'
+  | 'news_eng'
+  | 'live_event';
 export type BacklotIntExt = 'INT' | 'EXT' | 'INT/EXT' | 'EXT/INT';
 export type BacklotTimeOfDay = 'day' | 'night' | 'dawn' | 'dusk' | 'golden_hour' | 'magic_hour' | 'morning' | 'afternoon' | 'evening';
 
@@ -183,6 +190,52 @@ export interface BacklotCallSheet {
   general_notes: string | null;
   advance_schedule: string | null;
 
+  // === NEW TEMPLATE-SPECIFIC FIELDS ===
+
+  // Medical/Corporate Template Fields
+  hipaa_officer: string | null;
+  privacy_notes: string | null;
+  release_status: string | null;
+  restricted_areas: string | null;
+  dress_code: string | null;
+  client_name: string | null;
+  client_phone: string | null;
+  facility_contact: string | null;
+  facility_phone: string | null;
+
+  // News/ENG Template Fields
+  deadline_time: string | null;
+  story_angle: string | null;
+  reporter_name: string | null;
+  reporter_phone: string | null;
+  subject_notes: string | null;
+  location_2_name: string | null;
+  location_2_address: string | null;
+  location_3_name: string | null;
+  location_3_address: string | null;
+
+  // Live Event/Multi-cam Template Fields
+  load_in_time: string | null;
+  rehearsal_time: string | null;
+  doors_time: string | null;
+  intermission_time: string | null;
+  strike_time: string | null;
+  truck_location: string | null;
+  video_village: string | null;
+  comm_channel: string | null;
+  td_name: string | null;
+  td_phone: string | null;
+  stage_manager_name: string | null;
+  stage_manager_phone: string | null;
+  camera_plot: string | null;
+  show_rundown: string | null;
+  rain_plan: string | null;
+  client_notes: string | null;
+
+  // Additional Department Notes
+  broadcast_notes: string | null;
+  playback_notes: string | null;
+
   // Branding & PDF
   header_logo_url: string | null;
   pdf_url: string | null;
@@ -278,6 +331,173 @@ export interface BacklotCallSheetLocation {
   updated_at: string;
   // Joined data
   location?: BacklotLocation;
+}
+
+// Call Sheet Template (account-level, saved for reuse)
+export interface BacklotSavedCallSheetTemplate {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  template_type: BacklotCallSheetTemplate | null;
+  call_sheet_data: CallSheetTemplateData;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Data stored in a saved call sheet template (subset of BacklotCallSheet)
+export interface CallSheetTemplateData {
+  // Basic info (excluding project/date specifics)
+  title?: string;
+  template_type?: BacklotCallSheetTemplate;
+  production_title?: string;
+  production_company?: string;
+  header_logo_url?: string;
+  shoot_day_number?: number;
+  total_shoot_days?: number;
+
+  // Timing
+  crew_call_time?: string;
+  general_call_time?: string;
+  first_shot_time?: string;
+  breakfast_time?: string;
+  lunch_time?: string;
+  dinner_time?: string;
+  estimated_wrap_time?: string;
+  sunrise_time?: string;
+  sunset_time?: string;
+
+  // Contacts
+  production_office_phone?: string;
+  production_email?: string;
+  upm_name?: string;
+  upm_phone?: string;
+  first_ad_name?: string;
+  first_ad_phone?: string;
+  director_name?: string;
+  director_phone?: string;
+  producer_name?: string;
+  producer_phone?: string;
+  production_contact?: string;
+  production_phone?: string;
+
+  // Department notes
+  camera_notes?: string;
+  sound_notes?: string;
+  grip_electric_notes?: string;
+  art_notes?: string;
+  wardrobe_notes?: string;
+  makeup_hair_notes?: string;
+  stunts_notes?: string;
+  vfx_notes?: string;
+  transport_notes?: string;
+  catering_notes?: string;
+
+  // Schedule
+  schedule_blocks?: Array<{ time: string; activity: string; notes?: string }>;
+
+  // Custom contacts
+  custom_contacts?: Array<{ name: string; title?: string; phone?: string; email?: string }>;
+
+  // Weather/Safety/Notes
+  weather_forecast?: string;
+  weather_info?: string;
+  nearest_hospital?: string;
+  hospital_address?: string;
+  hospital_name?: string;
+  hospital_phone?: string;
+  set_medic?: string;
+  fire_safety_officer?: string;
+  safety_notes?: string;
+  general_notes?: string;
+  advance_schedule?: string;
+  special_instructions?: string;
+
+  // Template-specific fields (all optional)
+  hipaa_officer?: string;
+  privacy_notes?: string;
+  release_status?: string;
+  restricted_areas?: string;
+  dress_code?: string;
+  client_name?: string;
+  client_phone?: string;
+  facility_contact?: string;
+  facility_phone?: string;
+  deadline_time?: string;
+  story_angle?: string;
+  reporter_name?: string;
+  reporter_phone?: string;
+  subject_notes?: string;
+  load_in_time?: string;
+  rehearsal_time?: string;
+  doors_time?: string;
+  intermission_time?: string;
+  strike_time?: string;
+  truck_location?: string;
+  video_village?: string;
+  comm_channel?: string;
+  td_name?: string;
+  td_phone?: string;
+  stage_manager_name?: string;
+  stage_manager_phone?: string;
+  camera_plot?: string;
+  show_rundown?: string;
+  rain_plan?: string;
+  client_notes?: string;
+  broadcast_notes?: string;
+  playback_notes?: string;
+
+  // Nested data (stripped of IDs for templates)
+  locations?: CallSheetTemplateLocation[];
+  scenes?: CallSheetTemplateScene[];
+  people?: CallSheetTemplatePerson[];
+}
+
+// Location data stored in template (no IDs)
+export interface CallSheetTemplateLocation {
+  location_number: number;
+  name: string;
+  address?: string;
+  parking_instructions?: string;
+  basecamp_location?: string;
+  call_time?: string;
+  notes?: string;
+  sort_order?: number;
+}
+
+// Scene data stored in template (no IDs)
+export interface CallSheetTemplateScene {
+  scene_number?: string;
+  segment_label?: string;
+  page_count?: string;
+  set_name?: string;
+  int_ext?: BacklotIntExt;
+  time_of_day?: BacklotTimeOfDay;
+  description?: string;
+  cast_ids?: string;
+  notes?: string;
+  sort_order?: number;
+}
+
+// Person data stored in template (no IDs)
+export interface CallSheetTemplatePerson {
+  name: string;
+  role?: string;
+  department?: string;
+  call_time?: string;
+  phone?: string;
+  email?: string;
+  notes?: string;
+  makeup_time?: string;
+  pickup_time?: string;
+  on_set_time?: string;
+  wardrobe_notes?: string;
+  is_cast: boolean;
+  cast_number?: string;
+  character_name?: string;
+  sort_order?: number;
 }
 
 // Task
@@ -777,6 +997,48 @@ export interface CallSheetInput {
 
   // Custom Contacts
   custom_contacts?: CallSheetCustomContact[];
+
+  // Medical/Corporate template fields
+  hipaa_officer?: string;
+  privacy_notes?: string;
+  release_status?: string;
+  restricted_areas?: string;
+  dress_code?: string;
+  client_name?: string;
+  client_phone?: string;
+  facility_contact?: string;
+  facility_phone?: string;
+
+  // News/ENG template fields
+  deadline_time?: string;
+  story_angle?: string;
+  reporter_name?: string;
+  reporter_phone?: string;
+  subject_notes?: string;
+  location_2_name?: string;
+  location_2_address?: string;
+  location_3_name?: string;
+  location_3_address?: string;
+
+  // Live Event template fields
+  load_in_time?: string;
+  rehearsal_time?: string;
+  doors_time?: string;
+  intermission_time?: string;
+  strike_time?: string;
+  truck_location?: string;
+  video_village?: string;
+  comm_channel?: string;
+  td_name?: string;
+  td_phone?: string;
+  stage_manager_name?: string;
+  stage_manager_phone?: string;
+  camera_plot?: string;
+  show_rundown?: string;
+  rain_plan?: string;
+  client_notes?: string;
+  broadcast_notes?: string;
+  playback_notes?: string;
 }
 
 export interface CallSheetPersonInput {
@@ -937,6 +1199,38 @@ export interface ContactFilters {
   contact_type?: BacklotContactType | 'all';
   status?: BacklotContactStatus | 'all';
   search?: string;
+}
+
+// Unified Person - combines team members and contacts
+export interface UnifiedPerson {
+  id: string; // Primary identifier
+  source: 'team' | 'contact' | 'both';
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  // Team member fields
+  access_role?: string | null; // owner, admin, editor, viewer
+  backlot_roles: string[];
+  primary_role?: string | null;
+  user_avatar?: string | null;
+  user_username?: string | null;
+  // Contact fields
+  contact_type?: string | null;
+  contact_status?: string | null;
+  company?: string | null;
+  role_interest?: string | null;
+  // Relationship identifiers
+  is_team_member: boolean;
+  has_account: boolean; // has user_id
+  contact_id?: string | null;
+  member_id?: string | null;
+  user_id?: string | null;
+}
+
+export interface UnifiedPeopleResponse {
+  team: BacklotProjectMember[];
+  contacts: BacklotProjectContact[];
+  unified: UnifiedPerson[];
 }
 
 // View/Tab types for workspace navigation
@@ -4993,3 +5287,69 @@ export const DAILIES_RATING_LABELS: Record<number, string> = {
   4: 'Good',
   5: 'Excellent',
 };
+
+// ============================================
+// CREW PRESETS
+// ============================================
+
+export interface CrewPresetMember {
+  name: string;
+  role?: string;
+  department?: string;
+  default_call_time?: string;
+  phone?: string;
+  email?: string;
+  is_cast?: boolean;
+  cast_number?: string;
+  character_name?: string;
+}
+
+export interface BacklotCrewPreset {
+  id: string;
+  project_id: string | null;
+  user_id: string | null;
+  name: string;
+  description: string | null;
+  template_type: BacklotCallSheetTemplate | null;
+  crew_members: CrewPresetMember[];
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CrewPresetInput {
+  name: string;
+  description?: string;
+  template_type?: BacklotCallSheetTemplate;
+  crew_members: CrewPresetMember[];
+  scope: 'project' | 'user';
+}
+
+// ============================================
+// CALL SHEET CLONE
+// ============================================
+
+export interface CallSheetCloneRequest {
+  new_date: string;
+  new_day_number?: number;
+  new_title?: string;
+  keep_people?: boolean;
+  keep_scenes?: boolean;
+  keep_locations?: boolean;
+  keep_schedule_blocks?: boolean;
+  keep_department_notes?: boolean;
+}
+
+// ============================================
+// BULK DEPARTMENT TIME UPDATE
+// ============================================
+
+export interface BulkDepartmentTimeUpdate {
+  department: string;
+  call_time?: string;
+  makeup_time?: string;
+  pickup_time?: string;
+  on_set_time?: string;
+  apply_to: 'all' | 'empty_only';
+}

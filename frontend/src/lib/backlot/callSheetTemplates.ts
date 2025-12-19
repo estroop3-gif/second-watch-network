@@ -133,13 +133,13 @@ const FEATURE_TEMPLATE: CallSheetTemplateDefinition = {
       visible: true,
       defaultExpanded: true,
       fields: [
-        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true },
-        { key: 'general_call_time', label: 'General Call', type: 'time' },
-        { key: 'first_shot_time', label: 'First Shot / Camera Ready', type: 'time' },
-        { key: 'breakfast_time', label: 'Breakfast', type: 'time' },
-        { key: 'lunch_time', label: 'Lunch', type: 'time' },
-        { key: 'dinner_time', label: 'Second Meal / Dinner', type: 'time' },
-        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time' },
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '06:00' },
+        { key: 'general_call_time', label: 'General Call', type: 'time', defaultValue: '06:00' },
+        { key: 'first_shot_time', label: 'First Shot / Camera Ready', type: 'time', defaultValue: '07:00' },
+        { key: 'breakfast_time', label: 'Breakfast', type: 'time', defaultValue: '06:00' },
+        { key: 'lunch_time', label: 'Lunch', type: 'time', defaultValue: '12:00' },
+        { key: 'dinner_time', label: 'Second Meal / Dinner', type: 'time', defaultValue: '18:00' },
+        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time', defaultValue: '19:00' },
       ],
     },
     {
@@ -269,11 +269,11 @@ const DOCUMENTARY_TEMPLATE: CallSheetTemplateDefinition = {
       visible: true,
       defaultExpanded: true,
       fields: [
-        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true },
-        { key: 'general_call_time', label: 'Talent / Subject Call', type: 'time' },
-        { key: 'first_shot_time', label: 'Start Time', type: 'time' },
-        { key: 'lunch_time', label: 'Lunch', type: 'time' },
-        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time' },
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '08:00' },
+        { key: 'general_call_time', label: 'Talent / Subject Call', type: 'time', defaultValue: '09:00' },
+        { key: 'first_shot_time', label: 'Start Time', type: 'time', defaultValue: '09:30' },
+        { key: 'lunch_time', label: 'Lunch', type: 'time', defaultValue: '12:30' },
+        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time', defaultValue: '17:00' },
       ],
     },
     {
@@ -392,11 +392,11 @@ const MUSIC_VIDEO_TEMPLATE: CallSheetTemplateDefinition = {
       visible: true,
       defaultExpanded: true,
       fields: [
-        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true },
-        { key: 'general_call_time', label: 'Talent Call', type: 'time' },
-        { key: 'first_shot_time', label: 'Playback / First Shot', type: 'time' },
-        { key: 'lunch_time', label: 'Lunch', type: 'time' },
-        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time' },
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '10:00' },
+        { key: 'general_call_time', label: 'Talent Call', type: 'time', defaultValue: '12:00' },
+        { key: 'first_shot_time', label: 'Playback / First Shot', type: 'time', defaultValue: '13:00' },
+        { key: 'lunch_time', label: 'Lunch', type: 'time', defaultValue: '14:00' },
+        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time', defaultValue: '22:00' },
       ],
     },
     {
@@ -517,13 +517,13 @@ const COMMERCIAL_TEMPLATE: CallSheetTemplateDefinition = {
       visible: true,
       defaultExpanded: true,
       fields: [
-        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true },
-        { key: 'general_call_time', label: 'Talent Call', type: 'time' },
-        { key: 'client_call_time', label: 'Client / Agency Call', type: 'time', helpText: 'Time for client/agency arrivals' },
-        { key: 'first_shot_time', label: 'First Shot', type: 'time' },
-        { key: 'breakfast_time', label: 'Breakfast', type: 'time' },
-        { key: 'lunch_time', label: 'Lunch', type: 'time' },
-        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time' },
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '06:00' },
+        { key: 'general_call_time', label: 'Talent Call', type: 'time', defaultValue: '07:00' },
+        { key: 'client_call_time', label: 'Client / Agency Call', type: 'time', helpText: 'Time for client/agency arrivals', defaultValue: '09:00' },
+        { key: 'first_shot_time', label: 'First Shot', type: 'time', defaultValue: '08:00' },
+        { key: 'breakfast_time', label: 'Breakfast', type: 'time', defaultValue: '06:00' },
+        { key: 'lunch_time', label: 'Lunch', type: 'time', defaultValue: '12:00' },
+        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time', defaultValue: '18:00' },
       ],
     },
     {
@@ -643,6 +643,435 @@ const COMMERCIAL_TEMPLATE: CallSheetTemplateDefinition = {
 };
 
 // ============================================================================
+// TEMPLATE: MEDICAL / CORPORATE VIDEO
+// ============================================================================
+
+const MEDICAL_CORPORATE_TEMPLATE: CallSheetTemplateDefinition = {
+  type: 'medical_corporate',
+  name: 'Medical / Corporate',
+  description: 'Streamlined call sheet for dental videos, medical procedures, corporate training, and professional content',
+  icon: 'Briefcase',
+
+  coreFields: [
+    { key: 'title', label: 'Call Sheet Title', type: 'text', required: true, placeholder: 'e.g., Dental Procedure - Dr. Smith' },
+    { key: 'production_title', label: 'Video Title', type: 'text', placeholder: 'e.g., Root Canal Procedure Guide' },
+    { key: 'production_company', label: 'Client / Organization', type: 'text', placeholder: 'e.g., Smith Dental Associates' },
+    { key: 'date', label: 'Shoot Date', type: 'date', required: true },
+    { key: 'shoot_day_number', label: 'Day #', type: 'number', placeholder: '1' },
+    { key: 'total_shoot_days', label: 'of Total', type: 'number' },
+  ],
+
+  sections: [
+    {
+      id: 'timing',
+      title: 'Schedule',
+      icon: 'Clock',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '07:30' },
+        { key: 'general_call_time', label: 'Client / Talent Call', type: 'time', defaultValue: '08:30' },
+        { key: 'first_shot_time', label: 'Start Recording', type: 'time', defaultValue: '09:00' },
+        { key: 'lunch_time', label: 'Lunch', type: 'time', defaultValue: '12:00' },
+        { key: 'estimated_wrap_time', label: 'Estimated Wrap', type: 'time', defaultValue: '17:00' },
+      ],
+    },
+    {
+      id: 'location',
+      title: 'Location',
+      icon: 'MapPin',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'location_name', label: 'Facility Name', type: 'text', placeholder: 'e.g., Main Street Medical Center' },
+        { key: 'location_address', label: 'Address', type: 'text' },
+        { key: 'parking_instructions', label: 'Parking / Check-in', type: 'textarea', placeholder: 'Parking location, badge pickup, check-in procedures...' },
+      ],
+    },
+    {
+      id: 'production_contact',
+      title: 'Key Contacts',
+      icon: 'Phone',
+      visible: true,
+      fields: [
+        { key: 'producer_name', label: 'Producer', type: 'text' },
+        { key: 'producer_phone', label: 'Producer Phone', type: 'text' },
+        { key: 'director_name', label: 'Director / DP', type: 'text' },
+        { key: 'director_phone', label: 'Director Phone', type: 'text' },
+        { key: 'production_email', label: 'Production Email', type: 'text' },
+      ],
+    },
+    {
+      id: 'privacy_compliance',
+      title: 'Privacy & Compliance',
+      icon: 'Shield',
+      description: 'HIPAA and privacy considerations',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'hipaa_officer', label: 'HIPAA / Compliance Officer', type: 'text', placeholder: 'Name and contact' },
+        { key: 'privacy_notes', label: 'Privacy Requirements', type: 'textarea', placeholder: 'No patient faces visible, blur monitors, PHI precautions...' },
+        { key: 'release_status', label: 'Release Status', type: 'textarea', placeholder: 'Talent releases, patient consent forms, facility agreements...' },
+        { key: 'restricted_areas', label: 'Restricted Areas', type: 'textarea', placeholder: 'Areas off-limits to crew, patient areas, etc.' },
+      ],
+    },
+    {
+      id: 'client_contact',
+      title: 'Client / Facility Contact',
+      icon: 'Building',
+      visible: true,
+      fields: [
+        { key: 'client_name', label: 'Client Contact', type: 'text', placeholder: 'Primary client contact name' },
+        { key: 'client_phone', label: 'Client Phone', type: 'text' },
+        { key: 'facility_contact', label: 'Facility Contact', type: 'text', placeholder: 'On-site facility liaison' },
+        { key: 'facility_phone', label: 'Facility Phone', type: 'text' },
+      ],
+    },
+    {
+      id: 'safety',
+      title: 'Safety',
+      icon: 'Heart',
+      visible: true,
+      fields: [
+        { key: 'nearest_hospital', label: 'Nearest ER', type: 'text' },
+        { key: 'safety_notes', label: 'Safety Notes', type: 'textarea', placeholder: 'PPE requirements, sterile areas, equipment restrictions...' },
+      ],
+    },
+    {
+      id: 'additional',
+      title: 'Notes',
+      icon: 'FileText',
+      visible: true,
+      fields: [
+        { key: 'general_notes', label: 'General Notes', type: 'textarea' },
+        { key: 'dress_code', label: 'Dress Code', type: 'textarea', placeholder: 'Scrubs provided, no logos, closed-toe shoes, etc.' },
+      ],
+    },
+  ],
+
+  sceneBreakdown: {
+    enabled: true,
+    label: 'Shot List',
+    columns: [
+      { key: 'segment_label', label: 'Shot', visible: true, width: '80px' },
+      { key: 'set_name', label: 'Setup / Location', visible: true, width: '180px' },
+      { key: 'description', label: 'Description', visible: true },
+      { key: 'cast_names', label: 'Talent', visible: true, width: '120px' },
+    ],
+  },
+
+  departmentNotes: [
+    { id: 'camera_notes', label: 'Camera', visible: true, placeholder: 'Single camera setup, lens choice, stabilization...' },
+    { id: 'sound_notes', label: 'Audio', visible: true, placeholder: 'Lav mics, room tone, ambient noise considerations...' },
+    { id: 'grip_electric_notes', label: 'Lighting', visible: true, placeholder: 'Minimal lighting, natural light supplementation...' },
+    { id: 'art_notes', label: 'Set / Props', visible: false },
+    { id: 'wardrobe_notes', label: 'Wardrobe', visible: false },
+    { id: 'makeup_hair_notes', label: 'Makeup', visible: false },
+    { id: 'transport_notes', label: 'Transportation', visible: false },
+    { id: 'catering_notes', label: 'Craft Services', visible: true, placeholder: 'Client providing meals, crew lunch, dietary needs...' },
+  ],
+
+  defaultScheduleBlocks: [
+    { time: '08:00 AM', activity: 'Crew Call - Load In' },
+    { time: '08:30 AM', activity: 'Equipment Setup' },
+    { time: '09:00 AM', activity: 'Lighting & Sound Check' },
+    { time: '09:30 AM', activity: 'Talent / Subject Arrives' },
+    { time: '10:00 AM', activity: 'Begin Recording' },
+    { time: '12:00 PM', activity: 'Lunch Break' },
+    { time: '01:00 PM', activity: 'Afternoon Session' },
+    { time: '04:00 PM', activity: 'Wrap & Load Out' },
+  ],
+};
+
+// ============================================================================
+// TEMPLATE: NEWS / ENG (Electronic News Gathering)
+// ============================================================================
+
+const NEWS_ENG_TEMPLATE: CallSheetTemplateDefinition = {
+  type: 'news_eng',
+  name: 'News / ENG',
+  description: 'Fast-turnaround call sheet for news packages, ENG crews, and rapid-deployment shoots',
+  icon: 'Radio',
+
+  coreFields: [
+    { key: 'title', label: 'Assignment', type: 'text', required: true, placeholder: 'e.g., City Council Meeting Coverage' },
+    { key: 'production_title', label: 'Story / Package', type: 'text', placeholder: 'e.g., Budget Vote Package' },
+    { key: 'production_company', label: 'Outlet / Client', type: 'text' },
+    { key: 'date', label: 'Date', type: 'date', required: true },
+  ],
+
+  sections: [
+    {
+      id: 'timing',
+      title: 'Times',
+      icon: 'Clock',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'crew_call_time', label: 'Meet Time', type: 'time', required: true, defaultValue: '08:00' },
+        { key: 'first_shot_time', label: 'Event Start', type: 'time', defaultValue: '09:00' },
+        { key: 'estimated_wrap_time', label: 'Expected Finish', type: 'time', defaultValue: '17:00' },
+        { key: 'deadline_time', label: 'Deadline', type: 'time', helpText: 'File/feed deadline', defaultValue: '18:00' },
+      ],
+    },
+    {
+      id: 'location',
+      title: 'Primary Location',
+      icon: 'MapPin',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'location_name', label: 'Location', type: 'text', placeholder: 'e.g., City Hall' },
+        { key: 'location_address', label: 'Address', type: 'text' },
+        { key: 'parking_instructions', label: 'Parking / Access', type: 'textarea', placeholder: 'Media parking, credentials, entry point...' },
+      ],
+    },
+    {
+      id: 'additional_locations',
+      title: 'Additional Stops',
+      icon: 'Navigation',
+      visible: true,
+      fields: [
+        { key: 'location_2_name', label: 'Location 2', type: 'text' },
+        { key: 'location_2_address', label: 'Address', type: 'text' },
+        { key: 'location_3_name', label: 'Location 3', type: 'text' },
+        { key: 'location_3_address', label: 'Address', type: 'text' },
+      ],
+    },
+    {
+      id: 'production_contact',
+      title: 'Contacts',
+      icon: 'Phone',
+      visible: true,
+      fields: [
+        { key: 'producer_name', label: 'Assignment Editor / Producer', type: 'text' },
+        { key: 'producer_phone', label: 'Desk Phone', type: 'text' },
+        { key: 'reporter_name', label: 'Reporter', type: 'text' },
+        { key: 'reporter_phone', label: 'Reporter Cell', type: 'text' },
+      ],
+    },
+    {
+      id: 'subjects',
+      title: 'Interview Subjects',
+      icon: 'Users',
+      visible: true,
+      fields: [
+        { key: 'subject_notes', label: 'Scheduled Interviews', type: 'textarea', placeholder: 'Name, title, time, topic...' },
+      ],
+    },
+    {
+      id: 'additional',
+      title: 'Notes',
+      icon: 'FileText',
+      visible: true,
+      fields: [
+        { key: 'story_angle', label: 'Story Angle / Focus', type: 'textarea', placeholder: 'Key points, story focus, must-get shots...' },
+        { key: 'general_notes', label: 'Additional Notes', type: 'textarea' },
+      ],
+    },
+  ],
+
+  sceneBreakdown: {
+    enabled: true,
+    label: 'Segments',
+    columns: [
+      { key: 'segment_label', label: 'Segment', visible: true, width: '100px' },
+      { key: 'set_name', label: 'Location', visible: true, width: '150px' },
+      { key: 'description', label: 'Content / SOT', visible: true },
+      { key: 'cast_names', label: 'Subject', visible: true, width: '120px' },
+    ],
+  },
+
+  departmentNotes: [
+    { id: 'camera_notes', label: 'Camera / Gear', visible: true, placeholder: 'ENG camera, tripod, extra batteries, media...' },
+    { id: 'sound_notes', label: 'Audio', visible: true, placeholder: 'Wireless mics, stick mic, IFB...' },
+    { id: 'grip_electric_notes', label: 'Lighting', visible: false },
+    { id: 'art_notes', label: 'Art', visible: false },
+    { id: 'wardrobe_notes', label: 'Wardrobe', visible: false },
+    { id: 'makeup_hair_notes', label: 'Makeup', visible: false },
+    { id: 'transport_notes', label: 'Vehicle', visible: true, placeholder: 'News van, live truck, vehicle assignment...' },
+    { id: 'catering_notes', label: 'Meals', visible: false },
+  ],
+
+  defaultScheduleBlocks: [
+    { time: '10:00 AM', activity: 'Meet at Location 1' },
+    { time: '10:30 AM', activity: 'Setup & Interviews' },
+    { time: '12:00 PM', activity: 'Move to Location 2' },
+    { time: '12:30 PM', activity: 'B-Roll & Standup' },
+    { time: '02:00 PM', activity: 'Travel Back / File' },
+    { time: '04:00 PM', activity: 'Deadline' },
+  ],
+};
+
+// ============================================================================
+// TEMPLATE: LIVE EVENT / MULTI-CAM
+// ============================================================================
+
+const LIVE_EVENT_TEMPLATE: CallSheetTemplateDefinition = {
+  type: 'live_event',
+  name: 'Live Event / Multi-Cam',
+  description: 'Multi-camera call sheet for concerts, conferences, sports, and live productions',
+  icon: 'Tv',
+
+  coreFields: [
+    { key: 'title', label: 'Show / Event', type: 'text', required: true, placeholder: 'e.g., Annual Conference Day 1' },
+    { key: 'production_title', label: 'Event Name', type: 'text', placeholder: 'e.g., TechCon 2024' },
+    { key: 'production_company', label: 'Production Company / Client', type: 'text' },
+    { key: 'date', label: 'Event Date', type: 'date', required: true },
+    { key: 'shoot_day_number', label: 'Day #', type: 'number', placeholder: '1' },
+    { key: 'total_shoot_days', label: 'of Total', type: 'number' },
+  ],
+
+  sections: [
+    {
+      id: 'timing',
+      title: 'Key Times',
+      icon: 'Clock',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'crew_call_time', label: 'Crew Call', type: 'time', required: true, defaultValue: '12:00' },
+        { key: 'load_in_time', label: 'Load In', type: 'time', defaultValue: '08:00' },
+        { key: 'rehearsal_time', label: 'Rehearsal / Sound Check', type: 'time', defaultValue: '16:00' },
+        { key: 'doors_time', label: 'Doors Open', type: 'time', defaultValue: '18:00' },
+        { key: 'first_shot_time', label: 'Show Start / Downbeat', type: 'time', defaultValue: '19:00' },
+        { key: 'intermission_time', label: 'Intermission', type: 'time', defaultValue: '20:00' },
+        { key: 'estimated_wrap_time', label: 'Show End', type: 'time', defaultValue: '22:00' },
+        { key: 'strike_time', label: 'Strike Complete', type: 'time', defaultValue: '00:00' },
+      ],
+    },
+    {
+      id: 'location',
+      title: 'Venue',
+      icon: 'Building',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'location_name', label: 'Venue Name', type: 'text', placeholder: 'e.g., Convention Center Hall A' },
+        { key: 'location_address', label: 'Address', type: 'text' },
+        { key: 'parking_instructions', label: 'Crew Parking / Load In', type: 'textarea', placeholder: 'Loading dock, truck parking, crew entrance...' },
+        { key: 'basecamp_location', label: 'Production Office / Green Room', type: 'text' },
+      ],
+    },
+    {
+      id: 'truck_info',
+      title: 'Truck / Control Room',
+      icon: 'Monitor',
+      visible: true,
+      fields: [
+        { key: 'truck_location', label: 'Truck Location', type: 'text', placeholder: 'Location of production truck' },
+        { key: 'video_village', label: 'Video Village / Client Monitor', type: 'text' },
+        { key: 'comm_channel', label: 'Comm Channels', type: 'textarea', placeholder: 'PL channels, IFB frequencies, radio channels...' },
+      ],
+    },
+    {
+      id: 'production_contact',
+      title: 'Key Personnel',
+      icon: 'Phone',
+      visible: true,
+      fields: [
+        { key: 'director_name', label: 'Director', type: 'text' },
+        { key: 'director_phone', label: 'Director Phone', type: 'text' },
+        { key: 'producer_name', label: 'Producer', type: 'text' },
+        { key: 'producer_phone', label: 'Producer Phone', type: 'text' },
+        { key: 'td_name', label: 'Technical Director', type: 'text' },
+        { key: 'td_phone', label: 'TD Phone', type: 'text' },
+        { key: 'stage_manager_name', label: 'Stage Manager', type: 'text' },
+        { key: 'stage_manager_phone', label: 'SM Phone', type: 'text' },
+      ],
+    },
+    {
+      id: 'camera_positions',
+      title: 'Camera Positions',
+      icon: 'Camera',
+      description: 'Camera assignments by position',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'camera_plot', label: 'Camera Plot / Assignments', type: 'textarea', placeholder: 'CAM 1: Wide Stage Left - [Operator]\nCAM 2: Tight Center - [Operator]\nCAM 3: Handheld - [Operator]...' },
+      ],
+    },
+    {
+      id: 'run_of_show',
+      title: 'Run of Show',
+      icon: 'List',
+      description: 'Cue sheet / show rundown',
+      visible: true,
+      defaultExpanded: true,
+      fields: [
+        { key: 'show_rundown', label: 'Show Rundown', type: 'textarea', placeholder: 'Detailed show rundown with cues and timing...' },
+      ],
+    },
+    {
+      id: 'weather',
+      title: 'Weather (Outdoor)',
+      icon: 'Cloud',
+      visible: false,
+      fields: [
+        { key: 'weather_forecast', label: 'Forecast', type: 'textarea' },
+        { key: 'rain_plan', label: 'Rain Plan / Weather Hold', type: 'textarea' },
+      ],
+    },
+    {
+      id: 'safety',
+      title: 'Safety & Medical',
+      icon: 'Shield',
+      visible: true,
+      fields: [
+        { key: 'nearest_hospital', label: 'Nearest Hospital', type: 'text' },
+        { key: 'set_medic', label: 'On-Site Medic', type: 'text' },
+        { key: 'safety_notes', label: 'Safety Notes', type: 'textarea', placeholder: 'Pyro cues, rigging, crowd control, cable runs...' },
+      ],
+    },
+    {
+      id: 'additional',
+      title: 'Additional Notes',
+      icon: 'FileText',
+      visible: true,
+      fields: [
+        { key: 'general_notes', label: 'Production Notes', type: 'textarea' },
+        { key: 'client_notes', label: 'Client Requirements', type: 'textarea', placeholder: 'Deliverables, branding requirements, special requests...' },
+      ],
+    },
+  ],
+
+  sceneBreakdown: {
+    enabled: true,
+    label: 'Show Cues / Segments',
+    columns: [
+      { key: 'segment_label', label: 'Cue #', visible: true, width: '80px' },
+      { key: 'set_name', label: 'Time', visible: true, width: '80px' },
+      { key: 'description', label: 'Segment / Cue', visible: true },
+      { key: 'cast_names', label: 'Talent / Act', visible: true, width: '150px' },
+    ],
+  },
+
+  departmentNotes: [
+    { id: 'camera_notes', label: 'Camera', visible: true, placeholder: 'Camera package, ISO records, special gear...' },
+    { id: 'sound_notes', label: 'Audio', visible: true, placeholder: 'Audio console, RF coordination, IEMs, broadcast mix...' },
+    { id: 'grip_electric_notes', label: 'Lighting / Video', visible: true, placeholder: 'Lighting design, video walls, graphics...' },
+    { id: 'broadcast_notes', label: 'Broadcast / Stream', visible: true, placeholder: 'Transmission path, streaming platform, backup...' },
+    { id: 'playback_notes', label: 'Playback / Graphics', visible: true, placeholder: 'Playback sources, graphics package, lower thirds...' },
+    { id: 'art_notes', label: 'Staging', visible: false },
+    { id: 'transport_notes', label: 'Transportation', visible: true, placeholder: 'Truck call, equipment moves, strike plan...' },
+    { id: 'catering_notes', label: 'Craft Services', visible: true, placeholder: 'Crew meals, green room catering...' },
+  ],
+
+  defaultScheduleBlocks: [
+    { time: '06:00 AM', activity: 'Truck Call - Load In Begins' },
+    { time: '08:00 AM', activity: 'Camera Setup & Cable' },
+    { time: '10:00 AM', activity: 'Tech Check - All Cameras' },
+    { time: '12:00 PM', activity: 'Lunch' },
+    { time: '01:00 PM', activity: 'Rehearsal / Sound Check' },
+    { time: '04:00 PM', activity: 'Final Checks' },
+    { time: '05:00 PM', activity: 'Doors Open' },
+    { time: '06:00 PM', activity: 'Show Start' },
+    { time: '09:00 PM', activity: 'Show End' },
+    { time: '11:00 PM', activity: 'Strike Complete' },
+  ],
+};
+
+// ============================================================================
 // TEMPLATE REGISTRY
 // ============================================================================
 
@@ -651,6 +1080,9 @@ export const CALL_SHEET_TEMPLATES: Record<BacklotCallSheetTemplate, CallSheetTem
   documentary: DOCUMENTARY_TEMPLATE,
   music_video: MUSIC_VIDEO_TEMPLATE,
   commercial: COMMERCIAL_TEMPLATE,
+  medical_corporate: MEDICAL_CORPORATE_TEMPLATE,
+  news_eng: NEWS_ENG_TEMPLATE,
+  live_event: LIVE_EVENT_TEMPLATE,
 };
 
 /**

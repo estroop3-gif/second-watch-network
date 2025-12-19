@@ -135,6 +135,84 @@ class RolePreset(BaseModel):
     config: Dict[str, Any]
 
 
+class AddMemberFromContactRequest(BaseModel):
+    contact_id: str
+    role: str = "viewer"  # owner, admin, editor, viewer
+    backlot_role: Optional[str] = None  # showrunner, producer, etc.
+
+
+class UnifiedPerson(BaseModel):
+    """Unified view of a person (team member, contact, or both)"""
+    id: str  # Primary identifier
+    source: str  # 'team', 'contact', or 'both'
+    name: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    # Team member fields
+    access_role: Optional[str] = None  # owner, admin, editor, viewer
+    backlot_roles: List[str] = []
+    primary_role: Optional[str] = None
+    user_avatar: Optional[str] = None
+    user_username: Optional[str] = None
+    # Contact fields
+    contact_type: Optional[str] = None
+    contact_status: Optional[str] = None
+    company: Optional[str] = None
+    role_interest: Optional[str] = None
+    # Relationship identifiers
+    is_team_member: bool = False
+    has_account: bool = False  # has user_id
+    contact_id: Optional[str] = None
+    member_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class UnifiedPeopleResponse(BaseModel):
+    team: List[MemberWithRoles]
+    contacts: List[Dict[str, Any]]
+    unified: List[UnifiedPerson]
+
+
+# Role interest to backlot role mapping
+ROLE_INTEREST_MAPPING = {
+    "producer": "producer",
+    "line producer": "producer",
+    "executive producer": "producer",
+    "director": "director",
+    "1st ad": "first_ad",
+    "first ad": "first_ad",
+    "ad": "first_ad",
+    "assistant director": "first_ad",
+    "dp": "dp",
+    "cinematographer": "dp",
+    "director of photography": "dp",
+    "camera": "dp",
+    "editor": "editor",
+    "post": "editor",
+    "post production": "editor",
+    "script supervisor": "script_supervisor",
+    "scripter": "script_supervisor",
+    "department head": "department_head",
+    "key": "department_head",
+    "showrunner": "showrunner",
+}
+
+
+def suggest_backlot_role(role_interest: Optional[str]) -> Optional[str]:
+    """Suggest a backlot role based on contact's role_interest"""
+    if not role_interest:
+        return None
+    role_lower = role_interest.lower().strip()
+    # Check direct mappings
+    if role_lower in ROLE_INTEREST_MAPPING:
+        return ROLE_INTEREST_MAPPING[role_lower]
+    # Check partial matches
+    for key, value in ROLE_INTEREST_MAPPING.items():
+        if key in role_lower or role_lower in key:
+            return value
+    return "crew"  # Default
+
+
 # =============================================================================
 # HELPERS
 # =============================================================================
@@ -179,7 +257,7 @@ async def list_project_members(
     if not project_resp.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    owner_id = project_resp.data[0]["owner_id"]
+    owner_id = str(project_resp.data[0]["owner_id"])
 
     # Get all members (without profile join - avoid PostgREST schema cache issues)
     members_resp = client.table("backlot_project_members").select("*").eq(
@@ -188,8 +266,8 @@ async def list_project_members(
 
     members = members_resp.data or []
 
-    # Collect all user IDs we need profiles for
-    member_user_ids = [m["user_id"] for m in members]
+    # Collect all user IDs we need profiles for (convert to strings)
+    member_user_ids = [str(m["user_id"]) for m in members]
     all_user_ids = list(set(member_user_ids + [owner_id]))
 
     # Fetch all profiles in a single query
@@ -199,25 +277,25 @@ async def list_project_members(
             "id, full_name, avatar_url, username"
         ).in_("id", all_user_ids).execute()
         for p in (profiles_resp.data or []):
-            profiles_by_id[p["id"]] = p
+            profiles_by_id[str(p["id"])] = p
 
     # Get all backlot roles for this project
     roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
     roles_by_user: Dict[str, List[Dict]] = {}
     for r in (roles_resp.data or []):
-        uid = r["user_id"]
+        uid = str(r["user_id"])
         if uid not in roles_by_user:
             roles_by_user[uid] = []
         roles_by_user[uid].append(r)
 
     # Get all user overrides
     overrides_resp = client.table("backlot_project_view_overrides").select("user_id").eq("project_id", project_id).execute()
-    users_with_overrides = set(o["user_id"] for o in (overrides_resp.data or []))
+    users_with_overrides = set(str(o["user_id"]) for o in (overrides_resp.data or []))
 
     result = []
 
     # Add owner first if not in members
-    owner_in_members = any(m["user_id"] == owner_id for m in members)
+    owner_in_members = any(str(m["user_id"]) == owner_id for m in members)
     if not owner_in_members:
         owner_profile = profiles_by_id.get(owner_id, {})
 
@@ -242,32 +320,43 @@ async def list_project_members(
 
     # Add regular members
     for m in members:
-        profile = profiles_by_id.get(m["user_id"], {})
-        user_roles = roles_by_user.get(m["user_id"], [])
+        user_id_str = str(m["user_id"])
+        profile = profiles_by_id.get(user_id_str, {})
+        user_roles = roles_by_user.get(user_id_str, [])
         primary_role = next((r["backlot_role"] for r in user_roles if r.get("is_primary")), None)
         if not primary_role and user_roles:
             primary_role = user_roles[0]["backlot_role"]
 
         # Owner flag for members who are also owners
-        member_role = "owner" if m["user_id"] == owner_id else m.get("role", "viewer")
+        member_role = "owner" if str(m["user_id"]) == owner_id else m.get("role", "viewer")
+
+        # Convert UUID and datetime to strings
+        member_id = str(m["id"]) if m.get("id") else ""
+        member_project_id = str(m["project_id"]) if m.get("project_id") else project_id
+        member_user_id = str(m["user_id"]) if m.get("user_id") else ""
+        joined_at = m.get("joined_at", "")
+        if hasattr(joined_at, 'isoformat'):
+            joined_at = joined_at.isoformat()
+        elif joined_at is None:
+            joined_at = ""
 
         result.append(MemberWithRoles(
-            id=m["id"],
-            project_id=m["project_id"],
-            user_id=m["user_id"],
+            id=member_id,
+            project_id=member_project_id,
+            user_id=member_user_id,
             role=member_role,
             production_role=m.get("production_role"),
             department=m.get("department"),
             phone=m.get("phone"),
             email=m.get("email"),
-            invited_by=m.get("invited_by"),
-            joined_at=m.get("joined_at", ""),
+            invited_by=str(m["invited_by"]) if m.get("invited_by") else None,
+            joined_at=joined_at,
             user_name=profile.get("full_name"),
             user_avatar=profile.get("avatar_url"),
             user_username=profile.get("username"),
             backlot_roles=[r["backlot_role"] for r in user_roles],
             primary_role=primary_role,
-            has_overrides=m["user_id"] in users_with_overrides,
+            has_overrides=member_user_id in users_with_overrides,
         ))
 
     return result
@@ -860,3 +949,333 @@ async def preview_role_config(
         tabs=config.get("tabs", {}),
         sections=config.get("sections", {}),
     )
+
+
+# =============================================================================
+# UNIFIED PEOPLE ENDPOINTS
+# =============================================================================
+
+@router.get("/projects/{project_id}/people", response_model=UnifiedPeopleResponse)
+async def get_unified_people(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get unified view of all people associated with the project.
+    Combines team members and contacts, de-duplicating where user_id matches.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Verify project exists
+    project_resp = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_resp.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    owner_id = str(project_resp.data[0]["owner_id"])
+
+    # Get all team members (reuse existing logic)
+    members_resp = client.table("backlot_project_members").select("*").eq(
+        "project_id", project_id
+    ).order("joined_at").execute()
+    members = members_resp.data or []
+
+    # Collect all user IDs for profile lookup
+    member_user_ids = [str(m["user_id"]) for m in members]
+    all_user_ids = list(set(member_user_ids + [owner_id]))
+
+    # Fetch all profiles
+    profiles_by_id: Dict[str, Dict] = {}
+    if all_user_ids:
+        profiles_resp = client.table("profiles").select(
+            "id, full_name, avatar_url, username"
+        ).in_("id", all_user_ids).execute()
+        for p in (profiles_resp.data or []):
+            profiles_by_id[str(p["id"])] = p
+
+    # Get all backlot roles for this project
+    roles_resp = client.table("backlot_project_roles").select("*").eq("project_id", project_id).execute()
+    roles_by_user: Dict[str, List[Dict]] = {}
+    for r in (roles_resp.data or []):
+        uid = str(r["user_id"])
+        if uid not in roles_by_user:
+            roles_by_user[uid] = []
+        roles_by_user[uid].append(r)
+
+    # Get all user overrides
+    overrides_resp = client.table("backlot_project_view_overrides").select("user_id").eq("project_id", project_id).execute()
+    users_with_overrides = set(str(o["user_id"]) for o in (overrides_resp.data or []))
+
+    # Build team member list
+    team_members: List[MemberWithRoles] = []
+    team_by_user_id: Dict[str, MemberWithRoles] = {}
+
+    # Add owner first if not in members
+    owner_in_members = any(str(m["user_id"]) == owner_id for m in members)
+    if not owner_in_members:
+        owner_profile = profiles_by_id.get(owner_id, {})
+        owner_roles = roles_by_user.get(owner_id, [])
+        primary_role = next((r["backlot_role"] for r in owner_roles if r.get("is_primary")), None)
+        if not primary_role and owner_roles:
+            primary_role = owner_roles[0]["backlot_role"]
+
+        owner_member = MemberWithRoles(
+            id="owner",
+            project_id=project_id,
+            user_id=owner_id,
+            role="owner",
+            joined_at=datetime.utcnow().isoformat(),
+            user_name=owner_profile.get("full_name"),
+            user_avatar=owner_profile.get("avatar_url"),
+            user_username=owner_profile.get("username"),
+            backlot_roles=[r["backlot_role"] for r in owner_roles],
+            primary_role=primary_role or "showrunner",
+            has_overrides=owner_id in users_with_overrides,
+        )
+        team_members.append(owner_member)
+        team_by_user_id[owner_id] = owner_member
+
+    # Add regular members
+    for m in members:
+        user_id_str = str(m["user_id"])
+        profile = profiles_by_id.get(user_id_str, {})
+        user_roles = roles_by_user.get(user_id_str, [])
+        primary_role = next((r["backlot_role"] for r in user_roles if r.get("is_primary")), None)
+        if not primary_role and user_roles:
+            primary_role = user_roles[0]["backlot_role"]
+
+        member_role = "owner" if user_id_str == owner_id else m.get("role", "viewer")
+
+        # Convert UUID and datetime to strings
+        member_id = str(m["id"]) if m.get("id") else ""
+        joined_at = m.get("joined_at", "")
+        if hasattr(joined_at, 'isoformat'):
+            joined_at = joined_at.isoformat()
+        elif joined_at is None:
+            joined_at = ""
+
+        member = MemberWithRoles(
+            id=member_id,
+            project_id=project_id,
+            user_id=user_id_str,
+            role=member_role,
+            production_role=m.get("production_role"),
+            department=m.get("department"),
+            phone=m.get("phone"),
+            email=m.get("email"),
+            invited_by=str(m["invited_by"]) if m.get("invited_by") else None,
+            joined_at=joined_at,
+            user_name=profile.get("full_name"),
+            user_avatar=profile.get("avatar_url"),
+            user_username=profile.get("username"),
+            backlot_roles=[r["backlot_role"] for r in user_roles],
+            primary_role=primary_role,
+            has_overrides=user_id_str in users_with_overrides,
+        )
+        team_members.append(member)
+        team_by_user_id[user_id_str] = member
+
+    # Get all contacts
+    contacts_resp = client.table("backlot_project_contacts").select("*").eq(
+        "project_id", project_id
+    ).order("created_at", desc=True).execute()
+    contacts = contacts_resp.data or []
+
+    # Build unified list
+    unified_people: List[UnifiedPerson] = []
+    processed_user_ids: set = set()
+
+    # First, add all team members to unified list
+    for member in team_members:
+        unified_people.append(UnifiedPerson(
+            id=f"team_{member.user_id}",
+            source="team",
+            name=member.user_name or "Unknown",
+            email=member.email,
+            phone=member.phone,
+            access_role=member.role,
+            backlot_roles=member.backlot_roles,
+            primary_role=member.primary_role,
+            user_avatar=member.user_avatar,
+            user_username=member.user_username,
+            is_team_member=True,
+            has_account=True,
+            member_id=member.id,
+            user_id=member.user_id,
+        ))
+        processed_user_ids.add(member.user_id)
+
+    # Then add contacts, merging if they're also team members
+    for contact in contacts:
+        contact_user_id = str(contact["user_id"]) if contact.get("user_id") else None
+
+        if contact_user_id and contact_user_id in processed_user_ids:
+            # This contact is also a team member - update the unified entry to 'both'
+            for up in unified_people:
+                if up.user_id == contact_user_id:
+                    up.source = "both"
+                    up.contact_id = str(contact["id"])
+                    up.contact_type = contact.get("contact_type")
+                    up.contact_status = contact.get("status")
+                    up.company = contact.get("company")
+                    up.role_interest = contact.get("role_interest")
+                    # Prefer team member email/phone if available
+                    if not up.email:
+                        up.email = contact.get("email")
+                    if not up.phone:
+                        up.phone = contact.get("phone")
+                    break
+        else:
+            # Pure contact (not a team member)
+            unified_people.append(UnifiedPerson(
+                id=f"contact_{contact['id']}",
+                source="contact",
+                name=contact.get("name", "Unknown"),
+                email=contact.get("email"),
+                phone=contact.get("phone"),
+                contact_type=contact.get("contact_type"),
+                contact_status=contact.get("status"),
+                company=contact.get("company"),
+                role_interest=contact.get("role_interest"),
+                is_team_member=False,
+                has_account=bool(contact_user_id),
+                contact_id=str(contact["id"]),
+                user_id=contact_user_id,
+            ))
+
+    return UnifiedPeopleResponse(
+        team=team_members,
+        contacts=contacts,
+        unified=unified_people,
+    )
+
+
+@router.post("/projects/{project_id}/access/members/from-contact", response_model=MemberWithRoles)
+async def add_member_from_contact(
+    project_id: str,
+    request: AddMemberFromContactRequest,
+    authorization: str = Header(None)
+):
+    """
+    Convert a contact to a team member.
+    The contact must have a user_id (linked to a system account).
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await can_manage_access(project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to manage team access")
+
+    # Get the contact
+    contact_resp = client.table("backlot_project_contacts").select("*").eq(
+        "id", request.contact_id
+    ).eq("project_id", project_id).execute()
+
+    if not contact_resp.data:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    contact = contact_resp.data[0]
+
+    # Verify contact has a linked user account
+    if not contact.get("user_id"):
+        raise HTTPException(
+            status_code=400,
+            detail="This contact is not linked to a user account. They must first create an account or be linked to an existing user."
+        )
+
+    contact_user_id = str(contact["user_id"])
+
+    # Check if user is already a team member
+    existing_resp = client.table("backlot_project_members").select("id").eq(
+        "project_id", project_id
+    ).eq("user_id", contact_user_id).execute()
+
+    if existing_resp.data:
+        raise HTTPException(status_code=400, detail="This person is already a team member")
+
+    # Determine backlot role - use provided, or suggest from role_interest
+    backlot_role = request.backlot_role
+    if not backlot_role:
+        backlot_role = suggest_backlot_role(contact.get("role_interest"))
+
+    # Add as team member
+    member_data = {
+        "project_id": project_id,
+        "user_id": contact_user_id,
+        "role": request.role,
+        "production_role": contact.get("role_interest"),  # Use role_interest as production_role
+        "phone": contact.get("phone"),
+        "email": contact.get("email"),
+        "invited_by": user["id"],
+    }
+
+    create_resp = client.table("backlot_project_members").insert(member_data).execute()
+    if not create_resp.data:
+        raise HTTPException(status_code=500, detail="Failed to add member")
+
+    member = create_resp.data[0]
+
+    # Assign backlot role if we have one
+    if backlot_role:
+        client.table("backlot_project_roles").insert({
+            "project_id": project_id,
+            "user_id": contact_user_id,
+            "backlot_role": backlot_role,
+            "is_primary": True,
+        }).execute()
+
+    # Update contact status to "confirmed"
+    client.table("backlot_project_contacts").update({
+        "status": "confirmed"
+    }).eq("id", request.contact_id).execute()
+
+    # Get profile info
+    profile_resp = client.table("profiles").select("full_name, avatar_url, username").eq("id", contact_user_id).execute()
+    profile = profile_resp.data[0] if profile_resp.data else {}
+
+    return MemberWithRoles(
+        id=str(member["id"]),
+        project_id=str(member["project_id"]),
+        user_id=str(member["user_id"]),
+        role=member["role"],
+        production_role=member.get("production_role"),
+        phone=member.get("phone"),
+        email=member.get("email"),
+        invited_by=str(member["invited_by"]) if member.get("invited_by") else None,
+        joined_at=member.get("joined_at", ""),
+        user_name=profile.get("full_name") or contact.get("name"),
+        user_avatar=profile.get("avatar_url"),
+        user_username=profile.get("username"),
+        backlot_roles=[backlot_role] if backlot_role else [],
+        primary_role=backlot_role,
+        has_overrides=False,
+    )
+
+
+@router.get("/projects/{project_id}/people/suggest-role")
+async def suggest_role_for_contact(
+    project_id: str,
+    contact_id: str = Query(...),
+    authorization: str = Header(None)
+):
+    """
+    Get a suggested backlot role for a contact based on their role_interest
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get the contact
+    contact_resp = client.table("backlot_project_contacts").select("role_interest").eq(
+        "id", contact_id
+    ).eq("project_id", project_id).execute()
+
+    if not contact_resp.data:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    role_interest = contact_resp.data[0].get("role_interest")
+    suggested_role = suggest_backlot_role(role_interest)
+
+    return {
+        "role_interest": role_interest,
+        "suggested_role": suggested_role,
+    }

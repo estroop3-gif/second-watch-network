@@ -40,6 +40,8 @@ import {
   Package,
   Star,
   Archive,
+  UserPlus,
+  Check,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -49,6 +51,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useContacts, useContactStats } from '@/hooks/backlot';
+import { useAddMemberFromContact, useProjectMembers } from '@/hooks/backlot/useProjectAccess';
 import {
   BacklotProjectContact,
   ProjectContactInput,
@@ -81,16 +84,41 @@ const STATUS_CONFIG: Record<BacklotContactStatus, { label: string; color: string
   archived: { label: 'Archived', color: 'bg-muted-gray/20 text-muted-gray' },
 };
 
+// Backlot role options for "Add to Team" dialog
+const BACKLOT_ROLES = [
+  { value: 'showrunner', label: 'Showrunner' },
+  { value: 'producer', label: 'Producer' },
+  { value: 'director', label: 'Director' },
+  { value: 'first_ad', label: '1st AD' },
+  { value: 'dp', label: 'DP' },
+  { value: 'script_supervisor', label: 'Script Supervisor' },
+  { value: 'editor', label: 'Editor' },
+  { value: 'department_head', label: 'Department Head' },
+  { value: 'crew', label: 'Crew' },
+];
+
+const ACCESS_ROLES = [
+  { value: 'admin', label: 'Admin', description: 'Full access to manage project' },
+  { value: 'editor', label: 'Editor', description: 'Can edit content' },
+  { value: 'viewer', label: 'Viewer', description: 'View only access' },
+];
+
 const ContactCard: React.FC<{
   contact: BacklotProjectContact;
   canEdit: boolean;
+  isTeamMember: boolean;
   onEdit: (contact: BacklotProjectContact) => void;
   onDelete: (id: string) => void;
   onStatusChange: (id: string, status: BacklotContactStatus) => void;
-}> = ({ contact, canEdit, onEdit, onDelete, onStatusChange }) => {
+  onAddToTeam: (contact: BacklotProjectContact) => void;
+}> = ({ contact, canEdit, isTeamMember, onEdit, onDelete, onStatusChange, onAddToTeam }) => {
   const typeConfig = TYPE_CONFIG[contact.contact_type];
   const statusConfig = STATUS_CONFIG[contact.status];
   const TypeIcon = typeConfig.icon;
+
+  // Can add to team if: has user_id, not already a member, confirmed/in_discussion status
+  const canAddToTeam = contact.user_id && !isTeamMember &&
+    (contact.status === 'confirmed' || contact.status === 'in_discussion');
 
   return (
     <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
@@ -103,6 +131,12 @@ const ContactCard: React.FC<{
             <Badge variant="outline" className={cn('text-xs shrink-0', statusConfig.color)}>
               {statusConfig.label}
             </Badge>
+            {isTeamMember && (
+              <Badge variant="outline" className="text-xs shrink-0 bg-green-500/20 text-green-400 border-green-500/30">
+                <Check className="w-3 h-3 mr-1" />
+                Team Member
+              </Badge>
+            )}
           </div>
 
           {/* Company & Role */}
@@ -170,6 +204,12 @@ const ContactCard: React.FC<{
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
               </DropdownMenuItem>
+              {canAddToTeam && (
+                <DropdownMenuItem onClick={() => onAddToTeam(contact)} className="text-green-400">
+                  <UserPlus className="w-4 h-4 mr-2" />
+                  Add to Team
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               {Object.entries(STATUS_CONFIG).map(([value, config]) => (
                 <DropdownMenuItem
@@ -214,10 +254,21 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
     });
 
   const { data: stats } = useContactStats(projectId);
+  const { members } = useProjectMembers(projectId);
+  const addMemberFromContact = useAddMemberFromContact(projectId);
+
+  // Create a set of user IDs who are already team members
+  const teamMemberUserIds = new Set(members.map(m => m.user_id));
 
   const [showForm, setShowForm] = useState(false);
   const [editingContact, setEditingContact] = useState<BacklotProjectContact | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Add to Team dialog state
+  const [addToTeamContact, setAddToTeamContact] = useState<BacklotProjectContact | null>(null);
+  const [addToTeamRole, setAddToTeamRole] = useState<string>('viewer');
+  const [addToTeamBacklotRole, setAddToTeamBacklotRole] = useState<string>('crew');
+  const [isAddingToTeam, setIsAddingToTeam] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState<ProjectContactInput>({
@@ -300,6 +351,35 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
 
   const handleStatusChange = async (id: string, status: BacklotContactStatus) => {
     await updateStatus.mutateAsync({ id, status });
+  };
+
+  const handleOpenAddToTeam = (contact: BacklotProjectContact) => {
+    setAddToTeamContact(contact);
+    // Pre-fill backlot role from role_interest if it maps to a known role
+    const roleInterest = contact.role_interest?.toLowerCase() || '';
+    const suggestedRole = BACKLOT_ROLES.find(r =>
+      roleInterest.includes(r.value) || roleInterest.includes(r.label.toLowerCase())
+    );
+    setAddToTeamBacklotRole(suggestedRole?.value || 'crew');
+    setAddToTeamRole('viewer');
+  };
+
+  const handleAddToTeam = async () => {
+    if (!addToTeamContact) return;
+    setIsAddingToTeam(true);
+
+    try {
+      await addMemberFromContact.mutateAsync({
+        contactId: addToTeamContact.id,
+        role: addToTeamRole,
+        backlotRole: addToTeamBacklotRole,
+      });
+      setAddToTeamContact(null);
+    } catch (err) {
+      console.error('Failed to add to team:', err);
+    } finally {
+      setIsAddingToTeam(false);
+    }
   };
 
   if (isLoading) {
@@ -390,9 +470,11 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
               key={contact.id}
               contact={contact}
               canEdit={canEdit}
+              isTeamMember={contact.user_id ? teamMemberUserIds.has(contact.user_id) : false}
               onEdit={handleOpenForm}
               onDelete={handleDelete}
               onStatusChange={handleStatusChange}
+              onAddToTeam={handleOpenAddToTeam}
             />
           ))}
         </div>
@@ -566,6 +648,93 @@ const ContactsView: React.FC<ContactsViewProps> = ({ projectId, canEdit }) => {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add to Team Dialog */}
+      <Dialog open={!!addToTeamContact} onOpenChange={(open) => !open && setAddToTeamContact(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-green-400" />
+              Add to Team
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-4">
+            {addToTeamContact && (
+              <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3">
+                <p className="font-medium text-bone-white">{addToTeamContact.name}</p>
+                {addToTeamContact.role_interest && (
+                  <p className="text-sm text-muted-gray">{addToTeamContact.role_interest}</p>
+                )}
+                {addToTeamContact.email && (
+                  <p className="text-sm text-muted-gray">{addToTeamContact.email}</p>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="access_role">Access Level</Label>
+              <Select value={addToTeamRole} onValueChange={setAddToTeamRole}>
+                <SelectTrigger id="access_role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {ACCESS_ROLES.map((role) => (
+                    <SelectItem key={role.value} value={role.value}>
+                      <div>
+                        <span className="font-medium">{role.label}</span>
+                        <span className="text-muted-gray text-xs ml-2">{role.description}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="backlot_role">Backlot Role</Label>
+              <Select value={addToTeamBacklotRole} onValueChange={setAddToTeamBacklotRole}>
+                <SelectTrigger id="backlot_role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {BACKLOT_ROLES.map((role) => (
+                    <SelectItem key={role.value} value={role.value}>
+                      {role.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-gray">
+                This determines which tabs and sections they can access.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-4">
+              <Button type="button" variant="ghost" onClick={() => setAddToTeamContact(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleAddToTeam}
+                disabled={isAddingToTeam}
+                className="bg-green-600 text-white hover:bg-green-700"
+              >
+                {isAddingToTeam ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Adding...
+                  </>
+                ) : (
+                  <>
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Add to Team
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

@@ -4,6 +4,7 @@
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { US_STATES, PRODUCTION_REGIONS } from '@/components/ui/location-constants';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
@@ -333,26 +334,26 @@ const GlobalLocationSearchModal: React.FC<{
             />
           </div>
           <div className="flex gap-3">
-            <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+            <Select value={selectedRegion || 'all'} onValueChange={(v) => setSelectedRegion(v === 'all' ? '' : v)}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="All Regions" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Regions</SelectItem>
-                {regionsData?.map((region) => (
+                <SelectItem value="all">All Regions</SelectItem>
+                {regionsData?.filter(r => r).map((region) => (
                   <SelectItem key={region} value={region}>
                     {region}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <Select value={selectedType} onValueChange={setSelectedType}>
+            <Select value={selectedType || 'all'} onValueChange={(v) => setSelectedType(v === 'all' ? '' : v)}>
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="All Types" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Types</SelectItem>
-                {typesData?.map((type) => (
+                <SelectItem value="all">All Types</SelectItem>
+                {typesData?.filter(t => t).map((type) => (
                   <SelectItem key={type} value={type}>
                     {type}
                   </SelectItem>
@@ -591,18 +592,12 @@ const CreateLocationModal: React.FC<{
               : 'Add a new location to the global library and attach it to this project.'}
           </DialogDescription>
           {/* Scroll indicator */}
-          <div className="flex items-center justify-center gap-2 mt-2 text-bone-white/70 text-xs">
-            <svg className="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+          <div className="flex items-center justify-center mt-2 text-bone-white/70 text-xs">
             <span>Scroll down for all options</span>
-            <svg className="w-4 h-4 animate-bounce" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
           </div>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 -mx-6 px-6">
+        <div className="flex-1 overflow-y-auto -mx-6 px-6">
           <form onSubmit={handleSubmit} className="space-y-4 mt-4 pb-8">
           {/* Visibility Selector */}
           <div className="space-y-2">
@@ -663,13 +658,22 @@ const CreateLocationModal: React.FC<{
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="region_tag">Region</Label>
-              <Input
-                id="region_tag"
-                placeholder="e.g., Los Angeles"
+              <Select
                 value={formData.region_tag || ''}
-                onChange={(e) => setFormData({ ...formData, region_tag: e.target.value })}
+                onValueChange={(value) => setFormData({ ...formData, region_tag: value })}
                 disabled={isSubmitting}
-              />
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select region" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[200px]">
+                  {PRODUCTION_REGIONS.map((region) => (
+                    <SelectItem key={region.value} value={region.value}>
+                      {region.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="location_type">Location Type</Label>
@@ -731,12 +735,22 @@ const CreateLocationModal: React.FC<{
             </div>
             <div className="space-y-2">
               <Label htmlFor="state">State</Label>
-              <Input
-                id="state"
+              <Select
                 value={formData.state || ''}
-                onChange={(e) => setFormData({ ...formData, state: e.target.value })}
+                onValueChange={(value) => setFormData({ ...formData, state: value })}
                 disabled={isSubmitting}
-              />
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select state" />
+                </SelectTrigger>
+                <SelectContent className="max-h-[200px]">
+                  {US_STATES.map((state) => (
+                    <SelectItem key={state.value} value={state.value}>
+                      {state.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-2">
               <Label htmlFor="zip">ZIP</Label>
@@ -885,7 +899,7 @@ const CreateLocationModal: React.FC<{
             </Button>
           </div>
           </form>
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   );
