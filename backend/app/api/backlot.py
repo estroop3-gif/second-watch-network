@@ -1135,12 +1135,14 @@ async def get_project_members_for_send(
 class ProjectCreditInput(BaseModel):
     """Input for creating/updating a project credit"""
     department: Optional[str] = None
-    role: str
+    credit_role: str
     name: str
     user_id: Optional[str] = None
     is_primary: bool = False
     is_public: bool = True
     order_index: int = 0
+    endorsement_note: Optional[str] = None
+    imdb_id: Optional[str] = None
 
 
 class ProjectCreditResponse(BaseModel):
@@ -1148,12 +1150,14 @@ class ProjectCreditResponse(BaseModel):
     id: str
     project_id: str
     department: Optional[str] = None
-    role: str
+    credit_role: str
     name: str
     user_id: Optional[str] = None
     is_primary: bool = False
     is_public: bool = True
     order_index: int = 0
+    endorsement_note: Optional[str] = None
+    imdb_id: Optional[str] = None
     created_by: Optional[str] = None
     created_at: Optional[str] = None
     linked_user: Optional[Dict[str, Any]] = None
@@ -22138,12 +22142,14 @@ async def create_project_credit(
         credit_data = {
             "project_id": project_id,
             "department": input.department,
-            "role": input.role,
+            "credit_role": input.credit_role,
             "name": input.name,
-            "user_id": input.user_id,
+            "user_id": input.user_id if input.user_id else None,
             "is_primary": input.is_primary,
             "is_public": input.is_public,
             "order_index": input.order_index,
+            "endorsement_note": input.endorsement_note,
+            "imdb_id": input.imdb_id,
             "created_by": user["id"]
         }
 
@@ -22189,12 +22195,14 @@ async def update_project_credit(
 
         update_data = {
             "department": input.department,
-            "role": input.role,
+            "credit_role": input.credit_role,
             "name": input.name,
-            "user_id": input.user_id,
+            "user_id": input.user_id if input.user_id else None,
             "is_primary": input.is_primary,
             "is_public": input.is_public,
-            "order_index": input.order_index
+            "order_index": input.order_index,
+            "endorsement_note": input.endorsement_note,
+            "imdb_id": input.imdb_id
         }
 
         result = client.table("backlot_project_credits").update(update_data).eq("id", credit_id).execute()
@@ -25431,4 +25439,708 @@ async def can_manage_roles(
 
     except Exception as e:
         print(f"Error checking manage roles permission: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Desktop API Keys & Dailies Enhancements
+# =====================================================
+
+import secrets
+import hashlib
+
+
+class DesktopApiKeyCreate(BaseModel):
+    """Input for creating a desktop API key"""
+    name: str = "Desktop App"
+    scopes: List[str] = ["dailies:write", "dailies:read"]
+    expires_in_days: Optional[int] = None  # None = never expires
+
+
+class DesktopApiKeyResponse(BaseModel):
+    """Response for API key (key only shown on create)"""
+    id: str
+    project_id: str
+    user_id: str
+    key_prefix: str
+    name: str
+    scopes: List[str]
+    last_used_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    is_revoked: bool
+    created_at: str
+
+
+class ClipAssetLinkInput(BaseModel):
+    """Input for linking a clip to an asset"""
+    asset_id: str
+    link_type: str = "source"  # source, reference, alternate
+    notes: Optional[str] = None
+
+
+class PresignedUploadRequest(BaseModel):
+    """Request for a presigned upload URL"""
+    project_id: str
+    card_id: str
+    file_name: str
+    content_type: str = "video/mp4"
+    file_size: Optional[int] = None
+
+
+class ConfirmUploadRequest(BaseModel):
+    """Confirm upload completion"""
+    s3_key: str
+    checksum: Optional[str] = None
+    proxy_checksum: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+
+# =====================================================
+# Desktop API Key Management Endpoints
+# =====================================================
+
+@router.post("/projects/{project_id}/desktop-keys")
+async def create_desktop_api_key(
+    project_id: str,
+    input: DesktopApiKeyCreate,
+    authorization: str = Header(None)
+):
+    """
+    Create a new desktop API key for a project.
+    The full key is only returned once - store it securely!
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify project access (must be admin or owner)
+        await verify_project_access(client, project_id, user_id)
+
+        # Generate a secure API key: swn_dk_<32 random chars>
+        raw_key = f"swn_dk_{secrets.token_urlsafe(32)}"
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        key_prefix = raw_key[:12]
+
+        # Calculate expiration
+        expires_at = None
+        if input.expires_in_days:
+            from datetime import datetime, timedelta
+            expires_at = (datetime.utcnow() + timedelta(days=input.expires_in_days)).isoformat()
+
+        key_data = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "key_hash": key_hash,
+            "key_prefix": key_prefix,
+            "name": input.name,
+            "scopes": input.scopes,
+            "expires_at": expires_at,
+        }
+
+        result = client.table("backlot_desktop_api_keys").insert(key_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create API key")
+
+        created_key = result.data[0]
+
+        # Return the full key (only time it's shown)
+        return {
+            "success": True,
+            "api_key": raw_key,  # Full key - only returned on creation!
+            "key_id": str(created_key["id"]),
+            "key_prefix": key_prefix,
+            "name": input.name,
+            "scopes": input.scopes,
+            "expires_at": expires_at,
+            "message": "Store this API key securely - it won't be shown again!"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating desktop API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/desktop-keys")
+async def list_desktop_api_keys(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """List all desktop API keys for a project (prefix only, not full key)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        result = client.table("backlot_desktop_api_keys").select("*").eq(
+            "project_id", project_id
+        ).eq("is_revoked", False).order("created_at", desc=True).execute()
+
+        keys = []
+        for key in (result.data or []):
+            keys.append({
+                "id": str(key["id"]),
+                "project_id": str(key["project_id"]),
+                "user_id": str(key["user_id"]),
+                "key_prefix": key["key_prefix"],
+                "name": key["name"],
+                "scopes": key["scopes"],
+                "last_used_at": key["last_used_at"],
+                "expires_at": key["expires_at"],
+                "is_revoked": key["is_revoked"],
+                "created_at": key["created_at"],
+            })
+
+        return {"keys": keys}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing desktop API keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/desktop-keys/{key_id}")
+async def revoke_desktop_api_key(
+    key_id: str,
+    authorization: str = Header(None)
+):
+    """Revoke a desktop API key"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get the key to verify ownership
+        key_result = client.table("backlot_desktop_api_keys").select("*").eq(
+            "id", key_id
+        ).execute()
+
+        if not key_result.data:
+            raise HTTPException(status_code=404, detail="API key not found")
+
+        key = key_result.data[0]
+
+        # Verify the user owns this key or is project admin
+        if str(key["user_id"]) != str(user_id):
+            await verify_project_access(client, str(key["project_id"]), user_id)
+
+        # Revoke the key
+        client.table("backlot_desktop_api_keys").update({
+            "is_revoked": True
+        }).eq("id", key_id).execute()
+
+        return {"success": True, "message": "API key revoked"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error revoking desktop API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/verify")
+async def verify_desktop_api_key(
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Verify an API key and return project/user info.
+    Used by the desktop app on startup.
+    """
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+
+    client = get_client()
+
+    try:
+        # Hash the key to look it up
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+
+        result = client.table("backlot_desktop_api_keys").select("*").eq(
+            "key_hash", key_hash
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        key = result.data[0]
+
+        # Check if revoked
+        if key["is_revoked"]:
+            raise HTTPException(status_code=401, detail="API key has been revoked")
+
+        # Check expiration
+        if key["expires_at"]:
+            from datetime import datetime
+            expires = datetime.fromisoformat(key["expires_at"].replace("Z", "+00:00"))
+            if expires < datetime.now(expires.tzinfo):
+                raise HTTPException(status_code=401, detail="API key has expired")
+
+        # Update last used
+        client.table("backlot_desktop_api_keys").update({
+            "last_used_at": datetime.utcnow().isoformat()
+        }).eq("id", str(key["id"])).execute()
+
+        # Get project info
+        project_result = client.table("backlot_projects").select(
+            "id, title, status"
+        ).eq("id", str(key["project_id"])).execute()
+
+        project = project_result.data[0] if project_result.data else None
+
+        # Get user info
+        user_result = client.table("profiles").select(
+            "id, username, full_name, display_name"
+        ).eq("id", str(key["user_id"])).execute()
+
+        user_info = user_result.data[0] if user_result.data else None
+
+        return {
+            "valid": True,
+            "key_id": str(key["id"]),
+            "scopes": key["scopes"],
+            "project": {
+                "id": str(project["id"]) if project else None,
+                "title": project["title"] if project else None,
+                "status": project["status"] if project else None,
+            } if project else None,
+            "user": {
+                "id": str(user_info["id"]) if user_info else None,
+                "username": user_info.get("username") if user_info else None,
+                "display_name": user_info.get("display_name") or user_info.get("full_name") if user_info else None,
+            } if user_info else None,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error verifying desktop API key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Presigned Upload URL Endpoints
+# =====================================================
+
+@router.post("/dailies/upload-url")
+async def get_dailies_upload_url(
+    request: PresignedUploadRequest,
+    authorization: str = Header(None),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Get a presigned URL for uploading a dailies proxy file to S3.
+    Can authenticate via either Bearer token or X-API-Key header.
+    """
+    # Authenticate via API key or Bearer token
+    user_id = None
+    project_id = request.project_id
+
+    if api_key:
+        # Verify API key
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        client = get_client()
+        key_result = client.table("backlot_desktop_api_keys").select("*").eq(
+            "key_hash", key_hash
+        ).eq("is_revoked", False).execute()
+
+        if not key_result.data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        key = key_result.data[0]
+        if str(key["project_id"]) != project_id:
+            raise HTTPException(status_code=403, detail="API key not valid for this project")
+
+        user_id = str(key["user_id"])
+    elif authorization:
+        user = await get_current_user_from_token(authorization)
+        user_id = user["id"]
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        from app.core.storage import storage_client
+        import uuid
+
+        # Generate a unique S3 key
+        file_ext = request.file_name.split(".")[-1] if "." in request.file_name else "mp4"
+        s3_key = f"dailies/{project_id}/{request.card_id}/{uuid.uuid4()}.{file_ext}"
+
+        # Get presigned upload URL
+        bucket = storage_client.from_("backlot-files")
+        upload_data = bucket.create_signed_upload_url(s3_key, expires_in=900)  # 15 minutes
+
+        return {
+            "upload_url": upload_data.get("signedUrl") or upload_data.get("url"),
+            "fields": upload_data.get("fields", {}),
+            "s3_key": s3_key,
+            "expires_in": 900,
+            "bucket": "swn-backlot-files-517220555400",
+        }
+
+    except Exception as e:
+        print(f"Error generating presigned URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/clips/{clip_id}/confirm-upload")
+async def confirm_dailies_upload(
+    clip_id: str,
+    request: ConfirmUploadRequest,
+    authorization: str = Header(None),
+    api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Confirm that a dailies proxy upload completed successfully.
+    Updates the clip with cloud_url and checksum info.
+    """
+    # Authenticate via API key or Bearer token
+    if api_key:
+        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+        client = get_client()
+        key_result = client.table("backlot_desktop_api_keys").select("*").eq(
+            "key_hash", key_hash
+        ).eq("is_revoked", False).execute()
+
+        if not key_result.data:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+    elif authorization:
+        await get_current_user_from_token(authorization)
+        client = get_client()
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        # Build the full S3 URL
+        cloud_url = f"https://swn-backlot-files-517220555400.s3.us-east-1.amazonaws.com/{request.s3_key}"
+
+        update_data = {
+            "proxy_url": cloud_url,
+            "upload_status": "completed",
+        }
+
+        if request.checksum:
+            update_data["original_checksum"] = request.checksum
+        if request.proxy_checksum:
+            update_data["proxy_checksum"] = request.proxy_checksum
+        if request.thumbnail_url:
+            update_data["thumbnail_url"] = request.thumbnail_url
+
+        result = client.table("backlot_dailies_clips").update(update_data).eq(
+            "id", clip_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        return {
+            "success": True,
+            "clip_id": clip_id,
+            "proxy_url": cloud_url,
+            "message": "Upload confirmed"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error confirming upload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Clip-Asset Linking Endpoints
+# =====================================================
+
+@router.post("/dailies/clips/{clip_id}/link-asset")
+async def link_clip_to_asset(
+    clip_id: str,
+    input: ClipAssetLinkInput,
+    authorization: str = Header(None)
+):
+    """Link a dailies clip to an asset as source material"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get the clip to find project_id
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, card_id"
+        ).eq("id", clip_id).execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        # Get card to find day, then project
+        card_result = client.table("backlot_dailies_cards").select(
+            "day_id"
+        ).eq("id", str(clip_result.data[0]["card_id"])).execute()
+
+        if not card_result.data:
+            raise HTTPException(status_code=404, detail="Card not found")
+
+        day_result = client.table("backlot_dailies_days").select(
+            "project_id"
+        ).eq("id", str(card_result.data[0]["day_id"])).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+
+        project_id = str(day_result.data[0]["project_id"])
+
+        # Verify access
+        await verify_project_access(client, project_id, user_id)
+
+        # Create the link
+        link_data = {
+            "clip_id": clip_id,
+            "asset_id": input.asset_id,
+            "project_id": project_id,
+            "link_type": input.link_type,
+            "notes": input.notes,
+            "created_by_user_id": user_id,
+        }
+
+        result = client.table("backlot_dailies_clip_asset_links").insert(link_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create link")
+
+        link = result.data[0]
+        return {
+            "success": True,
+            "link": {
+                "id": str(link["id"]),
+                "clip_id": str(link["clip_id"]),
+                "asset_id": str(link["asset_id"]),
+                "link_type": link["link_type"],
+                "notes": link.get("notes"),
+                "created_at": link["created_at"],
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error linking clip to asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/dailies/clip-asset-links/{link_id}")
+async def remove_clip_asset_link(
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a link between a clip and an asset"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get the link to verify access
+        link_result = client.table("backlot_dailies_clip_asset_links").select(
+            "project_id"
+        ).eq("id", link_id).execute()
+
+        if not link_result.data:
+            raise HTTPException(status_code=404, detail="Link not found")
+
+        project_id = str(link_result.data[0]["project_id"])
+        await verify_project_access(client, project_id, user_id)
+
+        # Delete the link
+        client.table("backlot_dailies_clip_asset_links").delete().eq("id", link_id).execute()
+
+        return {"success": True, "message": "Link removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing clip-asset link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/assets/{asset_id}/source-clips")
+async def get_asset_source_clips(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """Get all dailies clips linked to an asset"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get asset to verify project access
+        asset_result = client.table("backlot_assets").select(
+            "project_id"
+        ).eq("id", asset_id).execute()
+
+        if not asset_result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        project_id = str(asset_result.data[0]["project_id"])
+        await verify_project_access(client, project_id, user_id)
+
+        # Get all links for this asset
+        links_result = client.table("backlot_dailies_clip_asset_links").select("*").eq(
+            "asset_id", asset_id
+        ).order("created_at", desc=True).execute()
+
+        if not links_result.data:
+            return {"clips": []}
+
+        # Get clip details
+        clip_ids = [str(link["clip_id"]) for link in links_result.data]
+        clips_result = client.table("backlot_dailies_clips").select("*").in_(
+            "id", clip_ids
+        ).execute()
+
+        clips_map = {str(c["id"]): c for c in (clips_result.data or [])}
+
+        # Build response with clip details
+        clips = []
+        for link in links_result.data:
+            clip = clips_map.get(str(link["clip_id"]))
+            if clip:
+                clips.append({
+                    "link_id": str(link["id"]),
+                    "link_type": link["link_type"],
+                    "link_notes": link.get("notes"),
+                    "linked_at": link["created_at"],
+                    "clip": {
+                        "id": str(clip["id"]),
+                        "file_name": clip.get("file_name"),
+                        "scene_number": clip.get("scene_number"),
+                        "take_number": clip.get("take_number"),
+                        "duration_seconds": clip.get("duration_seconds"),
+                        "proxy_url": clip.get("proxy_url"),
+                        "cloud_url": clip.get("cloud_url"),
+                        "thumbnail_url": clip.get("thumbnail_url"),
+                        "is_circle_take": clip.get("is_circle_take"),
+                        "rating": clip.get("rating"),
+                    }
+                })
+
+        return {"clips": clips, "count": len(clips)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting asset source clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/clips/{clip_id}/linked-assets")
+async def get_clip_linked_assets(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Get all assets linked to a dailies clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get all links for this clip
+        links_result = client.table("backlot_dailies_clip_asset_links").select("*").eq(
+            "clip_id", clip_id
+        ).order("created_at", desc=True).execute()
+
+        if not links_result.data:
+            return {"assets": []}
+
+        # Get asset details
+        asset_ids = [str(link["asset_id"]) for link in links_result.data]
+        assets_result = client.table("backlot_assets").select("*").in_(
+            "id", asset_ids
+        ).execute()
+
+        assets_map = {str(a["id"]): a for a in (assets_result.data or [])}
+
+        # Build response
+        assets = []
+        for link in links_result.data:
+            asset = assets_map.get(str(link["asset_id"]))
+            if asset:
+                assets.append({
+                    "link_id": str(link["id"]),
+                    "link_type": link["link_type"],
+                    "link_notes": link.get("notes"),
+                    "linked_at": link["created_at"],
+                    "asset": {
+                        "id": str(asset["id"]),
+                        "title": asset.get("title"),
+                        "asset_type": asset.get("asset_type"),
+                        "status": asset.get("status"),
+                        "version_label": asset.get("version_label"),
+                    }
+                })
+
+        return {"assets": assets, "count": len(assets)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clip linked assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/bulk-link-assets")
+async def bulk_link_clips_to_asset(
+    clip_ids: List[str],
+    asset_id: str,
+    link_type: str = "source",
+    authorization: str = Header(None)
+):
+    """Link multiple clips to a single asset"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify asset access
+        asset_result = client.table("backlot_assets").select(
+            "project_id"
+        ).eq("id", asset_id).execute()
+
+        if not asset_result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        project_id = str(asset_result.data[0]["project_id"])
+        await verify_project_access(client, project_id, user_id)
+
+        # Create links for each clip
+        created = 0
+        skipped = 0
+        for clip_id in clip_ids:
+            try:
+                link_data = {
+                    "clip_id": clip_id,
+                    "asset_id": asset_id,
+                    "project_id": project_id,
+                    "link_type": link_type,
+                    "created_by_user_id": user_id,
+                }
+                client.table("backlot_dailies_clip_asset_links").insert(link_data).execute()
+                created += 1
+            except Exception:
+                # Link already exists or clip doesn't exist
+                skipped += 1
+
+        return {
+            "success": True,
+            "created": created,
+            "skipped": skipped,
+            "message": f"Linked {created} clips to asset"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk linking clips: {e}")
         raise HTTPException(status_code=500, detail=str(e))

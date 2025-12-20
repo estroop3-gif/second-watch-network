@@ -46,6 +46,13 @@ import {
   Folder,
   Search,
   SlidersHorizontal,
+  Monitor,
+  Wifi,
+  WifiOff,
+  Link,
+  FolderOpen,
+  Download,
+  ExternalLink,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -58,6 +65,7 @@ import {
   useDailiesCards,
   useDailiesClips,
   useDailiesSummary,
+  useDesktopHelper,
 } from '@/hooks/backlot';
 import {
   BacklotDailiesDay,
@@ -95,6 +103,47 @@ const SummaryCard: React.FC<{
         <p className="text-xs text-muted-gray">{label}</p>
       </div>
     </div>
+  </div>
+);
+
+// Helper Connection Status Component
+const HelperConnectionStatus: React.FC<{
+  isConnected: boolean;
+  version?: string;
+  onBrowseLocal?: () => void;
+}> = ({ isConnected, version, onBrowseLocal }) => (
+  <div
+    className={cn(
+      'flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm',
+      isConnected
+        ? 'border-green-500/30 bg-green-500/10 text-green-400'
+        : 'border-muted-gray/20 bg-charcoal-black/50 text-muted-gray'
+    )}
+  >
+    <Monitor className="w-4 h-4" />
+    {isConnected ? (
+      <>
+        <Wifi className="w-3 h-3" />
+        <span>Helper Connected</span>
+        {version && <span className="text-xs opacity-70">v{version}</span>}
+        {onBrowseLocal && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onBrowseLocal}
+            className="ml-2 h-6 px-2 text-xs hover:bg-green-500/20"
+          >
+            <FolderOpen className="w-3 h-3 mr-1" />
+            Browse
+          </Button>
+        )}
+      </>
+    ) : (
+      <>
+        <WifiOff className="w-3 h-3" />
+        <span>Helper Offline</span>
+      </>
+    )}
   </div>
 );
 
@@ -427,6 +476,7 @@ const DaySection: React.FC<{
 const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   const { days, isLoading, createDay, updateDay, deleteDay } = useDailiesDays({ projectId });
   const { data: summary } = useDailiesSummary(projectId);
+  const { isConnected: helperConnected, status: helperStatus } = useDesktopHelper();
 
   // State
   const [selectedClip, setSelectedClip] = useState<BacklotDailiesClip | null>(null);
@@ -436,6 +486,8 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   const [editingCard, setEditingCard] = useState<BacklotDailiesCard | null>(null);
   const [cardDayId, setCardDayId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showLocalBrowser, setShowLocalBrowser] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
 
   // Day form state
   const [dayForm, setDayForm] = useState<DailiesDayInput>({
@@ -595,15 +647,33 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
             Review footage from set, mark circle takes, and add notes
           </p>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-3">
+          {/* Helper Connection Status */}
+          <HelperConnectionStatus
+            isConnected={helperConnected}
+            version={helperStatus.version}
+            onBrowseLocal={helperConnected ? () => setShowLocalBrowser(true) : undefined}
+          />
+          {/* Download Helper Button */}
           <Button
-            onClick={() => handleOpenDayForm()}
-            className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowDownloadModal(true)}
+            className="border-muted-gray/30 text-muted-gray hover:text-bone-white hover:border-accent-yellow/50"
           >
-            <Plus className="w-4 h-4 mr-2" />
-            Add Shoot Day
+            <Download className="w-4 h-4 mr-2" />
+            Get Desktop Helper
           </Button>
-        )}
+          {canEdit && (
+            <Button
+              onClick={() => handleOpenDayForm()}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add Shoot Day
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Summary Cards */}
@@ -831,6 +901,111 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Local File Browser Dialog */}
+      <Dialog open={showLocalBrowser} onOpenChange={setShowLocalBrowser}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FolderOpen className="w-5 h-5 text-accent-yellow" />
+              Browse Local Drives
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            {helperConnected ? (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-gray">
+                  Browse files on your local drives through the SWN Desktop Helper.
+                  Select clips to add them to your dailies.
+                </p>
+                <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-8 text-center">
+                  <Monitor className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
+                  <p className="text-sm text-muted-gray mb-2">
+                    Local file browser coming soon
+                  </p>
+                  <p className="text-xs text-muted-gray/70">
+                    Use the Desktop Helper app to offload and ingest footage directly.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <WifiOff className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
+                <p className="text-muted-gray mb-2">Desktop Helper not connected</p>
+                <p className="text-sm text-muted-gray/70">
+                  Install and run the SWN Desktop Helper to browse local drives.
+                </p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Download Helper Dialog */}
+      <Dialog open={showDownloadModal} onOpenChange={setShowDownloadModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="w-5 h-5 text-accent-yellow" />
+              Download SWN Dailies Helper
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-sm text-muted-gray">
+              The SWN Dailies Helper is a desktop app that helps you:
+            </p>
+            <ul className="text-sm text-muted-gray space-y-2 ml-4">
+              <li className="flex items-start gap-2">
+                <span className="text-accent-yellow">•</span>
+                Offload footage from camera cards with checksum verification
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-accent-yellow">•</span>
+                Copy to multiple drives simultaneously
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-accent-yellow">•</span>
+                Generate H.264 proxy files for faster review
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-accent-yellow">•</span>
+                Upload proxies to cloud for remote dailies review
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-accent-yellow">•</span>
+                Browse local drives from this web interface
+              </li>
+            </ul>
+
+            <div className="pt-4 space-y-3">
+              <div className="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">
+                <p className="text-sm font-medium text-bone-white mb-2 text-center">
+                  Alpha Release Available
+                </p>
+                <p className="text-xs text-muted-gray text-center mb-3">
+                  Compiled binaries coming soon. For now, install from source:
+                </p>
+                <div className="bg-charcoal-black rounded p-3 font-mono text-xs text-muted-gray">
+                  <p>pip install git+https://github.com/estroop3-gif/swn-dailies-helper.git</p>
+                  <p className="mt-1">swn-helper</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 text-center">
+              <a
+                href="https://github.com/estroop3-gif/swn-dailies-helper/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-accent-yellow text-charcoal-black rounded-lg hover:bg-bone-white transition-colors font-medium text-sm"
+              >
+                <ExternalLink className="w-4 h-4" />
+                View on GitHub
+              </a>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

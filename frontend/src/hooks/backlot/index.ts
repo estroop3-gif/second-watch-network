@@ -779,3 +779,31 @@ export type {
   StreamQCSession,
   MacroCommand,
 } from './useChurchTools';
+
+// Desktop Helper & Clip-Asset Links
+export {
+  useDesktopHelper,
+  useDesktopApiKeys,
+} from './useDesktopHelper';
+
+export type {
+  HelperStatus,
+  LocalDrive,
+  LocalFile,
+  DesktopApiKey,
+  CreateApiKeyResponse,
+} from './useDesktopHelper';
+
+export {
+  useClipLinkedAssets,
+  useAssetSourceClips,
+  useLinkClipToAsset,
+  useBulkLinkClipsToAsset,
+  useRemoveClipAssetLink,
+} from './useClipAssetLinks';
+
+export type {
+  ClipAssetLink,
+  LinkedClip,
+  LinkedAsset,
+} from './useClipAssetLinks';

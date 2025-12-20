@@ -50,6 +50,11 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
   Plus,
   MoreVertical,
   Pencil,
@@ -71,6 +76,11 @@ import {
   Filter,
   Package,
   CheckCircle2,
+  Link,
+  Circle,
+  Star,
+  ChevronDown,
+  Play,
 } from 'lucide-react';
 import {
   useAssets,
@@ -80,6 +90,7 @@ import {
   useDeliverablesSummary,
   useDeliverableMutations,
   useDeliverableTemplates,
+  useAssetSourceClips,
 } from '@/hooks/backlot';
 import {
   BacklotAsset,
@@ -139,6 +150,91 @@ const StatusIcon: React.FC<{ status: BacklotDeliverableStatus; className?: strin
     case 'delivered':
       return <Send className={iconClass} />;
   }
+};
+
+// Source Clips Section - Shows dailies clips linked to an asset
+const SourceClipsSection: React.FC<{ assetId: string }> = ({ assetId }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const { data: clips, isLoading } = useAssetSourceClips(assetId);
+
+  if (isLoading) {
+    return (
+      <div className="px-4 py-2 border-t border-muted-gray/10">
+        <Skeleton className="h-4 w-24" />
+      </div>
+    );
+  }
+
+  if (!clips || clips.length === 0) {
+    return null;
+  }
+
+  const formatDurationShort = (seconds: number | null | undefined) => {
+    if (!seconds) return '--:--';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+      <CollapsibleTrigger asChild>
+        <button className="w-full px-4 py-2 border-t border-muted-gray/10 flex items-center justify-between text-sm text-muted-gray hover:text-bone-white hover:bg-charcoal-black/30 transition-colors">
+          <div className="flex items-center gap-2">
+            <Link className="w-3 h-3" />
+            <span>{clips.length} source clip{clips.length !== 1 ? 's' : ''}</span>
+          </div>
+          <ChevronDown
+            className={cn('w-4 h-4 transition-transform', isOpen && 'rotate-180')}
+          />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="px-4 py-2 border-t border-muted-gray/10 bg-charcoal-black/30 space-y-2">
+          {clips.map((linkedClip) => (
+            <div
+              key={linkedClip.link_id}
+              className="flex items-center gap-3 p-2 rounded bg-charcoal-black/50 border border-muted-gray/10"
+            >
+              {/* Thumbnail placeholder */}
+              <div className="w-12 h-8 bg-charcoal-black rounded flex items-center justify-center flex-shrink-0">
+                <Play className="w-3 h-3 text-muted-gray/50" />
+              </div>
+
+              {/* Clip info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-bone-white truncate">
+                    {linkedClip.clip.file_name || 'Untitled Clip'}
+                  </span>
+                  {linkedClip.clip.is_circle_take && (
+                    <Circle className="w-3 h-3 text-green-400" fill="currentColor" />
+                  )}
+                  {linkedClip.clip.rating && linkedClip.clip.rating > 0 && (
+                    <div className="flex items-center gap-0.5">
+                      {Array.from({ length: linkedClip.clip.rating }).map((_, i) => (
+                        <Star key={i} className="w-2 h-2 text-accent-yellow" fill="currentColor" />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-gray">
+                  {linkedClip.clip.scene_number && <span>Sc. {linkedClip.clip.scene_number}</span>}
+                  {linkedClip.clip.take_number && <span>Tk. {linkedClip.clip.take_number}</span>}
+                  <span>{formatDurationShort(linkedClip.clip.duration_seconds)}</span>
+                </div>
+              </div>
+
+              {/* Link type badge */}
+              <Badge variant="outline" className="text-xs border-muted-gray/30 text-muted-gray capitalize">
+                {linkedClip.link_type}
+              </Badge>
+            </div>
+          ))}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
 };
 
 // Format duration in seconds to human-readable
@@ -636,6 +732,9 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
                       </Select>
                     </div>
                   </CardContent>
+
+                  {/* Source Clips Section */}
+                  <SourceClipsSection assetId={asset.id} />
                 </Card>
               ))}
             </div>

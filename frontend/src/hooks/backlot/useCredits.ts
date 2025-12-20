@@ -95,18 +95,21 @@ export function useCredits(projectId: string | null) {
         },
         body: JSON.stringify({
           department: input.department,
-          role: input.role,
+          credit_role: input.credit_role,
           name: input.name,
           user_id: input.user_id,
           is_primary: input.is_primary ?? false,
           is_public: input.is_public ?? true,
           order_index: input.order_index ?? 0,
+          endorsement_note: input.endorsement_note,
+          imdb_id: input.imdb_id,
         }),
       });
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Failed to create credit' }));
-        throw new Error(error.detail);
+        const message = typeof error.detail === 'string' ? error.detail : JSON.stringify(error.detail);
+        throw new Error(message);
       }
 
       return await response.json();
@@ -135,12 +138,14 @@ export function useCredits(projectId: string | null) {
         },
         body: JSON.stringify({
           department: updates.department,
-          role: updates.role,
+          credit_role: updates.credit_role,
           name: updates.name,
           user_id: updates.user_id,
           is_primary: updates.is_primary ?? false,
           is_public: updates.is_public ?? true,
           order_index: updates.order_index ?? 0,
+          endorsement_note: updates.endorsement_note,
+          imdb_id: updates.imdb_id,
         }),
       });
 

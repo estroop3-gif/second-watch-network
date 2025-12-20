@@ -1,0 +1,183 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build executable
+        run: |
+          pyinstaller build.spec --clean
+
+      - name: Rename artifact
+        run: |
+          move dist\SWN-Dailies-Helper.exe dist\SWN-Dailies-Helper-win.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/SWN-Dailies-Helper-win.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build app bundle
+        run: |
+          pyinstaller build.spec --clean
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          create-dmg \
+            --volname "SWN Dailies Helper" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --app-drop-link 425 178 \
+            --icon "SWN Dailies Helper.app" 175 178 \
+            dist/SWN-Dailies-Helper-mac.dmg \
+            "dist/SWN Dailies Helper.app"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: dist/SWN-Dailies-Helper-mac.dmg
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxcb-cursor0 \
+            libxkbcommon0 \
+            libgl1-mesa-glx \
+            libegl1 \
+            libfuse2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -e .
+
+      - name: Build executable
+        run: |
+          pyinstaller build.spec --clean
+
+      - name: Create AppImage
+        run: |
+          # Download appimagetool
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+
+          # Copy executable
+          cp dist/swn-dailies-helper AppDir/usr/bin/
+
+          # Create desktop file
+          cat > AppDir/usr/share/applications/swn-dailies-helper.desktop << EOF
+          [Desktop Entry]
+          Type=Application
+          Name=SWN Dailies Helper
+          Exec=swn-dailies-helper
+          Icon=swn-dailies-helper
+          Categories=AudioVideo;Video;
+          Comment=Desktop helper for Second Watch Network
+          EOF
+
+          # Copy icon (or create placeholder)
+          if [ -f resources/icon.png ]; then
+            cp resources/icon.png AppDir/usr/share/icons/hicolor/256x256/apps/swn-dailies-helper.png
+          else
+            convert -size 256x256 xc:gold AppDir/usr/share/icons/hicolor/256x256/apps/swn-dailies-helper.png 2>/dev/null || true
+          fi
+
+          # Create AppRun
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF=$(readlink -f "$0")
+          HERE=${SELF%/*}
+          export PATH="${HERE}/usr/bin:${PATH}"
+          exec "${HERE}/usr/bin/swn-dailies-helper" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # Link desktop and icon to root
+          ln -sf usr/share/applications/swn-dailies-helper.desktop AppDir/
+          ln -sf usr/share/icons/hicolor/256x256/apps/swn-dailies-helper.png AppDir/
+
+          # Build AppImage
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage AppDir dist/SWN-Dailies-Helper-linux.AppImage
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: dist/SWN-Dailies-Helper-linux.AppImage
+
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/windows-build/SWN-Dailies-Helper-win.exe
+            artifacts/macos-build/SWN-Dailies-Helper-mac.dmg
+            artifacts/linux-build/SWN-Dailies-Helper-linux.AppImage
+          generate_release_notes: true

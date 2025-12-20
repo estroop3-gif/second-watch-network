@@ -798,7 +798,7 @@ class APIClient {
     })
   }
 
-  async getNewlyAvailableFilmmakers(hours: number = 48) {
+  async getNewlyAvailableFilmmakersAdmin(hours: number = 48) {
     return this.request<any[]>(`/api/v1/admin/dashboard/newly-available?hours=${hours}`)
   }
 
