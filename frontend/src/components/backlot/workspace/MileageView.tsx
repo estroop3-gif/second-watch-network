@@ -489,7 +489,7 @@ function MileageFormModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-md">
+      <DialogContent className="max-w-md max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditing ? 'Edit Mileage' : 'Log Mileage'}</DialogTitle>
         </DialogHeader>

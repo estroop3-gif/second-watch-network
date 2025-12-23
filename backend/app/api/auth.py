@@ -159,19 +159,31 @@ async def sign_in(request: SignInRequest):
             except Exception as e:
                 print(f"Profile lookup error: {e}")
 
-        user_data = {
-            "id": profile["id"] if profile else cognito_user.get("id"),
-            "email": cognito_user.get("email") or request.email,
-            "full_name": cognito_user.get("name"),
-            "cognito_user_id": cognito_user.get("id"),
-        }
-
+        # Build user data - include full profile if available
         if profile:
-            user_data.update({
+            # Return full profile data to avoid needing a second API call
+            user_data = {
+                "id": str(profile["id"]),
+                "email": cognito_user.get("email") or request.email,
+                "full_name": profile.get("full_name") or cognito_user.get("name"),
+                "cognito_user_id": cognito_user.get("id"),
                 "username": profile.get("username"),
                 "avatar_url": profile.get("avatar_url"),
                 "role": profile.get("role"),
-            })
+                "display_name": profile.get("display_name"),
+                "bio": profile.get("bio"),
+                "location": profile.get("location"),
+                "is_filmmaker": profile.get("is_filmmaker"),
+                "is_partner": profile.get("is_partner"),
+                "subscription_status": profile.get("subscription_status"),
+            }
+        else:
+            user_data = {
+                "id": cognito_user.get("id"),
+                "email": cognito_user.get("email") or request.email,
+                "full_name": cognito_user.get("name"),
+                "cognito_user_id": cognito_user.get("id"),
+            }
 
         return {
             "access_token": session["access_token"],

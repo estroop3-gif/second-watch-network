@@ -36,6 +36,7 @@ import {
   Target,
   Film,
   BarChart3,
+  Radio,
 } from 'lucide-react';
 import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, BACKLOT_ROLES } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -104,6 +105,9 @@ const CameraAndContinuityView = lazy(() => import('@/components/backlot/workspac
 const CheckInView = lazy(() => import('@/components/backlot/workspace/CheckInView'));
 const MySpacePanel = lazy(() => import('@/components/backlot/workspace/MySpacePanel'));
 const ChurchToolsView = lazy(() => import('@/components/backlot/workspace/ChurchToolsView'));
+const HotSetView = lazy(() => import('@/components/backlot/workspace/HotSetView'));
+const InvoicesView = lazy(() => import('@/components/backlot/workspace/InvoicesView'));
+const ComsView = lazy(() => import('@/components/backlot/workspace/ComsView'));
 
 // Lazy loaded named exports (need wrapper)
 const CastingCrewTab = lazy(() =>
@@ -117,7 +121,7 @@ const ReviewDetailView = lazy(() =>
 );
 
 import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList } from 'lucide-react';
+import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -192,6 +196,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'On Set & Dailies',
     items: [
+      { id: 'hot-set', label: 'Production Day', icon: Flame },
       { id: 'camera-continuity', label: 'Camera & Continuity', icon: Aperture },
       { id: 'scripty', label: 'Scripty', icon: ClipboardList },
       { id: 'dailies', label: 'Dailies', icon: Video },
@@ -212,6 +217,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
       { id: 'timecards', label: 'Timecards', icon: Timer },
       { id: 'expenses', label: 'Expenses', icon: Receipt },
+      { id: 'invoices', label: 'Invoices', icon: FileText },
       { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
     ],
   },
@@ -219,6 +225,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Tasks & Collaboration',
     items: [
       { id: 'tasks', label: 'Tasks', icon: CheckSquare },
+      { id: 'coms', label: 'Coms', icon: Radio },
       { id: 'updates', label: 'Updates', icon: Megaphone },
       { id: 'contacts', label: 'Contacts', icon: Users },
     ],
@@ -691,6 +698,9 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'checkin' && (
             <CheckInView projectId={project.id} canManage={permission?.isAdmin || false} />
           )}
+          {activeView === 'hot-set' && (
+            <HotSetView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
           {activeView === 'my-space' && (
             <MySpacePanel projectId={project.id} />
           )}
@@ -715,6 +725,13 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'expenses' && (
             <ExpensesView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
+          {activeView === 'invoices' && (
+            <InvoicesView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              canReview={permission?.isAdmin || false}
+            />
+          )}
           {activeView === 'analytics' && (
             <AnalyticsView projectId={project.id} />
           )}
@@ -729,6 +746,9 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'contacts' && (
             <ContactsView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'coms' && (
+            <ComsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'credits' && (
             <CreditsView projectId={project.id} canEdit={permission?.canEdit || false} />

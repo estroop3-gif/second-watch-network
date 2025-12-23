@@ -120,15 +120,25 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setSession(authSession);
       setUser(data.user as AuthUser);
 
-      // Load profile
-      try {
-        const profileData = await api.getProfile();
-        setProfile(profileData);
-        if (profileData?.id) {
-          safeStorage.setItem('profile_id', profileData.id);
+      // Use profile data from signin response if available (optimization)
+      // The signin endpoint now returns full profile data
+      if (data.user?.id && data.user?.role !== undefined) {
+        // Full profile data is included in the signin response
+        setProfile(data.user);
+        if (data.user.id) {
+          safeStorage.setItem('profile_id', data.user.id);
         }
-      } catch {
-        // Profile may not exist yet
+      } else {
+        // Fallback: fetch profile separately if not included
+        try {
+          const profileData = await api.getProfile();
+          setProfile(profileData);
+          if (profileData?.id) {
+            safeStorage.setItem('profile_id', profileData.id);
+          }
+        } catch {
+          // Profile may not exist yet
+        }
       }
     } catch (error) {
       console.error('Sign in error:', error);

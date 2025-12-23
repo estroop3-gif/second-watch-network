@@ -46,6 +46,7 @@ import {
   RefreshCw,
   UserCheck,
   Calendar,
+  AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -71,6 +72,24 @@ interface CheckInViewProps {
   canManage: boolean; // Admin/1st AD can manage sessions
 }
 
+// Error display component
+const ErrorDisplay: React.FC<{ error: Error | null; message?: string }> = ({ error, message }) => {
+  if (!error) return null;
+  return (
+    <Card className="bg-red-500/10 border-red-500/30">
+      <CardContent className="py-4">
+        <div className="flex items-center gap-3 text-red-400">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+          <div>
+            <p className="font-medium">{message || 'An error occurred'}</p>
+            <p className="text-sm text-red-400/80">{error.message}</p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 // QR Code generator using an API (or could use a library like qrcode.react)
 const QRCodeDisplay: React.FC<{ value: string; size?: number }> = ({ value, size = 200 }) => {
   // Using a simple QR code API - in production you might use qrcode.react
@@ -90,17 +109,17 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
   const [showQRModal, setShowQRModal] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
-  // Queries
-  const { data: sessions, isLoading: sessionsLoading } = useCheckinSessions(projectId);
-  const { data: productionDays } = useProductionDays(projectId);
-  const { data: sessionDetails, isLoading: detailsLoading } = useCheckinSession(
+  // Queries with error handling
+  const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useCheckinSessions(projectId);
+  const { data: productionDays, error: productionDaysError } = useProductionDays(projectId);
+  const { data: sessionDetails, isLoading: detailsLoading, error: detailsError } = useCheckinSession(
     projectId,
     selectedSessionId
   );
-  const { data: sessionCheckins } = useSessionCheckins(projectId, selectedSessionId);
+  const { data: sessionCheckins, error: checkinsError } = useSessionCheckins(projectId, selectedSessionId);
 
-  // My check-ins query
-  const { data: myCheckins, isLoading: myCheckinsLoading } = useMyCheckins(projectId);
+  // My check-ins query with error handling
+  const { data: myCheckins, isLoading: myCheckinsLoading, error: myCheckinsError } = useMyCheckins(projectId);
 
   // Mutations
   const createSession = useCreateCheckinSession(projectId);
@@ -211,6 +230,9 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
         {/* Admin Session Management */}
         {canManage && (
           <TabsContent value="manage" className="mt-6 space-y-6">
+            {/* Error display */}
+            <ErrorDisplay error={sessionsError as Error | null} message="Failed to load check-in sessions" />
+
             {/* Active Sessions */}
             <div>
               <div className="flex items-center justify-between mb-4">
@@ -368,6 +390,10 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
 
         {/* Crew Check-in View */}
         <TabsContent value="my-checkins" className="mt-6 space-y-6">
+          {/* Error displays */}
+          <ErrorDisplay error={sessionsError as Error | null} message="Failed to load available sessions" />
+          <ErrorDisplay error={myCheckinsError as Error | null} message="Failed to load your check-in history" />
+
           {/* Available Sessions to Check Into */}
           <div>
             <h3 className="text-lg font-medium text-bone-white mb-4">Available Check-ins</h3>
@@ -550,14 +576,14 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
             <div>
               <Label>Production Day (Optional)</Label>
               <Select
-                value={formData.production_day_id}
-                onValueChange={(v) => setFormData({ ...formData, production_day_id: v })}
+                value={formData.production_day_id || 'none'}
+                onValueChange={(v) => setFormData({ ...formData, production_day_id: v === 'none' ? '' : v })}
               >
                 <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
                   <SelectValue placeholder="Select day" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">No specific day</SelectItem>
+                  <SelectItem value="none">No specific day</SelectItem>
                   {productionDays?.map((day) => (
                     <SelectItem key={day.id} value={day.id}>
                       Day {day.day_number} - {new Date(day.date).toLocaleDateString()}

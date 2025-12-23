@@ -713,54 +713,59 @@ async def get_my_checkins(
     authorization: str = Header(None)
 ):
     """Get current user's check-in/check-out records for a project"""
-    user = await get_current_user_from_token(authorization)
-    client = get_client()
+    try:
+        user = await get_current_user_from_token(authorization)
+        client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
-        raise HTTPException(status_code=403, detail="Not a project member")
+        if not await verify_project_member(client, project_id, user["id"]):
+            raise HTTPException(status_code=403, detail="Not a project member")
 
-    # Get check-ins with session info
-    query = client.table("backlot_checkins").select(
-        "*, backlot_checkin_sessions!inner(title, shoot_date)"
-    ).eq("project_id", project_id).eq("user_id", user["id"])
+        # Get check-ins with session info (use left join so missing sessions don't fail)
+        try:
+            query = client.table("backlot_checkins").select(
+                "*, backlot_checkin_sessions(session_type, notes, created_at)"
+            ).eq("project_id", project_id).eq("user_id", user["id"])
+            response = query.order("checked_in_at", desc=True).execute()
+        except Exception as e:
+            # If join fails, try without join
+            print(f"Join query failed, falling back to simple query: {e}")
+            response = client.table("backlot_checkins").select("*").eq(
+                "project_id", project_id
+            ).eq("user_id", user["id"]).order("checked_in_at", desc=True).execute()
 
-    if week_start:
-        # Filter to week (Monday to Sunday)
-        from datetime import datetime, timedelta
-        start_date = datetime.strptime(week_start, "%Y-%m-%d").date()
-        end_date = start_date + timedelta(days=6)
-        query = query.gte("backlot_checkin_sessions.shoot_date", start_date.isoformat())
-        query = query.lte("backlot_checkin_sessions.shoot_date", end_date.isoformat())
+        checkins = []
+        for row in (response.data or []):
+            session = row.get("backlot_checkin_sessions") or {}
 
-    response = query.order("checked_in_at", desc=True).execute()
+            # Calculate hours worked if both check-in and check-out exist
+            hours_worked = None
+            if row.get("checked_in_at") and row.get("checked_out_at"):
+                try:
+                    from datetime import datetime
+                    check_in = datetime.fromisoformat(row["checked_in_at"].replace("Z", "+00:00"))
+                    check_out = datetime.fromisoformat(row["checked_out_at"].replace("Z", "+00:00"))
+                    hours_worked = round((check_out - check_in).total_seconds() / 3600, 2)
+                except:
+                    pass
 
-    checkins = []
-    for row in (response.data or []):
-        session = row.get("backlot_checkin_sessions") or {}
+            checkins.append({
+                "id": row["id"],
+                "project_id": row["project_id"],
+                "session_id": row["session_id"],
+                "session_title": session.get("session_type") or session.get("notes") or "Check-in",
+                "shoot_date": row.get("checked_in_at", "")[:10] if row.get("checked_in_at") else None,
+                "checked_in_at": row["checked_in_at"],
+                "checked_out_at": row.get("checked_out_at"),
+                "hours_worked": hours_worked,
+            })
 
-        # Calculate hours worked if both check-in and check-out exist
-        hours_worked = None
-        if row.get("checked_in_at") and row.get("checked_out_at"):
-            try:
-                from datetime import datetime
-                check_in = datetime.fromisoformat(row["checked_in_at"].replace("Z", "+00:00"))
-                check_out = datetime.fromisoformat(row["checked_out_at"].replace("Z", "+00:00"))
-                hours_worked = round((check_out - check_in).total_seconds() / 3600, 2)
-            except:
-                pass
-
-        checkins.append({
-            "id": row["id"],
-            "project_id": row["project_id"],
-            "session_id": row["session_id"],
-            "session_title": session.get("title"),
-            "shoot_date": session.get("shoot_date"),
-            "checked_in_at": row["checked_in_at"],
-            "checked_out_at": row.get("checked_out_at"),
-            "hours_worked": hours_worked,
-        })
-
-    return {"checkins": checkins}
+        return checkins  # Return array directly as hook expects
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_my_checkins: {e}")
+        # Return empty array instead of 500 error for better UX
+        return []
 
 
 @router.get("/projects/{project_id}/checkin-sessions/{session_id}/checkins")

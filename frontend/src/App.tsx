@@ -25,6 +25,7 @@ import ResetPassword from "./pages/ResetPassword";
 import { AuthProvider } from "./context/AuthContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { EnrichedProfileProvider } from "./context/EnrichedProfileContext";
+import { SocketProvider } from "./context/SocketContext";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
 import ConfirmEmail from "./pages/ConfirmEmail";
@@ -106,6 +107,7 @@ const App = () => (
     <SettingsProvider>
       <AuthProvider>
         <EnrichedProfileProvider>
+          <SocketProvider>
           <PlatformStatusGate>
             <TooltipProvider>
             <Toaster />
@@ -233,6 +235,7 @@ const App = () => (
             </BrowserRouter>
           </TooltipProvider>
           </PlatformStatusGate>
+          </SocketProvider>
         </EnrichedProfileProvider>
       </AuthProvider>
     </SettingsProvider>

@@ -2012,3 +2012,125 @@ export function useMarkReimbursed(projectId: string) {
     },
   });
 }
+
+/**
+ * Submit a receipt as a company card expense (goes to budget, not invoice)
+ */
+export function useSubmitCompanyCard(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      receiptId,
+      budgetCategoryId,
+      budgetLineItemId,
+      expenseCategory,
+    }: {
+      receiptId: string;
+      budgetCategoryId?: string;
+      budgetLineItemId?: string;
+      expenseCategory?: string;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/submit-company-card`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            budget_category_id: budgetCategoryId,
+            budget_line_item_id: budgetLineItemId,
+            expense_category: expenseCategory,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to submit company card expense' }));
+        throw new Error(error.detail || 'Failed to submit company card expense');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals', projectId] });
+    },
+  });
+}
+
+/**
+ * Get budget actuals for a project
+ */
+export function useBudgetActuals(
+  projectId: string | null,
+  options?: {
+    budgetCategoryId?: string;
+    budgetLineItemId?: string;
+    startDate?: string;
+    endDate?: string;
+  }
+) {
+  return useQuery({
+    queryKey: ['backlot-budget-actuals', projectId, options],
+    queryFn: async () => {
+      if (!projectId) return { actuals: [] };
+
+      const token = getAuthToken();
+      const params = new URLSearchParams();
+      if (options?.budgetCategoryId) params.append('budget_category_id', options.budgetCategoryId);
+      if (options?.budgetLineItemId) params.append('budget_line_item_id', options.budgetLineItemId);
+      if (options?.startDate) params.append('start_date', options.startDate);
+      if (options?.endDate) params.append('end_date', options.endDate);
+
+      const url = `${API_BASE}/backlot/projects/${projectId}/budget-actuals${params.toString() ? `?${params}` : ''}`;
+
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budget actuals');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Get budget actuals summary by category
+ */
+export function useBudgetActualsSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-budget-actuals-summary', projectId],
+    queryFn: async () => {
+      if (!projectId) return { categories: [], total: 0 };
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/summary`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budget actuals summary');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}

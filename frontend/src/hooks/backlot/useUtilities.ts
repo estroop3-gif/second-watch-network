@@ -531,11 +531,16 @@ export function useMyCheckins(projectId: string | null, weekStart?: string) {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (!response.ok) throw new Error('Failed to fetch check-ins');
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => 'Unknown error');
+        throw new Error(`Failed to fetch check-ins: ${response.status} ${errorText}`);
+      }
       const data = await response.json();
-      return data.checkins || [];
+      // Handle both array response and { checkins: [] } response for backwards compatibility
+      return Array.isArray(data) ? data : (data.checkins || []);
     },
     enabled: !!projectId,
+    retry: 1, // Only retry once on failure
   });
 }
 

@@ -18,7 +18,7 @@ from app.api import (
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses,
     church_services, church_people, church_content, church_planning,
-    church_resources, church_readiness, cast_crew
+    church_resources, church_readiness, cast_crew, hot_set, invoices, coms
 )
 
 # Configure logging
@@ -142,6 +142,9 @@ app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory
 app.include_router(camera_continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Camera & Continuity"])
 app.include_router(continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Scripty Continuity"])
 app.include_router(utilities.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Utilities"])
+app.include_router(hot_set.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Hot Set"])
+app.include_router(invoices.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Invoices"])
+app.include_router(coms.router, prefix=f"{settings.API_V1_PREFIX}/coms", tags=["Coms"])
 
 # Church Production Tools
 app.include_router(church_services.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Services"])
@@ -150,6 +153,14 @@ app.include_router(church_content.router, prefix=f"{settings.API_V1_PREFIX}/chur
 app.include_router(church_planning.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Planning"])
 app.include_router(church_resources.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Resources"])
 app.include_router(church_readiness.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Readiness"])
+
+# Mount Socket.IO for real-time communications
+try:
+    from app.socketio_app import socket_app
+    app.mount("/socket.io", socket_app)
+    logger.info("Socket.IO mounted at /socket.io")
+except ImportError as e:
+    logger.warning(f"Socket.IO not available: {e}")
 
 
 if __name__ == "__main__":

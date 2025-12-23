@@ -47,6 +47,10 @@ import {
   TrendingUp,
   Loader2,
   FileSpreadsheet,
+  CreditCard,
+  Building2,
+  Wallet,
+  PieChart,
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
 import {
@@ -56,6 +60,8 @@ import {
   usePerDiemEntries,
   formatCurrency,
   EXPENSE_STATUS_CONFIG,
+  useBudgetActualsSummary,
+  useBudgetSummary,
 } from '@/hooks/backlot';
 import { useReceipts, useExportReceipts } from '@/hooks/backlot';
 
@@ -151,6 +157,12 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
   );
   const summary = summaryData?.summary;
 
+  // Fetch budget actuals summary (company card expenses)
+  const { data: budgetActualsData } = useBudgetActualsSummary(projectId);
+
+  // Fetch budget summary for comparison
+  const { data: budgetSummaryData } = useBudgetSummary(projectId);
+
   // Fetch individual expense data for detailed breakdowns
   const { data: receiptsData } = useReceipts(projectId, {
     start_date: dateRange.start,
@@ -183,17 +195,27 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
 
     const grandTotal = receiptsTotal + mileageTotal + kitRentalsTotal + perDiemTotal;
 
+    // Company card vs personal breakdown (from summary endpoint)
+    const companyCardTotal = summaryData?.company_card_total || 0;
+    const companyCardCount = summaryData?.company_card_count || 0;
+    const personalCardTotal = summaryData?.personal_card_total || 0;
+    const personalCardCount = summaryData?.personal_card_count || 0;
+
     return {
       receipts: receiptsTotal,
       mileage: mileageTotal,
       kitRentals: kitRentalsTotal,
       perDiem: perDiemTotal,
       grandTotal,
-      pending: summary?.pending_amount || 0,
-      approved: summary?.approved_amount || 0,
-      reimbursed: summary?.reimbursed_amount || 0,
+      pending: summary?.pending_amount || summary?.total_pending || 0,
+      approved: summary?.approved_amount || summary?.total_approved || 0,
+      reimbursed: summary?.reimbursed_amount || summary?.reimbursed_total || 0,
+      companyCard: companyCardTotal,
+      companyCardCount,
+      personalCard: personalCardTotal,
+      personalCardCount,
     };
-  }, [summary]);
+  }, [summary, summaryData]);
 
   // Calculate percentages for chart
   const percentages = useMemo(() => {
@@ -417,6 +439,48 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
         </Card>
       </div>
 
+      {/* Company Card vs Personal Card Breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 text-purple-500 mb-2">
+              <Building2 className="h-4 w-4" />
+              <span className="text-sm">Company Card Expenses</span>
+            </div>
+            <p className="text-2xl font-bold">{formatCurrency(totals.companyCard)}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {totals.companyCardCount} receipt{totals.companyCardCount !== 1 ? 's' : ''} (auto-recorded)
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 text-orange-500 mb-2">
+              <Wallet className="h-4 w-4" />
+              <span className="text-sm">Personal Card (Reimbursable)</span>
+            </div>
+            <p className="text-2xl font-bold">{formatCurrency(totals.personalCard)}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {totals.personalCardCount} receipt{totals.personalCardCount !== 1 ? 's' : ''}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-6">
+            <div className="flex items-center gap-2 text-cyan-500 mb-2">
+              <PieChart className="h-4 w-4" />
+              <span className="text-sm">Budget Actuals</span>
+            </div>
+            <p className="text-2xl font-bold">{formatCurrency(budgetActualsData?.total || 0)}</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {budgetActualsData?.categories?.length || 0} categor{(budgetActualsData?.categories?.length || 0) !== 1 ? 'ies' : 'y'} tracked
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Expense Type Breakdown */}
         <Card>
@@ -553,6 +617,114 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
       </div>
+
+      {/* Budget vs Actuals Comparison */}
+      {(budgetActualsData?.categories?.length > 0 || budgetSummaryData?.categories?.length > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <PieChart className="h-5 w-5" />
+              Budget vs Actuals
+            </CardTitle>
+            <CardDescription>Compare budgeted amounts to actual spending (company card expenses)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Category</TableHead>
+                  <TableHead className="text-right">Budgeted</TableHead>
+                  <TableHead className="text-right">Actual</TableHead>
+                  <TableHead className="text-right">Variance</TableHead>
+                  <TableHead className="w-32">Progress</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(() => {
+                  // Combine budget categories with actuals
+                  const categoryMap = new Map<string, {
+                    name: string;
+                    budgeted: number;
+                    actual: number;
+                  }>();
+
+                  // Add budget categories
+                  budgetSummaryData?.categories?.forEach((cat: any) => {
+                    categoryMap.set(cat.id, {
+                      name: cat.name,
+                      budgeted: cat.total_amount || 0,
+                      actual: 0,
+                    });
+                  });
+
+                  // Add actuals
+                  budgetActualsData?.categories?.forEach((cat: any) => {
+                    if (cat.budget_category_id && categoryMap.has(cat.budget_category_id)) {
+                      const existing = categoryMap.get(cat.budget_category_id)!;
+                      existing.actual = cat.total || 0;
+                    } else {
+                      // Actuals without budget category
+                      const key = cat.expense_category || 'Uncategorized';
+                      if (categoryMap.has(key)) {
+                        const existing = categoryMap.get(key)!;
+                        existing.actual += cat.total || 0;
+                      } else {
+                        categoryMap.set(key, {
+                          name: cat.expense_category || 'Uncategorized',
+                          budgeted: 0,
+                          actual: cat.total || 0,
+                        });
+                      }
+                    }
+                  });
+
+                  const categories = Array.from(categoryMap.values())
+                    .filter(cat => cat.budgeted > 0 || cat.actual > 0)
+                    .sort((a, b) => (b.actual + b.budgeted) - (a.actual + a.budgeted));
+
+                  if (categories.length === 0) {
+                    return (
+                      <TableRow>
+                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                          No budget or actual data available
+                        </TableCell>
+                      </TableRow>
+                    );
+                  }
+
+                  return categories.map((cat, idx) => {
+                    const variance = cat.budgeted - cat.actual;
+                    const percentUsed = cat.budgeted > 0 ? (cat.actual / cat.budgeted) * 100 : 0;
+                    const isOverBudget = cat.actual > cat.budgeted && cat.budgeted > 0;
+
+                    return (
+                      <TableRow key={idx}>
+                        <TableCell className="font-medium">{cat.name}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(cat.budgeted)}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(cat.actual)}</TableCell>
+                        <TableCell className={`text-right ${isOverBudget ? 'text-red-500' : 'text-green-500'}`}>
+                          {variance >= 0 ? '+' : ''}{formatCurrency(variance)}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Progress
+                              value={Math.min(percentUsed, 100)}
+                              className={`h-2 ${isOverBudget ? '[&>div]:bg-red-500' : ''}`}
+                            />
+                            <span className="text-xs text-muted-foreground w-10">
+                              {percentUsed.toFixed(0)}%
+                            </span>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  });
+                })()}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Detailed Table */}
       <Card>

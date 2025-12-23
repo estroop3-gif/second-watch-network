@@ -1489,7 +1489,18 @@ async def approve_timecard(
     if not update_resp.data:
         raise HTTPException(status_code=500, detail="Failed to approve timecard")
 
-    return {"success": True, "status": "approved"}
+    # Auto-add to user's draft invoice(s) - may split across multiple invoices by date
+    from app.services.invoice_auto_sync import auto_add_timecard_to_invoice
+    results = auto_add_timecard_to_invoice(
+        project_id=project_id,
+        user_id=tc["user_id"],
+        timecard=tc
+    )
+    # Extract results - may have multiple if split across invoices
+    auto_added = any(r[0] for r in results)
+    invoice_ids = [r[1] for r in results if r[1]]
+
+    return {"success": True, "status": "approved", "auto_added_to_invoice": auto_added, "invoice_ids": invoice_ids}
 
 
 @router.post("/projects/{project_id}/timecards/{timecard_id}/reject")

@@ -218,6 +218,16 @@ class ExpenseSummary(BaseModel):
     reimbursed_total: float = 0
     pending_count: int = 0
     approved_count: int = 0
+    # Company card expenses (separate from personal reimbursement flow)
+    company_card_total: float = 0
+    company_card_count: int = 0
+    personal_card_total: float = 0
+    personal_card_count: int = 0
+    # Grand totals by expense type (pending + approved + reimbursed)
+    total_mileage: float = 0
+    total_kit_rentals: float = 0
+    total_per_diem: float = 0
+    total_receipts: float = 0
 
 
 class ApproveRejectRequest(BaseModel):
@@ -421,15 +431,15 @@ async def create_mileage(
         "project_id": project_id,
         "user_id": user["id"],
         "date": request.date,
-        "description": request.description,
-        "start_location": request.start_location,
-        "end_location": request.end_location,
+        "description": request.description or None,
+        "start_location": request.start_location or None,
+        "end_location": request.end_location or None,
         "miles": request.miles,
         "rate_per_mile": rate,
         "is_round_trip": request.is_round_trip,
-        "purpose": request.purpose,
+        "purpose": request.purpose or None,  # Must be NULL or valid enum value
         "receipt_id": request.receipt_id,
-        "notes": request.notes,
+        "notes": request.notes or None,
         "status": "pending",
     }
 
@@ -556,7 +566,15 @@ async def approve_mileage(
         "approved_at": datetime.utcnow().isoformat(),
     }).eq("id", mileage_id).execute()
 
-    return {"success": True, "status": "approved"}
+    # Auto-add to user's draft invoice
+    from app.services.invoice_auto_sync import auto_add_mileage_to_invoice
+    auto_added, invoice_id = auto_add_mileage_to_invoice(
+        project_id=project_id,
+        user_id=entry["user_id"],
+        mileage_entry=entry
+    )
+
+    return {"success": True, "status": "approved", "auto_added_to_invoice": auto_added, "invoice_id": invoice_id}
 
 
 @router.post("/projects/{project_id}/mileage/{mileage_id}/reject")
@@ -676,7 +694,7 @@ async def list_kit_rentals(
                 pass
 
         result.append(KitRental(
-            **{k: v for k, v in entry.items() if k != "profiles"},
+            **{k: v for k, v in entry.items() if k not in ("profiles", "total_amount", "days_used")},
             total_amount=total,
             days_used=days_used,
             user_name=profile.get("full_name"),
@@ -841,7 +859,18 @@ async def approve_kit_rental(
         "approved_at": datetime.utcnow().isoformat(),
     }).eq("id", rental_id).execute()
 
-    return {"success": True, "status": "active"}
+    # Auto-add to user's draft invoice(s) - may split across multiple invoices by date
+    from app.services.invoice_auto_sync import auto_add_kit_rental_to_invoice
+    results = auto_add_kit_rental_to_invoice(
+        project_id=project_id,
+        user_id=entry["user_id"],
+        kit_rental=entry
+    )
+    # Extract results - may have multiple if split across invoices
+    auto_added = any(r[0] for r in results)
+    invoice_ids = [r[1] for r in results if r[1]]
+
+    return {"success": True, "status": "active", "auto_added_to_invoice": auto_added, "invoice_ids": invoice_ids}
 
 
 @router.post("/projects/{project_id}/kit-rentals/{rental_id}/reject")
@@ -1153,7 +1182,15 @@ async def approve_per_diem(
         "approved_at": datetime.utcnow().isoformat(),
     }).eq("id", entry_id).execute()
 
-    return {"success": True, "status": "approved"}
+    # Auto-add to user's draft invoice
+    from app.services.invoice_auto_sync import auto_add_per_diem_to_invoice
+    auto_added, invoice_id = auto_add_per_diem_to_invoice(
+        project_id=project_id,
+        user_id=entry["user_id"],
+        per_diem=entry
+    )
+
+    return {"success": True, "status": "approved", "auto_added_to_invoice": auto_added, "invoice_id": invoice_id}
 
 
 @router.post("/projects/{project_id}/per-diem/{entry_id}/reject")
@@ -1379,6 +1416,29 @@ async def get_expense_summary(
     total_approved = approved_mileage + approved_kit_rentals + approved_per_diem + approved_receipts
     reimbursed_total = reimbursed_mileage + reimbursed_kit_rentals + reimbursed_per_diem + reimbursed_receipts
 
+    # Company card vs personal card breakdown (receipts only)
+    company_card_query = client.table("backlot_receipts").select("id, amount").eq("project_id", project_id).eq("expense_type", "company_card")
+    if target_user:
+        company_card_query = company_card_query.eq("created_by_user_id", target_user)
+    company_card_resp = company_card_query.execute()
+    company_card_receipts = company_card_resp.data or []
+    company_card_total = sum(float(r.get("amount") or 0) for r in company_card_receipts)
+    company_card_count = len(company_card_receipts)
+
+    personal_card_query = client.table("backlot_receipts").select("id, amount").eq("project_id", project_id).neq("expense_type", "company_card")
+    if target_user:
+        personal_card_query = personal_card_query.eq("created_by_user_id", target_user)
+    personal_card_resp = personal_card_query.execute()
+    personal_card_receipts = personal_card_resp.data or []
+    personal_card_total = sum(float(r.get("amount") or 0) for r in personal_card_receipts)
+    personal_card_count = len(personal_card_receipts)
+
+    # Calculate grand totals by expense type
+    grand_total_mileage = pending_mileage + approved_mileage + reimbursed_mileage
+    grand_total_kit_rentals = pending_kit_rentals + approved_kit_rentals + reimbursed_kit_rentals
+    grand_total_per_diem = pending_per_diem + approved_per_diem + reimbursed_per_diem
+    grand_total_receipts = pending_receipts + approved_receipts + reimbursed_receipts
+
     return ExpenseSummary(
         pending_mileage=round(pending_mileage, 2),
         pending_kit_rentals=round(pending_kit_rentals, 2),
@@ -1393,6 +1453,14 @@ async def get_expense_summary(
         reimbursed_total=round(reimbursed_total, 2),
         pending_count=pending_count,
         approved_count=approved_count,
+        company_card_total=round(company_card_total, 2),
+        company_card_count=company_card_count,
+        personal_card_total=round(personal_card_total, 2),
+        personal_card_count=personal_card_count,
+        total_mileage=round(grand_total_mileage, 2),
+        total_kit_rentals=round(grand_total_kit_rentals, 2),
+        total_per_diem=round(grand_total_per_diem, 2),
+        total_receipts=round(grand_total_receipts, 2),
     )
 
 
@@ -1481,7 +1549,15 @@ async def approve_receipt_reimbursement(
         "updated_at": datetime.utcnow().isoformat(),
     }).eq("id", receipt_id).execute()
 
-    return {"success": True, "status": "approved"}
+    # Auto-add to user's draft invoice (receipts use created_by_user_id)
+    from app.services.invoice_auto_sync import auto_add_receipt_to_invoice
+    auto_added, invoice_id = auto_add_receipt_to_invoice(
+        project_id=project_id,
+        user_id=receipt["created_by_user_id"],
+        receipt=receipt
+    )
+
+    return {"success": True, "status": "approved", "auto_added_to_invoice": auto_added, "invoice_id": invoice_id}
 
 
 @router.post("/projects/{project_id}/receipts/{receipt_id}/reject-reimbursement")
@@ -1560,3 +1636,163 @@ async def mark_receipt_reimbursed(
     }).eq("id", receipt_id).execute()
 
     return {"success": True, "status": "reimbursed"}
+
+
+# =============================================================================
+# COMPANY CARD EXPENSES
+# =============================================================================
+
+class CompanyCardExpenseRequest(BaseModel):
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    expense_category: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/receipts/{receipt_id}/submit-company-card")
+async def submit_company_card_expense(
+    project_id: str,
+    receipt_id: str,
+    request: CompanyCardExpenseRequest = CompanyCardExpenseRequest(),
+    authorization: str = Header(None),
+):
+    """
+    Submit a receipt as a company card expense.
+    Auto-recorded (no approval needed) and links to budget.
+    Company card expenses don't flow to invoices.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get the receipt
+    resp = client.table("backlot_receipts").select("*").eq("id", receipt_id).eq("project_id", project_id).single().execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    receipt = resp.data
+
+    # Check if already processed as company card
+    if receipt.get("expense_type") == "company_card":
+        raise HTTPException(status_code=400, detail="Receipt is already submitted as company card expense")
+
+    # Update receipt to company card type
+    update_data = {
+        "expense_type": "company_card",
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if request.budget_category_id:
+        update_data["budget_category_id"] = request.budget_category_id
+    if request.budget_line_item_id:
+        update_data["budget_line_item_id"] = request.budget_line_item_id
+    if request.expense_category:
+        update_data["expense_category"] = request.expense_category
+
+    client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
+
+    # Create budget actual entry
+    budget_actual_data = {
+        "project_id": project_id,
+        "budget_category_id": request.budget_category_id,
+        "budget_line_item_id": request.budget_line_item_id,
+        "source_type": "receipt",
+        "source_id": receipt_id,
+        "description": receipt.get("description") or receipt.get("vendor_name") or "Company Card Expense",
+        "amount": float(receipt.get("amount") or 0),
+        "expense_date": receipt.get("purchase_date"),
+        "vendor_name": receipt.get("vendor_name"),
+        "expense_category": request.expense_category or receipt.get("expense_category"),
+        "created_by_user_id": user["id"],
+    }
+
+    client.table("backlot_budget_actuals").insert(budget_actual_data).execute()
+
+    # If linked to a budget line item, update its actual_total
+    if request.budget_line_item_id:
+        # Get current actual_total
+        line_resp = client.table("backlot_budget_line_items").select("actual_total").eq("id", request.budget_line_item_id).single().execute()
+        if line_resp.data:
+            current_actual = float(line_resp.data.get("actual_total") or 0)
+            new_actual = current_actual + float(receipt.get("amount") or 0)
+            client.table("backlot_budget_line_items").update({
+                "actual_total": new_actual,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("id", request.budget_line_item_id).execute()
+
+    return {"success": True, "expense_type": "company_card"}
+
+
+@router.get("/projects/{project_id}/budget-actuals")
+async def get_budget_actuals(
+    project_id: str,
+    budget_category_id: Optional[str] = Query(None),
+    budget_line_item_id: Optional[str] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    authorization: str = Header(None),
+):
+    """Get budget actuals for a project with optional filtering"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    query = client.table("backlot_budget_actuals").select(
+        "*, profiles!created_by_user_id(full_name, avatar_url)"
+    ).eq("project_id", project_id)
+
+    if budget_category_id:
+        query = query.eq("budget_category_id", budget_category_id)
+    if budget_line_item_id:
+        query = query.eq("budget_line_item_id", budget_line_item_id)
+    if start_date:
+        query = query.gte("expense_date", start_date)
+    if end_date:
+        query = query.lte("expense_date", end_date)
+
+    result = query.order("expense_date", desc=True).execute()
+
+    return {"actuals": result.data or []}
+
+
+@router.get("/projects/{project_id}/budget-actuals/summary")
+async def get_budget_actuals_summary(
+    project_id: str,
+    authorization: str = Header(None),
+):
+    """Get summary of budget actuals by category"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get all actuals
+    all_results = client.table("backlot_budget_actuals").select(
+        "budget_category_id, expense_category, amount"
+    ).eq("project_id", project_id).execute()
+
+    # Aggregate in Python
+    summary = {}
+    total = 0
+    for row in all_results.data or []:
+        cat_id = row.get("budget_category_id") or "uncategorized"
+        exp_cat = row.get("expense_category") or "Other"
+        key = f"{cat_id}:{exp_cat}"
+        if key not in summary:
+            summary[key] = {
+                "budget_category_id": row.get("budget_category_id"),
+                "expense_category": exp_cat,
+                "count": 0,
+                "total_amount": 0
+            }
+        summary[key]["count"] += 1
+        summary[key]["total_amount"] += float(row.get("amount") or 0)
+        total += float(row.get("amount") or 0)
+
+    return {
+        "categories": list(summary.values()),
+        "total": total
+    }

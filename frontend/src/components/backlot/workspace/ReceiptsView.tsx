@@ -79,7 +79,10 @@ import {
   useApproveReimbursement,
   useRejectReimbursement,
   useMarkReimbursed,
+  useSubmitCompanyCard,
 } from '@/hooks/backlot';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { CreditCard, Building2 } from 'lucide-react';
 import {
   BacklotReceipt,
   BacklotReceiptOcrStatus,
@@ -289,13 +292,21 @@ const ReceiptCard: React.FC<{
           )}
         </div>
 
-        {/* Reimbursement Status */}
-        {receipt.reimbursement_status !== 'not_applicable' && (
-          <div className="flex items-center justify-end">
-            <Badge className={`text-xs ${reimbursementStatus.style}`}>
-              {reimbursementStatus.icon}
-              <span className="ml-1">{reimbursementStatus.label}</span>
-            </Badge>
+        {/* Expense Type / Reimbursement Status */}
+        {((receipt as any).expense_type === 'company_card' || receipt.reimbursement_status !== 'not_applicable') && (
+          <div className="flex items-center justify-end gap-2">
+            {(receipt as any).expense_type === 'company_card' && (
+              <Badge className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/30">
+                <Building2 className="w-3 h-3 mr-1" />
+                Company Card
+              </Badge>
+            )}
+            {receipt.reimbursement_status !== 'not_applicable' && (
+              <Badge className={`text-xs ${reimbursementStatus.style}`}>
+                {reimbursementStatus.icon}
+                <span className="ml-1">{reimbursementStatus.label}</span>
+              </Badge>
+            )}
           </div>
         )}
 
@@ -332,14 +343,16 @@ const ReceiptCard: React.FC<{
                   </DropdownMenuItem>
                 )}
 
-                {/* Reimbursement Actions */}
+                {/* Expense Submission Actions */}
                 <DropdownMenuSeparator />
 
-                {/* User can submit for reimbursement if not already submitted */}
-                {receipt.reimbursement_status === 'not_applicable' && receipt.amount && (
+                {/* User can submit expense if not already submitted and not already company card */}
+                {receipt.reimbursement_status === 'not_applicable' &&
+                 (receipt as any).expense_type !== 'company_card' &&
+                 receipt.amount && (
                   <DropdownMenuItem onClick={() => onSubmitReimbursement(receipt)}>
                     <Send className="w-4 h-4 mr-2" />
-                    Request Reimbursement
+                    Submit Expense
                   </DropdownMenuItem>
                 )}
 
@@ -538,6 +551,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   const approveReimbursement = useApproveReimbursement(projectId);
   const rejectReimbursement = useRejectReimbursement(projectId);
   const markReimbursed = useMarkReimbursed(projectId);
+  const submitCompanyCard = useSubmitCompanyCard(projectId);
 
   // For now, treat canEdit as isManager for approval actions
   // In a real app, this would check the user's role
@@ -549,6 +563,12 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   const [editingReceipt, setEditingReceipt] = useState<BacklotReceipt | null>(null);
   const [mappingReceipt, setMappingReceipt] = useState<BacklotReceipt | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Expense type dialog state
+  const [expenseTypeReceipt, setExpenseTypeReceipt] = useState<BacklotReceipt | null>(null);
+  const [expenseType, setExpenseType] = useState<'personal' | 'company_card'>('personal');
+  const [selectedBudgetCategoryId, setSelectedBudgetCategoryId] = useState<string>('');
+  const [selectedBudgetLineItemId, setSelectedBudgetLineItemId] = useState<string>('');
 
   // Edit form
   const [editForm, setEditForm] = useState<ReceiptInput>({});
@@ -658,6 +678,32 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   };
 
   // Reimbursement handlers
+  const handleOpenExpenseTypeDialog = (receipt: BacklotReceipt) => {
+    setExpenseTypeReceipt(receipt);
+    setExpenseType('personal');
+    setSelectedBudgetCategoryId('');
+    setSelectedBudgetLineItemId('');
+  };
+
+  const handleSubmitExpenseType = async () => {
+    if (!expenseTypeReceipt) return;
+
+    try {
+      if (expenseType === 'personal') {
+        await submitReimbursement.mutateAsync({ receiptId: expenseTypeReceipt.id });
+      } else {
+        await submitCompanyCard.mutateAsync({
+          receiptId: expenseTypeReceipt.id,
+          budgetCategoryId: selectedBudgetCategoryId || undefined,
+          budgetLineItemId: selectedBudgetLineItemId || undefined,
+        });
+      }
+      setExpenseTypeReceipt(null);
+    } catch (err) {
+      console.error('Failed to submit expense:', err);
+    }
+  };
+
   const handleSubmitReimbursement = async (receipt: BacklotReceipt) => {
     try {
       await submitReimbursement.mutateAsync({ receiptId: receipt.id });
@@ -840,7 +886,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
               onVerify={handleVerify}
               onReprocess={handleReprocess}
               onDelete={handleDelete}
-              onSubmitReimbursement={handleSubmitReimbursement}
+              onSubmitReimbursement={handleOpenExpenseTypeDialog}
               onApproveReimbursement={handleApproveReimbursement}
               onRejectReimbursement={handleRejectReimbursement}
               onMarkReimbursed={handleMarkReimbursed}
@@ -1160,6 +1206,136 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                   </>
                 ) : (
                   'Map Receipt'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Expense Type Selection Dialog */}
+      <Dialog open={!!expenseTypeReceipt} onOpenChange={() => setExpenseTypeReceipt(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Submit Expense</DialogTitle>
+            <DialogDescription>
+              How was this expense paid?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-6 mt-4">
+            <RadioGroup
+              value={expenseType}
+              onValueChange={(v) => setExpenseType(v as 'personal' | 'company_card')}
+              className="space-y-3"
+            >
+              <div className={`flex items-start space-x-3 p-4 rounded-lg border cursor-pointer transition-colors ${
+                expenseType === 'personal'
+                  ? 'border-accent-yellow bg-accent-yellow/10'
+                  : 'border-muted-gray/30 hover:border-muted-gray/50'
+              }`}
+              onClick={() => setExpenseType('personal')}
+              >
+                <RadioGroupItem value="personal" id="personal" className="mt-1" />
+                <div className="flex-1">
+                  <Label htmlFor="personal" className="flex items-center gap-2 font-medium cursor-pointer">
+                    <CreditCard className="w-4 h-4" />
+                    Personal Card (Reimbursement)
+                  </Label>
+                  <p className="text-sm text-muted-gray mt-1">
+                    Submit for manager approval. Once approved, this will be added to your invoice for reimbursement.
+                  </p>
+                </div>
+              </div>
+              <div className={`flex items-start space-x-3 p-4 rounded-lg border cursor-pointer transition-colors ${
+                expenseType === 'company_card'
+                  ? 'border-accent-yellow bg-accent-yellow/10'
+                  : 'border-muted-gray/30 hover:border-muted-gray/50'
+              }`}
+              onClick={() => setExpenseType('company_card')}
+              >
+                <RadioGroupItem value="company_card" id="company_card" className="mt-1" />
+                <div className="flex-1">
+                  <Label htmlFor="company_card" className="flex items-center gap-2 font-medium cursor-pointer">
+                    <Building2 className="w-4 h-4" />
+                    Company Card
+                  </Label>
+                  <p className="text-sm text-muted-gray mt-1">
+                    Expense paid with company card. Will be recorded directly to the production budget.
+                  </p>
+                </div>
+              </div>
+            </RadioGroup>
+
+            {/* Budget category selection for company card */}
+            {expenseType === 'company_card' && (
+              <div className="space-y-4 pt-2 border-t border-muted-gray/20">
+                <div className="space-y-2">
+                  <Label>Budget Category (Optional)</Label>
+                  <Select
+                    value={selectedBudgetCategoryId || 'none'}
+                    onValueChange={(v) => {
+                      setSelectedBudgetCategoryId(v === 'none' ? '' : v);
+                      setSelectedBudgetLineItemId('');
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select category" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No category</SelectItem>
+                      {categories?.map((cat) => (
+                        <SelectItem key={cat.id} value={cat.id}>
+                          {cat.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {selectedBudgetCategoryId && (
+                  <div className="space-y-2">
+                    <Label>Budget Line Item (Optional)</Label>
+                    <Select
+                      value={selectedBudgetLineItemId || 'none'}
+                      onValueChange={(v) => setSelectedBudgetLineItemId(v === 'none' ? '' : v)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select line item" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">No specific line item</SelectItem>
+                        {lineItems
+                          ?.filter((li) => li.category_id === selectedBudgetCategoryId)
+                          .map((li) => (
+                            <SelectItem key={li.id} value={li.id}>
+                              {li.description}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <Button variant="ghost" onClick={() => setExpenseTypeReceipt(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmitExpenseType}
+                disabled={submitReimbursement.isPending || submitCompanyCard.isPending}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                {(submitReimbursement.isPending || submitCompanyCard.isPending) ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Submitting...
+                  </>
+                ) : expenseType === 'personal' ? (
+                  'Submit for Reimbursement'
+                ) : (
+                  'Add to Budget'
                 )}
               </Button>
             </div>

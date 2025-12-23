@@ -1243,6 +1243,7 @@ export type BacklotWorkspaceView =
   | 'schedule'
   | 'days'
   | 'call-sheets'
+  | 'hot-set'
   | 'casting'
   | 'people'
   | 'tasks'
@@ -1267,7 +1268,148 @@ export type BacklotWorkspaceView =
   | 'roles'
   | 'access'
   | 'settings'
-  | 'church-tools';
+  | 'church-tools'
+  | 'invoices'
+  | 'coms'
+  | 'scripty'
+  | 'expenses';
+
+// =============================================================================
+// HOT SET (Production Day) TYPES
+// =============================================================================
+
+export type HotSetDayType = '4hr' | '8hr' | '10hr' | '12hr';
+export type HotSetSessionStatus = 'not_started' | 'in_progress' | 'wrapped';
+export type HotSetSceneStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'moved';
+export type HotSetScheduleStatus = 'ahead' | 'on_time' | 'behind';
+export type HotSetMarkerType =
+  | 'call_time'
+  | 'first_shot'
+  | 'meal_in'
+  | 'meal_out'
+  | 'company_move'
+  | 'camera_wrap'
+  | 'martini'
+  | 'wrap'
+  | 'ot_threshold_1'
+  | 'ot_threshold_2'
+  | 'custom';
+
+export interface HotSetSession {
+  id: string;
+  project_id: string;
+  production_day_id: string;
+  call_sheet_id: string | null;
+  day_type: HotSetDayType;
+  actual_call_time: string | null;
+  actual_first_shot_time: string | null;
+  actual_wrap_time: string | null;
+  status: HotSetSessionStatus;
+  started_at: string | null;
+  wrapped_at: string | null;
+  default_hourly_rate: number | null;
+  ot_multiplier_1: number;
+  ot_multiplier_2: number;
+  ot_threshold_1_hours: number;
+  ot_threshold_2_hours: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  backlot_production_days?: {
+    day_number: number;
+    date: string;
+    title: string | null;
+    general_call_time: string | null;
+  };
+}
+
+export interface HotSetSceneLog {
+  id: string;
+  session_id: string;
+  call_sheet_scene_id: string | null;
+  scene_number: string | null;
+  set_name: string | null;
+  int_ext: string | null;
+  description: string | null;
+  estimated_minutes: number | null;
+  scheduled_start_time: string | null;
+  actual_start_time: string | null;
+  actual_end_time: string | null;
+  actual_duration_minutes: number | null;
+  status: HotSetSceneStatus;
+  sort_order: number;
+  notes: string | null;
+  skip_reason: string | null;
+}
+
+export interface HotSetMarker {
+  id: string;
+  session_id: string;
+  marker_type: HotSetMarkerType;
+  timestamp: string;
+  label: string | null;
+  notes: string | null;
+}
+
+export interface HotSetCrew {
+  id: string;
+  session_id: string;
+  call_sheet_person_id: string | null;
+  name: string;
+  department: string | null;
+  role: string | null;
+  rate_type: 'hourly' | 'daily' | 'weekly' | 'flat';
+  rate_amount: number | null;
+  actual_call_time: string | null;
+  actual_wrap_time: string | null;
+  total_hours: number | null;
+  regular_hours: number | null;
+  ot_hours_1: number | null;
+  ot_hours_2: number | null;
+  calculated_cost: number | null;
+}
+
+export interface HotSetTimeStats {
+  call_time: string | null;
+  first_shot_time: string | null;
+  current_time: string;
+  elapsed_minutes: number;
+  ot_threshold_1_at: string | null;
+  ot_threshold_2_at: string | null;
+  projected_wrap_time: string | null;
+}
+
+export interface HotSetCostProjection {
+  current_regular_cost: number;
+  current_ot1_cost: number;
+  current_ot2_cost: number;
+  current_total_cost: number;
+  projected_regular_cost: number;
+  projected_ot1_cost: number;
+  projected_ot2_cost: number;
+  projected_total_cost: number;
+  ot_overage_alert: boolean;
+}
+
+export interface HotSetScheduleInfo {
+  status: HotSetScheduleStatus;
+  variance_minutes: number;
+  scenes_completed: number;
+  scenes_total: number;
+  percent_complete: number;
+}
+
+export interface HotSetDashboard {
+  session: HotSetSession;
+  current_scene: HotSetSceneLog | null;
+  next_scenes: HotSetSceneLog[];
+  completed_scenes: HotSetSceneLog[];
+  markers: HotSetMarker[];
+  time_stats: HotSetTimeStats;
+  cost_projection: HotSetCostProjection;
+  schedule_status: HotSetScheduleInfo;
+}
 
 // Project stats for dashboard
 export interface ProjectStats {
@@ -5353,3 +5495,222 @@ export interface BulkDepartmentTimeUpdate {
   on_set_time?: string;
   apply_to: 'all' | 'empty_only';
 }
+
+// =============================================================================
+// INVOICES TYPES
+// =============================================================================
+
+export type InvoiceStatus = 'draft' | 'pending_approval' | 'approved' | 'changes_requested' | 'sent' | 'paid' | 'overdue' | 'cancelled';
+export type InvoiceRateType = 'hourly' | 'daily' | 'weekly' | 'flat';
+export type InvoicePaymentTerms = 'due_on_receipt' | 'net_15' | 'net_30' | 'net_45' | 'net_60' | 'custom';
+export type InvoiceSourceType = 'manual' | 'timecard' | 'kit_rental' | 'mileage' | 'per_diem' | 'receipt';
+
+export interface BacklotInvoice {
+  id: string;
+  project_id: string;
+  user_id: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string | null;
+  invoicer_name: string;
+  invoicer_email: string | null;
+  invoicer_phone: string | null;
+  invoicer_address: string | null;
+  bill_to_name: string;
+  bill_to_company: string | null;
+  bill_to_address: string | null;
+  bill_to_email: string | null;
+  position_role: string | null;
+  production_title: string | null;
+  date_range_start: string | null;
+  date_range_end: string | null;
+  po_number: string | null;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  discount_amount: number;
+  total_amount: number;
+  currency: string;
+  payment_terms: InvoicePaymentTerms | null;
+  payment_terms_custom: string | null;
+  payment_method: string | null;
+  payment_details: string | null;
+  status: InvoiceStatus;
+  sent_at: string | null;
+  paid_at: string | null;
+  paid_amount: number | null;
+  notes: string | null;
+  internal_notes: string | null;
+  // Approval workflow fields
+  submitted_for_approval_at: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  changes_requested_at: string | null;
+  changes_requested_by: string | null;
+  change_request_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  line_items?: BacklotInvoiceLineItem[];
+  user_name?: string;
+  user_avatar?: string;
+}
+
+export interface BacklotInvoiceLineItem {
+  id: string;
+  invoice_id: string;
+  description: string;
+  rate_type: InvoiceRateType;
+  rate_amount: number;
+  quantity: number;
+  units: string | null;
+  line_total: number;
+  source_type: InvoiceSourceType | null;
+  source_id: string | null;
+  service_date_start: string | null;
+  service_date_end: string | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvoiceInput {
+  invoice_number?: string;
+  invoice_date: string;
+  due_date?: string;
+  invoicer_name: string;
+  invoicer_email?: string;
+  invoicer_phone?: string;
+  invoicer_address?: string;
+  bill_to_name: string;
+  bill_to_company?: string;
+  bill_to_address?: string;
+  bill_to_email?: string;
+  position_role?: string;
+  production_title?: string;
+  date_range_start?: string;
+  date_range_end?: string;
+  po_number?: string;
+  payment_terms?: InvoicePaymentTerms;
+  payment_terms_custom?: string;
+  payment_method?: string;
+  payment_details?: string;
+  tax_rate?: number;
+  discount_amount?: number;
+  notes?: string;
+}
+
+export interface InvoiceLineItemInput {
+  description: string;
+  rate_type?: InvoiceRateType;
+  rate_amount: number;
+  quantity?: number;
+  units?: string;
+  service_date_start?: string;
+  service_date_end?: string;
+  source_type?: InvoiceSourceType;
+  source_id?: string;
+}
+
+export interface InvoiceListItem {
+  id: string;
+  invoice_number: string;
+  invoice_date: string;
+  due_date: string | null;
+  bill_to_name: string;
+  bill_to_company: string | null;
+  total_amount: number;
+  status: InvoiceStatus;
+  user_id: string;
+  user_name?: string;
+  line_item_count: number;
+}
+
+export interface InvoiceSummary {
+  total_invoices: number;
+  draft_count: number;
+  pending_approval_count: number;
+  approved_count: number;
+  changes_requested_count: number;
+  sent_count: number;
+  paid_count: number;
+  overdue_count: number;
+  cancelled_count: number;
+  total_outstanding: number;
+  total_paid: number;
+}
+
+export interface ImportableInvoiceData {
+  approved_timecards: Array<{
+    id: string;
+    week_start_date: string;
+    total_hours: number;
+    total_overtime: number;
+    rate_amount: number | null;
+    rate_type: string | null;
+  }>;
+  approved_kit_rentals: Array<{
+    id: string;
+    kit_name: string;
+    start_date: string;
+    end_date: string | null;
+    daily_rate: number;
+    total_amount: number;
+  }>;
+  approved_mileage: Array<{
+    id: string;
+    date: string;
+    description: string | null;
+    total_amount: number;
+  }>;
+  approved_per_diem: Array<{
+    id: string;
+    date: string;
+    meal_type: string;
+    amount: number;
+  }>;
+  approved_receipts: Array<{
+    id: string;
+    description: string | null;
+    amount: number;
+    purchase_date: string | null;
+  }>;
+}
+
+export interface InvoicePrefillData {
+  invoicer_name: string | null;
+  invoicer_email: string | null;
+  invoicer_phone: string | null;
+  invoicer_address: string | null;
+  bill_to_name: string | null;
+  production_title: string | null;
+  position_role: string | null;
+}
+
+// Invoice status configuration for UI
+export const INVOICE_STATUS_CONFIG: Record<InvoiceStatus, { label: string; color: string }> = {
+  draft: { label: 'Draft', color: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30' },
+  pending_approval: { label: 'Pending Approval', color: 'bg-amber-500/20 text-amber-400 border-amber-500/30' },
+  approved: { label: 'Approved', color: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
+  changes_requested: { label: 'Changes Requested', color: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
+  sent: { label: 'Sent', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+  paid: { label: 'Paid', color: 'bg-green-500/20 text-green-400 border-green-500/30' },
+  overdue: { label: 'Overdue', color: 'bg-red-500/20 text-red-400 border-red-500/30' },
+  cancelled: { label: 'Cancelled', color: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
+};
+
+export const PAYMENT_TERMS_OPTIONS = [
+  { value: 'due_on_receipt', label: 'Due on Receipt' },
+  { value: 'net_15', label: 'Net 15' },
+  { value: 'net_30', label: 'Net 30' },
+  { value: 'net_45', label: 'Net 45' },
+  { value: 'net_60', label: 'Net 60' },
+  { value: 'custom', label: 'Custom' },
+] as const;
+
+export const RATE_TYPE_OPTIONS = [
+  { value: 'hourly', label: 'Hourly' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'flat', label: 'Flat Rate' },
+] as const;
