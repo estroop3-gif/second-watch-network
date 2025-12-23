@@ -253,17 +253,31 @@ async def list_sessions(
     authorization: str = Header(None)
 ):
     """List all Hot Set sessions for a project"""
-    user = await get_current_user_from_token(authorization)
-    client = get_client()
+    import logging
+    logger = logging.getLogger(__name__)
 
-    if not await verify_project_access(client, project_id, user["id"]):
-        raise HTTPException(status_code=403, detail="Not a project member")
+    try:
+        logger.info(f"[HotSet] list_sessions called for project {project_id}")
+        user = await get_current_user_from_token(authorization)
+        logger.info(f"[HotSet] User authenticated: {user.get('id')}")
+        client = get_client()
 
-    result = client.table("backlot_hot_set_sessions").select(
-        "*, backlot_production_days(day_number, date, title)"
-    ).eq("project_id", project_id).order("created_at", desc=True).execute()
+        if not await verify_project_access(client, project_id, user["id"]):
+            logger.warning(f"[HotSet] Access denied for user {user.get('id')} on project {project_id}")
+            raise HTTPException(status_code=403, detail="Not a project member")
 
-    return result.data or []
+        logger.info(f"[HotSet] Querying backlot_hot_set_sessions table")
+        result = client.table("backlot_hot_set_sessions").select(
+            "*, production_day:backlot_production_days!production_day_id(day_number, date, title)"
+        ).eq("project_id", project_id).order("created_at", desc=True).execute()
+
+        logger.info(f"[HotSet] Query successful, found {len(result.data or [])} sessions")
+        return result.data or []
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[HotSet] Error in list_sessions: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Hot set error: {str(e)}")
 
 
 @router.get("/projects/{project_id}/hot-set/sessions/{session_id}")
@@ -280,7 +294,7 @@ async def get_session(
         raise HTTPException(status_code=403, detail="Not a project member")
 
     result = client.table("backlot_hot_set_sessions").select(
-        "*, backlot_production_days(day_number, date, title, general_call_time)"
+        "*, production_day:backlot_production_days!production_day_id(day_number, date, title, general_call_time)"
     ).eq("id", session_id).eq("project_id", project_id).execute()
 
     if not result.data:
@@ -810,7 +824,7 @@ async def get_dashboard(
 
     # Get session
     session_result = client.table("backlot_hot_set_sessions").select(
-        "*, backlot_production_days(day_number, date, title)"
+        "*, production_day:backlot_production_days!production_day_id(day_number, date, title)"
     ).eq("id", session_id).execute()
 
     if not session_result.data:

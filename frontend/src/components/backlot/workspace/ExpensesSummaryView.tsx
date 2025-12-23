@@ -150,12 +150,11 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
     }
   }, [datePreset, customStartDate, customEndDate]);
 
-  // Fetch summary data
-  const { data: summaryData, isLoading: summaryLoading } = useExpenseSummary(
+  // Fetch summary data (API returns ExpenseSummary directly, not wrapped)
+  const { data: summary, isLoading: summaryLoading } = useExpenseSummary(
     projectId,
     { start_date: dateRange.start, end_date: dateRange.end }
   );
-  const summary = summaryData?.summary;
 
   // Fetch budget actuals summary (company card expenses)
   const { data: budgetActualsData } = useBudgetActualsSummary(projectId);
@@ -196,10 +195,10 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
     const grandTotal = receiptsTotal + mileageTotal + kitRentalsTotal + perDiemTotal;
 
     // Company card vs personal breakdown (from summary endpoint)
-    const companyCardTotal = summaryData?.company_card_total || 0;
-    const companyCardCount = summaryData?.company_card_count || 0;
-    const personalCardTotal = summaryData?.personal_card_total || 0;
-    const personalCardCount = summaryData?.personal_card_count || 0;
+    const companyCardTotal = summary?.company_card_total || 0;
+    const companyCardCount = summary?.company_card_count || 0;
+    const personalCardTotal = summary?.personal_card_total || 0;
+    const personalCardCount = summary?.personal_card_count || 0;
 
     return {
       receipts: receiptsTotal,
@@ -215,7 +214,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
       personalCard: personalCardTotal,
       personalCardCount,
     };
-  }, [summary, summaryData]);
+  }, [summary]);
 
   // Calculate percentages for chart
   const percentages = useMemo(() => {
