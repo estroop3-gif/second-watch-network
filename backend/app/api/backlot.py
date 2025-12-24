@@ -4056,6 +4056,213 @@ async def get_budget_stats(
     )
 
 
+@router.get("/projects/{project_id}/budget/comparison")
+async def get_budget_comparison(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get comprehensive budget comparison data for estimated vs actual analysis"""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    # Get budget
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    if not budget_response.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    budget = budget_response.data[0]
+    budget_id = budget["id"]
+
+    # Get categories with line items
+    categories_response = client.table("backlot_budget_categories").select("*").eq("budget_id", budget_id).order("sort_order").execute()
+    categories = categories_response.data or []
+
+    # Get line items
+    line_items_response = client.table("backlot_budget_line_items").select("*").eq("budget_id", budget_id).order("sort_order").execute()
+    line_items = line_items_response.data or []
+
+    # Get receipts linked to budget
+    receipts_response = client.table("backlot_receipts").select(
+        "id, amount, vendor_name, budget_line_item_id, budget_category_id"
+    ).eq("budget_id", budget_id).execute()
+    receipts = receipts_response.data or []
+
+    # Get mileage linked to budget
+    mileage_response = client.table("backlot_mileage_entries").select(
+        "id, miles, rate_per_mile, is_round_trip, budget_line_item_id, budget_category_id, status"
+    ).eq("project_id", project_id).neq("budget_line_item_id", None).execute()
+    mileage_entries = [m for m in (mileage_response.data or []) if m.get("status") == "approved"]
+
+    # Get kit rentals linked to budget
+    kit_rentals_response = client.table("backlot_kit_rentals").select(
+        "id, total_amount, budget_line_item_id, budget_category_id, status"
+    ).eq("project_id", project_id).neq("budget_line_item_id", None).execute()
+    kit_rentals = [k for k in (kit_rentals_response.data or []) if k.get("status") == "approved"]
+
+    # Get per diem linked to budget
+    per_diem_response = client.table("backlot_per_diem").select(
+        "id, amount, budget_line_item_id, budget_category_id, status"
+    ).eq("project_id", project_id).neq("budget_line_item_id", None).execute()
+    per_diem_entries = [p for p in (per_diem_response.data or []) if p.get("status") == "approved"]
+
+    # Calculate totals by expense type
+    receipt_total = sum(r.get("amount", 0) or 0 for r in receipts)
+    mileage_total = sum(
+        (m.get("miles", 0) * m.get("rate_per_mile", 0.67) * (2 if m.get("is_round_trip") else 1))
+        for m in mileage_entries
+    )
+    kit_rental_total = sum(k.get("total_amount", 0) or 0 for k in kit_rentals)
+    per_diem_total = sum(p.get("amount", 0) or 0 for p in per_diem_entries)
+
+    # Group expenses by line item
+    expenses_by_line_item = {}
+    for r in receipts:
+        line_id = r.get("budget_line_item_id")
+        if line_id:
+            if line_id not in expenses_by_line_item:
+                expenses_by_line_item[line_id] = []
+            expenses_by_line_item[line_id].append({
+                "type": "receipt",
+                "amount": r.get("amount", 0) or 0,
+                "vendor": r.get("vendor_name")
+            })
+
+    for m in mileage_entries:
+        line_id = m.get("budget_line_item_id")
+        if line_id:
+            if line_id not in expenses_by_line_item:
+                expenses_by_line_item[line_id] = []
+            amount = m.get("miles", 0) * m.get("rate_per_mile", 0.67) * (2 if m.get("is_round_trip") else 1)
+            expenses_by_line_item[line_id].append({
+                "type": "mileage",
+                "amount": amount,
+                "miles": m.get("miles", 0)
+            })
+
+    for k in kit_rentals:
+        line_id = k.get("budget_line_item_id")
+        if line_id:
+            if line_id not in expenses_by_line_item:
+                expenses_by_line_item[line_id] = []
+            expenses_by_line_item[line_id].append({
+                "type": "kit_rental",
+                "amount": k.get("total_amount", 0) or 0
+            })
+
+    for p in per_diem_entries:
+        line_id = p.get("budget_line_item_id")
+        if line_id:
+            if line_id not in expenses_by_line_item:
+                expenses_by_line_item[line_id] = []
+            expenses_by_line_item[line_id].append({
+                "type": "per_diem",
+                "amount": p.get("amount", 0) or 0
+            })
+
+    # Build line items with expenses
+    line_items_map = {}
+    for item in line_items:
+        item_id = item["id"]
+        expenses = expenses_by_line_item.get(item_id, [])
+        actual_from_expenses = sum(e.get("amount", 0) for e in expenses)
+        # Use stored actual_total or calculated from expenses
+        actual = item.get("actual_total", 0) or actual_from_expenses
+        estimated = item.get("estimated_total", 0) or 0
+        line_items_map[item_id] = {
+            "id": item_id,
+            "description": item.get("description"),
+            "account_code": item.get("account_code"),
+            "estimated_total": estimated,
+            "actual_total": actual,
+            "variance": actual - estimated,
+            "variance_percent": ((actual - estimated) / estimated * 100) if estimated > 0 else 0,
+            "expenses": expenses,
+            "category_id": item.get("category_id")
+        }
+
+    # Build categories with line items
+    categories_with_items = []
+    for cat in categories:
+        cat_id = cat["id"]
+        cat_line_items = [line_items_map[item["id"]] for item in line_items if item.get("category_id") == cat_id]
+        estimated = cat.get("estimated_subtotal", 0) or 0
+        actual = cat.get("actual_subtotal", 0) or 0
+        categories_with_items.append({
+            "id": cat_id,
+            "name": cat.get("name"),
+            "code": cat.get("code"),
+            "account_code_prefix": cat.get("account_code_prefix"),
+            "category_type": cat.get("category_type"),
+            "estimated_subtotal": estimated,
+            "actual_subtotal": actual,
+            "variance": actual - estimated,
+            "variance_percent": ((actual - estimated) / estimated * 100) if estimated > 0 else 0,
+            "line_items": cat_line_items
+        })
+
+    # Group by category type
+    category_types = ["above_the_line", "production", "post", "other"]
+    type_labels = {
+        "above_the_line": "Above the Line",
+        "production": "Production",
+        "post": "Post-Production",
+        "other": "Other / Indirect"
+    }
+
+    by_category_type = []
+    for cat_type in category_types:
+        type_cats = [c for c in categories_with_items if c.get("category_type") == cat_type]
+        type_estimated = sum(c.get("estimated_subtotal", 0) for c in type_cats)
+        type_actual = sum(c.get("actual_subtotal", 0) for c in type_cats)
+        by_category_type.append({
+            "type": cat_type,
+            "label": type_labels.get(cat_type, cat_type),
+            "estimated": type_estimated,
+            "actual": type_actual,
+            "variance": type_actual - type_estimated,
+            "variance_percent": ((type_actual - type_estimated) / type_estimated * 100) if type_estimated > 0 else 0,
+            "categories": type_cats
+        })
+
+    # Overall summary
+    estimated_total = budget.get("estimated_total", 0) or 0
+    actual_total = budget.get("actual_total", 0) or 0
+    contingency = budget.get("contingency_amount", 0) or 0
+    fringes = budget.get("fringes_total", 0) or 0
+    grand_total = budget.get("grand_total", 0) or estimated_total + contingency + fringes
+
+    return {
+        "budget": {
+            "id": budget_id,
+            "name": budget.get("name"),
+            "status": budget.get("status"),
+            "project_type": budget.get("project_type_template"),
+            "contingency_percent": budget.get("contingency_percent"),
+            "contingency_amount": contingency,
+            "fringes_total": fringes,
+            "grand_total": grand_total
+        },
+        "summary": {
+            "estimated_total": estimated_total,
+            "actual_total": actual_total,
+            "variance": actual_total - estimated_total,
+            "variance_percent": ((actual_total - estimated_total) / estimated_total * 100) if estimated_total > 0 else 0
+        },
+        "by_category_type": by_category_type,
+        "categories": categories_with_items,
+        "expense_breakdown": {
+            "receipts": receipt_total,
+            "mileage": mileage_total,
+            "kit_rentals": kit_rental_total,
+            "per_diem": per_diem_total,
+            "total": receipt_total + mileage_total + kit_rental_total + per_diem_total
+        }
+    }
+
+
 # =====================================================
 # BUDGET CATEGORIES ENDPOINTS
 # =====================================================
@@ -4693,6 +4900,816 @@ async def delete_daily_budget_item(
 
 
 # =====================================================
+# DAILY BUDGET LABOR COSTS ENDPOINT
+# =====================================================
+
+class LaborCostEntry(BaseModel):
+    """Labor cost entry for a crew member"""
+    user_id: str
+    user_name: Optional[str] = None
+    user_avatar: Optional[str] = None
+    role_title: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
+    hours_worked: float = 0
+    overtime_hours: float = 0
+    double_time_hours: float = 0
+    rate_type: str = "daily"
+    rate_amount: float = 0
+    overtime_multiplier: float = 1.5
+    double_time_multiplier: float = 2.0
+    base_pay: float = 0
+    overtime_pay: float = 0
+    double_time_pay: float = 0
+    kit_rental: float = 0
+    car_allowance: float = 0
+    phone_allowance: float = 0
+    total_pay: float = 0
+    rate_source: str = "entry"  # 'crew_rate', 'entry', 'budget'
+    timecard_status: str = "draft"
+    timecard_entry_id: Optional[str] = None
+
+
+class DailyLaborCosts(BaseModel):
+    """Aggregated labor costs for a production day"""
+    production_day_id: str
+    date: str
+    entries: List[LaborCostEntry] = []
+    total_base_pay: float = 0
+    total_overtime_pay: float = 0
+    total_double_time_pay: float = 0
+    total_allowances: float = 0
+    grand_total: float = 0
+    approved_count: int = 0
+    pending_count: int = 0
+
+
+@router.get("/daily-budgets/{daily_budget_id}/labor-costs", response_model=DailyLaborCosts)
+async def get_daily_budget_labor_costs(
+    daily_budget_id: str,
+    include_pending: bool = True,
+    authorization: str = Header(None)
+):
+    """
+    Get labor costs for a daily budget by aggregating timecard entries.
+
+    Labor cost calculation priority:
+    1. Crew rate schedule (if exists for user/role on this date)
+    2. Timecard entry rate (fallback)
+    3. Budget line item rate (last resort, not implemented yet)
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+    client = get_client()
+
+    # Get daily budget with production day info
+    db_response = client.table("backlot_daily_budgets").select(
+        "*, production_day:production_day_id(id, date, project_id, day_number)"
+    ).eq("id", daily_budget_id).execute()
+
+    if not db_response.data:
+        raise HTTPException(status_code=404, detail="Daily budget not found")
+
+    daily_budget = db_response.data[0]
+    prod_day = daily_budget.get("production_day") or {}
+    project_id = prod_day.get("project_id") or daily_budget.get("project_id")
+    day_date = prod_day.get("date")
+    production_day_id = prod_day.get("id") or daily_budget.get("production_day_id")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Could not determine project")
+
+    # Verify access
+    await verify_budget_access(client, project_id, user_id)
+
+    if not day_date:
+        # Return empty if no date
+        return DailyLaborCosts(
+            production_day_id=production_day_id or "",
+            date="",
+            entries=[],
+        )
+
+    # Get timecard entries for this date
+    statuses = ["approved"]
+    if include_pending:
+        statuses.extend(["submitted", "draft"])
+
+    # Query timecard entries with timecard status filter
+    entries_query = client.table("backlot_timecard_entries").select(
+        "*, timecard:timecard_id(id, status, user_id)"
+    ).eq("project_id", project_id).eq("shoot_date", day_date)
+
+    entries_response = entries_query.execute()
+    all_entries = entries_response.data or []
+
+    # Filter by timecard status
+    filtered_entries = [
+        e for e in all_entries
+        if e.get("timecard", {}).get("status") in statuses
+    ]
+
+    # Get user profiles for all unique user IDs
+    user_ids = list(set(
+        e.get("timecard", {}).get("user_id")
+        for e in filtered_entries
+        if e.get("timecard", {}).get("user_id")
+    ))
+
+    user_profiles = {}
+    if user_ids:
+        profiles_resp = client.table("profiles").select(
+            "id, full_name, avatar_url"
+        ).in_("id", user_ids).execute()
+        for p in (profiles_resp.data or []):
+            user_profiles[p["id"]] = p
+
+    # Get crew rates for this project
+    rates_resp = client.table("backlot_crew_rates").select(
+        "*, role:role_id(id, title, department)"
+    ).eq("project_id", project_id).execute()
+    crew_rates = rates_resp.data or []
+
+    # Build a lookup for crew rates by user_id
+    def get_effective_rate(user_id: str, date: str):
+        """Find the effective crew rate for a user on a specific date"""
+        for rate in crew_rates:
+            if rate.get("user_id") != user_id:
+                continue
+            start = rate.get("effective_start")
+            end = rate.get("effective_end")
+            # Check if date is within range
+            if start and date < start:
+                continue
+            if end and date > end:
+                continue
+            return rate
+        return None
+
+    # Calculate labor costs for each entry
+    labor_entries = []
+    total_base = 0
+    total_ot = 0
+    total_dt = 0
+    total_allowances = 0
+    approved_count = 0
+    pending_count = 0
+
+    for entry in filtered_entries:
+        timecard = entry.get("timecard") or {}
+        tc_user_id = timecard.get("user_id")
+        tc_status = timecard.get("status", "draft")
+
+        if tc_status == "approved":
+            approved_count += 1
+        else:
+            pending_count += 1
+
+        profile = user_profiles.get(tc_user_id, {})
+        hours = entry.get("hours_worked") or 0
+        ot_hours = entry.get("overtime_hours") or 0
+        dt_hours = entry.get("double_time_hours") or 0
+
+        # Try to get crew rate
+        crew_rate = get_effective_rate(tc_user_id, day_date) if tc_user_id else None
+
+        if crew_rate:
+            rate_source = "crew_rate"
+            rate_type = crew_rate.get("rate_type", "daily")
+            rate_amount = crew_rate.get("rate_amount", 0)
+            ot_mult = crew_rate.get("overtime_multiplier", 1.5)
+            dt_mult = crew_rate.get("double_time_multiplier", 2.0)
+            kit_rental = crew_rate.get("kit_rental_rate") or 0
+            car_allow = crew_rate.get("car_allowance") or 0
+            phone_allow = crew_rate.get("phone_allowance") or 0
+            role_info = crew_rate.get("role") or {}
+            role_title = role_info.get("title")
+            department = role_info.get("department") or entry.get("department")
+        else:
+            # Fall back to entry's rate
+            rate_source = "entry"
+            rate_type = entry.get("rate_type") or "daily"
+            rate_amount = entry.get("rate_amount") or 0
+            ot_mult = 1.5
+            dt_mult = 2.0
+            kit_rental = 0
+            car_allow = 0
+            phone_allow = 0
+            role_title = entry.get("position")
+            department = entry.get("department")
+
+        # Calculate pay
+        if rate_type == "hourly":
+            hourly_rate = rate_amount
+            base_pay = hours * hourly_rate
+        elif rate_type == "daily":
+            base_pay = rate_amount
+            hourly_rate = rate_amount / 8 if rate_amount > 0 else 0
+        elif rate_type == "weekly":
+            base_pay = rate_amount / 5
+            hourly_rate = rate_amount / 40 if rate_amount > 0 else 0
+        else:  # flat
+            base_pay = rate_amount
+            hourly_rate = 0
+
+        # Calculate OT/DT (only for non-flat rates)
+        if rate_type != "flat" and hourly_rate > 0:
+            ot_pay = ot_hours * hourly_rate * ot_mult
+            dt_pay = dt_hours * hourly_rate * dt_mult
+        else:
+            ot_pay = 0
+            dt_pay = 0
+
+        total_pay = base_pay + ot_pay + dt_pay + kit_rental + car_allow + phone_allow
+
+        labor_entries.append(LaborCostEntry(
+            user_id=tc_user_id or "",
+            user_name=profile.get("full_name"),
+            user_avatar=profile.get("avatar_url"),
+            role_title=role_title,
+            department=department,
+            position=entry.get("position"),
+            hours_worked=hours,
+            overtime_hours=ot_hours,
+            double_time_hours=dt_hours,
+            rate_type=rate_type,
+            rate_amount=rate_amount,
+            overtime_multiplier=ot_mult,
+            double_time_multiplier=dt_mult,
+            base_pay=round(base_pay, 2),
+            overtime_pay=round(ot_pay, 2),
+            double_time_pay=round(dt_pay, 2),
+            kit_rental=kit_rental,
+            car_allowance=car_allow,
+            phone_allowance=phone_allow,
+            total_pay=round(total_pay, 2),
+            rate_source=rate_source,
+            timecard_status=tc_status,
+            timecard_entry_id=entry.get("id"),
+        ))
+
+        total_base += base_pay
+        total_ot += ot_pay
+        total_dt += dt_pay
+        total_allowances += kit_rental + car_allow + phone_allow
+
+    return DailyLaborCosts(
+        production_day_id=production_day_id or "",
+        date=day_date,
+        entries=labor_entries,
+        total_base_pay=round(total_base, 2),
+        total_overtime_pay=round(total_ot, 2),
+        total_double_time_pay=round(total_dt, 2),
+        total_allowances=round(total_allowances, 2),
+        grand_total=round(total_base + total_ot + total_dt + total_allowances, 2),
+        approved_count=approved_count,
+        pending_count=pending_count,
+    )
+
+
+# =====================================================
+# DAILY BUDGET SCENE COSTS ENDPOINT
+# =====================================================
+
+class SceneExpenseItem(BaseModel):
+    """An expense linked to a scene"""
+    id: str
+    expense_type: str  # 'receipt', 'mileage', 'kit_rental', 'per_diem', 'invoice_line_item'
+    description: Optional[str] = None
+    amount: float = 0
+    vendor: Optional[str] = None
+    user_name: Optional[str] = None
+    date: Optional[str] = None
+    status: Optional[str] = None
+
+
+class SceneBreakdownCostItem(BaseModel):
+    """A scene breakdown item with cost"""
+    id: str
+    item_type: str  # 'prop', 'wardrobe', 'makeup', 'special_effect', 'vehicle', 'animal', 'other'
+    description: str
+    quantity: int = 1
+    estimated_cost: float = 0
+    notes: Optional[str] = None
+
+
+class SceneCostDetail(BaseModel):
+    """Detailed costs for a single scene"""
+    scene_id: str
+    scene_number: Optional[str] = None
+    scene_name: Optional[str] = None
+    int_ext: Optional[str] = None
+    location: Optional[str] = None
+
+    # Breakdown items (from scene breakdown)
+    breakdown_items: List[SceneBreakdownCostItem] = []
+    breakdown_subtotal: float = 0
+
+    # Expenses linked to this scene
+    expenses: List[SceneExpenseItem] = []
+    expenses_subtotal: float = 0
+
+    # Total for this scene
+    scene_total: float = 0
+
+
+class DailySceneCosts(BaseModel):
+    """Aggregated scene costs for a production day"""
+    production_day_id: str
+    date: str
+    scenes: List[SceneCostDetail] = []
+    total_breakdown_costs: float = 0
+    total_expense_costs: float = 0
+    grand_total: float = 0
+
+
+@router.get("/daily-budgets/{daily_budget_id}/scene-costs", response_model=DailySceneCosts)
+async def get_daily_budget_scene_costs(
+    daily_budget_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get scene costs for a daily budget by aggregating:
+    1. Scene breakdown items (props, wardrobe, etc.) for scenes shot that day
+    2. Expenses linked to those scenes (receipts, mileage, kit rentals, per diem)
+    3. Invoice line items linked to those scenes
+
+    Note: Labor costs are NOT allocated to scenes (shown separately in labor costs endpoint).
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+    client = get_client()
+
+    # Get daily budget with production day info
+    db_response = client.table("backlot_daily_budgets").select(
+        "*, production_day:production_day_id(id, date, project_id, day_number)"
+    ).eq("id", daily_budget_id).execute()
+
+    if not db_response.data:
+        raise HTTPException(status_code=404, detail="Daily budget not found")
+
+    daily_budget = db_response.data[0]
+    prod_day = daily_budget.get("production_day") or {}
+    project_id = prod_day.get("project_id") or daily_budget.get("project_id")
+    day_date = prod_day.get("date")
+    production_day_id = prod_day.get("id") or daily_budget.get("production_day_id")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Could not determine project")
+
+    # Verify access
+    await verify_budget_access(client, project_id, user_id)
+
+    if not day_date or not production_day_id:
+        return DailySceneCosts(
+            production_day_id=production_day_id or "",
+            date=day_date or "",
+            scenes=[],
+        )
+
+    # Get scenes scheduled for this production day
+    # Scenes are linked to production days via shooting_schedule or scene schedule
+    schedule_response = client.table("backlot_shooting_schedule").select(
+        "scene_id"
+    ).eq("production_day_id", production_day_id).execute()
+
+    scene_ids = list(set(s["scene_id"] for s in (schedule_response.data or []) if s.get("scene_id")))
+
+    if not scene_ids:
+        return DailySceneCosts(
+            production_day_id=production_day_id,
+            date=day_date,
+            scenes=[],
+        )
+
+    # Get scene details
+    scenes_response = client.table("backlot_scenes").select(
+        "id, scene_number, scene_name, int_ext, location"
+    ).in_("id", scene_ids).execute()
+    scenes_by_id = {s["id"]: s for s in (scenes_response.data or [])}
+
+    # Get scene breakdown items for these scenes
+    breakdown_response = client.table("backlot_scene_breakdown_items").select(
+        "id, scene_id, item_type, description, quantity, estimated_cost, notes"
+    ).in_("scene_id", scene_ids).execute()
+    breakdown_by_scene = {}
+    for item in (breakdown_response.data or []):
+        sid = item["scene_id"]
+        if sid not in breakdown_by_scene:
+            breakdown_by_scene[sid] = []
+        breakdown_by_scene[sid].append(item)
+
+    # Get expenses linked to these scenes
+    # 1. Receipts
+    receipts_response = client.table("backlot_receipts").select(
+        "id, scene_id, description, amount, vendor_name, receipt_date, status"
+    ).in_("scene_id", scene_ids).execute()
+    receipts_by_scene = {}
+    for r in (receipts_response.data or []):
+        sid = r["scene_id"]
+        if sid not in receipts_by_scene:
+            receipts_by_scene[sid] = []
+        receipts_by_scene[sid].append(r)
+
+    # 2. Mileage entries
+    mileage_response = client.table("backlot_mileage_entries").select(
+        "id, scene_id, purpose, total_amount, date, status, user_id"
+    ).in_("scene_id", scene_ids).execute()
+    mileage_by_scene = {}
+    user_ids_needed = set()
+    for m in (mileage_response.data or []):
+        sid = m["scene_id"]
+        if sid not in mileage_by_scene:
+            mileage_by_scene[sid] = []
+        mileage_by_scene[sid].append(m)
+        if m.get("user_id"):
+            user_ids_needed.add(m["user_id"])
+
+    # 3. Kit rentals
+    kit_response = client.table("backlot_kit_rentals").select(
+        "id, scene_id, kit_description, total_amount, start_date, status, user_id"
+    ).in_("scene_id", scene_ids).execute()
+    kit_by_scene = {}
+    for k in (kit_response.data or []):
+        sid = k["scene_id"]
+        if sid not in kit_by_scene:
+            kit_by_scene[sid] = []
+        kit_by_scene[sid].append(k)
+        if k.get("user_id"):
+            user_ids_needed.add(k["user_id"])
+
+    # 4. Per diem
+    per_diem_response = client.table("backlot_per_diem").select(
+        "id, scene_id, notes, total_amount, date, status, user_id"
+    ).in_("scene_id", scene_ids).execute()
+    per_diem_by_scene = {}
+    for p in (per_diem_response.data or []):
+        sid = p["scene_id"]
+        if sid not in per_diem_by_scene:
+            per_diem_by_scene[sid] = []
+        per_diem_by_scene[sid].append(p)
+        if p.get("user_id"):
+            user_ids_needed.add(p["user_id"])
+
+    # 5. Invoice line items
+    invoice_items_response = client.table("backlot_invoice_line_items").select(
+        "id, scene_id, description, amount, invoice:invoice_id(vendor_name, status)"
+    ).in_("scene_id", scene_ids).execute()
+    invoice_items_by_scene = {}
+    for i in (invoice_items_response.data or []):
+        sid = i["scene_id"]
+        if sid not in invoice_items_by_scene:
+            invoice_items_by_scene[sid] = []
+        invoice_items_by_scene[sid].append(i)
+
+    # Get user profiles for expense user names
+    user_profiles = {}
+    if user_ids_needed:
+        profiles_resp = client.table("profiles").select(
+            "id, full_name"
+        ).in_("id", list(user_ids_needed)).execute()
+        for p in (profiles_resp.data or []):
+            user_profiles[p["id"]] = p.get("full_name")
+
+    # Build scene cost details
+    scene_costs = []
+    total_breakdown = 0
+    total_expenses = 0
+
+    for scene_id in scene_ids:
+        scene_info = scenes_by_id.get(scene_id, {})
+
+        # Breakdown items
+        breakdown_items = []
+        breakdown_subtotal = 0
+        for item in breakdown_by_scene.get(scene_id, []):
+            cost = (item.get("estimated_cost") or 0) * (item.get("quantity") or 1)
+            breakdown_items.append(SceneBreakdownCostItem(
+                id=item["id"],
+                item_type=item.get("item_type") or "other",
+                description=item.get("description") or "",
+                quantity=item.get("quantity") or 1,
+                estimated_cost=item.get("estimated_cost") or 0,
+                notes=item.get("notes"),
+            ))
+            breakdown_subtotal += cost
+
+        # Expenses
+        expenses = []
+        expenses_subtotal = 0
+
+        # Receipts
+        for r in receipts_by_scene.get(scene_id, []):
+            amount = r.get("amount") or 0
+            expenses.append(SceneExpenseItem(
+                id=r["id"],
+                expense_type="receipt",
+                description=r.get("description"),
+                amount=amount,
+                vendor=r.get("vendor_name"),
+                date=r.get("receipt_date"),
+                status=r.get("status"),
+            ))
+            expenses_subtotal += amount
+
+        # Mileage
+        for m in mileage_by_scene.get(scene_id, []):
+            amount = m.get("total_amount") or 0
+            expenses.append(SceneExpenseItem(
+                id=m["id"],
+                expense_type="mileage",
+                description=m.get("purpose"),
+                amount=amount,
+                user_name=user_profiles.get(m.get("user_id")),
+                date=m.get("date"),
+                status=m.get("status"),
+            ))
+            expenses_subtotal += amount
+
+        # Kit rentals
+        for k in kit_by_scene.get(scene_id, []):
+            amount = k.get("total_amount") or 0
+            expenses.append(SceneExpenseItem(
+                id=k["id"],
+                expense_type="kit_rental",
+                description=k.get("kit_description"),
+                amount=amount,
+                user_name=user_profiles.get(k.get("user_id")),
+                date=k.get("start_date"),
+                status=k.get("status"),
+            ))
+            expenses_subtotal += amount
+
+        # Per diem
+        for p in per_diem_by_scene.get(scene_id, []):
+            amount = p.get("total_amount") or 0
+            expenses.append(SceneExpenseItem(
+                id=p["id"],
+                expense_type="per_diem",
+                description=p.get("notes") or "Per Diem",
+                amount=amount,
+                user_name=user_profiles.get(p.get("user_id")),
+                date=p.get("date"),
+                status=p.get("status"),
+            ))
+            expenses_subtotal += amount
+
+        # Invoice line items
+        for i in invoice_items_by_scene.get(scene_id, []):
+            amount = i.get("amount") or 0
+            invoice = i.get("invoice") or {}
+            expenses.append(SceneExpenseItem(
+                id=i["id"],
+                expense_type="invoice_line_item",
+                description=i.get("description"),
+                amount=amount,
+                vendor=invoice.get("vendor_name"),
+                status=invoice.get("status"),
+            ))
+            expenses_subtotal += amount
+
+        scene_total = breakdown_subtotal + expenses_subtotal
+        total_breakdown += breakdown_subtotal
+        total_expenses += expenses_subtotal
+
+        scene_costs.append(SceneCostDetail(
+            scene_id=scene_id,
+            scene_number=scene_info.get("scene_number"),
+            scene_name=scene_info.get("scene_name"),
+            int_ext=scene_info.get("int_ext"),
+            location=scene_info.get("location"),
+            breakdown_items=breakdown_items,
+            breakdown_subtotal=round(breakdown_subtotal, 2),
+            expenses=expenses,
+            expenses_subtotal=round(expenses_subtotal, 2),
+            scene_total=round(scene_total, 2),
+        ))
+
+    # Sort scenes by scene number
+    scene_costs.sort(key=lambda s: s.scene_number or "")
+
+    return DailySceneCosts(
+        production_day_id=production_day_id,
+        date=day_date,
+        scenes=scene_costs,
+        total_breakdown_costs=round(total_breakdown, 2),
+        total_expense_costs=round(total_expenses, 2),
+        grand_total=round(total_breakdown + total_expenses, 2),
+    )
+
+
+# =====================================================
+# DAILY BUDGET INVOICES ENDPOINT
+# =====================================================
+
+class DailyInvoiceLineItem(BaseModel):
+    """A line item from an invoice"""
+    id: str
+    description: Optional[str] = None
+    quantity: float = 1
+    unit_price: float = 0
+    amount: float = 0
+    service_date: Optional[str] = None
+    scene_id: Optional[str] = None
+    scene_number: Optional[str] = None
+
+
+class DailyInvoiceEntry(BaseModel):
+    """An invoice for a production day"""
+    id: str
+    invoice_number: Optional[str] = None
+    vendor_name: Optional[str] = None
+    vendor_email: Optional[str] = None
+    status: str = "draft"
+    invoice_date: Optional[str] = None
+    due_date: Optional[str] = None
+    subtotal: float = 0
+    tax_amount: float = 0
+    total_amount: float = 0
+    notes: Optional[str] = None
+    line_items: List[DailyInvoiceLineItem] = []
+    # How this invoice is linked to the day
+    link_type: str = "production_day"  # 'production_day' or 'service_date'
+
+
+class DailyInvoices(BaseModel):
+    """Aggregated invoices for a production day"""
+    production_day_id: str
+    date: str
+    invoices: List[DailyInvoiceEntry] = []
+    total_amount: float = 0
+    approved_total: float = 0
+    pending_total: float = 0
+    invoice_count: int = 0
+    approved_count: int = 0
+    pending_count: int = 0
+
+
+@router.get("/daily-budgets/{daily_budget_id}/invoices", response_model=DailyInvoices)
+async def get_daily_budget_invoices(
+    daily_budget_id: str,
+    include_pending: bool = True,
+    authorization: str = Header(None)
+):
+    """
+    Get invoices for a daily budget by finding invoices where:
+    1. production_day_id matches this day, OR
+    2. Line items have service_date within the production day
+
+    Returns both approved and pending invoices (if include_pending=True).
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+    client = get_client()
+
+    # Get daily budget with production day info
+    db_response = client.table("backlot_daily_budgets").select(
+        "*, production_day:production_day_id(id, date, project_id, day_number)"
+    ).eq("id", daily_budget_id).execute()
+
+    if not db_response.data:
+        raise HTTPException(status_code=404, detail="Daily budget not found")
+
+    daily_budget = db_response.data[0]
+    prod_day = daily_budget.get("production_day") or {}
+    project_id = prod_day.get("project_id") or daily_budget.get("project_id")
+    day_date = prod_day.get("date")
+    production_day_id = prod_day.get("id") or daily_budget.get("production_day_id")
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="Could not determine project")
+
+    # Verify access
+    await verify_budget_access(client, project_id, user_id)
+
+    if not day_date or not production_day_id:
+        return DailyInvoices(
+            production_day_id=production_day_id or "",
+            date=day_date or "",
+            invoices=[],
+        )
+
+    # Build status filter
+    statuses = ["approved", "sent", "paid"]
+    if include_pending:
+        statuses.extend(["pending_approval", "draft", "submitted"])
+
+    # Get invoices directly linked to this production day
+    direct_invoices_response = client.table("backlot_invoices").select(
+        "*, line_items:backlot_invoice_line_items(id, description, quantity, unit_price, amount, service_date, scene_id)"
+    ).eq("project_id", project_id).eq("production_day_id", production_day_id).in_("status", statuses).execute()
+
+    direct_invoices = direct_invoices_response.data or []
+    direct_invoice_ids = {inv["id"] for inv in direct_invoices}
+
+    # Get invoices where any line item has service_date matching the production day
+    line_items_response = client.table("backlot_invoice_line_items").select(
+        "invoice_id"
+    ).eq("service_date", day_date).execute()
+
+    service_date_invoice_ids = list(set(
+        li["invoice_id"] for li in (line_items_response.data or [])
+        if li.get("invoice_id") and li["invoice_id"] not in direct_invoice_ids
+    ))
+
+    service_date_invoices = []
+    if service_date_invoice_ids:
+        service_invoices_response = client.table("backlot_invoices").select(
+            "*, line_items:backlot_invoice_line_items(id, description, quantity, unit_price, amount, service_date, scene_id)"
+        ).eq("project_id", project_id).in_("id", service_date_invoice_ids).in_("status", statuses).execute()
+        service_date_invoices = service_invoices_response.data or []
+
+    # Combine all invoices
+    all_invoices = direct_invoices + service_date_invoices
+
+    # Get scene numbers for any scene_ids in line items
+    scene_ids = set()
+    for inv in all_invoices:
+        for li in (inv.get("line_items") or []):
+            if li.get("scene_id"):
+                scene_ids.add(li["scene_id"])
+
+    scene_numbers = {}
+    if scene_ids:
+        scenes_resp = client.table("backlot_scenes").select(
+            "id, scene_number"
+        ).in_("id", list(scene_ids)).execute()
+        for s in (scenes_resp.data or []):
+            scene_numbers[s["id"]] = s.get("scene_number")
+
+    # Build response
+    invoice_entries = []
+    total_amount = 0
+    approved_total = 0
+    pending_total = 0
+    approved_count = 0
+    pending_count = 0
+
+    approved_statuses = {"approved", "sent", "paid"}
+
+    for inv in all_invoices:
+        inv_id = inv["id"]
+        is_direct = inv_id in direct_invoice_ids
+        link_type = "production_day" if is_direct else "service_date"
+        status = inv.get("status", "draft")
+        inv_total = inv.get("total_amount") or 0
+
+        # Build line items
+        line_items = []
+        for li in (inv.get("line_items") or []):
+            scene_id = li.get("scene_id")
+            line_items.append(DailyInvoiceLineItem(
+                id=li["id"],
+                description=li.get("description"),
+                quantity=li.get("quantity") or 1,
+                unit_price=li.get("unit_price") or 0,
+                amount=li.get("amount") or 0,
+                service_date=li.get("service_date"),
+                scene_id=scene_id,
+                scene_number=scene_numbers.get(scene_id) if scene_id else None,
+            ))
+
+        invoice_entries.append(DailyInvoiceEntry(
+            id=inv_id,
+            invoice_number=inv.get("invoice_number"),
+            vendor_name=inv.get("vendor_name"),
+            vendor_email=inv.get("vendor_email"),
+            status=status,
+            invoice_date=inv.get("invoice_date"),
+            due_date=inv.get("due_date"),
+            subtotal=inv.get("subtotal") or 0,
+            tax_amount=inv.get("tax_amount") or 0,
+            total_amount=inv_total,
+            notes=inv.get("notes"),
+            line_items=line_items,
+            link_type=link_type,
+        ))
+
+        total_amount += inv_total
+        if status in approved_statuses:
+            approved_total += inv_total
+            approved_count += 1
+        else:
+            pending_total += inv_total
+            pending_count += 1
+
+    # Sort by invoice date
+    invoice_entries.sort(key=lambda x: x.invoice_date or "", reverse=True)
+
+    return DailyInvoices(
+        production_day_id=production_day_id,
+        date=day_date,
+        invoices=invoice_entries,
+        total_amount=round(total_amount, 2),
+        approved_total=round(approved_total, 2),
+        pending_total=round(pending_total, 2),
+        invoice_count=len(invoice_entries),
+        approved_count=approved_count,
+        pending_count=pending_count,
+    )
+
+
+# =====================================================
 # BUDGET-DAY LINKING ENDPOINTS
 # =====================================================
 
@@ -4913,6 +5930,7 @@ class ReceiptInput(BaseModel):
     budget_id: Optional[str] = None
     daily_budget_id: Optional[str] = None
     budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
     vendor_name: Optional[str] = None
     description: Optional[str] = None
     purchase_date: Optional[str] = None
@@ -4929,6 +5947,7 @@ class ReceiptMappingInput(BaseModel):
     """Input for mapping a receipt to budget items"""
     budget_line_item_id: Optional[str] = None
     daily_budget_id: Optional[str] = None
+    scene_id: Optional[str] = None
     vendor_name: Optional[str] = None
     amount: Optional[float] = None
     purchase_date: Optional[str] = None
@@ -4943,6 +5962,7 @@ class ReceiptRegisterInput(BaseModel):
     file_size_bytes: Optional[int] = None
     run_ocr: bool = True
     daily_budget_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 class Receipt(BaseModel):
@@ -4952,6 +5972,7 @@ class Receipt(BaseModel):
     budget_id: Optional[str]
     daily_budget_id: Optional[str]
     budget_line_item_id: Optional[str]
+    scene_id: Optional[str] = None
     file_url: str
     original_filename: Optional[str]
     file_type: Optional[str]
@@ -5607,6 +6628,7 @@ async def register_receipt(
         "project_id": project_id,
         "budget_id": budget_id,
         "daily_budget_id": data.daily_budget_id,
+        "scene_id": data.scene_id,
         "file_url": data.file_url,
         "original_filename": data.original_filename,
         "file_type": data.file_type,
@@ -5821,6 +6843,8 @@ async def map_receipt(
         update_data["budget_line_item_id"] = mapping.budget_line_item_id
     if mapping.daily_budget_id is not None:
         update_data["daily_budget_id"] = mapping.daily_budget_id
+    if mapping.scene_id is not None:
+        update_data["scene_id"] = mapping.scene_id
     if mapping.vendor_name is not None:
         update_data["vendor_name"] = mapping.vendor_name
     if mapping.amount is not None:
@@ -12799,6 +13823,85 @@ class BulkAvailabilityInput(BaseModel):
     notes: Optional[str] = None
 
 
+class CrewRateInput(BaseModel):
+    """Input for creating/updating crew rates"""
+    user_id: Optional[str] = None
+    role_id: Optional[str] = None
+    rate_type: Literal["hourly", "daily", "weekly", "flat"]
+    rate_amount: float
+    overtime_multiplier: Optional[float] = 1.5
+    double_time_multiplier: Optional[float] = 2.0
+    kit_rental_rate: Optional[float] = None
+    car_allowance: Optional[float] = None
+    phone_allowance: Optional[float] = None
+    effective_start: Optional[str] = None
+    effective_end: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# =====================================================
+# Deal Memo Models
+# =====================================================
+
+class DealMemoInput(BaseModel):
+    """Input for creating/updating deal memos"""
+    role_id: Optional[str] = None
+    user_id: str
+    position_title: str
+    rate_type: Literal["hourly", "daily", "weekly", "flat"]
+    rate_amount: float
+    overtime_multiplier: Optional[float] = 1.5
+    double_time_multiplier: Optional[float] = 2.0
+    kit_rental_rate: Optional[float] = None
+    car_allowance: Optional[float] = None
+    phone_allowance: Optional[float] = None
+    per_diem_rate: Optional[float] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    additional_terms: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    notes: Optional[str] = None
+
+
+class DealMemoSendRequest(BaseModel):
+    """Request to send a deal memo for signature"""
+    signer_email: str
+    signer_name: str
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None
+
+
+# =====================================================
+# Credit Preference Models
+# =====================================================
+
+class CreditPreferenceInput(BaseModel):
+    """Input for creating/updating credit preferences"""
+    project_id: Optional[str] = None
+    role_id: Optional[str] = None
+    display_name: Optional[str] = None
+    role_title_preference: Optional[str] = None
+    department_preference: Optional[str] = None
+    endorsement_note: Optional[str] = None
+    imdb_id: Optional[str] = None
+    use_as_default: Optional[bool] = False
+    is_public: Optional[bool] = True
+
+
+# =====================================================
+# DocuSign Webhook Models
+# =====================================================
+
+class DocuSignWebhookPayload(BaseModel):
+    """DocuSign Connect webhook payload"""
+    event: str
+    apiVersion: Optional[str] = None
+    uri: Optional[str] = None
+    retryCount: Optional[int] = None
+    configurationId: Optional[int] = None
+    generatedDateTime: Optional[str] = None
+    data: Optional[Dict[str, Any]] = None
+
+
 # =====================================================
 # Helper: Check Order Membership
 # =====================================================
@@ -13205,6 +14308,67 @@ async def book_role(
                 "invited_by": current_user_id,
             }).execute()
 
+        # Auto-create crew rate from deal memo if one exists
+        deal_memo_result = client.table("backlot_deal_memos").select("*").eq("role_id", role_id).eq("user_id", user_id_to_book).execute()
+        if deal_memo_result.data:
+            deal_memo = deal_memo_result.data[0]
+            # Check if crew rate already exists for this deal memo
+            existing_rate = client.table("backlot_crew_rates").select("id").eq("deal_memo_id", deal_memo["id"]).execute()
+            if not existing_rate.data:
+                # Create crew rate from deal memo
+                client.table("backlot_crew_rates").insert({
+                    "project_id": role["project_id"],
+                    "user_id": user_id_to_book,
+                    "role_title": deal_memo["position_title"],
+                    "department": role.get("department"),
+                    "rate_type": deal_memo["rate_type"],
+                    "rate_amount": deal_memo["rate_amount"],
+                    "kit_rental_rate": deal_memo.get("kit_rental_rate"),
+                    "car_allowance": deal_memo.get("car_allowance"),
+                    "phone_allowance": deal_memo.get("phone_allowance"),
+                    "per_diem_rate": deal_memo.get("per_diem_rate"),
+                    "overtime_multiplier": deal_memo.get("overtime_multiplier", 1.5),
+                    "double_time_multiplier": deal_memo.get("double_time_multiplier", 2.0),
+                    "deal_memo_id": deal_memo["id"],
+                    "source": "deal_memo",
+                    "start_date": deal_memo.get("start_date"),
+                    "end_date": deal_memo.get("end_date"),
+                }).execute()
+
+        # Auto-create credit from credit preferences or defaults
+        credit_pref_result = client.table("backlot_credit_preferences").select("*").eq("user_id", user_id_to_book).eq("role_id", role_id).execute()
+        credit_pref = credit_pref_result.data[0] if credit_pref_result.data else None
+
+        # Fall back to default preferences if no role-specific ones
+        if not credit_pref:
+            default_pref_result = client.table("backlot_credit_preferences").select("*").eq("user_id", user_id_to_book).eq("use_as_default", True).execute()
+            credit_pref = default_pref_result.data[0] if default_pref_result.data else None
+
+        # Get user profile for credit name fallback
+        user_profile = client.table("profiles").select("full_name, display_name").eq("id", user_id_to_book).execute()
+        user_name = ""
+        if user_profile.data:
+            user_name = user_profile.data[0].get("display_name") or user_profile.data[0].get("full_name") or ""
+
+        # Check if credit already exists for this user/role
+        existing_credit = client.table("backlot_project_credits").select("id").eq("project_id", role["project_id"]).eq("user_id", user_id_to_book).eq("source_role_id", role_id).execute()
+        if not existing_credit.data:
+            credit_data = {
+                "project_id": role["project_id"],
+                "user_id": user_id_to_book,
+                "department": credit_pref.get("department_preference") if credit_pref else role.get("department"),
+                "credit_role": credit_pref.get("role_title_preference") if credit_pref else role["title"],
+                "name": credit_pref.get("display_name") if credit_pref and credit_pref.get("display_name") else user_name,
+                "endorsement_note": credit_pref.get("endorsement_note") if credit_pref else None,
+                "imdb_id": credit_pref.get("imdb_id") if credit_pref else None,
+                "is_primary": False,
+                "is_public": credit_pref.get("is_public", True) if credit_pref else True,
+                "credit_preference_id": credit_pref["id"] if credit_pref else None,
+                "auto_created": True,
+                "source_role_id": role_id,
+            }
+            client.table("backlot_project_credits").insert(credit_data).execute()
+
         return {"success": True, "message": f"User booked for {role['title']}"}
 
     except HTTPException:
@@ -13274,6 +14438,145 @@ async def get_open_roles(
 
     except Exception as e:
         print(f"Error fetching open roles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Role to Community Endpoints
+# =====================================================
+
+@router.post("/roles/{role_id}/post-to-community")
+async def post_role_to_community(
+    role_id: str,
+    authorization: str = Header(None)
+):
+    """Post a role to the community job board"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get role and verify admin access
+        role_result = client.table("backlot_project_roles").select(
+            "*, backlot_projects(id, title, owner_id)"
+        ).eq("id", role_id).single().execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role = role_result.data
+        project = role.get("backlot_projects", {})
+        project_id = project.get("id")
+
+        # Check admin access
+        is_owner = str(project.get("owner_id")) == str(user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Check if already posted
+        if role.get("community_job_id"):
+            raise HTTPException(status_code=400, detail="Role is already posted to community")
+
+        # Create community job
+        job_data = {
+            "title": f"{role.get('title')} - {project.get('title', 'Project')}",
+            "description": role.get("description") or f"We're looking for a {role.get('title')} for our production.",
+            "location": role.get("location"),
+            "job_type": role.get("type", "crew"),  # cast or crew
+            "roles_needed": role.get("title"),
+            "pay_info": role.get("rate_description"),
+            "is_paid": role.get("paid", False),
+            "visibility": "order_only" if role.get("is_order_only") else "public",
+            "created_by_id": user_id,
+            "starts_at": role.get("start_date"),
+            "ends_at": role.get("end_date"),
+            "application_deadline": role.get("application_deadline"),
+            "is_active": True,
+            "source_role_id": role_id,
+            "source_project_id": project_id,
+        }
+
+        job_result = client.table("order_jobs").insert(job_data).execute()
+        if not job_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create community job")
+
+        community_job_id = job_result.data[0]["id"]
+
+        # Update role with community job reference
+        client.table("backlot_project_roles").update({
+            "community_job_id": community_job_id,
+            "posted_to_community_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", role_id).execute()
+
+        return {
+            "success": True,
+            "community_job_id": community_job_id,
+            "message": "Role posted to community"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error posting role to community: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/roles/{role_id}/remove-from-community")
+async def remove_role_from_community(
+    role_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a role from the community job board"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get role and verify admin access
+        role_result = client.table("backlot_project_roles").select(
+            "community_job_id, backlot_projects(id, owner_id)"
+        ).eq("id", role_id).single().execute()
+        if not role_result.data:
+            raise HTTPException(status_code=404, detail="Role not found")
+
+        role = role_result.data
+        project = role.get("backlot_projects", {})
+        project_id = project.get("id")
+
+        # Check admin access
+        is_owner = str(project.get("owner_id")) == str(user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        community_job_id = role.get("community_job_id")
+        if not community_job_id:
+            raise HTTPException(status_code=400, detail="Role is not posted to community")
+
+        # Deactivate community job (don't delete, preserve history)
+        client.table("order_jobs").update({
+            "is_active": False,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", community_job_id).execute()
+
+        # Remove community reference from role
+        client.table("backlot_project_roles").update({
+            "community_job_id": None,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", role_id).execute()
+
+        return {
+            "success": True,
+            "message": "Role removed from community"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing role from community: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -13413,7 +14716,67 @@ async def apply_to_role(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit application")
 
-        return {"success": True, "application": result.data[0], "message": "Application submitted successfully"}
+        application = result.data[0]
+
+        # --- Send notifications to project owner and casting team ---
+        try:
+            # Get applicant name
+            applicant_name = profile_snapshot.get("full_name") or profile_snapshot.get("username") or "Someone"
+            role_title = role.get("title", "a role")
+            project_id = role.get("project_id")
+
+            # Get project owner
+            project_result = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).single().execute()
+            project = project_result.data if project_result.data else {}
+            project_title = project.get("title", "your project")
+            owner_id = project.get("owner_id")
+
+            # Get project members who should receive casting notifications (admins, editors)
+            members_result = client.table("backlot_project_members").select(
+                "user_id, role, production_role"
+            ).eq("project_id", project_id).in_("role", ["owner", "admin", "editor"]).execute()
+
+            notify_user_ids = set()
+            if owner_id:
+                notify_user_ids.add(owner_id)
+            if members_result.data:
+                for member in members_result.data:
+                    # Include admins/editors with casting-related production roles
+                    prod_role = (member.get("production_role") or "").lower()
+                    if member["role"] in ["owner", "admin"] or "cast" in prod_role or "producer" in prod_role:
+                        notify_user_ids.add(member["user_id"])
+
+            # Don't notify the applicant themselves
+            notify_user_ids.discard(user_id)
+
+            # Create notifications
+            notification_data = {
+                "type": "role_application",
+                "title": f"New application for {role_title}",
+                "message": f"{applicant_name} has applied for {role_title} on {project_title}",
+                "data": {
+                    "application_id": application["id"],
+                    "role_id": role_id,
+                    "project_id": project_id,
+                    "applicant_user_id": user_id,
+                    "applicant_name": applicant_name,
+                    "role_title": role_title,
+                    "project_title": project_title,
+                },
+                "is_read": False,
+            }
+
+            for notify_id in notify_user_ids:
+                client.table("notifications").insert({
+                    **notification_data,
+                    "user_id": notify_id,
+                }).execute()
+
+        except Exception as notify_err:
+            # Don't fail the application if notification fails
+            print(f"Warning: Failed to send application notification: {notify_err}")
+
+        return {"success": True, "application": application, "message": "Application submitted successfully"}
 
     except HTTPException:
         raise
@@ -13484,6 +14847,70 @@ async def update_application_status(
                 "booked_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
             }).eq("id", application["role_id"]).execute()
+
+        # --- Send notification to applicant for status changes ---
+        try:
+            applicant_id = application["applicant_user_id"]
+            new_status = status_update.status
+
+            # Get role and project info
+            role_result = client.table("backlot_project_roles").select(
+                "title, project_id, backlot_projects(title)"
+            ).eq("id", application["role_id"]).single().execute()
+            role_data = role_result.data if role_result.data else {}
+            role_title = role_data.get("title", "a role")
+            project_title = role_data.get("backlot_projects", {}).get("title", "the project")
+
+            # Only notify for meaningful status changes
+            status_notifications = {
+                "shortlisted": {
+                    "title": f"You've been shortlisted for {role_title}",
+                    "message": f"Great news! You've been shortlisted for {role_title} on {project_title}.",
+                    "type": "application_shortlisted",
+                },
+                "interview": {
+                    "title": f"Interview requested for {role_title}",
+                    "message": f"The team at {project_title} would like to interview you for {role_title}.",
+                    "type": "application_interview",
+                },
+                "offered": {
+                    "title": f"Offer for {role_title}!",
+                    "message": f"Congratulations! You've received an offer for {role_title} on {project_title}.",
+                    "type": "application_offered",
+                },
+                "booked": {
+                    "title": f"You're booked for {role_title}!",
+                    "message": f"Welcome to the team! You've been booked for {role_title} on {project_title}.",
+                    "type": "application_booked",
+                },
+                "rejected": {
+                    "title": f"Update on your application for {role_title}",
+                    "message": f"Unfortunately, the team has decided to go in a different direction for {role_title} on {project_title}.",
+                    "type": "application_rejected",
+                },
+            }
+
+            if new_status in status_notifications:
+                notif = status_notifications[new_status]
+                client.table("notifications").insert({
+                    "user_id": applicant_id,
+                    "type": notif["type"],
+                    "title": notif["title"],
+                    "message": notif["message"],
+                    "data": {
+                        "application_id": application_id,
+                        "role_id": application["role_id"],
+                        "project_id": project_id,
+                        "role_title": role_title,
+                        "project_title": project_title,
+                        "status": new_status,
+                    },
+                    "is_read": False,
+                }).execute()
+
+        except Exception as notify_err:
+            # Don't fail the status update if notification fails
+            print(f"Warning: Failed to send status change notification: {notify_err}")
 
         return {"success": True, "application": result.data[0] if result.data else None, "message": f"Application {status_update.status}"}
 
@@ -23789,19 +25216,27 @@ async def create_production_day(
     try:
         await verify_project_access(client, project_id, user["id"])
 
+        # Convert empty strings to None for time fields (PostgreSQL requires valid time or NULL)
+        general_call_time = day.get("general_call_time")
+        wrap_time = day.get("wrap_time")
+        if general_call_time == "":
+            general_call_time = None
+        if wrap_time == "":
+            wrap_time = None
+
         day_data = {
             "project_id": project_id,
             "day_number": day.get("day_number"),
-            "date": day.get("date"),
-            "title": day.get("title"),
-            "description": day.get("description"),
-            "general_call_time": day.get("general_call_time"),
-            "wrap_time": day.get("wrap_time"),
-            "location_id": day.get("location_id"),
-            "location_name": day.get("location_name"),
-            "location_address": day.get("location_address"),
-            "notes": day.get("notes"),
-            "weather_notes": day.get("weather_notes"),
+            "date": day.get("date") or None,
+            "title": day.get("title") or None,
+            "description": day.get("description") or None,
+            "general_call_time": general_call_time,
+            "wrap_time": wrap_time,
+            "location_id": day.get("location_id") or None,
+            "location_name": day.get("location_name") or None,
+            "location_address": day.get("location_address") or None,
+            "notes": day.get("notes") or None,
+            "weather_notes": day.get("weather_notes") or None,
         }
 
         result = client.table("backlot_production_days").insert(day_data).execute()
@@ -23837,7 +25272,15 @@ async def update_production_day(
                       "wrap_time", "location_id", "location_name", "location_address",
                       "notes", "weather_notes", "is_completed"]:
             if field in day:
-                update_data[field] = day[field]
+                value = day[field]
+                # Convert empty strings to None for time fields
+                if field in ["general_call_time", "wrap_time"] and value == "":
+                    value = None
+                # Convert empty strings to None for text/uuid fields
+                elif field in ["title", "description", "location_id", "location_name",
+                              "location_address", "notes", "weather_notes", "date"] and value == "":
+                    value = None
+                update_data[field] = value
 
         result = client.table("backlot_production_days").update(update_data).eq("id", day_id).execute()
 
@@ -23904,6 +25347,1242 @@ async def delete_production_day(
         raise
     except Exception as e:
         print(f"Error deleting production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PRODUCTION DAY SCENES (Schedule Scene Assignment)
+# =====================================================
+
+class ProductionDaySceneInput(BaseModel):
+    scene_id: str
+    sort_order: Optional[int] = 0
+    estimated_duration: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ProductionDaySceneReorderInput(BaseModel):
+    scene_orders: List[dict]  # [{scene_id: str, sort_order: int}]
+
+
+# =====================================================
+# DAY VIEW (Days List with Summary Stats)
+# =====================================================
+
+@router.get("/projects/{project_id}/days")
+async def get_days_list(
+    project_id: str,
+    start_date: str = None,
+    end_date: str = None,
+    authorization: str = Header(None)
+):
+    """
+    Get list of production days with summary stats for Day View.
+    Returns day info plus has_call_sheet, has_dailies, task_count, crew_scheduled_count.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all production days for the project
+        days_query = client.table("backlot_production_days").select("*").eq(
+            "project_id", project_id
+        ).order("day_number")
+
+        if start_date:
+            days_query = days_query.gte("date", start_date)
+        if end_date:
+            days_query = days_query.lte("date", end_date)
+
+        days_result = days_query.execute()
+        days = days_result.data or []
+
+        # Get all call sheets for this project to check which days have call sheets
+        call_sheets_result = client.table("backlot_call_sheets").select(
+            "production_day_id"
+        ).eq("project_id", project_id).execute()
+        call_sheet_day_ids = set(cs["production_day_id"] for cs in (call_sheets_result.data or []) if cs.get("production_day_id"))
+
+        # Get all dailies days for this project
+        dailies_result = client.table("backlot_dailies_days").select(
+            "production_day_id"
+        ).eq("project_id", project_id).execute()
+        dailies_day_ids = set(d["production_day_id"] for d in (dailies_result.data or []) if d.get("production_day_id"))
+
+        # Get task counts per day
+        tasks_result = client.table("backlot_tasks").select(
+            "production_day_id"
+        ).eq("project_id", project_id).execute()
+        task_counts = {}
+        for t in (tasks_result.data or []):
+            day_id = t.get("production_day_id")
+            if day_id:
+                task_counts[day_id] = task_counts.get(day_id, 0) + 1
+
+        # Get crew scheduled counts per day (from call sheet people)
+        crew_result = client.table("backlot_call_sheet_people").select(
+            "call_sheet_id"
+        ).execute()
+        # Map call sheet ids to day ids
+        cs_to_day = {}
+        for cs in (call_sheets_result.data or []):
+            if cs.get("production_day_id"):
+                cs_to_day[cs.get("id")] = cs.get("production_day_id")
+        crew_counts = {}
+        for c in (crew_result.data or []):
+            cs_id = c.get("call_sheet_id")
+            day_id = cs_to_day.get(cs_id)
+            if day_id:
+                crew_counts[day_id] = crew_counts.get(day_id, 0) + 1
+
+        # Build response
+        result = []
+        for day in days:
+            day_id = day["id"]
+            result.append({
+                "id": day_id,
+                "day_number": day["day_number"],
+                "date": day["date"],
+                "title": day.get("title"),
+                "location_name": day.get("location_name"),
+                "general_call_time": day.get("general_call_time"),
+                "is_completed": day.get("is_completed", False),
+                "has_call_sheet": day_id in call_sheet_day_ids,
+                "has_dailies": day_id in dailies_day_ids,
+                "task_count": task_counts.get(day_id, 0),
+                "crew_scheduled_count": crew_counts.get(day_id, 0),
+            })
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting days list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/days/{day_id}/overview")
+async def get_day_overview(
+    project_id: str,
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get comprehensive overview of a production day for Day View.
+    Returns day details plus call sheets, dailies, budget, tasks, timecards, scenes, crew.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("*").eq("id", day_id).eq("project_id", project_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+        day = day_result.data[0]
+
+        # Get call sheets linked to this day (by date or production_day_id)
+        call_sheets = []
+        try:
+            # Try by production_day_id first
+            cs_result = client.table("backlot_call_sheets").select(
+                "id, title, date, general_call_time, is_published"
+            ).eq("production_day_id", day_id).execute()
+
+            # Also try by date match if no direct link
+            if not cs_result.data:
+                cs_result = client.table("backlot_call_sheets").select(
+                    "id, title, date, general_call_time, is_published"
+                ).eq("project_id", project_id).eq("date", day["date"]).execute()
+
+            for cs in (cs_result.data or []):
+                # Get crew/cast/scene counts
+                crew_count = 0
+                cast_count = 0
+                scene_count = 0
+                try:
+                    crew_result = client.table("backlot_call_sheet_crew").select("id", count="exact").eq("call_sheet_id", cs["id"]).execute()
+                    crew_count = crew_result.count or 0
+                except:
+                    pass
+                try:
+                    cast_result = client.table("backlot_call_sheet_cast").select("id", count="exact").eq("call_sheet_id", cs["id"]).execute()
+                    cast_count = cast_result.count or 0
+                except:
+                    pass
+                try:
+                    scene_result = client.table("backlot_call_sheet_scenes").select("id", count="exact").eq("call_sheet_id", cs["id"]).execute()
+                    scene_count = scene_result.count or 0
+                except:
+                    pass
+
+                call_sheets.append({
+                    "id": cs["id"],
+                    "title": cs.get("title", "Call Sheet"),
+                    "date": cs.get("date"),
+                    "general_call_time": cs.get("general_call_time"),
+                    "location_name": day.get("location_name"),
+                    "is_published": cs.get("is_published", False),
+                    "crew_count": crew_count,
+                    "cast_count": cast_count,
+                    "scene_count": scene_count,
+                })
+        except Exception as e:
+            print(f"Error getting call sheets for day overview: {e}")
+
+        # Get daily budget
+        daily_budget = None
+        try:
+            budget_result = client.table("backlot_daily_budgets").select(
+                "id, total_planned, total_actual"
+            ).eq("production_day_id", day_id).limit(1).execute()
+            if budget_result.data:
+                b = budget_result.data[0]
+                item_count_result = client.table("backlot_daily_budget_items").select("id", count="exact").eq("daily_budget_id", b["id"]).execute()
+                daily_budget = {
+                    "id": b["id"],
+                    "total_planned": b.get("total_planned", 0) or 0,
+                    "total_actual": b.get("total_actual", 0) or 0,
+                    "variance": (b.get("total_planned", 0) or 0) - (b.get("total_actual", 0) or 0),
+                    "item_count": item_count_result.count or 0,
+                }
+        except Exception as e:
+            print(f"Error getting daily budget for day overview: {e}")
+
+        # Get dailies (by shoot_date)
+        dailies = None
+        try:
+            dailies_result = client.table("backlot_dailies_days").select(
+                "id, shoot_date, label"
+            ).eq("project_id", project_id).eq("shoot_date", day["date"]).limit(1).execute()
+            if dailies_result.data:
+                d = dailies_result.data[0]
+                # Get card/clip counts
+                card_count = 0
+                clip_count = 0
+                circle_takes = 0
+                total_duration = 0
+                try:
+                    cards_result = client.table("backlot_dailies_cards").select("id", count="exact").eq("dailies_day_id", d["id"]).execute()
+                    card_count = cards_result.count or 0
+
+                    clips_result = client.table("backlot_dailies_clips").select(
+                        "id, is_circle_take, duration_seconds"
+                    ).eq("dailies_day_id", d["id"]).execute()
+                    for clip in (clips_result.data or []):
+                        clip_count += 1
+                        if clip.get("is_circle_take"):
+                            circle_takes += 1
+                        if clip.get("duration_seconds"):
+                            total_duration += clip["duration_seconds"]
+                except:
+                    pass
+
+                dailies = {
+                    "id": d["id"],
+                    "shoot_date": d.get("shoot_date"),
+                    "label": d.get("label"),
+                    "card_count": card_count,
+                    "clip_count": clip_count,
+                    "circle_take_count": circle_takes,
+                    "total_duration_minutes": round(total_duration / 60, 1) if total_duration else 0,
+                }
+        except Exception as e:
+            print(f"Error getting dailies for day overview: {e}")
+
+        # Get travel items (would need a travel table - returning empty for now)
+        travel_items = []
+
+        # Get tasks due on this day
+        tasks = []
+        try:
+            tasks_result = client.table("backlot_tasks").select(
+                "id, title, status, priority, assigned_to, task_list_id"
+            ).eq("project_id", project_id).eq("due_date", day["date"]).limit(20).execute()
+
+            for t in (tasks_result.data or []):
+                assigned_name = None
+                list_name = None
+                if t.get("assigned_to"):
+                    try:
+                        user_result = client.table("profiles").select("display_name, username").eq("id", t["assigned_to"]).limit(1).execute()
+                        if user_result.data:
+                            assigned_name = user_result.data[0].get("display_name") or user_result.data[0].get("username")
+                    except:
+                        pass
+                if t.get("task_list_id"):
+                    try:
+                        list_result = client.table("backlot_task_lists").select("name").eq("id", t["task_list_id"]).limit(1).execute()
+                        if list_result.data:
+                            list_name = list_result.data[0].get("name")
+                    except:
+                        pass
+
+                tasks.append({
+                    "id": t["id"],
+                    "title": t.get("title", ""),
+                    "status": t.get("status", "pending"),
+                    "priority": t.get("priority"),
+                    "assigned_to_name": assigned_name,
+                    "task_list_name": list_name,
+                })
+        except Exception as e:
+            print(f"Error getting tasks for day overview: {e}")
+
+        # Get updates (recent project updates)
+        updates = []
+        try:
+            updates_result = client.table("backlot_updates").select(
+                "id, title, content, update_type, created_by, created_at"
+            ).eq("project_id", project_id).order("created_at", desc=True).limit(5).execute()
+
+            for u in (updates_result.data or []):
+                author_name = None
+                if u.get("created_by"):
+                    try:
+                        user_result = client.table("profiles").select("display_name, username").eq("id", u["created_by"]).limit(1).execute()
+                        if user_result.data:
+                            author_name = user_result.data[0].get("display_name") or user_result.data[0].get("username")
+                    except:
+                        pass
+
+                updates.append({
+                    "id": u["id"],
+                    "title": u.get("title"),
+                    "content": u.get("content", ""),
+                    "update_type": u.get("update_type", "general"),
+                    "author_name": author_name,
+                    "created_at": u.get("created_at"),
+                })
+        except Exception as e:
+            print(f"Error getting updates for day overview: {e}")
+
+        # Get timecard entries for this day
+        timecard_entries = []
+        try:
+            tc_result = client.table("backlot_timecard_entries").select(
+                "id, user_id, call_time, wrap_time, hours_worked, status"
+            ).eq("production_day_id", day_id).execute()
+
+            for tc in (tc_result.data or []):
+                user_name = None
+                if tc.get("user_id"):
+                    try:
+                        user_result = client.table("profiles").select("display_name, username").eq("id", tc["user_id"]).limit(1).execute()
+                        if user_result.data:
+                            user_name = user_result.data[0].get("display_name") or user_result.data[0].get("username")
+                    except:
+                        pass
+
+                timecard_entries.append({
+                    "id": tc["id"],
+                    "user_id": tc.get("user_id"),
+                    "user_name": user_name,
+                    "call_time": tc.get("call_time"),
+                    "wrap_time": tc.get("wrap_time"),
+                    "hours_worked": tc.get("hours_worked"),
+                    "status": tc.get("status", "pending"),
+                })
+        except Exception as e:
+            print(f"Error getting timecard entries for day overview: {e}")
+
+        # Get scenes scheduled for this day
+        scenes_scheduled = []
+        try:
+            scenes_result = client.table("backlot_production_day_scenes").select(
+                "scene_id"
+            ).eq("production_day_id", day_id).order("sort_order").execute()
+
+            for ps in (scenes_result.data or []):
+                if ps.get("scene_id"):
+                    try:
+                        scene_result = client.table("backlot_scenes").select(
+                            "id, scene_number, slugline, page_length"
+                        ).eq("id", ps["scene_id"]).limit(1).execute()
+                        if scene_result.data:
+                            s = scene_result.data[0]
+                            scenes_scheduled.append({
+                                "id": s["id"],
+                                "scene_number": s.get("scene_number"),
+                                "slugline": s.get("slugline"),
+                                "page_length": s.get("page_length"),
+                            })
+                    except:
+                        pass
+        except Exception as e:
+            print(f"Error getting scenes for day overview: {e}")
+
+        # Get crew summary
+        crew_summary = {
+            "total_crew": 0,
+            "total_cast": 0,
+            "departments": {},
+        }
+        try:
+            # Get from call sheet if available
+            if call_sheets:
+                cs_id = call_sheets[0]["id"]
+                crew_summary["total_crew"] = call_sheets[0]["crew_count"]
+                crew_summary["total_cast"] = call_sheets[0]["cast_count"]
+
+                # Get department breakdown
+                dept_result = client.table("backlot_call_sheet_crew").select(
+                    "department"
+                ).eq("call_sheet_id", cs_id).execute()
+
+                for c in (dept_result.data or []):
+                    dept = c.get("department") or "Other"
+                    crew_summary["departments"][dept] = crew_summary["departments"].get(dept, 0) + 1
+        except Exception as e:
+            print(f"Error getting crew summary for day overview: {e}")
+
+        return {
+            "day": day,
+            "call_sheets": call_sheets,
+            "daily_budget": daily_budget,
+            "dailies": dailies,
+            "travel_items": travel_items,
+            "tasks": tasks,
+            "updates": updates,
+            "timecard_entries": timecard_entries,
+            "scenes_scheduled": scenes_scheduled,
+            "crew_summary": crew_summary,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting day overview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/production-days/{day_id}/scenes")
+async def get_production_day_scenes(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get all scenes assigned to a production day with full scene details"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # First verify the day exists and user has access
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
+
+        # Get scene assignments with scene details
+        result = client.table("backlot_production_day_scenes").select(
+            "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+        ).eq("production_day_id", day_id).order("sort_order").execute()
+
+        return {"scenes": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production day scenes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/scenes")
+async def add_scene_to_production_day(
+    day_id: str,
+    scene_data: ProductionDaySceneInput,
+    authorization: str = Header(None)
+):
+    """Add a scene to a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify day exists and user has access
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Verify scene exists and belongs to same project
+        scene_result = client.table("backlot_scenes").select("id, project_id").eq("id", scene_data.scene_id).execute()
+        if not scene_result.data:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if scene_result.data[0]["project_id"] != project_id:
+            raise HTTPException(status_code=400, detail="Scene does not belong to this project")
+
+        # Check if scene is already assigned to this day
+        existing = client.table("backlot_production_day_scenes").select("id").eq(
+            "production_day_id", day_id
+        ).eq("scene_id", scene_data.scene_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="Scene is already assigned to this day")
+
+        # Get next sort order if not specified
+        if scene_data.sort_order == 0:
+            max_order = client.table("backlot_production_day_scenes").select("sort_order").eq(
+                "production_day_id", day_id
+            ).order("sort_order", desc=True).limit(1).execute()
+            sort_order = (max_order.data[0]["sort_order"] + 1) if max_order.data else 0
+        else:
+            sort_order = scene_data.sort_order
+
+        # Insert the assignment
+        insert_data = {
+            "production_day_id": day_id,
+            "scene_id": scene_data.scene_id,
+            "sort_order": sort_order,
+            "estimated_duration": scene_data.estimated_duration,
+            "notes": scene_data.notes,
+        }
+        result = client.table("backlot_production_day_scenes").insert(insert_data).execute()
+
+        # Return with full scene details
+        if result.data:
+            full_result = client.table("backlot_production_day_scenes").select(
+                "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+            ).eq("id", result.data[0]["id"]).execute()
+            return {"scene_assignment": full_result.data[0] if full_result.data else result.data[0]}
+
+        return {"scene_assignment": None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding scene to production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/scenes/bulk")
+async def add_scenes_bulk_to_production_day(
+    day_id: str,
+    scene_ids: List[str] = Body(...),
+    authorization: str = Header(None)
+):
+    """Add multiple scenes to a production day at once"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify day exists and user has access
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get current max sort order
+        max_order = client.table("backlot_production_day_scenes").select("sort_order").eq(
+            "production_day_id", day_id
+        ).order("sort_order", desc=True).limit(1).execute()
+        current_order = (max_order.data[0]["sort_order"] + 1) if max_order.data else 0
+
+        # Insert all scenes
+        inserted = []
+        for scene_id in scene_ids:
+            # Skip if already assigned
+            existing = client.table("backlot_production_day_scenes").select("id").eq(
+                "production_day_id", day_id
+            ).eq("scene_id", scene_id).execute()
+            if existing.data:
+                continue
+
+            insert_data = {
+                "production_day_id": day_id,
+                "scene_id": scene_id,
+                "sort_order": current_order,
+            }
+            result = client.table("backlot_production_day_scenes").insert(insert_data).execute()
+            if result.data:
+                inserted.append(result.data[0])
+            current_order += 1
+
+        return {"inserted_count": len(inserted), "scenes": inserted}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk adding scenes to production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/production-days/{day_id}/scenes/{scene_id}")
+async def remove_scene_from_production_day(
+    day_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a scene from a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify day exists and user has access
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
+
+        # Delete the assignment
+        client.table("backlot_production_day_scenes").delete().eq(
+            "production_day_id", day_id
+        ).eq("scene_id", scene_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing scene from production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/production-days/{day_id}/scenes/reorder")
+async def reorder_production_day_scenes(
+    day_id: str,
+    reorder_data: ProductionDaySceneReorderInput,
+    authorization: str = Header(None)
+):
+    """Reorder scenes within a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify day exists and user has access
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
+
+        # Update sort orders
+        for item in reorder_data.scene_orders:
+            client.table("backlot_production_day_scenes").update(
+                {"sort_order": item["sort_order"]}
+            ).eq("production_day_id", day_id).eq("scene_id", item["scene_id"]).execute()
+
+        # Return updated list
+        result = client.table("backlot_production_day_scenes").select(
+            "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+        ).eq("production_day_id", day_id).order("sort_order").execute()
+
+        return {"scenes": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error reordering production day scenes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/unassigned-scenes")
+async def get_unassigned_scenes(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all scenes that are not assigned to any production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all scenes for the project
+        all_scenes = client.table("backlot_scenes").select(
+            "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day, status"
+        ).eq("project_id", project_id).order("scene_number").execute()
+
+        if not all_scenes.data:
+            return {"scenes": []}
+
+        # Get all assigned scene IDs
+        assigned = client.table("backlot_production_day_scenes").select(
+            "scene_id, production_day_id"
+        ).execute()
+
+        # Get production day IDs for this project
+        project_days = client.table("backlot_production_days").select("id").eq("project_id", project_id).execute()
+        project_day_ids = {d["id"] for d in (project_days.data or [])}
+
+        # Filter to only assignments for this project's days
+        assigned_scene_ids = {
+            a["scene_id"] for a in (assigned.data or [])
+            if a["production_day_id"] in project_day_ids
+        }
+
+        # Filter unassigned
+        unassigned = [s for s in all_scenes.data if s["id"] not in assigned_scene_ids]
+
+        return {"scenes": unassigned}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting unassigned scenes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SCHEDULE <-> CALL SHEET INTEGRATION
+# =====================================================
+
+class CreateCallSheetFromDayInput(BaseModel):
+    title: Optional[str] = None
+    include_scenes: bool = True
+
+
+class SyncToCallSheetInput(BaseModel):
+    call_sheet_id: str
+    sync_date: bool = True
+    sync_times: bool = True
+    sync_location: bool = True
+    sync_scenes: bool = True
+    overwrite_existing: bool = False
+
+
+@router.post("/production-days/{day_id}/create-call-sheet")
+async def create_call_sheet_from_production_day(
+    day_id: str,
+    input_data: Optional[CreateCallSheetFromDayInput] = None,
+    authorization: str = Header(None)
+):
+    """Create a new call sheet pre-populated with production day data"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("*").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = day_result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        # Check if call sheet already exists for this day
+        existing = client.table("backlot_call_sheets").select("id").eq("production_day_id", day_id).execute()
+        if existing.data:
+            raise HTTPException(
+                status_code=400,
+                detail="A call sheet already exists for this production day. Use sync instead."
+            )
+
+        # Create the call sheet
+        call_sheet_data = {
+            "project_id": day["project_id"],
+            "production_day_id": day_id,
+            "date": day["date"],
+            "shoot_day_number": day["day_number"],
+            "title": input_data.title if input_data and input_data.title else day.get("title") or f"Day {day['day_number']}",
+            "general_call_time": day.get("general_call_time"),
+            "estimated_wrap_time": day.get("wrap_time"),
+            "location_name": day.get("location_name"),
+            "location_address": day.get("location_address"),
+            "general_notes": day.get("description") or day.get("notes"),
+            "created_by": user["id"],
+        }
+
+        result = client.table("backlot_call_sheets").insert(call_sheet_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create call sheet")
+
+        call_sheet = result.data[0]
+
+        # If including scenes, add them to the call sheet
+        scenes_added = 0
+        if input_data is None or input_data.include_scenes:
+            # Get scenes assigned to this production day
+            day_scenes = client.table("backlot_production_day_scenes").select(
+                "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+            ).eq("production_day_id", day_id).order("sort_order").execute()
+
+            if day_scenes.data:
+                for idx, ds in enumerate(day_scenes.data):
+                    scene = ds.get("scene") or {}
+                    scene_data = {
+                        "call_sheet_id": call_sheet["id"],
+                        "scene_number": scene.get("scene_number", ""),
+                        "set_name": scene.get("set_name") or scene.get("slugline", ""),
+                        "description": scene.get("description", ""),
+                        "page_count": scene.get("page_length"),
+                        "int_ext": scene.get("int_ext"),
+                        "time_of_day": scene.get("time_of_day"),
+                        "sort_order": idx,
+                        "linked_scene_id": scene.get("id"),
+                    }
+                    client.table("backlot_call_sheet_scenes").insert(scene_data).execute()
+                    scenes_added += 1
+
+        return {
+            "call_sheet": call_sheet,
+            "synced_fields": ["date", "call_time", "wrap_time", "location", "scenes"] if scenes_added > 0 else ["date", "call_time", "wrap_time", "location"],
+            "scenes_added": scenes_added
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating call sheet from production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/sync-to-call-sheet")
+async def sync_production_day_to_call_sheet(
+    day_id: str,
+    sync_input: SyncToCallSheetInput,
+    authorization: str = Header(None)
+):
+    """Sync production day changes to an existing call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("*").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = day_result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        # Get the target call sheet
+        cs_result = client.table("backlot_call_sheets").select("*").eq("id", sync_input.call_sheet_id).execute()
+        if not cs_result.data:
+            raise HTTPException(status_code=404, detail="Call sheet not found")
+
+        call_sheet = cs_result.data[0]
+        if call_sheet["project_id"] != day["project_id"]:
+            raise HTTPException(status_code=400, detail="Call sheet belongs to a different project")
+
+        # Build update data
+        update_data = {}
+        synced_fields = []
+
+        if sync_input.sync_date:
+            update_data["date"] = day["date"]
+            update_data["shoot_day_number"] = day["day_number"]
+            synced_fields.append("date")
+
+        if sync_input.sync_times:
+            if day.get("general_call_time"):
+                update_data["general_call_time"] = day["general_call_time"]
+            if day.get("wrap_time"):
+                update_data["estimated_wrap_time"] = day["wrap_time"]
+            synced_fields.append("times")
+
+        if sync_input.sync_location:
+            if day.get("location_name"):
+                update_data["location_name"] = day["location_name"]
+            if day.get("location_address"):
+                update_data["location_address"] = day["location_address"]
+            synced_fields.append("location")
+
+        # Link the call sheet to this production day if not already linked
+        if not call_sheet.get("production_day_id"):
+            update_data["production_day_id"] = day_id
+
+        # Update call sheet
+        if update_data:
+            client.table("backlot_call_sheets").update(update_data).eq("id", sync_input.call_sheet_id).execute()
+
+        # Sync scenes
+        scenes_added = 0
+        scenes_removed = 0
+        if sync_input.sync_scenes:
+            # Get scenes assigned to this production day
+            day_scenes = client.table("backlot_production_day_scenes").select(
+                "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+            ).eq("production_day_id", day_id).order("sort_order").execute()
+
+            if sync_input.overwrite_existing:
+                # Remove existing scenes
+                existing_scenes = client.table("backlot_call_sheet_scenes").select("id").eq(
+                    "call_sheet_id", sync_input.call_sheet_id
+                ).execute()
+                scenes_removed = len(existing_scenes.data) if existing_scenes.data else 0
+                client.table("backlot_call_sheet_scenes").delete().eq(
+                    "call_sheet_id", sync_input.call_sheet_id
+                ).execute()
+
+            # Add scenes from production day
+            existing_scene_numbers = set()
+            if not sync_input.overwrite_existing:
+                existing = client.table("backlot_call_sheet_scenes").select("scene_number, linked_scene_id").eq(
+                    "call_sheet_id", sync_input.call_sheet_id
+                ).execute()
+                existing_scene_numbers = {s["scene_number"] for s in (existing.data or [])}
+                existing_scene_ids = {s["linked_scene_id"] for s in (existing.data or []) if s.get("linked_scene_id")}
+
+            # Get current max sort order
+            max_order = 0
+            if not sync_input.overwrite_existing:
+                order_result = client.table("backlot_call_sheet_scenes").select("sort_order").eq(
+                    "call_sheet_id", sync_input.call_sheet_id
+                ).order("sort_order", desc=True).limit(1).execute()
+                if order_result.data:
+                    max_order = order_result.data[0]["sort_order"] + 1
+
+            if day_scenes.data:
+                for idx, ds in enumerate(day_scenes.data):
+                    scene = ds.get("scene") or {}
+                    scene_number = scene.get("scene_number", "")
+                    scene_id = scene.get("id")
+
+                    # Skip if already exists (in merge mode)
+                    if not sync_input.overwrite_existing:
+                        if scene_number in existing_scene_numbers or (scene_id and scene_id in existing_scene_ids):
+                            continue
+
+                    scene_data = {
+                        "call_sheet_id": sync_input.call_sheet_id,
+                        "scene_number": scene_number,
+                        "set_name": scene.get("set_name") or scene.get("slugline", ""),
+                        "description": scene.get("description", ""),
+                        "page_count": scene.get("page_length"),
+                        "int_ext": scene.get("int_ext"),
+                        "time_of_day": scene.get("time_of_day"),
+                        "sort_order": max_order + idx if not sync_input.overwrite_existing else idx,
+                        "linked_scene_id": scene_id,
+                    }
+                    client.table("backlot_call_sheet_scenes").insert(scene_data).execute()
+                    scenes_added += 1
+
+            synced_fields.append("scenes")
+
+        return {
+            "success": True,
+            "synced_fields": synced_fields,
+            "scenes_added": scenes_added,
+            "scenes_removed": scenes_removed,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error syncing production day to call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AutoSchedulerConstraints(BaseModel):
+    max_pages_per_day: float = 5.0
+    group_by_location: bool = True
+    group_by_int_ext: bool = True
+    group_by_time_of_day: bool = True
+    target_days: Optional[int] = None  # If set, try to fit into this many days
+
+
+class AutoSchedulerRequest(BaseModel):
+    scene_ids: Optional[List[str]] = None  # If None, use all unassigned scenes
+    constraints: Optional[AutoSchedulerConstraints] = None
+
+
+@router.post("/projects/{project_id}/schedule/auto-generate")
+async def auto_generate_schedule(
+    project_id: str,
+    request: AutoSchedulerRequest,
+    authorization: str = Header(None)
+):
+    """
+    Auto-generate a suggested schedule by grouping scenes intelligently.
+    Groups by location, INT/EXT, time of day, and respects page limits.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        constraints = request.constraints or AutoSchedulerConstraints()
+
+        # Get scenes to schedule
+        if request.scene_ids:
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, slugline, set_name, page_length, int_ext, time_of_day, location_id"
+            ).in_("id", request.scene_ids).order("scene_number").execute()
+        else:
+            # Get all unassigned scenes
+            all_scenes = client.table("backlot_scenes").select(
+                "id, scene_number, slugline, set_name, page_length, int_ext, time_of_day, location_id"
+            ).eq("project_id", project_id).order("scene_number").execute()
+
+            # Get already assigned scene IDs
+            project_days = client.table("backlot_production_days").select("id").eq("project_id", project_id).execute()
+            project_day_ids = [d["id"] for d in (project_days.data or [])]
+
+            assigned_result = client.table("backlot_production_day_scenes").select("scene_id").in_(
+                "production_day_id", project_day_ids
+            ).execute() if project_day_ids else {"data": []}
+
+            assigned_ids = {a["scene_id"] for a in (assigned_result.data if hasattr(assigned_result, 'data') else assigned_result.get("data", []))}
+
+            scenes_result = type('obj', (object,), {
+                'data': [s for s in (all_scenes.data or []) if s["id"] not in assigned_ids]
+            })()
+
+        scenes = scenes_result.data or []
+
+        if not scenes:
+            return {
+                "suggested_days": [],
+                "message": "No scenes to schedule"
+            }
+
+        # Group scenes by location/set for efficient scheduling
+        def get_grouping_key(scene):
+            parts = []
+            if constraints.group_by_location:
+                # Use set_name or slugline as location proxy
+                loc = scene.get("set_name") or scene.get("slugline") or "UNKNOWN"
+                # Extract location from slugline (e.g., "INT. HOUSE - LIVING ROOM" -> "HOUSE")
+                if " - " in loc:
+                    loc = loc.split(" - ")[0]
+                if ". " in loc:
+                    loc = loc.split(". ", 1)[1] if len(loc.split(". ")) > 1 else loc
+                parts.append(loc.strip())
+            if constraints.group_by_int_ext:
+                parts.append(scene.get("int_ext") or "")
+            if constraints.group_by_time_of_day:
+                parts.append(scene.get("time_of_day") or "")
+            return "|".join(parts)
+
+        # Group scenes
+        from collections import defaultdict
+        grouped = defaultdict(list)
+        for scene in scenes:
+            key = get_grouping_key(scene)
+            grouped[key].append(scene)
+
+        # Sort groups by number of scenes (larger groups first for efficiency)
+        sorted_groups = sorted(grouped.items(), key=lambda x: -len(x[1]))
+
+        # Build suggested days
+        suggested_days = []
+        current_day = {
+            "day_number": 1,
+            "scenes": [],
+            "total_pages": 0,
+            "locations": set(),
+            "reasoning": []
+        }
+
+        for group_key, group_scenes in sorted_groups:
+            for scene in group_scenes:
+                page_length = scene.get("page_length") or 1.0
+
+                # Check if adding this scene would exceed the page limit
+                if current_day["total_pages"] + page_length > constraints.max_pages_per_day and current_day["scenes"]:
+                    # Finalize current day
+                    current_day["locations"] = list(current_day["locations"])
+                    current_day["reasoning"] = " | ".join(current_day["reasoning"][:3])
+                    suggested_days.append(current_day)
+
+                    # Start new day
+                    current_day = {
+                        "day_number": len(suggested_days) + 1,
+                        "scenes": [],
+                        "total_pages": 0,
+                        "locations": set(),
+                        "reasoning": []
+                    }
+
+                # Add scene to current day
+                current_day["scenes"].append({
+                    "id": scene["id"],
+                    "scene_number": scene["scene_number"],
+                    "slugline": scene.get("slugline") or scene.get("set_name"),
+                    "page_length": page_length,
+                    "int_ext": scene.get("int_ext"),
+                    "time_of_day": scene.get("time_of_day"),
+                })
+                current_day["total_pages"] += page_length
+
+                # Track location for reasoning
+                loc = scene.get("set_name") or scene.get("slugline") or ""
+                if loc:
+                    current_day["locations"].add(loc.split(" - ")[0] if " - " in loc else loc)
+
+                # Add reasoning
+                if scene.get("int_ext") or scene.get("time_of_day"):
+                    reason = f"{scene.get('int_ext', '')} {scene.get('time_of_day', '')}".strip()
+                    if reason and reason not in current_day["reasoning"]:
+                        current_day["reasoning"].append(reason)
+
+        # Don't forget the last day
+        if current_day["scenes"]:
+            current_day["locations"] = list(current_day["locations"])
+            current_day["reasoning"] = " | ".join(current_day["reasoning"][:3])
+            suggested_days.append(current_day)
+
+        # If target_days is set and we have more days, try to consolidate
+        if constraints.target_days and len(suggested_days) > constraints.target_days:
+            # Simple consolidation: merge smallest days
+            while len(suggested_days) > constraints.target_days:
+                # Find smallest day
+                smallest_idx = min(range(len(suggested_days)), key=lambda i: suggested_days[i]["total_pages"])
+                smallest = suggested_days.pop(smallest_idx)
+
+                # Find best day to merge into (lowest total that can fit)
+                best_merge_idx = None
+                for i, day in enumerate(suggested_days):
+                    if day["total_pages"] + smallest["total_pages"] <= constraints.max_pages_per_day * 1.2:  # Allow 20% overflow
+                        if best_merge_idx is None or day["total_pages"] < suggested_days[best_merge_idx]["total_pages"]:
+                            best_merge_idx = i
+
+                if best_merge_idx is not None:
+                    suggested_days[best_merge_idx]["scenes"].extend(smallest["scenes"])
+                    suggested_days[best_merge_idx]["total_pages"] += smallest["total_pages"]
+                    suggested_days[best_merge_idx]["locations"] = list(
+                        set(suggested_days[best_merge_idx]["locations"]) | set(smallest["locations"])
+                    )
+                else:
+                    # Can't merge, put it back
+                    suggested_days.append(smallest)
+                    break
+
+            # Renumber days
+            for i, day in enumerate(suggested_days):
+                day["day_number"] = i + 1
+
+        return {
+            "suggested_days": suggested_days,
+            "total_scenes": len(scenes),
+            "total_pages": sum(s.get("page_length") or 1 for s in scenes),
+            "constraints_used": {
+                "max_pages_per_day": constraints.max_pages_per_day,
+                "group_by_location": constraints.group_by_location,
+                "group_by_int_ext": constraints.group_by_int_ext,
+                "group_by_time_of_day": constraints.group_by_time_of_day,
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error auto-generating schedule: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/schedule/apply-suggestion")
+async def apply_schedule_suggestion(
+    project_id: str,
+    suggested_days: List[dict] = Body(...),
+    start_date: Optional[str] = Body(None),
+    authorization: str = Header(None)
+):
+    """
+    Apply a suggested schedule by creating production days and assigning scenes.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        from datetime import datetime, timedelta
+
+        # Get starting date (default to tomorrow)
+        if start_date:
+            current_date = datetime.strptime(start_date, "%Y-%m-%d")
+        else:
+            current_date = datetime.now() + timedelta(days=1)
+
+        # Get existing day numbers to avoid conflicts
+        existing_days = client.table("backlot_production_days").select("day_number").eq(
+            "project_id", project_id
+        ).execute()
+        existing_numbers = {d["day_number"] for d in (existing_days.data or [])}
+
+        created_days = []
+        for suggestion in suggested_days:
+            # Find next available day number
+            day_number = suggestion.get("day_number", 1)
+            while day_number in existing_numbers:
+                day_number += 1
+            existing_numbers.add(day_number)
+
+            # Create production day
+            day_data = {
+                "project_id": project_id,
+                "day_number": day_number,
+                "date": current_date.strftime("%Y-%m-%d"),
+                "title": f"Day {day_number}",
+                "description": suggestion.get("reasoning", ""),
+            }
+
+            day_result = client.table("backlot_production_days").insert(day_data).execute()
+            if not day_result.data:
+                continue
+
+            new_day = day_result.data[0]
+            created_days.append(new_day)
+
+            # Assign scenes to this day
+            for idx, scene in enumerate(suggestion.get("scenes", [])):
+                scene_assignment = {
+                    "production_day_id": new_day["id"],
+                    "scene_id": scene["id"],
+                    "sort_order": idx,
+                }
+                client.table("backlot_production_day_scenes").insert(scene_assignment).execute()
+
+            # Move to next date (skip weekends optionally)
+            current_date += timedelta(days=1)
+
+        return {
+            "created_days": len(created_days),
+            "days": created_days,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error applying schedule suggestion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/production-days/{day_id}/linked-call-sheet")
+async def get_linked_call_sheet(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get the call sheet linked to a production day, if any"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
+
+        # Find linked call sheet
+        cs_result = client.table("backlot_call_sheets").select("id, title, date, is_published").eq(
+            "production_day_id", day_id
+        ).execute()
+
+        return {
+            "call_sheet": cs_result.data[0] if cs_result.data else None,
+            "has_call_sheet": bool(cs_result.data)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting linked call sheet: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -24160,6 +26839,40 @@ async def update_call_sheet(
                     update_data[field] = value
 
         result = client.table("backlot_call_sheets").update(update_data).eq("id", call_sheet_id).execute()
+
+        # Bidirectional sync: Update linked production day
+        if result.data:
+            call_sheet = result.data[0]
+            production_day_id = call_sheet.get("production_day_id")
+            if production_day_id:
+                sync_data = {}
+                # Sync date
+                if "date" in update_data:
+                    sync_data["date"] = update_data["date"]
+                if "shoot_day_number" in update_data:
+                    sync_data["day_number"] = update_data["shoot_day_number"]
+                # Sync times
+                if "general_call_time" in update_data:
+                    sync_data["general_call_time"] = update_data["general_call_time"]
+                if "estimated_wrap_time" in update_data:
+                    sync_data["wrap_time"] = update_data["estimated_wrap_time"]
+                # Sync location
+                if "location_name" in update_data:
+                    sync_data["location_name"] = update_data["location_name"]
+                if "location_address" in update_data:
+                    sync_data["location_address"] = update_data["location_address"]
+                # Sync title
+                if "title" in update_data:
+                    sync_data["title"] = update_data["title"]
+
+                if sync_data:
+                    try:
+                        client.table("backlot_production_days").update(sync_data).eq(
+                            "id", production_day_id
+                        ).execute()
+                    except Exception as sync_err:
+                        # Log but don't fail the main operation
+                        print(f"Warning: Failed to sync to production day: {sync_err}")
 
         return {"call_sheet": result.data[0] if result.data else None}
 
@@ -26143,4 +28856,2046 @@ async def bulk_link_clips_to_asset(
         raise
     except Exception as e:
         print(f"Error bulk linking clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# PURCHASE ORDERS
+# =============================================================================
+
+class CreatePurchaseOrderRequest(BaseModel):
+    description: str
+    estimated_amount: float
+    vendor_name: Optional[str] = None
+    department: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class UpdatePurchaseOrderRequest(BaseModel):
+    description: Optional[str] = None
+    estimated_amount: Optional[float] = None
+    vendor_name: Optional[str] = None
+    department: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RejectPurchaseOrderRequest(BaseModel):
+    reason: str
+
+
+class ApprovalNotesRequest(BaseModel):
+    notes: Optional[str] = None  # Optional notes when approving
+
+
+class DenyPurchaseOrderRequest(BaseModel):
+    reason: str  # Required - reason for denial (permanent rejection)
+
+
+@router.get("/projects/{project_id}/purchase-orders")
+async def get_project_purchase_orders(
+    project_id: str,
+    status: Optional[str] = None,
+    department: Optional[str] = None,
+    requested_by: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all purchase orders for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        query = client.table("backlot_purchase_orders").select(
+            "*, requester:profiles!requested_by(display_name, avatar_url), approver:profiles!approved_by(display_name)"
+        ).eq("project_id", project_id)
+
+        if status and status != "all":
+            query = query.eq("status", status)
+        if department:
+            query = query.eq("department", department)
+        if requested_by:
+            query = query.eq("requested_by", requested_by)
+
+        result = query.order("created_at", desc=True).execute()
+
+        # Format response
+        purchase_orders = []
+        for po in result.data or []:
+            purchase_orders.append({
+                **po,
+                "requester_name": po.get("requester", {}).get("display_name") if po.get("requester") else None,
+                "requester_avatar": po.get("requester", {}).get("avatar_url") if po.get("requester") else None,
+                "approver_name": po.get("approver", {}).get("display_name") if po.get("approver") else None,
+            })
+
+        return purchase_orders
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting purchase orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/purchase-orders/my")
+async def get_my_purchase_orders(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get current user's purchase orders for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        result = client.table("backlot_purchase_orders").select(
+            "*, approver:profiles!approved_by(display_name)"
+        ).eq("project_id", project_id).eq(
+            "requested_by", user_id
+        ).order("created_at", desc=True).execute()
+
+        # Format response
+        purchase_orders = []
+        for po in result.data or []:
+            purchase_orders.append({
+                **po,
+                "approver_name": po.get("approver", {}).get("display_name") if po.get("approver") else None,
+            })
+
+        return purchase_orders
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting my purchase orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/purchase-orders/summary")
+async def get_purchase_order_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get purchase order summary stats for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        # Get all POs for this project
+        result = client.table("backlot_purchase_orders").select(
+            "status, estimated_amount"
+        ).eq("project_id", project_id).execute()
+
+        # Calculate stats
+        total_count = 0
+        pending_count = 0
+        approved_count = 0
+        rejected_count = 0
+        completed_count = 0
+        pending_total = 0.0
+        approved_total = 0.0
+
+        for po in result.data or []:
+            total_count += 1
+            amount = float(po.get("estimated_amount") or 0)
+            status = po.get("status")
+
+            if status == "pending":
+                pending_count += 1
+                pending_total += amount
+            elif status == "approved":
+                approved_count += 1
+                approved_total += amount
+            elif status == "rejected":
+                rejected_count += 1
+            elif status == "completed":
+                completed_count += 1
+                approved_total += amount
+
+        return {
+            "total_count": total_count,
+            "pending_count": pending_count,
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+            "completed_count": completed_count,
+            "pending_total": pending_total,
+            "approved_total": approved_total,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting PO summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/purchase-orders")
+async def create_purchase_order(
+    project_id: str,
+    request: CreatePurchaseOrderRequest,
+    authorization: str = Header(None)
+):
+    """Create a new purchase order"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        po_data = {
+            "project_id": project_id,
+            "requested_by": user_id,
+            "description": request.description,
+            "estimated_amount": request.estimated_amount,
+            "vendor_name": request.vendor_name,
+            "department": request.department,
+            "budget_category_id": request.budget_category_id,
+            "notes": request.notes,
+            "status": "pending",
+        }
+
+        result = client.table("backlot_purchase_orders").insert(po_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create purchase order")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/purchase-orders/{po_id}")
+async def get_purchase_order(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single purchase order"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        result = client.table("backlot_purchase_orders").select(
+            "*, requester:profiles!requested_by(display_name, avatar_url), approver:profiles!approved_by(display_name)"
+        ).eq("id", po_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = result.data[0]
+        await verify_project_access(client, po["project_id"], user_id)
+
+        return {
+            **po,
+            "requester_name": po.get("requester", {}).get("display_name") if po.get("requester") else None,
+            "requester_avatar": po.get("requester", {}).get("avatar_url") if po.get("requester") else None,
+            "approver_name": po.get("approver", {}).get("display_name") if po.get("approver") else None,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/purchase-orders/{po_id}")
+async def update_purchase_order(
+    po_id: str,
+    request: UpdatePurchaseOrderRequest,
+    authorization: str = Header(None)
+):
+    """Update a purchase order (only if pending and owned by user)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, requested_by, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+
+        # Check ownership and status
+        if po["requested_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only edit your own purchase orders")
+        if po["status"] not in ["pending", "rejected", "denied"]:
+            raise HTTPException(status_code=400, detail="Can only edit pending, rejected, or denied purchase orders")
+
+        # Build update data
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.estimated_amount is not None:
+            update_data["estimated_amount"] = request.estimated_amount
+        if request.vendor_name is not None:
+            update_data["vendor_name"] = request.vendor_name
+        if request.department is not None:
+            update_data["department"] = request.department
+        if request.budget_category_id is not None:
+            update_data["budget_category_id"] = request.budget_category_id
+        if request.notes is not None:
+            update_data["notes"] = request.notes
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/purchase-orders/{po_id}")
+async def delete_purchase_order(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a purchase order (only if pending and owned by user)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, requested_by, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+
+        # Check ownership and status
+        if po["requested_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only delete your own purchase orders")
+        if po["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Can only delete pending purchase orders")
+
+        client.table("backlot_purchase_orders").delete().eq("id", po_id).execute()
+
+        return {"success": True, "message": "Purchase order deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/approve")
+async def approve_purchase_order(
+    po_id: str,
+    request: ApprovalNotesRequest = None,
+    authorization: str = Header(None)
+):
+    """Approve a purchase order with optional notes (requires approver role)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+        project_id = po["project_id"]
+
+        # Verify user can approve (check role)
+        role_result = client.table("backlot_project_roles").select(
+            "backlot_role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        approver_roles = ["showrunner", "producer", "line_producer", "upm"]
+        user_roles = [r["backlot_role"] for r in (role_result.data or [])]
+        can_approve = any(role in approver_roles for role in user_roles)
+
+        # Also check if project owner/admin
+        member_result = client.table("backlot_project_members").select(
+            "role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        if member_result.data and member_result.data[0].get("role") == "owner":
+            can_approve = True
+
+        if not can_approve:
+            raise HTTPException(status_code=403, detail="You don't have permission to approve purchase orders")
+
+        if po["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Can only approve pending purchase orders")
+
+        # Update PO
+        update_data = {
+            "status": "approved",
+            "approved_by": user_id,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Add approval notes if provided
+        if request and request.notes:
+            update_data["approval_notes"] = request.notes
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error approving purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/reject")
+async def reject_purchase_order(
+    po_id: str,
+    request: RejectPurchaseOrderRequest,
+    authorization: str = Header(None)
+):
+    """Reject a purchase order (requires approver role)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+        project_id = po["project_id"]
+
+        # Verify user can approve/reject (check role)
+        role_result = client.table("backlot_project_roles").select(
+            "backlot_role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        approver_roles = ["showrunner", "producer", "line_producer", "upm"]
+        user_roles = [r["backlot_role"] for r in (role_result.data or [])]
+        can_approve = any(role in approver_roles for role in user_roles)
+
+        # Also check if project owner/admin
+        member_result = client.table("backlot_project_members").select(
+            "role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        if member_result.data and member_result.data[0].get("role") == "owner":
+            can_approve = True
+
+        if not can_approve:
+            raise HTTPException(status_code=403, detail="You don't have permission to reject purchase orders")
+
+        if po["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Can only reject pending purchase orders")
+
+        # Update PO
+        update_data = {
+            "status": "rejected",
+            "rejection_reason": request.reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/deny")
+async def deny_purchase_order(
+    po_id: str,
+    request: DenyPurchaseOrderRequest,
+    authorization: str = Header(None)
+):
+    """Permanently deny a purchase order. Cannot be resubmitted."""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+        project_id = po["project_id"]
+
+        # Verify user can deny (check role)
+        role_result = client.table("backlot_project_roles").select(
+            "backlot_role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        approver_roles = ["showrunner", "producer", "line_producer", "upm"]
+        user_roles = [r["backlot_role"] for r in (role_result.data or [])]
+        can_deny = any(role in approver_roles for role in user_roles)
+
+        # Also check if project owner/admin
+        member_result = client.table("backlot_project_members").select(
+            "role"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
+
+        if member_result.data and member_result.data[0].get("role") == "owner":
+            can_deny = True
+
+        if not can_deny:
+            raise HTTPException(status_code=403, detail="You don't have permission to deny purchase orders")
+
+        if po["status"] not in ["pending", "rejected"]:
+            raise HTTPException(status_code=400, detail="Can only deny pending or rejected purchase orders")
+
+        # Update PO
+        update_data = {
+            "status": "denied",
+            "denied_by": user_id,
+            "denied_at": datetime.now(timezone.utc).isoformat(),
+            "denial_reason": request.reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error denying purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/resubmit")
+async def resubmit_purchase_order(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Resubmit a rejected or denied purchase order for approval."""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, requested_by, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+
+        # Only owner can resubmit
+        if po["requested_by"] != user_id:
+            raise HTTPException(status_code=403, detail="Only the owner can resubmit this purchase order")
+
+        if po["status"] not in ["rejected", "denied"]:
+            raise HTTPException(status_code=400, detail="Only rejected or denied purchase orders can be resubmitted")
+
+        # Clear rejection/denial fields and set back to pending
+        update_data = {
+            "status": "pending",
+            "rejection_reason": None,
+            "denied_by": None,
+            "denied_at": None,
+            "denial_reason": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resubmitting purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/complete")
+async def complete_purchase_order(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Mark a purchase order as completed"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+        await verify_project_access(client, po["project_id"], user_id)
+
+        if po["status"] != "approved":
+            raise HTTPException(status_code=400, detail="Can only complete approved purchase orders")
+
+        # Update PO
+        update_data = {
+            "status": "completed",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error completing purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/cancel")
+async def cancel_purchase_order(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Cancel a purchase order (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, requested_by, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+
+        # Check ownership
+        if po["requested_by"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only cancel your own purchase orders")
+
+        if po["status"] not in ["pending", "approved"]:
+            raise HTTPException(status_code=400, detail="Cannot cancel this purchase order")
+
+        # Update PO
+        update_data = {
+            "status": "cancelled",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error cancelling purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Crew Rates Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/crew-rates")
+async def get_crew_rates(
+    project_id: str,
+    user_id: Optional[str] = None,
+    role_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all crew rates for a project"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    # Verify project access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+    try:
+        query = client.table("backlot_crew_rates").select("*").eq("project_id", project_id).order("created_at", desc=True)
+
+        if user_id:
+            query = query.eq("user_id", user_id)
+        if role_id:
+            query = query.eq("role_id", role_id)
+
+        result = query.execute()
+        rates = result.data or []
+
+        # Enrich with user and role info
+        for rate in rates:
+            if rate.get("user_id"):
+                user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", rate["user_id"]).execute()
+                rate["user"] = user_result.data[0] if user_result.data else None
+            if rate.get("role_id"):
+                role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", rate["role_id"]).execute()
+                rate["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "rates": rates, "count": len(rates)}
+
+    except Exception as e:
+        print(f"Error fetching crew rates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/crew-rates/{rate_id}")
+async def get_crew_rate(
+    rate_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single crew rate"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        result = client.table("backlot_crew_rates").select("*").eq("id", rate_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Crew rate not found")
+
+        rate = result.data
+
+        # Verify project access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", rate["project_id"]).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", rate["project_id"]).eq("user_id", current_user_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Enrich with user and role info
+        if rate.get("user_id"):
+            user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", rate["user_id"]).execute()
+            rate["user"] = user_result.data[0] if user_result.data else None
+        if rate.get("role_id"):
+            role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", rate["role_id"]).execute()
+            rate["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "rate": rate}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching crew rate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/crew-rates")
+async def create_crew_rate(
+    project_id: str,
+    rate_input: CrewRateInput,
+    authorization: str = Header(None)
+):
+    """Create a new crew rate"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    # Verify project edit access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+        if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to create crew rates")
+
+    try:
+        rate_data = {
+            "project_id": project_id,
+            "user_id": rate_input.user_id,
+            "role_id": rate_input.role_id,
+            "rate_type": rate_input.rate_type,
+            "rate_amount": rate_input.rate_amount,
+            "overtime_multiplier": rate_input.overtime_multiplier,
+            "double_time_multiplier": rate_input.double_time_multiplier,
+            "kit_rental_rate": rate_input.kit_rental_rate,
+            "car_allowance": rate_input.car_allowance,
+            "phone_allowance": rate_input.phone_allowance,
+            "effective_start": rate_input.effective_start,
+            "effective_end": rate_input.effective_end,
+            "notes": rate_input.notes,
+        }
+
+        result = client.table("backlot_crew_rates").insert(rate_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create crew rate")
+
+        rate = result.data[0]
+
+        # Enrich with user and role info
+        if rate.get("user_id"):
+            user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", rate["user_id"]).execute()
+            rate["user"] = user_result.data[0] if user_result.data else None
+        if rate.get("role_id"):
+            role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", rate["role_id"]).execute()
+            rate["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "rate": rate, "message": "Crew rate created successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating crew rate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/crew-rates/{rate_id}")
+async def update_crew_rate(
+    rate_id: str,
+    rate_input: CrewRateInput,
+    authorization: str = Header(None)
+):
+    """Update a crew rate"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing rate
+        existing = client.table("backlot_crew_rates").select("project_id").eq("id", rate_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Crew rate not found")
+
+        project_id = existing.data[0]["project_id"]
+
+        # Verify project edit access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to update crew rates")
+
+        update_data = {
+            "user_id": rate_input.user_id,
+            "role_id": rate_input.role_id,
+            "rate_type": rate_input.rate_type,
+            "rate_amount": rate_input.rate_amount,
+            "overtime_multiplier": rate_input.overtime_multiplier,
+            "double_time_multiplier": rate_input.double_time_multiplier,
+            "kit_rental_rate": rate_input.kit_rental_rate,
+            "car_allowance": rate_input.car_allowance,
+            "phone_allowance": rate_input.phone_allowance,
+            "effective_start": rate_input.effective_start,
+            "effective_end": rate_input.effective_end,
+            "notes": rate_input.notes,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_crew_rates").update(update_data).eq("id", rate_id).execute()
+
+        rate = result.data[0] if result.data else {"id": rate_id, **update_data}
+
+        # Enrich with user and role info
+        if rate.get("user_id"):
+            user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", rate["user_id"]).execute()
+            rate["user"] = user_result.data[0] if user_result.data else None
+        if rate.get("role_id"):
+            role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", rate["role_id"]).execute()
+            rate["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "rate": rate, "message": "Crew rate updated successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating crew rate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/crew-rates/{rate_id}")
+async def delete_crew_rate(
+    rate_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a crew rate"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing rate
+        existing = client.table("backlot_crew_rates").select("project_id").eq("id", rate_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Crew rate not found")
+
+        project_id = existing.data[0]["project_id"]
+
+        # Verify project edit access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to delete crew rates")
+
+        client.table("backlot_crew_rates").delete().eq("id", rate_id).execute()
+
+        return {"success": True, "message": "Crew rate deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting crew rate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/crew-rates/by-user/{target_user_id}")
+async def get_crew_rates_by_user(
+    project_id: str,
+    target_user_id: str,
+    effective_date: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get crew rates for a specific user on a project"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    # Verify project access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        query = client.table("backlot_crew_rates").select("*").eq("project_id", project_id).eq("user_id", target_user_id).order("effective_start", desc=True)
+
+        result = query.execute()
+        rates = result.data or []
+
+        # Filter by effective date if provided
+        if effective_date and rates:
+            filtered_rates = []
+            for rate in rates:
+                start = rate.get("effective_start")
+                end = rate.get("effective_end")
+                # If no dates, rate is always effective
+                if not start and not end:
+                    filtered_rates.append(rate)
+                elif start and not end and effective_date >= start:
+                    filtered_rates.append(rate)
+                elif not start and end and effective_date <= end:
+                    filtered_rates.append(rate)
+                elif start and end and start <= effective_date <= end:
+                    filtered_rates.append(rate)
+            rates = filtered_rates
+
+        # Enrich with role info
+        for rate in rates:
+            if rate.get("role_id"):
+                role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", rate["role_id"]).execute()
+                rate["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "rates": rates, "count": len(rates)}
+
+    except Exception as e:
+        print(f"Error fetching crew rates by user: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/crew-rates/by-role/{target_role_id}")
+async def get_crew_rates_by_role(
+    project_id: str,
+    target_role_id: str,
+    effective_date: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get crew rates for a specific role on a project"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    # Verify project access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+        if not member_response.data:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    try:
+        query = client.table("backlot_crew_rates").select("*").eq("project_id", project_id).eq("role_id", target_role_id).order("effective_start", desc=True)
+
+        result = query.execute()
+        rates = result.data or []
+
+        # Filter by effective date if provided
+        if effective_date and rates:
+            filtered_rates = []
+            for rate in rates:
+                start = rate.get("effective_start")
+                end = rate.get("effective_end")
+                if not start and not end:
+                    filtered_rates.append(rate)
+                elif start and not end and effective_date >= start:
+                    filtered_rates.append(rate)
+                elif not start and end and effective_date <= end:
+                    filtered_rates.append(rate)
+                elif start and end and start <= effective_date <= end:
+                    filtered_rates.append(rate)
+            rates = filtered_rates
+
+        # Enrich with user info
+        for rate in rates:
+            if rate.get("user_id"):
+                user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", rate["user_id"]).execute()
+                rate["user"] = user_result.data[0] if user_result.data else None
+
+        return {"success": True, "rates": rates, "count": len(rates)}
+
+    except Exception as e:
+        print(f"Error fetching crew rates by role: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Credit Preferences Endpoints
+# =====================================================
+
+@router.get("/users/{user_id}/credit-preferences")
+async def get_user_credit_preferences(
+    user_id: str,
+    project_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get credit preferences for a user"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        query = client.table("backlot_credit_preferences").select("*").eq("user_id", user_id)
+
+        if project_id:
+            query = query.eq("project_id", project_id)
+
+        result = query.order("created_at", desc=True).execute()
+        preferences = result.data or []
+
+        return {"success": True, "credit_preferences": preferences, "count": len(preferences)}
+
+    except Exception as e:
+        print(f"Error fetching credit preferences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/credit-preferences/defaults/{user_id}")
+async def get_default_credit_preferences(
+    user_id: str,
+    authorization: str = Header(None)
+):
+    """Get the user's default credit preferences"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get default preference (use_as_default=true, no project/role)
+        result = client.table("backlot_credit_preferences").select("*").eq("user_id", user_id).eq("use_as_default", True).is_("project_id", "null").single().execute()
+
+        if result.data:
+            return {"success": True, "credit_preference": result.data}
+
+        # Fall back to profile data
+        profile_result = client.table("profiles").select("full_name, username").eq("id", user_id).single().execute()
+        profile = profile_result.data if profile_result.data else {}
+
+        # Return a default-like object from profile
+        default = {
+            "id": None,
+            "user_id": user_id,
+            "display_name": profile.get("full_name") or profile.get("username"),
+            "role_title_preference": None,
+            "department_preference": None,
+            "endorsement_note": None,
+            "imdb_id": None,
+            "use_as_default": True,
+            "is_public": True,
+        }
+
+        return {"success": True, "credit_preference": default}
+
+    except Exception as e:
+        print(f"Error fetching default credit preferences: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/credit-preferences")
+async def create_credit_preference(
+    preference: CreditPreferenceInput,
+    authorization: str = Header(None)
+):
+    """Create a new credit preference"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        preference_data = {
+            "user_id": user_id,
+            "project_id": preference.project_id,
+            "role_id": preference.role_id,
+            "display_name": preference.display_name,
+            "role_title_preference": preference.role_title_preference,
+            "department_preference": preference.department_preference,
+            "endorsement_note": preference.endorsement_note,
+            "imdb_id": preference.imdb_id,
+            "use_as_default": preference.use_as_default,
+            "is_public": preference.is_public,
+        }
+
+        result = client.table("backlot_credit_preferences").insert(preference_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create credit preference")
+
+        return {"success": True, "credit_preference": result.data[0], "message": "Credit preference created"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating credit preference: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/credit-preferences/{preference_id}")
+async def update_credit_preference(
+    preference_id: str,
+    preference: CreditPreferenceInput,
+    authorization: str = Header(None)
+):
+    """Update a credit preference"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("backlot_credit_preferences").select("user_id").eq("id", preference_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Credit preference not found")
+        if existing.data["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        update_data = {
+            "display_name": preference.display_name,
+            "role_title_preference": preference.role_title_preference,
+            "department_preference": preference.department_preference,
+            "endorsement_note": preference.endorsement_note,
+            "imdb_id": preference.imdb_id,
+            "use_as_default": preference.use_as_default,
+            "is_public": preference.is_public,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Remove None values
+        update_data = {k: v for k, v in update_data.items() if v is not None}
+
+        result = client.table("backlot_credit_preferences").update(update_data).eq("id", preference_id).execute()
+
+        return {"success": True, "credit_preference": result.data[0] if result.data else None, "message": "Credit preference updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating credit preference: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/credit-preferences/{preference_id}")
+async def delete_credit_preference(
+    preference_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a credit preference"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("backlot_credit_preferences").select("user_id").eq("id", preference_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Credit preference not found")
+        if existing.data["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        client.table("backlot_credit_preferences").delete().eq("id", preference_id).execute()
+
+        return {"success": True, "message": "Credit preference deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting credit preference: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Deal Memo Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/deal-memos")
+async def get_project_deal_memos(
+    project_id: str,
+    status: Optional[str] = None,
+    user_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all deal memos for a project"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify project access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        query = client.table("backlot_deal_memos").select("*").eq("project_id", project_id).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+        if user_id:
+            query = query.eq("user_id", user_id)
+
+        result = query.execute()
+        deal_memos = result.data or []
+
+        # Enrich with user and role info
+        for memo in deal_memos:
+            if memo.get("user_id"):
+                user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", memo["user_id"]).execute()
+                memo["user"] = user_result.data[0] if user_result.data else None
+            if memo.get("role_id"):
+                role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", memo["role_id"]).execute()
+                memo["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "deal_memos": deal_memos, "count": len(deal_memos)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching deal memos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deal-memos/{deal_memo_id}")
+async def get_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single deal memo"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = result.data
+        project_id = memo["project_id"]
+
+        # Verify access (project admin or the person the memo is for)
+        is_recipient = memo["user_id"] == current_user_id
+
+        if not is_recipient:
+            project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+            is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+            if not is_owner:
+                member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+                if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                    raise HTTPException(status_code=403, detail="Access denied")
+
+        # Enrich with user and role info
+        if memo.get("user_id"):
+            user_result = client.table("profiles").select("id, full_name, username, avatar_url").eq("id", memo["user_id"]).execute()
+            memo["user"] = user_result.data[0] if user_result.data else None
+        if memo.get("role_id"):
+            role_result = client.table("backlot_project_roles").select("id, title, department, type").eq("id", memo["role_id"]).execute()
+            memo["role"] = role_result.data[0] if role_result.data else None
+
+        return {"success": True, "deal_memo": memo}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/deal-memos")
+async def create_deal_memo(
+    project_id: str,
+    memo: DealMemoInput,
+    authorization: str = Header(None)
+):
+    """Create a new deal memo"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        memo_data = {
+            "project_id": project_id,
+            "role_id": memo.role_id,
+            "user_id": memo.user_id,
+            "position_title": memo.position_title,
+            "rate_type": memo.rate_type,
+            "rate_amount": memo.rate_amount,
+            "overtime_multiplier": memo.overtime_multiplier or 1.5,
+            "double_time_multiplier": memo.double_time_multiplier or 2.0,
+            "kit_rental_rate": memo.kit_rental_rate,
+            "car_allowance": memo.car_allowance,
+            "phone_allowance": memo.phone_allowance,
+            "per_diem_rate": memo.per_diem_rate,
+            "start_date": memo.start_date,
+            "end_date": memo.end_date,
+            "additional_terms": memo.additional_terms or {},
+            "notes": memo.notes,
+            "status": "draft",
+            "created_by": current_user_id,
+        }
+
+        result = client.table("backlot_deal_memos").insert(memo_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create deal memo")
+
+        return {"success": True, "deal_memo": result.data[0], "message": "Deal memo created"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/deal-memos/{deal_memo_id}")
+async def update_deal_memo(
+    deal_memo_id: str,
+    memo: DealMemoInput,
+    authorization: str = Header(None)
+):
+    """Update a deal memo (only if still in draft status)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing memo
+        existing = client.table("backlot_deal_memos").select("project_id, status").eq("id", deal_memo_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        if existing.data["status"] not in ["draft", "pending_send"]:
+            raise HTTPException(status_code=400, detail="Cannot edit a deal memo that has been sent")
+
+        project_id = existing.data["project_id"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        update_data = {
+            "role_id": memo.role_id,
+            "user_id": memo.user_id,
+            "position_title": memo.position_title,
+            "rate_type": memo.rate_type,
+            "rate_amount": memo.rate_amount,
+            "overtime_multiplier": memo.overtime_multiplier or 1.5,
+            "double_time_multiplier": memo.double_time_multiplier or 2.0,
+            "kit_rental_rate": memo.kit_rental_rate,
+            "car_allowance": memo.car_allowance,
+            "phone_allowance": memo.phone_allowance,
+            "per_diem_rate": memo.per_diem_rate,
+            "start_date": memo.start_date,
+            "end_date": memo.end_date,
+            "additional_terms": memo.additional_terms or {},
+            "notes": memo.notes,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        result = client.table("backlot_deal_memos").update(update_data).eq("id", deal_memo_id).execute()
+
+        return {"success": True, "deal_memo": result.data[0] if result.data else None, "message": "Deal memo updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/deal-memos/{deal_memo_id}")
+async def delete_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a deal memo (only if in draft status)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing memo
+        existing = client.table("backlot_deal_memos").select("project_id, status").eq("id", deal_memo_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        if existing.data["status"] != "draft":
+            raise HTTPException(status_code=400, detail="Cannot delete a deal memo that has been sent")
+
+        project_id = existing.data["project_id"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        client.table("backlot_deal_memos").delete().eq("id", deal_memo_id).execute()
+
+        return {"success": True, "message": "Deal memo deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/create-rate")
+async def create_rate_from_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Create a crew rate from a signed deal memo"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Create crew rate from deal memo data
+        rate_data = {
+            "project_id": project_id,
+            "user_id": memo["user_id"],
+            "role_id": memo["role_id"],
+            "rate_type": memo["rate_type"],
+            "rate_amount": memo["rate_amount"],
+            "overtime_multiplier": memo["overtime_multiplier"],
+            "double_time_multiplier": memo["double_time_multiplier"],
+            "kit_rental_rate": memo["kit_rental_rate"],
+            "car_allowance": memo["car_allowance"],
+            "phone_allowance": memo["phone_allowance"],
+            "effective_start": memo["start_date"],
+            "effective_end": memo["end_date"],
+            "notes": f"Created from deal memo: {memo['position_title']}",
+            "deal_memo_id": deal_memo_id,
+            "source": "deal_memo",
+        }
+
+        rate_result = client.table("backlot_crew_rates").insert(rate_data).execute()
+
+        if not rate_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create crew rate")
+
+        return {"success": True, "rate": rate_result.data[0], "message": "Crew rate created from deal memo"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating rate from deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/void")
+async def void_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Void a deal memo (cancel signature request)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Can only void sent or viewed memos
+        if memo["status"] not in ["sent", "viewed"]:
+            raise HTTPException(status_code=400, detail=f"Cannot void deal memo with status '{memo['status']}'")
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Update status to voided
+        update_result = client.table("backlot_deal_memos").update({
+            "status": "voided",
+            "docusign_status": "voided",
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", deal_memo_id).execute()
+
+        # Notify the recipient
+        if memo.get("user_id"):
+            client.table("notifications").insert({
+                "user_id": memo["user_id"],
+                "type": "deal_memo_voided",
+                "title": "Deal Memo Voided",
+                "body": f"The deal memo for {memo['position_title']} has been voided.",
+                "data": {"deal_memo_id": deal_memo_id, "project_id": project_id},
+            }).execute()
+
+        return {"success": True, "message": "Deal memo voided"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error voiding deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/resend")
+async def resend_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Resend a declined or expired deal memo (creates new draft for editing)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get original deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Can only resend declined or expired memos
+        if memo["status"] not in ["declined", "expired"]:
+            raise HTTPException(status_code=400, detail=f"Cannot resend deal memo with status '{memo['status']}'")
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Create a new deal memo as draft (copy of the original)
+        new_memo_data = {
+            "project_id": project_id,
+            "role_id": memo.get("role_id"),
+            "user_id": memo["user_id"],
+            "position_title": memo["position_title"],
+            "rate_type": memo["rate_type"],
+            "rate_amount": memo["rate_amount"],
+            "overtime_multiplier": memo.get("overtime_multiplier", 1.5),
+            "double_time_multiplier": memo.get("double_time_multiplier", 2.0),
+            "kit_rental_rate": memo.get("kit_rental_rate"),
+            "car_allowance": memo.get("car_allowance"),
+            "phone_allowance": memo.get("phone_allowance"),
+            "per_diem_rate": memo.get("per_diem_rate"),
+            "start_date": memo.get("start_date"),
+            "end_date": memo.get("end_date"),
+            "additional_terms": memo.get("additional_terms", {}),
+            "notes": memo.get("notes"),
+            "status": "draft",
+            "docusign_status": "draft",
+            "created_by": current_user_id,
+        }
+
+        new_result = client.table("backlot_deal_memos").insert(new_memo_data).execute()
+
+        if not new_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create new deal memo")
+
+        return {
+            "success": True,
+            "deal_memo": new_result.data[0],
+            "message": "New deal memo created as draft. You can edit and send it."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resending deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/send")
+async def send_deal_memo(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Send deal memo for signature (placeholder - would integrate with DocuSign)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Can only send draft memos
+        if memo["status"] not in ["draft", "pending_send"]:
+            raise HTTPException(status_code=400, detail=f"Cannot send deal memo with status '{memo['status']}'")
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Update status to sent (in real implementation, would create DocuSign envelope first)
+        update_result = client.table("backlot_deal_memos").update({
+            "status": "sent",
+            "docusign_status": "sent",
+            "docusign_sent_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", deal_memo_id).execute()
+
+        # Notify the recipient
+        if memo.get("user_id"):
+            client.table("notifications").insert({
+                "user_id": memo["user_id"],
+                "type": "deal_memo_received",
+                "title": "Deal Memo Received",
+                "body": f"You have received a deal memo for {memo['position_title']}. Please review and sign.",
+                "data": {"deal_memo_id": deal_memo_id, "project_id": project_id},
+            }).execute()
+
+        return {"success": True, "message": "Deal memo sent for signature"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# DEAL MEMO PAPERWORK TRACKING
+# =============================================================================
+
+class DealMemoStatusUpdate(BaseModel):
+    """Input for updating deal memo status"""
+    status: Literal["sent", "viewed", "signed", "declined"]
+    notes: Optional[str] = None
+    signed_document_url: Optional[str] = None
+
+
+@router.patch("/deal-memos/{deal_memo_id}/status")
+async def update_deal_memo_status(
+    deal_memo_id: str,
+    update: DealMemoStatusUpdate,
+    authorization: str = Header(None)
+):
+    """Update deal memo status (manual paperwork tracking)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+        old_status = memo["status"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id, title").eq("id", project_id).execute()
+        project_data = project_response.data[0] if project_response.data else {}
+        is_owner = str(project_data.get("owner_id")) == str(current_user_id)
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Build update data
+        update_data = {
+            "status": update.status,
+            "docusign_status": update.status,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Add status-specific timestamps
+        if update.status == "sent" and old_status in ["draft", "pending_send"]:
+            update_data["docusign_sent_at"] = datetime.utcnow().isoformat()
+        elif update.status == "signed":
+            update_data["docusign_signed_at"] = datetime.utcnow().isoformat()
+            if update.signed_document_url:
+                update_data["signed_document_url"] = update.signed_document_url
+        elif update.status == "declined":
+            update_data["docusign_declined_at"] = datetime.utcnow().isoformat()
+
+        # Add notes if provided
+        if update.notes:
+            existing_notes = memo.get("notes") or ""
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+            new_note = f"\n[{timestamp}] Status → {update.status}: {update.notes}"
+            update_data["notes"] = existing_notes + new_note
+
+        # Update the deal memo
+        client.table("backlot_deal_memos").update(update_data).eq("id", deal_memo_id).execute()
+
+        # Send notifications based on status change
+        notification_data = {
+            "deal_memo_id": deal_memo_id,
+            "project_id": project_id,
+            "project_title": project_data.get("title", ""),
+            "position_title": memo["position_title"],
+        }
+
+        if update.status == "sent" and memo.get("user_id"):
+            # Notify recipient that deal memo was sent
+            client.table("notifications").insert({
+                "user_id": memo["user_id"],
+                "type": "deal_memo_received",
+                "title": "Deal Memo Received",
+                "body": f"You have a deal memo for {memo['position_title']} on {project_data.get('title', 'a project')}. Please review and sign.",
+                "data": notification_data,
+            }).execute()
+
+        elif update.status == "signed":
+            # Notify project owner that deal memo was signed
+            if project_data.get("owner_id") and str(project_data["owner_id"]) != str(current_user_id):
+                client.table("notifications").insert({
+                    "user_id": project_data["owner_id"],
+                    "type": "deal_memo_signed",
+                    "title": "Deal Memo Signed",
+                    "body": f"The deal memo for {memo['position_title']} has been signed.",
+                    "data": notification_data,
+                }).execute()
+
+            # Auto-create crew rate if not already created
+            existing_rate = client.table("backlot_crew_rates").select("id").eq("deal_memo_id", deal_memo_id).execute()
+            if not existing_rate.data:
+                rate_data = {
+                    "project_id": project_id,
+                    "user_id": memo["user_id"],
+                    "role_id": memo.get("role_id"),
+                    "rate_type": memo["rate_type"],
+                    "rate_amount": memo["rate_amount"],
+                    "overtime_multiplier": memo.get("overtime_multiplier", 1.5),
+                    "double_time_multiplier": memo.get("double_time_multiplier", 2.0),
+                    "kit_rental_rate": memo.get("kit_rental_rate"),
+                    "car_allowance": memo.get("car_allowance"),
+                    "phone_allowance": memo.get("phone_allowance"),
+                    "effective_start": memo.get("start_date"),
+                    "effective_end": memo.get("end_date"),
+                    "notes": f"Auto-created from signed deal memo: {memo['position_title']}",
+                    "deal_memo_id": deal_memo_id,
+                    "source": "deal_memo",
+                }
+                client.table("backlot_crew_rates").insert(rate_data).execute()
+
+        elif update.status == "declined" and memo.get("user_id"):
+            # Notify project owner that deal memo was declined
+            if project_data.get("owner_id"):
+                client.table("notifications").insert({
+                    "user_id": project_data["owner_id"],
+                    "type": "deal_memo_declined",
+                    "title": "Deal Memo Declined",
+                    "body": f"The deal memo for {memo['position_title']} was declined.",
+                    "data": notification_data,
+                }).execute()
+
+        return {"success": True, "message": f"Deal memo status updated to {update.status}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating deal memo status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/upload-signed")
+async def upload_signed_document(
+    deal_memo_id: str,
+    file_url: str = Body(..., embed=True),
+    authorization: str = Header(None)
+):
+    """Upload a signed deal memo document"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("project_id, status").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Update deal memo with signed document URL
+        client.table("backlot_deal_memos").update({
+            "signed_document_url": file_url,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", deal_memo_id).execute()
+
+        return {"success": True, "message": "Signed document uploaded"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error uploading signed document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deal-memos/{deal_memo_id}/history")
+async def get_deal_memo_history(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Get status history for a deal memo (from notes)"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Verify project access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data:
+                # Check if user is the recipient
+                if str(memo.get("user_id")) != str(current_user_id):
+                    raise HTTPException(status_code=403, detail="Access denied")
+
+        # Build history from timestamps
+        history = []
+
+        if memo.get("created_at"):
+            history.append({
+                "status": "draft",
+                "timestamp": memo["created_at"],
+                "description": "Deal memo created",
+            })
+
+        if memo.get("docusign_sent_at"):
+            history.append({
+                "status": "sent",
+                "timestamp": memo["docusign_sent_at"],
+                "description": "Sent for signature",
+            })
+
+        if memo.get("docusign_signed_at"):
+            history.append({
+                "status": "signed",
+                "timestamp": memo["docusign_signed_at"],
+                "description": "Document signed",
+            })
+
+        if memo.get("docusign_declined_at"):
+            history.append({
+                "status": "declined",
+                "timestamp": memo["docusign_declined_at"],
+                "description": "Document declined",
+            })
+
+        # Sort by timestamp
+        history.sort(key=lambda x: x["timestamp"])
+
+        return {
+            "success": True,
+            "deal_memo_id": deal_memo_id,
+            "current_status": memo["status"],
+            "history": history,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching deal memo history: {e}")
         raise HTTPException(status_code=500, detail=str(e))

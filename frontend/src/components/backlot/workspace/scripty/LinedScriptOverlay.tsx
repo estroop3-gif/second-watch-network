@@ -505,17 +505,16 @@ const LinedScriptOverlay: React.FC<LinedScriptOverlayProps> = ({
         {/* PDF Background - Using iframe for PDF with full page view and zoom */}
         {fileUrl ? (
           <div
-            className="origin-top-left"
+            className="origin-top-left h-full"
             style={{
               transform: `scale(${zoomLevel / 100})`,
               width: `${10000 / zoomLevel}%`,
-              minHeight: `${10000 / zoomLevel}%`,
+              height: `${10000 / zoomLevel}%`,
             }}
           >
             <iframe
-              src={`${fileUrl}#page=${pageNumber}&view=FitV&toolbar=0&navpanes=0`}
-              className="w-full border-0"
-              style={{ height: '100vh', minHeight: '800px' }}
+              src={`${fileUrl}#page=${pageNumber}&view=FitH&toolbar=0&navpanes=0`}
+              className="w-full h-full border-0"
               title="Script PDF"
             />
           </div>

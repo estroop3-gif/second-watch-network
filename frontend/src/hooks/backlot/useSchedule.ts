@@ -10,6 +10,8 @@ import {
   BacklotCallSheetScene,
   BacklotCallSheetLocation,
   ProductionDayInput,
+  ProductionDayScene,
+  ProductionDaySceneInput,
   CallSheetInput,
   CallSheetPersonInput,
   CallSheetSceneInput,
@@ -206,6 +208,451 @@ export function useProductionDay(id: string | null) {
       return (result.day || result) as BacklotProductionDay;
     },
     enabled: !!id,
+  });
+}
+
+// =====================================================
+// Production Day Scenes (Schedule Scene Assignment)
+// =====================================================
+
+/**
+ * Hook for managing scenes assigned to a production day
+ */
+export function useProductionDayScenes(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['backlot-production-day-scenes', dayId],
+    queryFn: async () => {
+      if (!dayId) return [];
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/scenes`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch scenes' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.scenes || []) as ProductionDayScene[];
+    },
+    enabled: !!dayId,
+  });
+
+  const addScene = useMutation({
+    mutationFn: async (input: ProductionDaySceneInput) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/scenes`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to add scene' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.scene_assignment as ProductionDayScene;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day-scenes', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unassigned-scenes'] });
+    },
+  });
+
+  const addScenesBulk = useMutation({
+    mutationFn: async (sceneIds: string[]) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/scenes/bulk`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(sceneIds),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to add scenes' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day-scenes', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unassigned-scenes'] });
+    },
+  });
+
+  const removeScene = useMutation({
+    mutationFn: async (sceneId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/scenes/${sceneId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove scene' }));
+        throw new Error(error.detail);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day-scenes', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unassigned-scenes'] });
+    },
+  });
+
+  const reorderScenes = useMutation({
+    mutationFn: async (sceneOrders: { scene_id: string; sort_order: number }[]) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/scenes/reorder`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ scene_orders: sceneOrders }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder scenes' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.scenes || []) as ProductionDayScene[];
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day-scenes', dayId] });
+    },
+  });
+
+  return {
+    scenes: data || [],
+    isLoading,
+    error,
+    refetch,
+    addScene,
+    addScenesBulk,
+    removeScene,
+    reorderScenes,
+  };
+}
+
+/**
+ * Hook for fetching unassigned scenes for a project
+ */
+export function useUnassignedScenes(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-unassigned-scenes', projectId],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/unassigned-scenes`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch unassigned scenes' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.scenes || [];
+    },
+    enabled: !!projectId,
+  });
+}
+
+// =====================================================
+// Schedule <-> Call Sheet Integration
+// =====================================================
+
+export interface LinkedCallSheet {
+  id: string;
+  title: string | null;
+  date: string;
+  status: string | null;
+  is_published: boolean;
+}
+
+export interface CreateCallSheetFromDayInput {
+  title?: string;
+  include_scenes?: boolean;
+}
+
+export interface SyncToCallSheetInput {
+  call_sheet_id: string;
+  sync_date?: boolean;
+  sync_times?: boolean;
+  sync_location?: boolean;
+  sync_scenes?: boolean;
+  overwrite_existing?: boolean;
+}
+
+/**
+ * Hook to get the call sheet linked to a production day
+ */
+export function useLinkedCallSheet(dayId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-linked-call-sheet', dayId],
+    queryFn: async () => {
+      if (!dayId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/linked-call-sheet`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch linked call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return {
+        callSheet: result.call_sheet as LinkedCallSheet | null,
+        hasCallSheet: result.has_call_sheet as boolean,
+      };
+    },
+    enabled: !!dayId,
+  });
+}
+
+/**
+ * Hook to create a call sheet from a production day
+ */
+export function useCreateCallSheetFromDay(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input?: CreateCallSheetFromDayInput) => {
+      if (!dayId) throw new Error('Day ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/create-call-sheet`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input || {}),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-linked-call-sheet', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets'] });
+    },
+  });
+}
+
+/**
+ * Hook to sync a production day to an existing call sheet
+ */
+export function useSyncDayToCallSheet(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: SyncToCallSheetInput) => {
+      if (!dayId) throw new Error('Day ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/production-days/${dayId}/sync-to-call-sheet`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync to call sheet' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-linked-call-sheet', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheet', variables.call_sheet_id] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets'] });
+    },
+  });
+}
+
+// =====================================================
+// Auto-Scheduler
+// =====================================================
+
+export interface AutoSchedulerConstraints {
+  max_pages_per_day?: number;
+  group_by_location?: boolean;
+  group_by_int_ext?: boolean;
+  group_by_time_of_day?: boolean;
+  target_days?: number | null;
+}
+
+export interface AutoSchedulerScene {
+  id: string;
+  scene_number: string;
+  slugline: string | null;
+  page_length: number;
+  int_ext: string | null;
+  time_of_day: string | null;
+}
+
+export interface SuggestedDay {
+  day_number: number;
+  scenes: AutoSchedulerScene[];
+  total_pages: number;
+  locations: string[];
+  reasoning: string;
+}
+
+export interface AutoSchedulerResult {
+  suggested_days: SuggestedDay[];
+  total_scenes: number;
+  total_pages: number;
+  constraints_used: AutoSchedulerConstraints;
+  message?: string;
+}
+
+/**
+ * Hook to auto-generate a schedule suggestion
+ */
+export function useAutoGenerateSchedule(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input?: {
+      scene_ids?: string[];
+      constraints?: AutoSchedulerConstraints;
+    }) => {
+      if (!projectId) throw new Error('Project ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/schedule/auto-generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input || {}),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to generate schedule' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json() as Promise<AutoSchedulerResult>;
+    },
+  });
+}
+
+/**
+ * Hook to apply a suggested schedule
+ */
+export function useApplyScheduleSuggestion(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: {
+      suggested_days: SuggestedDay[];
+      start_date?: string;
+    }) => {
+      if (!projectId) throw new Error('Project ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/schedule/apply-suggestion`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to apply schedule' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-days', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unassigned-scenes', projectId] });
+    },
   });
 }
 
@@ -2008,4 +2455,30 @@ export function useCallSheetFullData(callSheetId: string | null) {
     },
     enabled: !!callSheetId,
   });
+}
+
+// =====================================================
+// Today's Shoot Day
+// =====================================================
+
+/**
+ * Hook to get today's production day (if one is scheduled for today)
+ */
+export function useTodayShootDay(projectId: string | null) {
+  const { days, isLoading } = useProductionDays(projectId);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const todayDay = days?.find((day) => {
+    const dayDate = new Date(day.date);
+    dayDate.setHours(0, 0, 0, 0);
+    return dayDate.getTime() === today.getTime();
+  }) || null;
+
+  return {
+    todayDay,
+    isLoading,
+    hasShootToday: !!todayDay,
+  };
 }

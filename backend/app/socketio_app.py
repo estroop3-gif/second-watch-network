@@ -6,8 +6,7 @@ import socketio
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Set
-from jose import jwt, JWTError
-from app.core.config import settings
+from app.core.cognito import CognitoAuth
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +19,8 @@ sio = socketio.AsyncServer(
 )
 
 # Socket.IO ASGI app
-socket_app = socketio.ASGIApp(sio, socketio_path='/socket.io')
+# socketio_path should be empty since we mount at /socket.io in main.py
+socket_app = socketio.ASGIApp(sio, socketio_path='')
 
 # Track connected users and their sessions
 # user_id -> set of socket ids
@@ -31,34 +31,22 @@ socket_sessions: Dict[str, dict] = {}
 voice_channels: Dict[str, Set[str]] = {}
 
 
-def decode_token(token: str) -> Optional[dict]:
-    """Decode and validate JWT token."""
-    try:
-        # Handle Bearer prefix
-        if token.startswith('Bearer '):
-            token = token[7:]
-
-        payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
-        )
-        return payload
-    except JWTError as e:
-        logger.error(f"JWT decode error: {e}")
-        return None
-
-
 async def get_user_from_token(token: str) -> Optional[dict]:
-    """Get user info from token."""
-    payload = decode_token(token)
-    if not payload:
+    """Get user info from Cognito token."""
+    # Handle Bearer prefix
+    if token.startswith('Bearer '):
+        token = token[7:]
+
+    # Use Cognito token verification
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        logger.warning("[Socket] Token verification failed")
         return None
 
     return {
-        'user_id': payload.get('sub'),
-        'username': payload.get('username'),
-        'full_name': payload.get('full_name'),
+        'user_id': user.get('id'),
+        'username': user.get('username'),
+        'email': user.get('email'),
     }
 
 
@@ -86,8 +74,8 @@ async def connect(sid: str, environ: dict, auth: dict):
     # Store session info
     socket_sessions[sid] = {
         'user_id': user_id,
-        'username': user.get('username'),
-        'full_name': user.get('full_name'),
+        'username': user.get('username') or user.get('email'),
+        'email': user.get('email'),
         'connected_at': datetime.now(timezone.utc).isoformat(),
     }
 
@@ -195,7 +183,7 @@ async def send_message(sid: str, data: dict):
         'sender': {
             'id': user_id,
             'username': session.get('username'),
-            'full_name': session.get('full_name'),
+            'email': session.get('email'),
         }
     }
 
@@ -222,7 +210,7 @@ async def typing_start(sid: str, data: dict):
     await sio.emit('user_typing', {
         'channel_id': channel_id,
         'user_id': session['user_id'],
-        'username': session.get('username') or session.get('full_name'),
+        'username': session.get('username') or session.get('email'),
     }, room=channel_id, skip_sid=sid)
 
 
@@ -274,7 +262,7 @@ async def voice_join(sid: str, data: dict):
     await sio.emit('voice_user_joined', {
         'channel_id': channel_id,
         'user_id': user_id,
-        'username': session.get('username') or session.get('full_name'),
+        'username': session.get('username') or session.get('email'),
         'peer_id': peer_id,
     }, room=f"voice:{channel_id}", skip_sid=sid)
 
@@ -387,10 +375,29 @@ async def ptt_start(sid: str, data: dict):
     if not session:
         return
 
+    user_id = session['user_id']
+
+    # Update database so REST API polling picks up the change
+    try:
+        from app.core.database import execute_update
+        execute_update(
+            """
+            UPDATE coms_voice_participants vp
+            SET is_transmitting = TRUE, last_activity_at = NOW()
+            FROM coms_voice_rooms vr
+            WHERE vp.room_id = vr.id
+              AND vr.channel_id = :channel_id
+              AND vp.user_id = :user_id
+            """,
+            {"channel_id": channel_id, "user_id": user_id}
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update PTT state in database: {e}")
+
     await sio.emit('ptt_active', {
         'channel_id': channel_id,
-        'user_id': session['user_id'],
-        'username': session.get('username') or session.get('full_name'),
+        'user_id': user_id,
+        'username': session.get('username') or session.get('email'),
         'is_transmitting': True,
     }, room=f"voice:{channel_id}")
 
@@ -406,10 +413,29 @@ async def ptt_stop(sid: str, data: dict):
     if not session:
         return
 
+    user_id = session['user_id']
+
+    # Update database so REST API polling picks up the change
+    try:
+        from app.core.database import execute_update
+        execute_update(
+            """
+            UPDATE coms_voice_participants vp
+            SET is_transmitting = FALSE, last_activity_at = NOW()
+            FROM coms_voice_rooms vr
+            WHERE vp.room_id = vr.id
+              AND vr.channel_id = :channel_id
+              AND vp.user_id = :user_id
+            """,
+            {"channel_id": channel_id, "user_id": user_id}
+        )
+    except Exception as e:
+        logger.warning(f"Failed to update PTT state in database: {e}")
+
     await sio.emit('ptt_active', {
         'channel_id': channel_id,
-        'user_id': session['user_id'],
-        'username': session.get('username') or session.get('full_name'),
+        'user_id': user_id,
+        'username': session.get('username') or session.get('email'),
         'is_transmitting': False,
     }, room=f"voice:{channel_id}")
 

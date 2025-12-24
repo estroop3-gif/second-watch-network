@@ -92,6 +92,7 @@ import {
   ReceiptMappingInput,
   ReceiptFilters,
 } from '@/types/backlot';
+import SceneSelect from '../shared/SceneSelect';
 
 interface ReceiptsViewProps {
   projectId: string;
@@ -624,6 +625,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
     setMappingForm({
       budget_line_item_id: receipt.budget_line_item_id || undefined,
       daily_budget_id: receipt.daily_budget_id || undefined,
+      scene_id: (receipt as any).scene_id || undefined,
     });
   };
 
@@ -1189,6 +1191,17 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Scene Selection */}
+            <SceneSelect
+              projectId={projectId}
+              value={mappingForm.scene_id || null}
+              onChange={(sceneId) => {
+                setMappingForm({ ...mappingForm, scene_id: sceneId || undefined });
+              }}
+              label="Related Scene"
+              placeholder="Select scene (optional)"
+            />
 
             <div className="flex justify-end gap-3 pt-4">
               <Button variant="ghost" onClick={() => setMappingReceipt(null)}>

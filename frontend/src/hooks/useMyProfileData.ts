@@ -122,7 +122,10 @@ export function useMyProfileData(): MyProfileData {
   const { user } = useAuth();
   const { profile: baseProfile, isLoading: profileLoading, isError: profileError, refetch: refetchProfile } = useProfile();
 
-  // Fetch filmmaker profile via API
+  // Check if user might have a filmmaker profile (based on base profile flags)
+  const mightBeFilmmaker = !!(baseProfile as any)?.is_filmmaker || !!(baseProfile as any)?.has_completed_filmmaker_onboarding;
+
+  // Fetch filmmaker profile via API - only if user might be a filmmaker
   const { data: filmmakerProfile, isLoading: filmmakerLoading } = useQuery({
     queryKey: ['filmmaker-profile', user?.id],
     queryFn: async () => {
@@ -135,7 +138,7 @@ export function useMyProfileData(): MyProfileData {
         return null;
       }
     },
-    enabled: !!user,
+    enabled: !!user && mightBeFilmmaker,
   });
 
   // Fetch partner profile via API
@@ -154,7 +157,10 @@ export function useMyProfileData(): MyProfileData {
     enabled: !!user,
   });
 
-  // Fetch Order member profile
+  // Check if user might be an Order member (based on base profile flags)
+  const mightBeOrderMember = !!(baseProfile as any)?.is_order_member || !!(baseProfile as any)?.has_order_membership;
+
+  // Fetch Order member profile - only if user might be an Order member
   const { data: orderMemberProfile, isLoading: orderLoading } = useQuery({
     queryKey: ['order-member-profile', user?.id],
     queryFn: async () => {
@@ -167,10 +173,10 @@ export function useMyProfileData(): MyProfileData {
         return null;
       }
     },
-    enabled: !!user,
+    enabled: !!user && mightBeOrderMember,
   });
 
-  // Fetch lodge memberships
+  // Fetch lodge memberships - only if user might be an Order member
   const { data: lodgeMemberships, isLoading: lodgeLoading } = useQuery({
     queryKey: ['lodge-memberships', user?.id],
     queryFn: async () => {
@@ -182,10 +188,10 @@ export function useMyProfileData(): MyProfileData {
         return [];
       }
     },
-    enabled: !!user,
+    enabled: !!user && mightBeOrderMember,
   });
 
-  // Fetch Order profile settings
+  // Fetch Order profile settings - only if user might be an Order member
   const { data: orderProfileSettings, isLoading: orderSettingsLoading } = useQuery({
     queryKey: ['order-profile-settings', user?.id],
     queryFn: async () => {
@@ -196,7 +202,7 @@ export function useMyProfileData(): MyProfileData {
         return null;
       }
     },
-    enabled: !!user,
+    enabled: !!user && mightBeOrderMember,
   });
 
   // Fetch credits via API

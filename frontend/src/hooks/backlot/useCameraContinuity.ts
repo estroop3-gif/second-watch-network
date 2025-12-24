@@ -421,7 +421,10 @@ export function useCreateCameraMedia(projectId: string | null) {
         body: JSON.stringify(input),
       });
 
-      if (!response.ok) throw new Error('Failed to create camera media');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to create camera media');
+      }
       const data = await response.json();
       return data.media;
     },
@@ -448,7 +451,10 @@ export function useUpdateCameraMedia(projectId: string | null) {
         body: JSON.stringify(updates),
       });
 
-      if (!response.ok) throw new Error('Failed to update camera media');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to update camera media');
+      }
       const data = await response.json();
       return data.media;
     },

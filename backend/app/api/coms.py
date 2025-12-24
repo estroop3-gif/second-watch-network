@@ -2,10 +2,11 @@
 Coms API - Production Communications System
 Handles channels, messages, voice rooms, and presence
 """
+import json
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional, List
 from datetime import datetime
-from app.core.database import get_client, execute_query, execute_single
+from app.core.database import get_client, execute_query, execute_single, execute_update
 from app.core.auth import get_current_user
 from app.schemas.coms import (
     Channel, ChannelCreate, ChannelUpdate, ChannelWithMembers, ChannelListResponse,
@@ -30,31 +31,31 @@ DEFAULT_ICE_SERVERS = [
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def get_user_backlot_role(project_id: str, user_id: str) -> Optional[str]:
+def get_user_backlot_role(project_id: str, user_id: str) -> Optional[str]:
     """Get user's backlot role for a project"""
-    result = await execute_single(
+    result = execute_single(
         """
         SELECT backlot_role FROM backlot_project_roles
-        WHERE project_id = $1 AND user_id = $2 AND is_primary = true
+        WHERE project_id = :project_id AND user_id = :user_id AND is_primary = true
         """,
-        project_id, user_id
+        {"project_id": project_id, "user_id": user_id}
     )
     return result["backlot_role"] if result else None
 
 
-async def can_access_channel(channel_id: str, user_id: str, project_id: Optional[str] = None) -> bool:
+def can_access_channel(channel_id: str, user_id: str, project_id: Optional[str] = None) -> bool:
     """Check if user can access a channel"""
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         return False
 
     # Check if explicit member
-    member = await execute_single(
-        "SELECT id FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2",
-        channel_id, user_id
+    member = execute_single(
+        "SELECT id FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :user_id",
+        {"channel_id": channel_id, "user_id": user_id}
     )
     if member:
         return True
@@ -70,26 +71,26 @@ async def can_access_channel(channel_id: str, user_id: str, project_id: Optional
 
     # Get user's role in project
     if channel["project_id"]:
-        user_role = await get_user_backlot_role(channel["project_id"], user_id)
+        user_role = get_user_backlot_role(channel["project_id"], user_id)
         if user_role and user_role in visible_roles:
             return True
 
     return False
 
 
-async def can_transmit_in_channel(channel_id: str, user_id: str) -> bool:
+def can_transmit_in_channel(channel_id: str, user_id: str) -> bool:
     """Check if user can transmit (voice) in a channel"""
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         return False
 
     # Check member override
-    member = await execute_single(
-        "SELECT can_transmit, is_muted FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2",
-        channel_id, user_id
+    member = execute_single(
+        "SELECT can_transmit, is_muted FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :user_id",
+        {"channel_id": channel_id, "user_id": user_id}
     )
     if member:
         return member["can_transmit"] and not member["is_muted"]
@@ -100,33 +101,33 @@ async def can_transmit_in_channel(channel_id: str, user_id: str) -> bool:
         return True  # No restrictions
 
     if channel["project_id"]:
-        user_role = await get_user_backlot_role(channel["project_id"], user_id)
+        user_role = get_user_backlot_role(channel["project_id"], user_id)
         if user_role and user_role in transmit_roles:
             return True
 
     return False
 
 
-async def is_project_admin(project_id: str, user_id: str) -> bool:
+def is_project_admin(project_id: str, user_id: str) -> bool:
     """Check if user is admin/owner of project"""
-    result = await execute_single(
+    result = execute_single(
         """
         SELECT role FROM backlot_project_members
-        WHERE project_id = $1 AND user_id = $2 AND role IN ('owner', 'admin')
+        WHERE project_id = :project_id AND user_id = :user_id AND role IN ('owner', 'admin')
         """,
-        project_id, user_id
+        {"project_id": project_id, "user_id": user_id}
     )
     return result is not None
 
 
-async def can_create_channel(project_id: str, user_id: str) -> bool:
+def can_create_channel(project_id: str, user_id: str) -> bool:
     """Check if user can create channels (above-the-line roles)"""
     # Project admins can always create
-    if await is_project_admin(project_id, user_id):
+    if is_project_admin(project_id, user_id):
         return True
 
     # Check backlot role
-    user_role = await get_user_backlot_role(project_id, user_id)
+    user_role = get_user_backlot_role(project_id, user_id)
     allowed_roles = ["showrunner", "producer", "director", "first_ad"]
     return user_role in allowed_roles if user_role else False
 
@@ -150,62 +151,63 @@ async def list_channels(
     # Get user's role for filtering
     user_role = None
     if project_id:
-        user_role = await get_user_backlot_role(project_id, user_id)
+        user_role = get_user_backlot_role(project_id, user_id)
 
     # Build query
     if scope == "project":
-        channels = await execute_query(
+        channels = execute_query(
             """
             SELECT c.*,
-                   COALESCE(get_coms_unread_count(c.id, $2), 0) as unread_count,
+                   COALESCE(get_coms_unread_count(c.id, :user_id), 0) as unread_count,
                    (SELECT COUNT(*) FROM coms_channel_members WHERE channel_id = c.id) as member_count
             FROM coms_channels c
-            WHERE c.project_id = $1
+            WHERE c.project_id = :project_id
               AND c.scope = 'project'
               AND c.archived_at IS NULL
               AND (
                   -- No role restrictions
                   (c.visible_to_roles IS NULL OR array_length(c.visible_to_roles, 1) IS NULL OR array_length(c.visible_to_roles, 1) = 0)
                   -- User's role matches
-                  OR ($3 = ANY(c.visible_to_roles))
+                  OR (:user_role = ANY(c.visible_to_roles))
                   -- User is explicit member
-                  OR EXISTS (SELECT 1 FROM coms_channel_members WHERE channel_id = c.id AND user_id = $2)
+                  OR EXISTS (SELECT 1 FROM coms_channel_members WHERE channel_id = c.id AND user_id = :user_id)
               )
             ORDER BY c.sort_order, c.created_at
             """,
-            project_id, user_id, user_role
+            {"project_id": project_id, "user_id": user_id, "user_role": user_role}
         )
     else:
         # Global channels (premium feature)
-        channels = await execute_query(
+        channels = execute_query(
             """
             SELECT c.*,
-                   COALESCE(get_coms_unread_count(c.id, $1), 0) as unread_count,
+                   COALESCE(get_coms_unread_count(c.id, :user_id), 0) as unread_count,
                    (SELECT COUNT(*) FROM coms_channel_members WHERE channel_id = c.id) as member_count
             FROM coms_channels c
             WHERE c.scope = 'global'
               AND c.archived_at IS NULL
             ORDER BY c.sort_order, c.created_at
             """,
-            user_id
+            {"user_id": user_id}
         )
 
     # Get last message for each channel
     for channel in channels:
-        last_msg = await execute_single(
+        last_msg = execute_single(
             """
             SELECT m.*, p.username, p.full_name, p.avatar_url
             FROM coms_messages m
             LEFT JOIN profiles p ON p.id = m.sender_id
-            WHERE m.channel_id = $1 AND m.is_deleted = FALSE
+            WHERE m.channel_id = :channel_id AND m.is_deleted = FALSE
             ORDER BY m.created_at DESC
             LIMIT 1
             """,
-            channel["id"]
+            {"channel_id": channel["id"]}
         )
         if last_msg:
             channel["last_message"] = {
                 "id": last_msg["id"],
+                "channel_id": str(channel["id"]),
                 "content": last_msg["content"],
                 "message_type": last_msg["message_type"],
                 "sender_id": last_msg["sender_id"],
@@ -235,42 +237,46 @@ async def create_channel(
             raise HTTPException(status_code=400, detail="project_id required for project scope")
 
         # Check permission to create
-        if not await can_create_channel(channel.project_id, user_id):
+        if not can_create_channel(channel.project_id, user_id):
             raise HTTPException(status_code=403, detail="Not authorized to create channels")
 
     # Create channel
-    result = await execute_single(
+    result = execute_single(
         """
         INSERT INTO coms_channels (
             name, description, channel_type, scope, project_id,
             icon, color, template_key, visible_to_roles, can_transmit_roles,
             is_private, created_by, sort_order
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        ) VALUES (:name, :description, :channel_type, :scope, :project_id,
+                  :icon, :color, :template_key, :visible_to_roles, :can_transmit_roles,
+                  :is_private, :created_by, :sort_order)
         RETURNING *
         """,
-        channel.name,
-        channel.description,
-        channel.channel_type.value,
-        channel.scope.value,
-        channel.project_id,
-        channel.icon,
-        channel.color,
-        channel.template_key,
-        channel.visible_to_roles,
-        channel.can_transmit_roles,
-        channel.is_private,
-        user_id,
-        0
+        {
+            "name": channel.name,
+            "description": channel.description,
+            "channel_type": channel.channel_type.value,
+            "scope": channel.scope.value,
+            "project_id": channel.project_id,
+            "icon": channel.icon,
+            "color": channel.color,
+            "template_key": channel.template_key,
+            "visible_to_roles": channel.visible_to_roles,
+            "can_transmit_roles": channel.can_transmit_roles,
+            "is_private": channel.is_private,
+            "created_by": user_id,
+            "sort_order": 0
+        }
     )
 
     # Add creator as admin member for private channels
     if channel.is_private:
-        await execute_single(
+        execute_single(
             """
             INSERT INTO coms_channel_members (channel_id, user_id, role, can_transmit)
-            VALUES ($1, $2, 'admin', true)
+            VALUES (:channel_id, :user_id, 'admin', true)
             """,
-            result["id"], user_id
+            {"channel_id": result["id"], "user_id": user_id}
         )
 
     return {**result, "unread_count": 0, "member_count": 1 if channel.is_private else 0}
@@ -284,33 +290,33 @@ async def get_channel(
     """Get channel details"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized to view this channel")
 
-    channel = await execute_single(
+    channel = execute_single(
         """
         SELECT c.*,
-               COALESCE(get_coms_unread_count(c.id, $2), 0) as unread_count,
+               COALESCE(get_coms_unread_count(c.id, :user_id), 0) as unread_count,
                (SELECT COUNT(*) FROM coms_channel_members WHERE channel_id = c.id) as member_count
         FROM coms_channels c
-        WHERE c.id = $1 AND c.archived_at IS NULL
+        WHERE c.id = :channel_id AND c.archived_at IS NULL
         """,
-        channel_id, user_id
+        {"channel_id": channel_id, "user_id": user_id}
     )
 
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
 
     # Get members
-    members = await execute_query(
+    members = execute_query(
         """
         SELECT cm.*, p.username, p.full_name, p.avatar_url
         FROM coms_channel_members cm
         LEFT JOIN profiles p ON p.id = cm.user_id
-        WHERE cm.channel_id = $1
+        WHERE cm.channel_id = :channel_id
         ORDER BY cm.joined_at
         """,
-        channel_id
+        {"channel_id": channel_id}
     )
 
     return {**channel, "members": members}
@@ -325,47 +331,44 @@ async def update_channel(
     """Update channel settings"""
     user_id = user["id"]
 
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
 
     # Check permission (creator, admin member, or project admin)
     is_creator = channel["created_by"] == user_id
-    is_channel_admin = await execute_single(
-        "SELECT id FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2 AND role = 'admin'",
-        channel_id, user_id
+    is_channel_admin = execute_single(
+        "SELECT id FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :user_id AND role = 'admin'",
+        {"channel_id": channel_id, "user_id": user_id}
     )
-    is_proj_admin = channel["project_id"] and await is_project_admin(channel["project_id"], user_id)
+    is_proj_admin = channel["project_id"] and is_project_admin(channel["project_id"], user_id)
 
     if not (is_creator or is_channel_admin or is_proj_admin):
         raise HTTPException(status_code=403, detail="Not authorized to update this channel")
 
-    # Build update query
+    # Build update query with named params
     update_fields = []
-    params = []
-    param_count = 1
+    params = {"channel_id": channel_id}
 
     for field, value in update.model_dump(exclude_unset=True).items():
         if value is not None:
-            update_fields.append(f"{field} = ${param_count}")
-            params.append(value)
-            param_count += 1
+            update_fields.append(f"{field} = :{field}")
+            params[field] = value
 
     if not update_fields:
         return channel
 
-    params.append(channel_id)
     query = f"""
         UPDATE coms_channels
         SET {', '.join(update_fields)}, updated_at = NOW()
-        WHERE id = ${param_count}
+        WHERE id = :channel_id
         RETURNING *
     """
 
-    result = await execute_single(query, *params)
+    result = execute_single(query, params)
     return {**result, "unread_count": 0, "member_count": 0}
 
 
@@ -377,23 +380,23 @@ async def archive_channel(
     """Archive a channel"""
     user_id = user["id"]
 
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
 
     # Check permission
     is_creator = channel["created_by"] == user_id
-    is_proj_admin = channel["project_id"] and await is_project_admin(channel["project_id"], user_id)
+    is_proj_admin = channel["project_id"] and is_project_admin(channel["project_id"], user_id)
 
     if not (is_creator or is_proj_admin):
         raise HTTPException(status_code=403, detail="Not authorized to delete this channel")
 
-    await execute_single(
-        "UPDATE coms_channels SET archived_at = NOW() WHERE id = $1",
-        channel_id
+    execute_single(
+        "UPDATE coms_channels SET archived_at = NOW() WHERE id = :channel_id",
+        {"channel_id": channel_id}
     )
 
     return {"success": True, "message": "Channel archived"}
@@ -413,43 +416,43 @@ async def list_messages(
     """List messages in a channel with cursor pagination"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized to view this channel")
 
     # Build query with cursor pagination
     if before:
-        messages = await execute_query(
+        messages = execute_query(
             """
             SELECT m.*, p.username, p.full_name, p.avatar_url,
                    bpr.backlot_role as production_role
             FROM coms_messages m
             LEFT JOIN profiles p ON p.id = m.sender_id
             LEFT JOIN backlot_project_roles bpr ON bpr.user_id = m.sender_id
-                AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = $1)
+                AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = :channel_id)
                 AND bpr.is_primary = true
-            WHERE m.channel_id = $1
+            WHERE m.channel_id = :channel_id
               AND m.is_deleted = FALSE
-              AND m.created_at < (SELECT created_at FROM coms_messages WHERE id = $2)
+              AND m.created_at < (SELECT created_at FROM coms_messages WHERE id = :before)
             ORDER BY m.created_at DESC
-            LIMIT $3
+            LIMIT :limit
             """,
-            channel_id, before, limit + 1
+            {"channel_id": channel_id, "before": before, "limit": limit + 1}
         )
     else:
-        messages = await execute_query(
+        messages = execute_query(
             """
             SELECT m.*, p.username, p.full_name, p.avatar_url,
                    bpr.backlot_role as production_role
             FROM coms_messages m
             LEFT JOIN profiles p ON p.id = m.sender_id
             LEFT JOIN backlot_project_roles bpr ON bpr.user_id = m.sender_id
-                AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = $1)
+                AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = :channel_id)
                 AND bpr.is_primary = true
-            WHERE m.channel_id = $1 AND m.is_deleted = FALSE
+            WHERE m.channel_id = :channel_id AND m.is_deleted = FALSE
             ORDER BY m.created_at DESC
-            LIMIT $2
+            LIMIT :limit
             """,
-            channel_id, limit + 1
+            {"channel_id": channel_id, "limit": limit + 1}
         )
 
     has_more = len(messages) > limit
@@ -459,8 +462,13 @@ async def list_messages(
     # Format messages with sender info
     formatted = []
     for msg in messages:
+        # Ensure attachments is always a list
+        attachments = msg.get("attachments")
+        if not isinstance(attachments, list):
+            attachments = []
         formatted.append({
             **msg,
+            "attachments": attachments,
             "sender": {
                 "id": msg["sender_id"],
                 "username": msg["username"],
@@ -486,35 +494,37 @@ async def send_message(
     """Send a message to a channel"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized to send messages in this channel")
 
     # Create message
-    result = await execute_single(
+    result = execute_single(
         """
         INSERT INTO coms_messages (channel_id, sender_id, content, message_type, attachments, reply_to_id)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        VALUES (:channel_id, :sender_id, :content, :message_type, :attachments, :reply_to_id)
         RETURNING *
         """,
-        channel_id,
-        user_id,
-        message.content,
-        message.message_type.value,
-        message.attachments,
-        message.reply_to_id
+        {
+            "channel_id": channel_id,
+            "sender_id": user_id,
+            "content": message.content,
+            "message_type": message.message_type.value,
+            "attachments": message.attachments,
+            "reply_to_id": message.reply_to_id
+        }
     )
 
     # Get sender info
-    sender = await execute_single(
+    sender = execute_single(
         """
         SELECT p.username, p.full_name, p.avatar_url, bpr.backlot_role as production_role
         FROM profiles p
         LEFT JOIN backlot_project_roles bpr ON bpr.user_id = p.id
-            AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = $1)
+            AND bpr.project_id = (SELECT project_id FROM coms_channels WHERE id = :channel_id)
             AND bpr.is_primary = true
-        WHERE p.id = $2
+        WHERE p.id = :user_id
         """,
-        channel_id, user_id
+        {"channel_id": channel_id, "user_id": user_id}
     )
 
     return {
@@ -538,9 +548,9 @@ async def edit_message(
     """Edit a message (owner only)"""
     user_id = user["id"]
 
-    message = await execute_single(
-        "SELECT * FROM coms_messages WHERE id = $1 AND is_deleted = FALSE",
-        message_id
+    message = execute_single(
+        "SELECT * FROM coms_messages WHERE id = :message_id AND is_deleted = FALSE",
+        {"message_id": message_id}
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -548,14 +558,14 @@ async def edit_message(
     if message["sender_id"] != user_id:
         raise HTTPException(status_code=403, detail="Can only edit your own messages")
 
-    result = await execute_single(
+    result = execute_single(
         """
         UPDATE coms_messages
-        SET content = $1, edited_at = NOW()
-        WHERE id = $2
+        SET content = :content, edited_at = NOW()
+        WHERE id = :message_id
         RETURNING *
         """,
-        update.content, message_id
+        {"content": update.content, "message_id": message_id}
     )
 
     return result
@@ -569,25 +579,25 @@ async def delete_message(
     """Delete a message"""
     user_id = user["id"]
 
-    message = await execute_single(
-        "SELECT * FROM coms_messages WHERE id = $1 AND is_deleted = FALSE",
-        message_id
+    message = execute_single(
+        "SELECT * FROM coms_messages WHERE id = :message_id AND is_deleted = FALSE",
+        {"message_id": message_id}
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
     # Check permission (sender or channel/project admin)
     if message["sender_id"] != user_id:
-        channel = await execute_single(
-            "SELECT project_id FROM coms_channels WHERE id = $1",
-            message["channel_id"]
+        channel = execute_single(
+            "SELECT project_id FROM coms_channels WHERE id = :channel_id",
+            {"channel_id": message["channel_id"]}
         )
-        if not channel or not await is_project_admin(channel["project_id"], user_id):
+        if not channel or not is_project_admin(channel["project_id"], user_id):
             raise HTTPException(status_code=403, detail="Not authorized to delete this message")
 
-    await execute_single(
-        "UPDATE coms_messages SET is_deleted = TRUE WHERE id = $1",
-        message_id
+    execute_single(
+        "UPDATE coms_messages SET is_deleted = TRUE WHERE id = :message_id",
+        {"message_id": message_id}
     )
 
     return {"success": True}
@@ -605,18 +615,18 @@ async def list_channel_members(
     """List channel members"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    members = await execute_query(
+    members = execute_query(
         """
         SELECT cm.*, p.username, p.full_name, p.avatar_url
         FROM coms_channel_members cm
         LEFT JOIN profiles p ON p.id = cm.user_id
-        WHERE cm.channel_id = $1
+        WHERE cm.channel_id = :channel_id
         ORDER BY cm.joined_at
         """,
-        channel_id
+        {"channel_id": channel_id}
     )
 
     return members
@@ -631,44 +641,44 @@ async def add_channel_member(
     """Add a member to a channel"""
     user_id = user["id"]
 
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
 
     # Check permission
-    is_channel_admin = await execute_single(
-        "SELECT id FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2 AND role = 'admin'",
-        channel_id, user_id
+    is_channel_admin = execute_single(
+        "SELECT id FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :user_id AND role = 'admin'",
+        {"channel_id": channel_id, "user_id": user_id}
     )
-    is_proj_admin = channel["project_id"] and await is_project_admin(channel["project_id"], user_id)
+    is_proj_admin = channel["project_id"] and is_project_admin(channel["project_id"], user_id)
 
     if not (is_channel_admin or is_proj_admin):
         raise HTTPException(status_code=403, detail="Not authorized to add members")
 
     # Check if already member
-    existing = await execute_single(
-        "SELECT id FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2",
-        channel_id, member.user_id
+    existing = execute_single(
+        "SELECT id FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :member_user_id",
+        {"channel_id": channel_id, "member_user_id": member.user_id}
     )
     if existing:
         raise HTTPException(status_code=400, detail="User is already a member")
 
-    result = await execute_single(
+    result = execute_single(
         """
         INSERT INTO coms_channel_members (channel_id, user_id, role, can_transmit)
-        VALUES ($1, $2, $3, $4)
+        VALUES (:channel_id, :user_id, :role, :can_transmit)
         RETURNING *
         """,
-        channel_id, member.user_id, member.role.value, member.can_transmit
+        {"channel_id": channel_id, "user_id": member.user_id, "role": member.role.value, "can_transmit": member.can_transmit}
     )
 
     # Get user info
-    user_info = await execute_single(
-        "SELECT username, full_name, avatar_url FROM profiles WHERE id = $1",
-        member.user_id
+    user_info = execute_single(
+        "SELECT username, full_name, avatar_url FROM profiles WHERE id = :user_id",
+        {"user_id": member.user_id}
     )
 
     return {**result, **(user_info or {})}
@@ -683,27 +693,27 @@ async def remove_channel_member(
     """Remove a member from a channel"""
     user_id = user["id"]
 
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
 
     # Check permission (self, channel admin, or project admin)
     is_self = member_user_id == user_id
-    is_channel_admin = await execute_single(
-        "SELECT id FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2 AND role = 'admin'",
-        channel_id, user_id
+    is_channel_admin = execute_single(
+        "SELECT id FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :user_id AND role = 'admin'",
+        {"channel_id": channel_id, "user_id": user_id}
     )
-    is_proj_admin = channel["project_id"] and await is_project_admin(channel["project_id"], user_id)
+    is_proj_admin = channel["project_id"] and is_project_admin(channel["project_id"], user_id)
 
     if not (is_self or is_channel_admin or is_proj_admin):
         raise HTTPException(status_code=403, detail="Not authorized to remove members")
 
-    await execute_single(
-        "DELETE FROM coms_channel_members WHERE channel_id = $1 AND user_id = $2",
-        channel_id, member_user_id
+    execute_single(
+        "DELETE FROM coms_channel_members WHERE channel_id = :channel_id AND user_id = :member_user_id",
+        {"channel_id": channel_id, "member_user_id": member_user_id}
     )
 
     return {"success": True}
@@ -721,12 +731,12 @@ async def join_voice_room(
     """Join a voice channel"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    channel = await execute_single(
-        "SELECT * FROM coms_channels WHERE id = $1 AND archived_at IS NULL",
-        channel_id
+    channel = execute_single(
+        "SELECT * FROM coms_channels WHERE id = :channel_id AND archived_at IS NULL",
+        {"channel_id": channel_id}
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -734,46 +744,51 @@ async def join_voice_room(
     if channel["channel_type"] not in ["voice", "text_and_voice"]:
         raise HTTPException(status_code=400, detail="Channel does not support voice")
 
-    # Get or create voice room
-    room = await execute_single(
-        "SELECT * FROM coms_voice_rooms WHERE channel_id = $1 AND is_active = TRUE",
-        channel_id
+    # Get or create voice room (reactivate if inactive)
+    room = execute_single(
+        "SELECT * FROM coms_voice_rooms WHERE channel_id = :channel_id AND is_active = TRUE",
+        {"channel_id": channel_id}
     )
     if not room:
-        room = await execute_single(
+        # Try to reactivate existing inactive room, or create new one
+        room = execute_single(
             """
             INSERT INTO coms_voice_rooms (channel_id, ice_servers)
-            VALUES ($1, $2)
+            VALUES (:channel_id, CAST(:ice_servers AS jsonb))
+            ON CONFLICT (channel_id) DO UPDATE SET
+                is_active = TRUE,
+                started_at = NOW(),
+                ended_at = NULL
             RETURNING *
             """,
-            channel_id, DEFAULT_ICE_SERVERS
+            {"channel_id": channel_id, "ice_servers": json.dumps(DEFAULT_ICE_SERVERS)}
         )
 
     # Add participant
-    participant = await execute_single(
+    participant = execute_single(
         """
         INSERT INTO coms_voice_participants (room_id, user_id)
-        VALUES ($1, $2)
+        VALUES (:room_id, :user_id)
         ON CONFLICT (room_id, user_id)
         DO UPDATE SET joined_at = NOW(), last_activity_at = NOW()
         RETURNING *
         """,
-        room["id"], user_id
+        {"room_id": room["id"], "user_id": user_id}
     )
 
     # Get all participants
-    participants = await execute_query(
+    participants = execute_query(
         """
         SELECT vp.*, p.username, p.full_name, p.avatar_url,
                bpr.backlot_role as production_role
         FROM coms_voice_participants vp
         LEFT JOIN profiles p ON p.id = vp.user_id
         LEFT JOIN backlot_project_roles bpr ON bpr.user_id = vp.user_id
-            AND bpr.project_id = $2
+            AND bpr.project_id = :project_id
             AND bpr.is_primary = true
-        WHERE vp.room_id = $1
+        WHERE vp.room_id = :room_id
         """,
-        room["id"], channel["project_id"]
+        {"room_id": room["id"], "project_id": channel["project_id"]}
     )
 
     return {
@@ -792,26 +807,53 @@ async def leave_voice_room(
     """Leave a voice channel"""
     user_id = user["id"]
 
-    room = await execute_single(
-        "SELECT * FROM coms_voice_rooms WHERE channel_id = $1 AND is_active = TRUE",
-        channel_id
+    room = execute_single(
+        "SELECT * FROM coms_voice_rooms WHERE channel_id = :channel_id AND is_active = TRUE",
+        {"channel_id": channel_id}
     )
     if room:
-        await execute_single(
-            "DELETE FROM coms_voice_participants WHERE room_id = $1 AND user_id = $2",
-            room["id"], user_id
+        execute_update(
+            "DELETE FROM coms_voice_participants WHERE room_id = :room_id AND user_id = :user_id",
+            {"room_id": room["id"], "user_id": user_id}
         )
 
         # Check if room is empty
-        remaining = await execute_single(
-            "SELECT COUNT(*) as count FROM coms_voice_participants WHERE room_id = $1",
-            room["id"]
+        remaining = execute_single(
+            "SELECT COUNT(*) as count FROM coms_voice_participants WHERE room_id = :room_id",
+            {"room_id": room["id"]}
         )
         if remaining["count"] == 0:
-            await execute_single(
-                "UPDATE coms_voice_rooms SET is_active = FALSE, ended_at = NOW() WHERE id = $1",
-                room["id"]
+            execute_update(
+                "UPDATE coms_voice_rooms SET is_active = FALSE, ended_at = NOW() WHERE id = :room_id",
+                {"room_id": room["id"]}
             )
+
+    return {"success": True}
+
+
+@router.post("/channels/{channel_id}/voice/ptt")
+async def update_ptt_state(
+    channel_id: str,
+    body: dict,
+    user=Depends(get_current_user)
+):
+    """Update push-to-talk transmitting state"""
+    user_id = user["id"]
+    is_transmitting = body.get("is_transmitting", False)
+
+    room = execute_single(
+        "SELECT id FROM coms_voice_rooms WHERE channel_id = :channel_id AND is_active = TRUE",
+        {"channel_id": channel_id}
+    )
+    if room:
+        execute_update(
+            """
+            UPDATE coms_voice_participants
+            SET is_transmitting = :is_transmitting, last_activity_at = NOW()
+            WHERE room_id = :room_id AND user_id = :user_id
+            """,
+            {"room_id": room["id"], "user_id": user_id, "is_transmitting": is_transmitting}
+        )
 
     return {"success": True}
 
@@ -824,33 +866,33 @@ async def get_voice_participants(
     """Get current voice participants"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    channel = await execute_single(
-        "SELECT project_id FROM coms_channels WHERE id = $1",
-        channel_id
+    channel = execute_single(
+        "SELECT project_id FROM coms_channels WHERE id = :channel_id",
+        {"channel_id": channel_id}
     )
 
-    room = await execute_single(
-        "SELECT * FROM coms_voice_rooms WHERE channel_id = $1 AND is_active = TRUE",
-        channel_id
+    room = execute_single(
+        "SELECT * FROM coms_voice_rooms WHERE channel_id = :channel_id AND is_active = TRUE",
+        {"channel_id": channel_id}
     )
     if not room:
         return []
 
-    participants = await execute_query(
+    participants = execute_query(
         """
         SELECT vp.*, p.username, p.full_name, p.avatar_url,
                bpr.backlot_role as production_role
         FROM coms_voice_participants vp
         LEFT JOIN profiles p ON p.id = vp.user_id
         LEFT JOIN backlot_project_roles bpr ON bpr.user_id = vp.user_id
-            AND bpr.project_id = $2
+            AND bpr.project_id = :project_id
             AND bpr.is_primary = true
-        WHERE vp.room_id = $1
+        WHERE vp.room_id = :room_id
         """,
-        room["id"], channel["project_id"] if channel else None
+        {"room_id": room["id"], "project_id": channel["project_id"] if channel else None}
     )
 
     return participants
@@ -868,30 +910,32 @@ async def update_presence(
     """Update user presence status"""
     user_id = user["id"]
 
-    result = await execute_single(
+    result = execute_single(
         """
         INSERT INTO coms_user_presence (user_id, status, status_message, current_channel_id, current_project_id)
-        VALUES ($1, $2, $3, $4, $5)
+        VALUES (:user_id, :status, :status_message, :current_channel_id, :current_project_id)
         ON CONFLICT (user_id)
         DO UPDATE SET
-            status = $2,
-            status_message = $3,
-            current_channel_id = $4,
-            current_project_id = $5,
+            status = :status,
+            status_message = :status_message,
+            current_channel_id = :current_channel_id,
+            current_project_id = :current_project_id,
             last_seen_at = NOW()
         RETURNING *
         """,
-        user_id,
-        presence.status.value,
-        presence.status_message,
-        presence.current_channel_id,
-        presence.current_project_id
+        {
+            "user_id": user_id,
+            "status": presence.status.value,
+            "status_message": presence.status_message,
+            "current_channel_id": presence.current_channel_id,
+            "current_project_id": presence.current_project_id
+        }
     )
 
     # Get user info
-    user_info = await execute_single(
-        "SELECT username, full_name, avatar_url FROM profiles WHERE id = $1",
-        user_id
+    user_info = execute_single(
+        "SELECT username, full_name, avatar_url FROM profiles WHERE id = :user_id",
+        {"user_id": user_id}
     )
 
     return {**result, **(user_info or {})}
@@ -904,7 +948,7 @@ async def get_project_presence(
 ):
     """Get presence for all users in a project"""
     # Get project members with presence
-    users = await execute_query(
+    users = execute_query(
         """
         SELECT p.id as user_id, p.username, p.full_name, p.avatar_url,
                COALESCE(up.status, 'offline') as status,
@@ -915,7 +959,7 @@ async def get_project_presence(
         FROM backlot_project_members bpm
         JOIN profiles p ON p.id = bpm.user_id
         LEFT JOIN coms_user_presence up ON up.user_id = bpm.user_id
-        WHERE bpm.project_id = $1
+        WHERE bpm.project_id = :project_id
         ORDER BY
             CASE up.status
                 WHEN 'online' THEN 1
@@ -925,7 +969,7 @@ async def get_project_presence(
             END,
             p.full_name
         """,
-        project_id
+        {"project_id": project_id}
     )
 
     online_count = sum(1 for u in users if u["status"] == "online")
@@ -952,35 +996,35 @@ async def mark_channel_read(
     """Mark channel as read"""
     user_id = user["id"]
 
-    if not await can_access_channel(channel_id, user_id):
+    if not can_access_channel(channel_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     if request.message_id:
         # Mark up to specific message
-        await execute_single(
+        execute_update(
             """
             INSERT INTO coms_read_receipts (channel_id, user_id, last_read_message_id, last_read_at)
-            VALUES ($1, $2, $3, NOW())
+            VALUES (:channel_id, :user_id, :message_id, NOW())
             ON CONFLICT (channel_id, user_id)
-            DO UPDATE SET last_read_message_id = $3, last_read_at = NOW()
+            DO UPDATE SET last_read_message_id = :message_id, last_read_at = NOW()
             """,
-            channel_id, user_id, request.message_id
+            {"channel_id": channel_id, "user_id": user_id, "message_id": request.message_id}
         )
     else:
         # Mark all as read (get latest message)
-        latest = await execute_single(
-            "SELECT id FROM coms_messages WHERE channel_id = $1 ORDER BY created_at DESC LIMIT 1",
-            channel_id
+        latest = execute_single(
+            "SELECT id FROM coms_messages WHERE channel_id = :channel_id ORDER BY created_at DESC LIMIT 1",
+            {"channel_id": channel_id}
         )
         if latest:
-            await execute_single(
+            execute_update(
                 """
                 INSERT INTO coms_read_receipts (channel_id, user_id, last_read_message_id, last_read_at)
-                VALUES ($1, $2, $3, NOW())
+                VALUES (:channel_id, :user_id, :message_id, NOW())
                 ON CONFLICT (channel_id, user_id)
-                DO UPDATE SET last_read_message_id = $3, last_read_at = NOW()
+                DO UPDATE SET last_read_message_id = :message_id, last_read_at = NOW()
                 """,
-                channel_id, user_id, latest["id"]
+                {"channel_id": channel_id, "user_id": user_id, "message_id": latest["id"]}
             )
 
     return {"success": True}
@@ -996,23 +1040,23 @@ async def get_unread_counts(
     user_role = None
 
     if project_id:
-        user_role = await get_user_backlot_role(project_id, user_id)
+        user_role = get_user_backlot_role(project_id, user_id)
 
-    channels = await execute_query(
+    channels = execute_query(
         """
         SELECT c.id as channel_id, c.name as channel_name,
-               COALESCE(get_coms_unread_count(c.id, $2), 0) as unread_count
+               COALESCE(get_coms_unread_count(c.id, :user_id), 0) as unread_count
         FROM coms_channels c
-        WHERE ($1::uuid IS NULL OR c.project_id = $1)
+        WHERE (:project_id::uuid IS NULL OR c.project_id = :project_id)
           AND c.archived_at IS NULL
           AND (
               array_length(c.visible_to_roles, 1) IS NULL
               OR array_length(c.visible_to_roles, 1) = 0
-              OR $3 = ANY(c.visible_to_roles)
-              OR EXISTS (SELECT 1 FROM coms_channel_members WHERE channel_id = c.id AND user_id = $2)
+              OR :user_role = ANY(c.visible_to_roles)
+              OR EXISTS (SELECT 1 FROM coms_channel_members WHERE channel_id = c.id AND user_id = :user_id)
           )
         """,
-        project_id, user_id, user_role
+        {"project_id": project_id, "user_id": user_id, "user_role": user_role}
     )
 
     total = sum(c["unread_count"] for c in channels)
@@ -1030,7 +1074,7 @@ async def get_unread_counts(
 @router.get("/templates", response_model=List[ChannelTemplate])
 async def list_channel_templates():
     """List available channel templates"""
-    templates = await execute_query(
+    templates = execute_query(
         """
         SELECT * FROM coms_channel_templates
         WHERE is_active = TRUE
@@ -1049,7 +1093,7 @@ async def apply_templates_to_project(
     """Apply production channel templates to a project"""
     user_id = user["id"]
 
-    if not await is_project_admin(project_id, user_id):
+    if not is_project_admin(project_id, user_id):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     created_channels = []
@@ -1057,44 +1101,48 @@ async def apply_templates_to_project(
 
     for template_key in request.template_keys:
         # Get template
-        template = await execute_single(
-            "SELECT * FROM coms_channel_templates WHERE template_key = $1 AND is_active = TRUE",
-            template_key
+        template = execute_single(
+            "SELECT * FROM coms_channel_templates WHERE template_key = :template_key AND is_active = TRUE",
+            {"template_key": template_key}
         )
         if not template:
             skipped_templates.append(template_key)
             continue
 
         # Check if already exists
-        existing = await execute_single(
-            "SELECT id FROM coms_channels WHERE project_id = $1 AND template_key = $2 AND archived_at IS NULL",
-            project_id, template_key
+        existing = execute_single(
+            "SELECT id FROM coms_channels WHERE project_id = :project_id AND template_key = :template_key AND archived_at IS NULL",
+            {"project_id": project_id, "template_key": template_key}
         )
         if existing:
             skipped_templates.append(template_key)
             continue
 
         # Create channel from template
-        channel = await execute_single(
+        channel = execute_single(
             """
             INSERT INTO coms_channels (
                 name, description, channel_type, scope, project_id,
                 icon, color, template_key, is_system_channel,
                 visible_to_roles, can_transmit_roles, created_by, sort_order
-            ) VALUES ($1, $2, $3, 'project', $4, $5, $6, $7, TRUE, $8, $9, $10, $11)
+            ) VALUES (:name, :description, :channel_type, 'project', :project_id,
+                      :icon, :color, :template_key, TRUE, :visible_to_roles,
+                      :can_transmit_roles, :created_by, :sort_order)
             RETURNING *
             """,
-            template["name"],
-            template["description"],
-            template["channel_type"],
-            project_id,
-            template["icon"],
-            template["color"],
-            template_key,
-            template["default_visible_to_roles"],
-            template["default_can_transmit_roles"],
-            user_id,
-            template["sort_order"]
+            {
+                "name": template["name"],
+                "description": template["description"],
+                "channel_type": template["channel_type"],
+                "project_id": project_id,
+                "icon": template["icon"],
+                "color": template["color"],
+                "template_key": template_key,
+                "visible_to_roles": template["default_visible_to_roles"],
+                "can_transmit_roles": template["default_can_transmit_roles"],
+                "created_by": user_id,
+                "sort_order": template["sort_order"]
+            }
         )
 
         created_channels.append({**channel, "unread_count": 0, "member_count": 0})

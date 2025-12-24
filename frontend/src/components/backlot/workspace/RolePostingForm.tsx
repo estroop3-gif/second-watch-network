@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { useProjectRoleMutations } from '@/hooks/backlot';
+import { useProjectRoleMutations, usePostRoleToCommunity, useRemoveRoleFromCommunity } from '@/hooks/backlot';
 import {
   BacklotProjectRole,
   ProjectRoleInput,
@@ -26,7 +26,7 @@ import {
   CREW_DEPARTMENTS,
   GENDER_OPTIONS,
 } from '@/types/backlot';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Users } from 'lucide-react';
 
 interface RolePostingFormProps {
   projectId: string;
@@ -43,7 +43,12 @@ export function RolePostingForm({
 }: RolePostingFormProps) {
   const { toast } = useToast();
   const { createRole, updateRole } = useProjectRoleMutations(projectId);
+  const postToCommunityMutation = usePostRoleToCommunity();
+  const removeFromCommunityMutation = useRemoveRoleFromCommunity();
   const isEditing = !!role;
+
+  // Track community posting state
+  const [postToCommunity, setPostToCommunity] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState<ProjectRoleInput>({
@@ -100,6 +105,8 @@ export function RolePostingForm({
         application_deadline: role.application_deadline || '',
         max_applications: role.max_applications,
       });
+      // Set community posting state based on whether role is already posted
+      setPostToCommunity(!!role.community_job_id);
     }
   }, [role]);
 
@@ -132,19 +139,59 @@ export function RolePostingForm({
         application_deadline: formData.application_deadline || null,
       };
 
+      let savedRoleId: string;
+
       if (isEditing && role) {
         await updateRole.mutateAsync({ roleId: role.id, input: cleanedData });
+        savedRoleId = role.id;
         toast({
           title: 'Role updated',
           description: 'The role has been updated successfully.',
         });
       } else {
-        await createRole.mutateAsync(cleanedData);
+        const newRole = await createRole.mutateAsync(cleanedData);
+        savedRoleId = newRole.id;
         toast({
           title: 'Role created',
           description: 'Your role posting is now live.',
         });
       }
+
+      // Handle community posting changes
+      const wasPostedToCommunity = isEditing && role?.community_job_id;
+
+      if (postToCommunity && !wasPostedToCommunity) {
+        // Post to community
+        try {
+          await postToCommunityMutation.mutateAsync({ roleId: savedRoleId, projectId });
+          toast({
+            title: 'Posted to Community',
+            description: 'This role is now visible on the Collab Board.',
+          });
+        } catch (err: any) {
+          toast({
+            title: 'Warning',
+            description: `Role saved but failed to post to community: ${err.message}`,
+            variant: 'destructive',
+          });
+        }
+      } else if (!postToCommunity && wasPostedToCommunity) {
+        // Remove from community
+        try {
+          await removeFromCommunityMutation.mutateAsync({ roleId: savedRoleId, projectId });
+          toast({
+            title: 'Removed from Community',
+            description: 'This role is no longer visible on the Collab Board.',
+          });
+        } catch (err: any) {
+          toast({
+            title: 'Warning',
+            description: `Role saved but failed to remove from community: ${err.message}`,
+            variant: 'destructive',
+          });
+        }
+      }
+
       onSuccess();
     } catch (error: any) {
       toast({
@@ -155,7 +202,8 @@ export function RolePostingForm({
     }
   };
 
-  const isPending = createRole.isPending || updateRole.isPending;
+  const isPending = createRole.isPending || updateRole.isPending ||
+    postToCommunityMutation.isPending || removeFromCommunityMutation.isPending;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -455,6 +503,27 @@ export function RolePostingForm({
           Visibility
         </h3>
         <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-4">
+            <Switch
+              id="post_to_community"
+              checked={postToCommunity}
+              onCheckedChange={setPostToCommunity}
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="post_to_community">Post to Community</Label>
+                <Users className="w-4 h-4 text-muted-foreground" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Share this role on the Collab Board for community members to discover and apply
+              </p>
+              {role?.community_job_id && (
+                <p className="text-xs text-accent-yellow mt-1">
+                  Currently posted to community
+                </p>
+              )}
+            </div>
+          </div>
           <div className="flex items-center gap-4">
             <Switch
               id="is_order_only"

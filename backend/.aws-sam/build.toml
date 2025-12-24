@@ -9,4 +9,13 @@ manifest_hash = ""
 packagetype = "Zip"
 functions = ["SecondWatchApi"]
 
+[function_build_definitions.54880f9c-94cd-4275-be34-8acf0176150b]
+codeuri = "/home/estro/second-watch-network/backend/websocket"
+runtime = "python3.12"
+architecture = "x86_64"
+handler = "handler.handler"
+manifest_hash = ""
+packagetype = "Zip"
+functions = ["WebSocketFunction"]
+
 [layer_build_definitions]

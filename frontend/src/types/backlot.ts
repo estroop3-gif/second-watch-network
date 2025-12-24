@@ -104,6 +104,46 @@ export interface BacklotProductionDay {
   location?: BacklotLocation;
   call_sheets?: BacklotCallSheet[];
   task_count?: number;
+  // Scene assignments from schedule
+  assigned_scenes?: ProductionDayScene[];
+  scene_count?: number;
+}
+
+// Production Day Scene Assignment (for schedule scene assignment)
+export interface ProductionDayScene {
+  id: string;
+  production_day_id: string;
+  scene_id: string;
+  sort_order: number;
+  estimated_duration: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined scene data
+  scene?: {
+    id: string;
+    scene_number: string;
+    slugline: string | null;
+    set_name: string | null;
+    description: string | null;
+    page_length: number | null;
+    int_ext: string | null;
+    time_of_day: string | null;
+    status: string | null;
+  };
+}
+
+// Input for adding a scene to a production day
+export interface ProductionDaySceneInput {
+  scene_id: string;
+  sort_order?: number;
+  estimated_duration?: string;
+  notes?: string;
+}
+
+// Input for reordering scenes in a production day
+export interface ProductionDaySceneReorderInput {
+  scene_orders: { scene_id: string; sort_order: number }[];
 }
 
 // Call Sheet
@@ -869,11 +909,21 @@ export interface BacklotProjectCredit {
   order_index: number;
   endorsement_note: string | null;
   imdb_id: string | null;
+  credit_preference_id: string | null;
+  auto_created: boolean;
+  source_role_id: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
   // Joined data
   linked_user?: BacklotProfile;
+  credit_preference?: CreditPreference | null;
+  source_role?: {
+    id: string;
+    title: string;
+    department: string | null;
+    type: 'cast' | 'crew';
+  } | null;
 }
 
 // Input types for mutations
@@ -1272,7 +1322,10 @@ export type BacklotWorkspaceView =
   | 'invoices'
   | 'coms'
   | 'scripty'
-  | 'expenses';
+  | 'expenses'
+  | 'approvals'
+  | 'camera'
+  | 'budget-comparison';
 
 // =============================================================================
 // HOT SET (Production Day) TYPES
@@ -1912,6 +1965,7 @@ export interface ReceiptInput {
   budget_id?: string;
   daily_budget_id?: string;
   budget_line_item_id?: string;
+  scene_id?: string;
   vendor_name?: string;
   description?: string;
   purchase_date?: string;
@@ -1927,6 +1981,7 @@ export interface ReceiptInput {
 export interface ReceiptMappingInput {
   budget_line_item_id?: string;
   daily_budget_id?: string;
+  scene_id?: string;
   vendor_name?: string;
   amount?: number;
   purchase_date?: string;
@@ -3107,6 +3162,9 @@ export interface BacklotProjectRole {
     cover_image_url: string | null;
     owner_id: string;
   };
+  // Community posting
+  community_job_id: number | null;
+  posted_to_community_at: string | null;
   // For open roles listing
   user_has_applied?: boolean;
   user_application_status?: BacklotApplicationStatus | null;
@@ -5714,3 +5772,366 @@ export const RATE_TYPE_OPTIONS = [
   { value: 'weekly', label: 'Weekly' },
   { value: 'flat', label: 'Flat Rate' },
 ] as const;
+
+// =====================================================
+// Crew Rates Types
+// =====================================================
+
+export type CrewRateType = 'hourly' | 'daily' | 'weekly' | 'flat';
+
+export type CrewRateSource = 'manual' | 'deal_memo' | 'imported';
+
+export interface CrewRate {
+  id: string;
+  project_id: string;
+  user_id: string | null;
+  role_id: string | null;
+  rate_type: CrewRateType;
+  rate_amount: number;
+  overtime_multiplier: number;
+  double_time_multiplier: number;
+  kit_rental_rate: number | null;
+  car_allowance: number | null;
+  phone_allowance: number | null;
+  effective_start: string | null;
+  effective_end: string | null;
+  notes: string | null;
+  deal_memo_id: string | null;
+  source: CrewRateSource;
+  created_at: string;
+  updated_at: string;
+  // Enriched fields from API
+  user?: {
+    id: string;
+    full_name: string | null;
+    username: string | null;
+    avatar_url: string | null;
+  } | null;
+  role?: {
+    id: string;
+    title: string;
+    department: string | null;
+    type: 'cast' | 'crew';
+  } | null;
+  deal_memo?: DealMemo | null;
+}
+
+export interface CrewRateInput {
+  user_id?: string | null;
+  role_id?: string | null;
+  rate_type: CrewRateType;
+  rate_amount: number;
+  overtime_multiplier?: number;
+  double_time_multiplier?: number;
+  kit_rental_rate?: number | null;
+  car_allowance?: number | null;
+  phone_allowance?: number | null;
+  effective_start?: string | null;
+  effective_end?: string | null;
+  notes?: string | null;
+}
+
+export interface CrewRatesResponse {
+  success: boolean;
+  rates: CrewRate[];
+  count: number;
+}
+
+export interface CrewRateResponse {
+  success: boolean;
+  rate: CrewRate;
+  message?: string;
+}
+
+// =====================================================
+// Daily Budget Labor Costs Types
+// =====================================================
+
+export interface LaborCostEntry {
+  user_id: string;
+  user_name: string | null;
+  user_avatar: string | null;
+  role_title: string | null;
+  department: string | null;
+  position: string | null;
+  hours_worked: number;
+  overtime_hours: number;
+  double_time_hours: number;
+  rate_type: CrewRateType;
+  rate_amount: number;
+  overtime_multiplier: number;
+  double_time_multiplier: number;
+  base_pay: number;
+  overtime_pay: number;
+  double_time_pay: number;
+  kit_rental: number;
+  car_allowance: number;
+  phone_allowance: number;
+  total_pay: number;
+  rate_source: 'crew_rate' | 'entry' | 'budget';
+  timecard_status: string;
+  timecard_entry_id: string | null;
+}
+
+export interface DailyLaborCosts {
+  production_day_id: string;
+  date: string;
+  entries: LaborCostEntry[];
+  total_base_pay: number;
+  total_overtime_pay: number;
+  total_double_time_pay: number;
+  total_allowances: number;
+  grand_total: number;
+  approved_count: number;
+  pending_count: number;
+}
+
+// =============================================================================
+// DAILY BUDGET SCENE COSTS
+// =============================================================================
+
+export interface SceneExpenseItem {
+  id: string;
+  expense_type: 'receipt' | 'mileage' | 'kit_rental' | 'per_diem' | 'invoice_line_item';
+  description: string | null;
+  amount: number;
+  vendor: string | null;
+  user_name: string | null;
+  date: string | null;
+  status: string | null;
+}
+
+export interface SceneBreakdownCostItem {
+  id: string;
+  item_type: string; // 'prop', 'wardrobe', 'makeup', 'special_effect', 'vehicle', 'animal', 'other'
+  description: string;
+  quantity: number;
+  estimated_cost: number;
+  notes: string | null;
+}
+
+export interface SceneCostDetail {
+  scene_id: string;
+  scene_number: string | null;
+  scene_name: string | null;
+  int_ext: string | null;
+  location: string | null;
+
+  // Breakdown items (from scene breakdown)
+  breakdown_items: SceneBreakdownCostItem[];
+  breakdown_subtotal: number;
+
+  // Expenses linked to this scene
+  expenses: SceneExpenseItem[];
+  expenses_subtotal: number;
+
+  // Total for this scene
+  scene_total: number;
+}
+
+export interface DailySceneCosts {
+  production_day_id: string;
+  date: string;
+  scenes: SceneCostDetail[];
+  total_breakdown_costs: number;
+  total_expense_costs: number;
+  grand_total: number;
+}
+
+// =============================================================================
+// DAILY BUDGET INVOICES
+// =============================================================================
+
+export interface DailyInvoiceLineItem {
+  id: string;
+  description: string | null;
+  quantity: number;
+  unit_price: number;
+  amount: number;
+  service_date: string | null;
+  scene_id: string | null;
+  scene_number: string | null;
+}
+
+export interface DailyInvoiceEntry {
+  id: string;
+  invoice_number: string | null;
+  vendor_name: string | null;
+  vendor_email: string | null;
+  status: string;
+  invoice_date: string | null;
+  due_date: string | null;
+  subtotal: number;
+  tax_amount: number;
+  total_amount: number;
+  notes: string | null;
+  line_items: DailyInvoiceLineItem[];
+  link_type: 'production_day' | 'service_date';
+}
+
+export interface DailyInvoices {
+  production_day_id: string;
+  date: string;
+  invoices: DailyInvoiceEntry[];
+  total_amount: number;
+  approved_total: number;
+  pending_total: number;
+  invoice_count: number;
+  approved_count: number;
+  pending_count: number;
+}
+
+// =============================================================================
+// DEAL MEMOS
+// =============================================================================
+
+export type DealMemoStatus = 'draft' | 'pending_send' | 'sent' | 'viewed' | 'signed' | 'declined' | 'voided' | 'expired';
+export type DealMemoRateType = 'hourly' | 'daily' | 'weekly' | 'flat';
+
+export interface DealMemo {
+  id: string;
+  project_id: string;
+  role_id: string | null;
+  user_id: string;
+
+  // Deal Terms
+  position_title: string;
+  rate_type: DealMemoRateType;
+  rate_amount: number;
+  overtime_multiplier: number;
+  double_time_multiplier: number;
+  kit_rental_rate: number | null;
+  car_allowance: number | null;
+  phone_allowance: number | null;
+  per_diem_rate: number | null;
+  start_date: string | null;
+  end_date: string | null;
+  additional_terms: Record<string, unknown>;
+  notes: string | null;
+
+  // DocuSign
+  docusign_envelope_id: string | null;
+  docusign_status: string;
+  docusign_sent_at: string | null;
+  docusign_signed_at: string | null;
+  docusign_declined_at: string | null;
+  docusign_void_reason: string | null;
+  signed_document_url: string | null;
+
+  // Status
+  status: DealMemoStatus;
+
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+
+  // Joined data
+  user?: BacklotProfile;
+  role?: {
+    id: string;
+    title: string;
+    department: string | null;
+    type: 'cast' | 'crew';
+  } | null;
+  created_by_user?: BacklotProfile;
+}
+
+export interface DealMemoInput {
+  role_id?: string | null;
+  user_id: string;
+  position_title: string;
+  rate_type: DealMemoRateType;
+  rate_amount: number;
+  overtime_multiplier?: number;
+  double_time_multiplier?: number;
+  kit_rental_rate?: number | null;
+  car_allowance?: number | null;
+  phone_allowance?: number | null;
+  per_diem_rate?: number | null;
+  start_date?: string | null;
+  end_date?: string | null;
+  additional_terms?: Record<string, unknown>;
+  notes?: string | null;
+}
+
+export interface DealMemoResponse {
+  success: boolean;
+  deal_memo: DealMemo;
+  message?: string;
+}
+
+export interface DealMemosResponse {
+  success: boolean;
+  deal_memos: DealMemo[];
+  count: number;
+}
+
+// =============================================================================
+// CREDIT PREFERENCES
+// =============================================================================
+
+export interface CreditPreference {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  role_id: string | null;
+
+  display_name: string | null;
+  role_title_preference: string | null;
+  department_preference: string | null;
+  endorsement_note: string | null;
+  imdb_id: string | null;
+  use_as_default: boolean;
+  is_public: boolean;
+
+  created_at: string;
+  updated_at: string;
+
+  // Joined data
+  user?: BacklotProfile;
+  role?: {
+    id: string;
+    title: string;
+    department: string | null;
+    type: 'cast' | 'crew';
+  } | null;
+}
+
+export interface CreditPreferenceInput {
+  project_id?: string | null;
+  role_id?: string | null;
+  display_name?: string | null;
+  role_title_preference?: string | null;
+  department_preference?: string | null;
+  endorsement_note?: string | null;
+  imdb_id?: string | null;
+  use_as_default?: boolean;
+  is_public?: boolean;
+}
+
+export interface CreditPreferenceResponse {
+  success: boolean;
+  credit_preference: CreditPreference;
+  message?: string;
+}
+
+export interface CreditPreferencesResponse {
+  success: boolean;
+  credit_preferences: CreditPreference[];
+  count: number;
+}
+
+// =============================================================================
+// DOCUSIGN WEBHOOKS
+// =============================================================================
+
+export interface DocuSignWebhook {
+  id: string;
+  envelope_id: string;
+  event_type: string;
+  event_timestamp: string;
+  payload: Record<string, unknown>;
+  processed_at: string | null;
+  processing_error: string | null;
+  created_at: string;
+}

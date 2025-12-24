@@ -36,7 +36,10 @@ import {
   Trash2,
   Save,
   X,
+  Info,
+  Loader2,
 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { useTakes, useCreateTake, useUpdateTake, useDeleteTake, useTakeNotes, useCreateTakeNote } from '@/hooks/backlot/useContinuity';
@@ -45,6 +48,7 @@ interface TakeLoggerPanelProps {
   projectId: string;
   sceneId: string | null;
   productionDayId: string | null;
+  selectedSceneNumber?: string; // Auto-populated scene number from parent
   canEdit: boolean;
   isRecording: boolean;
   onTakeLogged?: () => void;
@@ -80,6 +84,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
   projectId,
   sceneId,
   productionDayId,
+  selectedSceneNumber,
   canEdit,
   isRecording,
   onTakeLogged,
@@ -145,10 +150,22 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
 
   // Create new take
   const handleCreateTake = async () => {
-    if (!sceneId || !productionDayId) {
+    // Only require scene selection - productionDayId is optional
+    if (!sceneId) {
       toast({
-        title: 'Missing selection',
-        description: 'Please select a scene and production day',
+        title: 'Scene Required',
+        description: 'Please select a scene from the script panel',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Derive scene_number from selected scene or manual entry
+    const sceneNumber = selectedSceneNumber || newTakeData.scene_number;
+    if (!sceneNumber) {
+      toast({
+        title: 'Scene Number Required',
+        description: 'Could not determine scene number. Please ensure a scene is selected.',
         variant: 'destructive',
       });
       return;
@@ -159,8 +176,8 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       await createTake.mutateAsync({
         project_id: projectId,
         scene_id: sceneId,
-        production_day_id: productionDayId,
-        scene_number: newTakeData.scene_number,
+        production_day_id: productionDayId || undefined, // Optional now
+        scene_number: sceneNumber,
         take_number: takeNumberToUse,
         status: newTakeData.status,
         timecode_in: newTakeData.timecode_in || undefined,
@@ -169,7 +186,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
         notes: newTakeData.notes || undefined,
       });
 
-      toast({ title: 'Take logged' });
+      toast({ title: 'Take logged', description: `Take ${takeNumberToUse} for Scene ${sceneNumber}` });
       setShowAddForm(false);
       // Reset form - nextTakeNumber will auto-update from the refetch
       setNewTakeData(d => ({
@@ -181,9 +198,17 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       refetch();
       onTakeLogged?.();
     } catch (err: any) {
+      // Log full error for debugging
+      console.error('[TakeLogger] Error creating take:', err);
+      console.error('[TakeLogger] Error type:', err?.constructor?.name);
+      console.error('[TakeLogger] Error message:', err?.message);
+      console.error('[TakeLogger] Error stack:', err?.stack);
+
+      // Extract meaningful error message from backend
+      const errorMessage = err.response?.data?.detail || err.message || 'Failed to log take';
       toast({
-        title: 'Error',
-        description: err.message || 'Failed to log take',
+        title: 'Failed to Log Take',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -277,6 +302,24 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       {/* Add Take Form */}
       {showAddForm && canEdit && (
         <div className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
+          {/* Info banner when no production day selected */}
+          {!productionDayId && (
+            <Alert className="bg-blue-500/10 border-blue-500/30 py-2">
+              <Info className="w-3 h-3 text-blue-400" />
+              <AlertDescription className="text-xs text-blue-300">
+                No production day selected. Take will be logged without a day reference.
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* Scene info */}
+          {selectedSceneNumber && (
+            <div className="text-xs text-muted-gray flex items-center gap-1">
+              <Film className="w-3 h-3" />
+              Scene {selectedSceneNumber}
+            </div>
+          )}
+
           <div className="grid grid-cols-3 gap-2">
             <div>
               <Input
@@ -317,6 +360,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
                   newTakeData.status === status.value && status.bgColor
                 )}
                 onClick={() => setNewTakeData(d => ({ ...d, status: status.value }))}
+                disabled={createTake.isPending}
               >
                 <status.icon className={cn('w-3 h-3 mr-1', status.color)} />
                 {status.label}
@@ -329,6 +373,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
             value={newTakeData.notes}
             onChange={(e) => setNewTakeData(d => ({ ...d, notes: e.target.value }))}
             className="h-16 text-sm resize-none"
+            disabled={createTake.isPending}
           />
 
           <Button
@@ -336,7 +381,14 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
             onClick={handleCreateTake}
             disabled={createTake.isPending}
           >
-            {createTake.isPending ? 'Saving...' : 'Log Take'}
+            {createTake.isPending ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Logging Take...
+              </>
+            ) : (
+              'Log Take'
+            )}
           </Button>
         </div>
       )}

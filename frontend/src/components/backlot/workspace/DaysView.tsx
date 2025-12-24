@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useDaysList, DayListItem, formatDate, formatCallTime, getDayStatus } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
+import { format, isToday, parseISO } from 'date-fns';
 
 interface DaysViewProps {
   projectId: string;
@@ -36,6 +37,9 @@ export default function DaysView({ projectId, canEdit, onSelectDay }: DaysViewPr
   const completedDays = days?.filter(d => d.is_completed).length || 0;
   const upcomingDays = days?.filter(d => !d.is_completed && d.has_call_sheet).length || 0;
   const planningDays = days?.filter(d => !d.is_completed && !d.has_call_sheet).length || 0;
+
+  // Find today's shoot day
+  const todayShoot = days?.find(d => isToday(parseISO(d.date)));
 
   if (isLoading) {
     return (
@@ -61,11 +65,56 @@ export default function DaysView({ projectId, canEdit, onSelectDay }: DaysViewPr
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-2xl font-heading text-bone-white">Production Days</h2>
+        <h2 className="text-2xl font-heading text-bone-white">Shoot Days</h2>
         <p className="text-sm text-muted-gray">
           {totalDays} days &middot; {completedDays} wrapped
         </p>
       </div>
+
+      {/* Today's Shoot Banner */}
+      {todayShoot && (
+        <Card
+          className="bg-gradient-to-r from-green-500/20 to-green-600/10 border-green-500/30 cursor-pointer hover:border-green-400/50 transition-colors"
+          onClick={() => onSelectDay(todayShoot)}
+        >
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex flex-col items-center justify-center w-16 h-16 rounded-lg bg-green-500/30">
+                  <span className="text-[10px] font-bold text-green-300 uppercase">Today</span>
+                  <span className="text-2xl font-bold text-green-300">{todayShoot.day_number}</span>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-green-300 text-lg">Shooting Today</span>
+                    {todayShoot.title && (
+                      <span className="text-green-400/70">— {todayShoot.title}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-4 mt-1 text-sm text-green-400/80">
+                    {todayShoot.general_call_time && (
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />
+                        Call: {formatCallTime(todayShoot.general_call_time)}
+                      </span>
+                    )}
+                    {todayShoot.location_name && (
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5" />
+                        {todayShoot.location_name}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-green-400">View Details</span>
+                <ChevronRight className="w-5 h-5 text-green-400" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -130,19 +179,36 @@ export default function DaysView({ projectId, canEdit, onSelectDay }: DaysViewPr
       <div className="space-y-3">
         {days?.map((day) => {
           const status = getDayStatus(day);
+          const dayIsToday = isToday(parseISO(day.date));
           return (
             <Card
               key={day.id}
-              className="bg-charcoal-black border-muted-gray/20 cursor-pointer hover:border-muted-gray/40 transition-colors"
+              className={cn(
+                'bg-charcoal-black cursor-pointer hover:border-muted-gray/40 transition-colors',
+                dayIsToday
+                  ? 'border-green-500/50 ring-1 ring-green-500/20'
+                  : 'border-muted-gray/20'
+              )}
               onClick={() => onSelectDay(day)}
             >
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
                     {/* Day Number */}
-                    <div className="flex flex-col items-center justify-center w-16 h-16 rounded-lg bg-muted-gray/10">
-                      <span className="text-xs text-muted-gray uppercase">Day</span>
-                      <span className="text-2xl font-bold text-bone-white">{day.day_number}</span>
+                    <div className={cn(
+                      'flex flex-col items-center justify-center w-16 h-16 rounded-lg',
+                      dayIsToday ? 'bg-green-500/20' : 'bg-muted-gray/10'
+                    )}>
+                      {dayIsToday && (
+                        <span className="text-[10px] font-bold text-green-400 uppercase">Today</span>
+                      )}
+                      {!dayIsToday && (
+                        <span className="text-xs text-muted-gray uppercase">Day</span>
+                      )}
+                      <span className={cn(
+                        'text-2xl font-bold',
+                        dayIsToday ? 'text-green-400' : 'text-bone-white'
+                      )}>{day.day_number}</span>
                     </div>
 
                     {/* Day Info */}
@@ -151,6 +217,11 @@ export default function DaysView({ projectId, canEdit, onSelectDay }: DaysViewPr
                         <span className="font-medium text-bone-white">
                           {formatDate(day.date)}
                         </span>
+                        {dayIsToday && (
+                          <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                            Shooting Today
+                          </Badge>
+                        )}
                         <Badge className={status.color}>{status.label}</Badge>
                       </div>
                       {day.title && (

@@ -3,7 +3,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { BacklotProjectCredit, ProjectCreditInput, BacklotProfile } from '@/types/backlot';
+import { BacklotProjectCredit, ProjectCreditInput, BacklotProfile, CreditPreference, CreditPreferenceInput } from '@/types/backlot';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -354,5 +354,170 @@ export function useCreditsByDepartment(projectId: string | null) {
     departments: Object.keys(groupedCredits),
     isLoading,
     error,
+  };
+}
+
+/**
+ * useCreditPreferences - Hook for managing user credit preferences
+ */
+export function useCreditPreferences(userId: string | null, projectId?: string | null) {
+  const queryClient = useQueryClient();
+
+  // Get user's credit preferences
+  const query = useQuery({
+    queryKey: ['backlot', 'credit-preferences', userId, projectId],
+    queryFn: async () => {
+      if (!userId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      let url = `${API_BASE}/api/v1/backlot/users/${userId}/credit-preferences`;
+      if (projectId) {
+        url += `?project_id=${projectId}`;
+      }
+
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch credit preferences' }));
+        throw new Error(error.detail);
+      }
+
+      const data = await response.json();
+      return data.credit_preferences as CreditPreference[];
+    },
+    enabled: !!userId,
+  });
+
+  // Get default preferences for user
+  const defaultQuery = useQuery({
+    queryKey: ['backlot', 'credit-preferences', 'default', userId],
+    queryFn: async () => {
+      if (!userId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credit-preferences/defaults/${userId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch default preferences' }));
+        throw new Error(error.detail);
+      }
+
+      const data = await response.json();
+      return data.credit_preference as CreditPreference | null;
+    },
+    enabled: !!userId,
+  });
+
+  // Create preference
+  const createPreference = useMutation({
+    mutationFn: async (input: CreditPreferenceInput) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credit-preferences`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create credit preference' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-preferences', userId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-preferences', 'default', userId],
+      });
+    },
+  });
+
+  // Update preference
+  const updatePreference = useMutation({
+    mutationFn: async ({ id, ...updates }: CreditPreferenceInput & { id: string }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credit-preferences/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(updates),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update credit preference' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-preferences', userId],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-preferences', 'default', userId],
+      });
+    },
+  });
+
+  // Delete preference
+  const deletePreference = useMutation({
+    mutationFn: async (id: string) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/credit-preferences/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to delete credit preference' }));
+        throw new Error(error.detail);
+      }
+
+      return { id };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-preferences', userId],
+      });
+    },
+  });
+
+  return {
+    preferences: query.data || [],
+    defaultPreference: defaultQuery.data,
+    isLoading: query.isLoading || defaultQuery.isLoading,
+    error: query.error || defaultQuery.error,
+    createPreference,
+    updatePreference,
+    deletePreference,
   };
 }

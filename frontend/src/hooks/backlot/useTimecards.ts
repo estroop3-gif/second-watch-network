@@ -331,20 +331,22 @@ export function useSubmitTimecard(projectId: string | null) {
 }
 
 /**
- * Approve a timecard
+ * Approve a timecard with optional notes
  */
 export function useApproveTimecard(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (timecardId: string) => {
+    mutationFn: async ({ timecardId, notes }: { timecardId: string; notes?: string }) => {
       if (!projectId) throw new Error('Project ID required');
-      return apiClient.post(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/approve`);
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/approve`, notes ? { notes } : {});
     },
-    onSuccess: (_, timecardId) => {
+    onSuccess: (_, { timecardId }) => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, timecardId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'review'] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'summary'] });
+      // Also invalidate invoice importable data so it shows newly approved timecards
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'importable'] });
     },
   });
 }
@@ -359,6 +361,25 @@ export function useRejectTimecard(projectId: string | null) {
     mutationFn: async ({ timecardId, reason }: { timecardId: string; reason?: string }) => {
       if (!projectId) throw new Error('Project ID required');
       return apiClient.post(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/reject`, { reason });
+    },
+    onSuccess: (_, { timecardId }) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, timecardId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'review'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'summary'] });
+    },
+  });
+}
+
+/**
+ * Deny a timecard permanently
+ */
+export function useDenyTimecard(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ timecardId, reason }: { timecardId: string; reason: string }) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/timecards/${timecardId}/deny`, { reason });
     },
     onSuccess: (_, { timecardId }) => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, timecardId] });

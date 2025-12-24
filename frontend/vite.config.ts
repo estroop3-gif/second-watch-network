@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import dyadComponentTagger from "@dyad-sh/react-vite-component-tagger";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 export default defineConfig(() => ({
   server: {
@@ -15,7 +16,19 @@ export default defineConfig(() => ({
       },
     },
   },
-  plugins: [dyadComponentTagger(), react()],
+  plugins: [
+    dyadComponentTagger(),
+    react(),
+    nodePolyfills({
+      // Enable polyfills for Node.js modules used by simple-peer
+      include: ['buffer', 'events', 'stream', 'util', 'process'],
+      globals: {
+        Buffer: true,
+        global: true,
+        process: true,
+      },
+    }),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

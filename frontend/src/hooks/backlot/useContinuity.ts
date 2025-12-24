@@ -53,7 +53,8 @@ export interface CreateLiningMarkInput {
 export interface TakeNote {
   id: string;
   project_id: string;
-  take_id: string;
+  take_id?: string;  // Camera dept slate logs
+  scripty_take_id?: string;  // Script supervisor takes
   note_text: string;
   note_category: string;
   timecode?: string;
@@ -68,7 +69,8 @@ export interface TakeNote {
 
 export interface CreateTakeNoteInput {
   project_id: string;
-  take_id: string;
+  take_id?: string;  // Camera dept slate logs
+  scripty_take_id?: string;  // Script supervisor takes
   note_text: string;
   note_category?: string;
   timecode?: string;
@@ -198,10 +200,10 @@ export function useLiningMarks(params: LiningMarksParams) {
       if (params.sceneId) searchParams.set('scene_id', params.sceneId);
       if (params.pageNumber) searchParams.set('page_number', params.pageNumber.toString());
 
-      const response = await api.get(
+      const data = await api.get<LiningMark[]>(
         `${API_BASE}/backlot/projects/${params.projectId}/continuity/lining-marks?${searchParams}`
       );
-      return response.data as LiningMark[];
+      return data || [];
     },
     enabled: !!params.projectId,
   });
@@ -211,11 +213,11 @@ export function useCreateLiningMark() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateLiningMarkInput) => {
-      const response = await api.post(
+      const data = await api.post<LiningMark>(
         `${API_BASE}/backlot/projects/${input.project_id}/continuity/lining-marks`,
         input
       );
-      return response.data as LiningMark;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'lining-marks'] });
@@ -228,11 +230,11 @@ export function useUpdateLiningMark() {
   return useMutation({
     mutationFn: async ({ id, ...input }: Partial<CreateLiningMarkInput> & { id: string }) => {
       const projectId = input.project_id;
-      const response = await api.patch(
+      const data = await api.patch<LiningMark>(
         `${API_BASE}/backlot/projects/${projectId}/continuity/lining-marks/${id}`,
         input
       );
-      return response.data as LiningMark;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'lining-marks'] });
@@ -271,10 +273,10 @@ export function useTakes(params: TakesParams) {
       if (params.sceneId) searchParams.set('scene_id', params.sceneId);
       if (params.productionDayId) searchParams.set('production_day_id', params.productionDayId);
 
-      const response = await api.get(
+      const data = await api.get<Take[]>(
         `${API_BASE}/backlot/projects/${params.projectId}/continuity/takes?${searchParams}`
       );
-      return response.data as Take[];
+      return data || [];
     },
     enabled: !!params.projectId,
   });
@@ -284,11 +286,11 @@ export function useCreateTake() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateTakeInput) => {
-      const response = await api.post(
+      const data = await api.post<Take>(
         `${API_BASE}/backlot/projects/${input.project_id}/continuity/takes`,
         input
       );
-      return response.data as Take;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'takes'] });
@@ -300,11 +302,11 @@ export function useUpdateTake() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ id, ...input }: Partial<CreateTakeInput> & { id: string }) => {
-      const response = await api.patch(
+      const data = await api.patch<Take>(
         `${API_BASE}/backlot/continuity/takes/${id}`,
         input
       );
-      return response.data as Take;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'takes'] });
@@ -330,7 +332,8 @@ export function useDeleteTake() {
 
 interface TakeNotesParams {
   projectId: string;
-  takeId?: string;
+  takeId?: string;  // Camera dept slate log ID
+  scriptyTakeId?: string;  // Script supervisor take ID
 }
 
 export function useTakeNotes(params: TakeNotesParams) {
@@ -338,14 +341,19 @@ export function useTakeNotes(params: TakeNotesParams) {
     queryKey: ['continuity', 'take-notes', params],
     queryFn: async () => {
       const searchParams = new URLSearchParams();
-      if (params.takeId) searchParams.set('take_id', params.takeId);
+      // Use scripty_take_id for script supervisor takes
+      if (params.scriptyTakeId) {
+        searchParams.set('scripty_take_id', params.scriptyTakeId);
+      } else if (params.takeId) {
+        searchParams.set('take_id', params.takeId);
+      }
 
-      const response = await api.get(
+      const data = await api.get<TakeNote[]>(
         `${API_BASE}/backlot/projects/${params.projectId}/continuity/take-notes?${searchParams}`
       );
-      return response.data as TakeNote[];
+      return data || [];
     },
-    enabled: !!params.projectId && !!params.takeId,
+    enabled: !!params.projectId && (!!params.takeId || !!params.scriptyTakeId),
   });
 }
 
@@ -353,11 +361,11 @@ export function useCreateTakeNote() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateTakeNoteInput) => {
-      const response = await api.post(
+      const data = await api.post<TakeNote>(
         `${API_BASE}/backlot/projects/${input.project_id}/continuity/take-notes`,
         input
       );
-      return response.data as TakeNote;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'take-notes'] });
@@ -386,10 +394,10 @@ export function useContinuityPhotos(params: ContinuityPhotosParams) {
       if (params.takeId) searchParams.set('take_id', params.takeId);
       if (params.category) searchParams.set('category', params.category);
 
-      const response = await api.get(
+      const data = await api.get<ContinuityPhoto[]>(
         `${API_BASE}/backlot/projects/${params.projectId}/continuity/photos?${searchParams}`
       );
-      return response.data as ContinuityPhoto[];
+      return data || [];
     },
     enabled: !!params.projectId,
   });
@@ -417,16 +425,26 @@ export function useUploadContinuityPhoto() {
       if (category) formData.append('category', category);
       if (description) formData.append('description', description);
 
-      const response = await api.post(
-        `${API_BASE}/backlot/projects/${project_id}/continuity/photos`,
-        formData,
+      // Note: For file uploads, we need to use fetch directly since api.post
+      // sets Content-Type to application/json. The browser will set the correct
+      // Content-Type with boundary for FormData automatically.
+      const token = api.getToken();
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+      const response = await fetch(
+        `${baseUrl}${API_BASE}/backlot/projects/${project_id}/continuity/photos`,
         {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
+          method: 'POST',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+          body: formData,
         }
       );
-      return response.data as ContinuityPhoto;
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Upload failed' }));
+        throw new Error(error.detail || 'Upload failed');
+      }
+
+      return response.json() as Promise<ContinuityPhoto>;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'photos'] });
@@ -447,11 +465,11 @@ export function useUpdateContinuityPhoto() {
       is_favorite?: boolean;
       is_reference?: boolean;
     }) => {
-      const response = await api.patch(
+      const data = await api.patch<ContinuityPhoto>(
         `${API_BASE}/backlot/continuity/photos/${id}`,
         input
       );
-      return response.data as ContinuityPhoto;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'photos'] });
@@ -489,10 +507,10 @@ export function useContinuityNotes(params: ContinuityNotesParams) {
       if (params.sceneId) searchParams.set('scene_id', params.sceneId);
       if (params.category) searchParams.set('category', params.category);
 
-      const response = await api.get(
+      const data = await api.get<ContinuityNote[]>(
         `${API_BASE}/backlot/projects/${params.projectId}/continuity/notes?${searchParams}`
       );
-      return response.data as ContinuityNote[];
+      return data || [];
     },
     enabled: !!params.projectId,
   });
@@ -502,11 +520,11 @@ export function useCreateContinuityNote() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: CreateContinuityNoteInput) => {
-      const response = await api.post(
+      const data = await api.post<ContinuityNote>(
         `${API_BASE}/backlot/projects/${input.project_id}/continuity/notes`,
         input
       );
-      return response.data as ContinuityNote;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'notes'] });
@@ -526,11 +544,11 @@ export function useUpdateContinuityNote() {
       content?: string;
       is_critical?: boolean;
     }) => {
-      const response = await api.patch(
+      const data = await api.patch<ContinuityNote>(
         `${API_BASE}/backlot/continuity/notes/${id}`,
         input
       );
-      return response.data as ContinuityNote;
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'notes'] });
@@ -548,4 +566,102 @@ export function useDeleteContinuityNote() {
       queryClient.invalidateQueries({ queryKey: ['continuity', 'notes'] });
     },
   });
+}
+
+// =============================================================================
+// EXPORT HOOKS
+// =============================================================================
+
+export interface DailyReportSummary {
+  total_takes: number;
+  print_takes: number;
+  circled_takes: number;
+  ng_takes: number;
+  scenes_shot: string[];
+  total_notes: number;
+  critical_notes: number;
+  photos_taken: number;
+}
+
+export interface DailyReport {
+  production_day: {
+    id: string;
+    day_number: number;
+    date: string;
+    title?: string;
+  };
+  summary: DailyReportSummary;
+  takes: Take[];
+  notes: TakeNote[];
+  photos: Array<{
+    id: string;
+    category: string;
+    description?: string;
+    is_reference: boolean;
+    created_at: string;
+  }>;
+}
+
+interface ExportTakesParams {
+  format: 'csv' | 'json';
+  sceneId?: string;
+  productionDayId?: string;
+}
+
+interface ExportNotesParams {
+  format: 'csv' | 'json';
+  sceneId?: string;
+}
+
+export function useExportTakes(projectId: string) {
+  return useMutation({
+    mutationFn: async (params: ExportTakesParams) => {
+      const searchParams = new URLSearchParams({ format: params.format });
+      if (params.sceneId) searchParams.set('scene_id', params.sceneId);
+      if (params.productionDayId) searchParams.set('production_day_id', params.productionDayId);
+
+      const data = await api.get<string | Take[]>(
+        `${API_BASE}/backlot/projects/${projectId}/continuity/export/takes?${searchParams}`
+      );
+      return { data, format: params.format };
+    },
+  });
+}
+
+export function useExportNotes(projectId: string) {
+  return useMutation({
+    mutationFn: async (params: ExportNotesParams) => {
+      const searchParams = new URLSearchParams({ format: params.format });
+      if (params.sceneId) searchParams.set('scene_id', params.sceneId);
+
+      const data = await api.get<string | ContinuityNote[]>(
+        `${API_BASE}/backlot/projects/${projectId}/continuity/export/notes?${searchParams}`
+      );
+      return { data, format: params.format };
+    },
+  });
+}
+
+export function useExportDailyReport(projectId: string) {
+  return useMutation({
+    mutationFn: async (productionDayId: string) => {
+      const data = await api.get<DailyReport>(
+        `${API_BASE}/backlot/projects/${projectId}/continuity/export/daily-report?production_day_id=${productionDayId}`
+      );
+      return data;
+    },
+  });
+}
+
+// Helper function to trigger file download
+export function downloadFile(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }

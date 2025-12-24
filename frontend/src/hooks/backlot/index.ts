@@ -25,6 +25,18 @@ export type {
 export {
   useProductionDays,
   useProductionDay,
+  useTodayShootDay,
+  // Production Day Scenes (Schedule Scene Assignment)
+  useProductionDayScenes,
+  useUnassignedScenes,
+  // Schedule <-> Call Sheet Integration
+  useLinkedCallSheet,
+  useCreateCallSheetFromDay,
+  useSyncDayToCallSheet,
+  // Auto-Scheduler
+  useAutoGenerateSchedule,
+  useApplyScheduleSuggestion,
+  // Call Sheets
   useCallSheets,
   useCallSheet,
   useCallSheetPeople,
@@ -57,6 +69,15 @@ export type {
   CallSheetFullData,
   CallSheetShare,
   CreateShareInput,
+  // Schedule <-> Call Sheet Integration types
+  LinkedCallSheet,
+  CreateCallSheetFromDayInput,
+  SyncToCallSheetInput,
+  // Auto-Scheduler types
+  AutoSchedulerConstraints,
+  AutoSchedulerScene,
+  SuggestedDay,
+  AutoSchedulerResult,
 } from './useSchedule';
 
 // Tasks
@@ -111,6 +132,7 @@ export {
   useCredits,
   usePublicCredits,
   useCreditsByDepartment,
+  useCreditPreferences,
   CREDIT_DEPARTMENTS,
   CREDIT_ROLES,
 } from './useCredits';
@@ -121,6 +143,7 @@ export {
   useBudget,
   useBudgetSummary,
   useBudgetStats,
+  useBudgetComparison,
   useCreateBudget,
   useUpdateBudget,
   useLockBudget,
@@ -156,11 +179,19 @@ export {
   useSubmitForReimbursement,
   useApproveReimbursement,
   useRejectReimbursement,
+  useDenyReimbursement,
+  useResubmitReimbursement,
   useMarkReimbursed,
   // Company Card Expenses
   useSubmitCompanyCard,
   useBudgetActuals,
   useBudgetActualsSummary,
+  // Daily Budget Labor Costs
+  useDailyLaborCosts,
+  // Daily Budget Scene Costs
+  useDailySceneCosts,
+  // Daily Budget Invoices
+  useDailyInvoices,
   // Professional Budget Templates & Top Sheet
   useBudgetTemplateTypes,
   useBudgetTemplateAccounts,
@@ -180,6 +211,19 @@ export {
   useCreateBudgetFromBundles,
   useAddBundleToBudget,
 } from './useBudget';
+
+export type {
+  BudgetComparisonData,
+  BudgetComparisonCategory,
+  BudgetComparisonCategoryType,
+  BudgetComparisonLineItem,
+  BudgetComparisonExpense,
+} from './useBudget';
+
+export type {
+  DailyLaborCosts,
+  LaborCostEntry,
+} from '@/types/backlot';
 
 // Scout Photos
 export {
@@ -264,7 +308,34 @@ export {
   // Booked People & Conflicts
   useBookedPeople,
   useCheckAvailabilityConflicts,
+  // Deal Memos
+  useDealMemos,
+  useDealMemo,
+  useDealMemoMutations,
+  useDealMemoHistory,
+  // Community Posting
+  usePostRoleToCommunity,
+  useRemoveRoleFromCommunity,
 } from './useCastingCrew';
+export type { DealMemoStatusHistory } from './useCastingCrew';
+
+// Crew Rates (Day Rate Schedules)
+export {
+  useCrewRates,
+  useCrewRate,
+  useCrewRatesByUser,
+  useCrewRatesByRole,
+  useCrewRateMutations,
+  useEffectiveCrewRate,
+  calculateDailyCompensation,
+} from './useCrewRates';
+export type {
+  CrewRate,
+  CrewRateInput,
+  CrewRatesResponse,
+  CrewRateResponse,
+  CrewRateType,
+} from '@/types/backlot';
 
 // Clearances & Releases
 export {
@@ -394,7 +465,9 @@ export {
   useViewProfiles,
   useCanManageRoles,
   useCanViewAsRole,
+  useCanApprove,
   BACKLOT_ROLES,
+  APPROVER_ROLES,
   DEFAULT_VIEW_CONFIGS,
 } from './useProjectRoles';
 export type {
@@ -500,6 +573,7 @@ export {
   useSubmitTimecard,
   useApproveTimecard,
   useRejectTimecard,
+  useDenyTimecard,
   getWeekStartDate,
   getWeekDates,
   formatWeekRange,
@@ -557,6 +631,35 @@ export type {
   ContinuityNoteItem,
 } from './useCameraContinuity';
 
+// Camera Log (Quick take logging for 1st AC / 2nd AC)
+export {
+  useCameraLogs,
+  useCreateCameraLog,
+  useUpdateCameraLog,
+  useDeleteCameraLog,
+  useToggleCircleTake,
+  useCameraSettings,
+  useUpdateCameraSettings,
+  useNextTakeNumber as useCameraNextTake,
+  SHOT_TYPES as CAMERA_SHOT_TYPES,
+  DEFAULT_LENS_PRESETS,
+  DEFAULT_FILTER_PRESETS,
+  DEFAULT_IRIS_PRESETS,
+  DEFAULT_CAMERA_IDS,
+  CAMERA_LOG_KEYS,
+  CAMERA_LOG_STORAGE_KEYS,
+  getLastUsedSettings,
+  saveLastUsedSettings,
+} from './useCameraLog';
+export type {
+  CameraLogItem,
+  CreateCameraLogInput,
+  UpdateCameraLogInput,
+  CameraSettings,
+  UpdateCameraSettingsInput,
+  NextTakeInfo,
+} from './useCameraLog';
+
 // Utilities (Sun/Weather, Check-in, Notes, Bookmarks)
 export {
   // Day Settings & Weather
@@ -607,28 +710,37 @@ export type {
 export {
   // Mileage
   useMileageEntries,
+  useMileageEntry,
   useCreateMileage,
   useUpdateMileage,
   useDeleteMileage,
   useApproveMileage,
   useRejectMileage,
+  useDenyMileage,
+  useResubmitMileage,
   useMarkMileageReimbursed,
   // Kit Rentals
   useKitRentals,
+  useKitRental,
   useCreateKitRental,
   useUpdateKitRental,
   useDeleteKitRental,
   useApproveKitRental,
   useRejectKitRental,
+  useDenyKitRental,
+  useResubmitKitRental,
   useCompleteKitRental,
   useMarkKitRentalReimbursed,
   // Per Diem
   usePerDiemEntries,
+  usePerDiemEntry,
   useClaimPerDiem,
   useBulkClaimPerDiem,
   useDeletePerDiem,
   useApprovePerDiem,
   useRejectPerDiem,
+  useDenyPerDiem,
+  useResubmitPerDiem,
   useMarkPerDiemReimbursed,
   // Settings
   useExpenseSettings,
@@ -862,7 +974,9 @@ export {
   useCancelInvoice,
   useSubmitForApproval,
   useApproveInvoice,
+  useDenyInvoice,
   useRequestChanges,
+  useRequestChanges as useRequestInvoiceChanges,
   useMarkInvoiceSent,
   useImportTimecards,
   useImportExpenses,
@@ -875,3 +989,30 @@ export {
   isInvoiceOverdue,
 } from './useInvoices';
 export type { PendingImportCount } from './useInvoices';
+
+// Purchase Orders
+export {
+  usePurchaseOrders,
+  useMyPurchaseOrders,
+  usePurchaseOrder,
+  usePurchaseOrderSummary,
+  useCreatePurchaseOrder,
+  useUpdatePurchaseOrder,
+  useDeletePurchaseOrder,
+  useApprovePurchaseOrder,
+  useRejectPurchaseOrder,
+  useDenyPurchaseOrder,
+  useResubmitPurchaseOrder,
+  useCompletePurchaseOrder,
+  useCancelPurchaseOrder,
+  PO_STATUS_CONFIG,
+  formatCurrency as formatPOCurrency,
+} from './usePurchaseOrders';
+export type {
+  PurchaseOrder,
+  PurchaseOrderStatus,
+  CreatePurchaseOrderData,
+  UpdatePurchaseOrderData,
+  PurchaseOrderFilters,
+  PurchaseOrderSummary,
+} from './usePurchaseOrders';

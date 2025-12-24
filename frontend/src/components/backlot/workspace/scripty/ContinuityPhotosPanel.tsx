@@ -103,6 +103,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
   const [selectedPhoto, setSelectedPhoto] = useState<ContinuityPhoto | null>(null);
   const [compareMode, setCompareMode] = useState(false);
   const [comparePhotos, setComparePhotos] = useState<ContinuityPhoto[]>([]);
+  const [showCompareDialog, setShowCompareDialog] = useState(false);
   const [uploadCategory, setUploadCategory] = useState('general');
   const [isUploading, setIsUploading] = useState(false);
 
@@ -437,8 +438,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
           <Button
             className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             onClick={() => {
-              // Open compare dialog
-              setSelectedPhoto(null); // Clear single selection
+              setShowCompareDialog(true);
             }}
           >
             <Columns className="w-4 h-4 mr-2" />
@@ -499,18 +499,32 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
       </Dialog>
 
       {/* Compare Dialog */}
-      <Dialog open={compareMode && comparePhotos.length === 2} onOpenChange={() => {
-        setCompareMode(false);
-        setComparePhotos([]);
+      <Dialog open={showCompareDialog} onOpenChange={(open) => {
+        setShowCompareDialog(open);
+        if (!open) {
+          setCompareMode(false);
+          setComparePhotos([]);
+        }
       }}>
         <DialogContent className="max-w-5xl bg-charcoal-black border-muted-gray/30">
           <DialogHeader>
-            <DialogTitle className="text-bone-white">Compare Photos</DialogTitle>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <Columns className="w-5 h-5" />
+              Compare Photos
+            </DialogTitle>
           </DialogHeader>
           <div className="grid grid-cols-2 gap-4">
-            {comparePhotos.map((photo) => (
+            {comparePhotos.map((photo, index) => (
               <div key={photo.id} className="space-y-2">
-                <div className="aspect-video bg-soft-black rounded-lg overflow-hidden">
+                <div className="text-xs text-muted-gray mb-1 flex items-center gap-2">
+                  <Badge variant="outline" className="text-[10px]">
+                    Photo {index + 1}
+                  </Badge>
+                  {photo.original_filename && (
+                    <span className="truncate">{photo.original_filename}</span>
+                  )}
+                </div>
+                <div className="aspect-video bg-soft-black rounded-lg overflow-hidden border border-muted-gray/20">
                   {photo.full_url ? (
                     <img
                       src={photo.full_url}
@@ -523,16 +537,46 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <Badge variant="outline" className="text-xs">
                     {getCategoryConfig(photo.category).label}
                   </Badge>
-                  <span className="text-xs text-muted-gray">
+                  {photo.is_favorite && (
+                    <Badge className="text-xs bg-accent-yellow/20 text-accent-yellow">
+                      <Star className="w-2 h-2 mr-1 fill-accent-yellow" />
+                      Favorite
+                    </Badge>
+                  )}
+                  <span className="text-xs text-muted-gray ml-auto">
                     {new Date(photo.created_at).toLocaleDateString()}
                   </span>
                 </div>
+                {photo.description && (
+                  <p className="text-xs text-muted-gray line-clamp-2">{photo.description}</p>
+                )}
               </div>
             ))}
+          </div>
+          <div className="flex justify-end gap-2 mt-4 pt-4 border-t border-muted-gray/20">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCompareDialog(false);
+                // Keep compare mode active to select different photos
+              }}
+            >
+              Select Different Photos
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCompareDialog(false);
+                setCompareMode(false);
+                setComparePhotos([]);
+              }}
+            >
+              Done
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

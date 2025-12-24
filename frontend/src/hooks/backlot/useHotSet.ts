@@ -422,6 +422,14 @@ export function useCompleteScene() {
     onSuccess: ({ sessionId }) => {
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+      // Also invalidate coverage and scenes to reflect scene completion
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+      // Invalidate tasks - scene completion may trigger task completion
+      queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'tasks'] });
     },
   });
 }

@@ -154,6 +154,108 @@ export function useBudgetStats(projectId: string | null) {
   });
 }
 
+// Budget Comparison Types
+export interface BudgetComparisonExpense {
+  type: 'receipt' | 'mileage' | 'kit_rental' | 'per_diem';
+  amount: number;
+  vendor?: string;
+  miles?: number;
+}
+
+export interface BudgetComparisonLineItem {
+  id: string;
+  description: string;
+  account_code: string | null;
+  estimated_total: number;
+  actual_total: number;
+  variance: number;
+  variance_percent: number;
+  expenses: BudgetComparisonExpense[];
+  category_id: string;
+}
+
+export interface BudgetComparisonCategory {
+  id: string;
+  name: string;
+  code: string | null;
+  account_code_prefix: string | null;
+  category_type: string;
+  estimated_subtotal: number;
+  actual_subtotal: number;
+  variance: number;
+  variance_percent: number;
+  line_items: BudgetComparisonLineItem[];
+}
+
+export interface BudgetComparisonCategoryType {
+  type: string;
+  label: string;
+  estimated: number;
+  actual: number;
+  variance: number;
+  variance_percent: number;
+  categories: BudgetComparisonCategory[];
+}
+
+export interface BudgetComparisonData {
+  budget: {
+    id: string;
+    name: string;
+    status: string;
+    project_type: string;
+    contingency_percent: number | null;
+    contingency_amount: number;
+    fringes_total: number;
+    grand_total: number;
+  };
+  summary: {
+    estimated_total: number;
+    actual_total: number;
+    variance: number;
+    variance_percent: number;
+  };
+  by_category_type: BudgetComparisonCategoryType[];
+  categories: BudgetComparisonCategory[];
+  expense_breakdown: {
+    receipts: number;
+    mileage: number;
+    kit_rentals: number;
+    per_diem: number;
+    total: number;
+  };
+}
+
+/**
+ * Fetch budget comparison data for estimated vs actual analysis
+ */
+export function useBudgetComparison(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-budget-comparison', projectId],
+    queryFn: async (): Promise<BudgetComparisonData | null> => {
+      if (!projectId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/comparison`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budget comparison');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
 /**
  * Create a new budget for a project
  */
@@ -1910,13 +2012,13 @@ export function useSubmitForReimbursement(projectId: string) {
 }
 
 /**
- * Approve a receipt for reimbursement (manager only)
+ * Approve a receipt for reimbursement with optional notes (manager only)
  */
 export function useApproveReimbursement(projectId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (receiptId: string) => {
+    mutationFn: async ({ receiptId, notes }: { receiptId: string; notes?: string }) => {
       const token = getAuthToken();
 
       const response = await fetch(
@@ -1925,7 +2027,9 @@ export function useApproveReimbursement(projectId: string) {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
           },
+          body: JSON.stringify(notes ? { notes } : {}),
         }
       );
 
@@ -1968,6 +2072,77 @@ export function useRejectReimbursement(projectId: string) {
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Failed to reject reimbursement' }));
         throw new Error(error.detail || 'Failed to reject reimbursement');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Permanently deny a receipt reimbursement (manager only)
+ */
+export function useDenyReimbursement(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ receiptId, reason }: { receiptId: string; reason: string }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/deny-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ reason }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to deny reimbursement' }));
+        throw new Error(error.detail || 'Failed to deny reimbursement');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Resubmit a rejected or denied receipt reimbursement
+ */
+export function useResubmitReimbursement(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (receiptId: string) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}/resubmit-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to resubmit reimbursement' }));
+        throw new Error(error.detail || 'Failed to resubmit reimbursement');
       }
 
       return response.json();
@@ -2132,5 +2307,120 @@ export function useBudgetActualsSummary(projectId: string | null) {
       return response.json();
     },
     enabled: !!projectId,
+  });
+}
+
+// =============================================================================
+// DAILY BUDGET LABOR COSTS
+// =============================================================================
+
+import type { DailyLaborCosts, DailySceneCosts, DailyInvoices } from '@/types/backlot';
+
+/**
+ * Get labor costs for a daily budget
+ * Aggregates approved timecard entries with crew rates
+ */
+export function useDailyLaborCosts(
+  dailyBudgetId: string | null,
+  options?: { includePending?: boolean }
+) {
+  return useQuery({
+    queryKey: ['backlot-daily-labor-costs', dailyBudgetId, options],
+    queryFn: async (): Promise<DailyLaborCosts> => {
+      const token = getAuthToken();
+      const params = new URLSearchParams();
+      if (options?.includePending !== undefined) {
+        params.append('include_pending', String(options.includePending));
+      }
+
+      const response = await fetch(
+        `${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/labor-costs?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch labor costs');
+      }
+
+      return response.json();
+    },
+    enabled: !!dailyBudgetId,
+  });
+}
+
+// =============================================================================
+// DAILY BUDGET SCENE COSTS
+// =============================================================================
+
+/**
+ * Get scene costs for a daily budget
+ * Aggregates scene breakdown items and linked expenses for scenes shot that day
+ */
+export function useDailySceneCosts(dailyBudgetId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-daily-scene-costs', dailyBudgetId],
+    queryFn: async (): Promise<DailySceneCosts> => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/scene-costs`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch scene costs');
+      }
+
+      return response.json();
+    },
+    enabled: !!dailyBudgetId,
+  });
+}
+
+// =============================================================================
+// DAILY BUDGET INVOICES
+// =============================================================================
+
+/**
+ * Get invoices for a daily budget
+ * Includes invoices linked by production_day_id or by line item service_date
+ */
+export function useDailyInvoices(
+  dailyBudgetId: string | null,
+  options?: { includePending?: boolean }
+) {
+  return useQuery({
+    queryKey: ['backlot-daily-invoices', dailyBudgetId, options],
+    queryFn: async (): Promise<DailyInvoices> => {
+      const token = getAuthToken();
+      const params = new URLSearchParams();
+      if (options?.includePending !== undefined) {
+        params.append('include_pending', String(options.includePending));
+      }
+
+      const response = await fetch(
+        `${API_BASE}/backlot/daily-budgets/${dailyBudgetId}/invoices?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch invoices');
+      }
+
+      return response.json();
+    },
+    enabled: !!dailyBudgetId,
   });
 }

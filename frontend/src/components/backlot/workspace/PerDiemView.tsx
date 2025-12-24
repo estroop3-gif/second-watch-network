@@ -49,6 +49,7 @@ import {
   useRejectPerDiem,
   useMarkPerDiemReimbursed,
   useExpenseSettings,
+  useBudget,
   PerDiemEntry,
   CreatePerDiemData,
   BulkPerDiemData,
@@ -57,6 +58,9 @@ import {
   formatCurrency,
 } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
+import BudgetCategorySelect from '../shared/BudgetCategorySelect';
+import BudgetLineItemSelect from '../shared/BudgetLineItemSelect';
+import SceneSelect from '../shared/SceneSelect';
 
 interface PerDiemViewProps {
   projectId: string;
@@ -434,8 +438,13 @@ function PerDiemFormModal({
     amount: settings?.per_diem_full_day ?? 65,
     location: '',
     notes: '',
+    budget_category_id: null,
+    budget_line_item_id: null,
+    scene_id: null,
   });
 
+  const { data: budget } = useBudget(projectId);
+  const budgetId = budget?.id || null;
   const claimPerDiem = useClaimPerDiem(projectId);
 
   React.useEffect(() => {
@@ -471,6 +480,9 @@ function PerDiemFormModal({
         amount: settings?.per_diem_full_day ?? 65,
         location: '',
         notes: '',
+        budget_category_id: null,
+        budget_line_item_id: null,
+        scene_id: null,
       });
     } catch (error) {
       console.error('Failed to claim:', error);
@@ -547,6 +559,47 @@ function PerDiemFormModal({
             />
           </div>
 
+          {/* Budget Linking */}
+          {budgetId && (
+            <div className="space-y-4 pt-2 border-t border-muted-gray/10">
+              <div className="text-xs font-medium text-muted-gray uppercase tracking-wider">
+                Budget Allocation
+              </div>
+              <BudgetCategorySelect
+                projectId={projectId}
+                value={formData.budget_category_id || null}
+                onChange={(categoryId) => {
+                  setFormData({
+                    ...formData,
+                    budget_category_id: categoryId,
+                    budget_line_item_id: null,
+                  });
+                }}
+                label="Budget Category"
+                placeholder="Select category (optional)"
+              />
+              <BudgetLineItemSelect
+                budgetId={budgetId}
+                categoryId={formData.budget_category_id || null}
+                value={formData.budget_line_item_id || null}
+                onChange={(lineItemId) => {
+                  setFormData({ ...formData, budget_line_item_id: lineItemId });
+                }}
+                label="Budget Line Item"
+                placeholder="Select line item (optional)"
+              />
+              <SceneSelect
+                projectId={projectId}
+                value={formData.scene_id || null}
+                onChange={(sceneId) => {
+                  setFormData({ ...formData, scene_id: sceneId });
+                }}
+                label="Related Scene"
+                placeholder="Select scene (optional)"
+              />
+            </div>
+          )}
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
@@ -587,8 +640,13 @@ function BulkPerDiemModal({
     amount: settings?.per_diem_full_day ?? 65,
     location: '',
     notes: '',
+    budget_category_id: null,
+    budget_line_item_id: null,
+    scene_id: null,
   });
 
+  const { data: budget } = useBudget(projectId);
+  const budgetId = budget?.id || null;
   const bulkClaimPerDiem = useBulkClaimPerDiem(projectId);
 
   const getMealAmount = (mealType: string) => {
@@ -704,6 +762,47 @@ function BulkPerDiemModal({
               placeholder="e.g., Set, Downtown"
             />
           </div>
+
+          {/* Budget Linking */}
+          {budgetId && (
+            <div className="space-y-4 pt-2 border-t border-muted-gray/10">
+              <div className="text-xs font-medium text-muted-gray uppercase tracking-wider">
+                Budget Allocation
+              </div>
+              <BudgetCategorySelect
+                projectId={projectId}
+                value={formData.budget_category_id || null}
+                onChange={(categoryId) => {
+                  setFormData({
+                    ...formData,
+                    budget_category_id: categoryId,
+                    budget_line_item_id: null,
+                  });
+                }}
+                label="Budget Category"
+                placeholder="Select category (optional)"
+              />
+              <BudgetLineItemSelect
+                budgetId={budgetId}
+                categoryId={formData.budget_category_id || null}
+                value={formData.budget_line_item_id || null}
+                onChange={(lineItemId) => {
+                  setFormData({ ...formData, budget_line_item_id: lineItemId });
+                }}
+                label="Budget Line Item"
+                placeholder="Select line item (optional)"
+              />
+              <SceneSelect
+                projectId={projectId}
+                value={formData.scene_id || null}
+                onChange={(sceneId) => {
+                  setFormData({ ...formData, scene_id: sceneId });
+                }}
+                label="Related Scene"
+                placeholder="Select scene (optional)"
+              />
+            </div>
+          )}
 
           <Card className="bg-muted/50">
             <CardContent className="py-3">

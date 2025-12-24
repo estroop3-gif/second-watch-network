@@ -522,6 +522,10 @@ export function useDailiesClips(options: UseDailiesClipsOptions) {
       queryClient.invalidateQueries({ queryKey: ['dailies-clips'] });
       queryClient.invalidateQueries({ queryKey: ['dailies-clip'] });
       queryClient.invalidateQueries({ queryKey: ['dailies-days'] });
+      // Also invalidate coverage queries - circle takes indicate a shot was completed
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage'] });
     },
   });
 

@@ -43,10 +43,22 @@ import {
   AlertTriangle,
   Sparkles,
   ChevronRight,
+  ChevronDown,
   ArrowLeft,
   Receipt,
   Lightbulb,
   CheckCircle2,
+  Users,
+  Clock,
+  Briefcase,
+  Film,
+  MapPin,
+  Package,
+  Shirt,
+  Car,
+  FileText,
+  ExternalLink,
+  Calendar as CalendarIcon,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import {
@@ -61,6 +73,9 @@ import {
   useBudget,
   useBudgetLineItems,
   useProductionDays,
+  useDailyLaborCosts,
+  useDailySceneCosts,
+  useDailyInvoices,
 } from '@/hooks/backlot';
 import {
   BacklotDailyBudget,
@@ -68,6 +83,12 @@ import {
   BacklotBudgetLineItem,
   DailyBudgetSummary,
   DailyBudgetItemInput,
+  LaborCostEntry,
+  DailyLaborCosts,
+  DailySceneCosts,
+  SceneCostDetail,
+  DailyInvoices,
+  DailyInvoiceEntry,
 } from '@/types/backlot';
 
 interface DailyBudgetViewProps {
@@ -259,6 +280,718 @@ const DailyBudgetItemRow: React.FC<{
   );
 };
 
+// Labor Costs Section (from timecards)
+const LaborCostsSection: React.FC<{
+  laborCosts: DailyLaborCosts | undefined;
+  isLoading: boolean;
+  currency: string;
+}> = ({ laborCosts, isLoading, currency }) => {
+  const [isExpanded, setIsExpanded] = useState(true);
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-16" />
+        <Skeleton className="h-16" />
+      </div>
+    );
+  }
+
+  if (!laborCosts || laborCosts.entries.length === 0) {
+    return null;
+  }
+
+  const formatHours = (hours: number) => {
+    if (hours === 0) return '-';
+    return `${hours.toFixed(1)}h`;
+  };
+
+  const getRateSourceBadge = (source: string) => {
+    switch (source) {
+      case 'crew_rate':
+        return (
+          <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">
+            Day Rate
+          </Badge>
+        );
+      case 'entry':
+        return (
+          <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+            Timecard
+          </Badge>
+        );
+      case 'budget':
+        return (
+          <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+            Budget
+          </Badge>
+        );
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <button
+        className="flex items-center gap-2 w-full text-left"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        {isExpanded ? (
+          <ChevronDown className="w-5 h-5 text-muted-gray" />
+        ) : (
+          <ChevronRight className="w-5 h-5 text-muted-gray" />
+        )}
+        <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+          <Users className="w-5 h-5 text-accent-yellow" />
+          Labor Costs
+        </h3>
+        <Badge className="ml-2 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30">
+          {laborCosts.entries.length} crew
+        </Badge>
+        <div className="ml-auto text-bone-white font-medium">
+          {formatCurrency(laborCosts.grand_total, currency)}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="space-y-3">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-4 gap-3">
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Base Pay</div>
+              <div className="text-lg font-semibold text-bone-white">
+                {formatCurrency(laborCosts.total_base_pay, currency)}
+              </div>
+            </div>
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Overtime</div>
+              <div className="text-lg font-semibold text-amber-400">
+                {formatCurrency(laborCosts.total_overtime_pay, currency)}
+              </div>
+            </div>
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Double Time</div>
+              <div className="text-lg font-semibold text-red-400">
+                {formatCurrency(laborCosts.total_double_time_pay, currency)}
+              </div>
+            </div>
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Allowances</div>
+              <div className="text-lg font-semibold text-blue-400">
+                {formatCurrency(laborCosts.total_allowances, currency)}
+              </div>
+            </div>
+          </div>
+
+          {/* Crew List */}
+          <div className="space-y-2">
+            {laborCosts.entries.map((entry: LaborCostEntry) => (
+              <div
+                key={entry.user_id || entry.timecard_entry_id}
+                className="flex items-center justify-between py-3 px-4 bg-charcoal-black/40 rounded-lg hover:bg-charcoal-black/60 transition-colors"
+              >
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  {entry.user_avatar ? (
+                    <img
+                      src={entry.user_avatar}
+                      alt={entry.user_name || 'Crew'}
+                      className="w-8 h-8 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-8 h-8 rounded-full bg-muted-gray/30 flex items-center justify-center">
+                      <Users className="w-4 h-4 text-muted-gray" />
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <div className="font-medium text-bone-white truncate">
+                      {entry.user_name || 'Unknown'}
+                    </div>
+                    <div className="text-xs text-muted-gray flex items-center gap-2">
+                      {entry.role_title && <span>{entry.role_title}</span>}
+                      {entry.department && (
+                        <>
+                          <span>•</span>
+                          <span>{entry.department}</span>
+                        </>
+                      )}
+                      {getRateSourceBadge(entry.rate_source)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Hours breakdown */}
+                <div className="flex items-center gap-4 text-sm">
+                  <div className="text-center min-w-[50px]">
+                    <div className="text-bone-white">{formatHours(entry.hours_worked)}</div>
+                    <div className="text-xs text-muted-gray">Regular</div>
+                  </div>
+                  {entry.overtime_hours > 0 && (
+                    <div className="text-center min-w-[50px]">
+                      <div className="text-amber-400">{formatHours(entry.overtime_hours)}</div>
+                      <div className="text-xs text-muted-gray">OT</div>
+                    </div>
+                  )}
+                  {entry.double_time_hours > 0 && (
+                    <div className="text-center min-w-[50px]">
+                      <div className="text-red-400">{formatHours(entry.double_time_hours)}</div>
+                      <div className="text-xs text-muted-gray">DT</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Rate and total */}
+                <div className="flex items-center gap-4">
+                  <div className="text-right min-w-[80px]">
+                    <div className="text-sm text-bone-white">
+                      {formatCurrency(entry.rate_amount, currency)}
+                    </div>
+                    <div className="text-xs text-muted-gray">
+                      /{entry.rate_type === 'hourly' ? 'hr' : entry.rate_type === 'daily' ? 'day' : entry.rate_type}
+                    </div>
+                  </div>
+                  <div className="text-right min-w-[90px]">
+                    <div className="font-medium text-bone-white">
+                      {formatCurrency(entry.total_pay, currency)}
+                    </div>
+                    {(entry.kit_rental > 0 || entry.car_allowance > 0 || entry.phone_allowance > 0) && (
+                      <div className="text-xs text-blue-400">
+                        +{formatCurrency(entry.kit_rental + entry.car_allowance + entry.phone_allowance, currency)} kit/allow
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Pending indicator */}
+          {laborCosts.entries.some((e) => e.timecard_status === 'pending' || e.timecard_status === 'submitted') && (
+            <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-500/10 rounded-lg px-3 py-2">
+              <Clock className="w-4 h-4" />
+              Some timecards are pending approval. Totals may change.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Scene Costs Section (from scene breakdown items and linked expenses)
+const SceneCostsSection: React.FC<{
+  sceneCosts: DailySceneCosts | undefined;
+  isLoading: boolean;
+  currency: string;
+}> = ({ sceneCosts, isLoading, currency }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [expandedScenes, setExpandedScenes] = useState<Set<string>>(new Set());
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-16" />
+      </div>
+    );
+  }
+
+  if (!sceneCosts || sceneCosts.scenes.length === 0) {
+    return null;
+  }
+
+  const toggleSceneExpanded = (sceneId: string) => {
+    setExpandedScenes((prev) => {
+      const next = new Set(prev);
+      if (next.has(sceneId)) {
+        next.delete(sceneId);
+      } else {
+        next.add(sceneId);
+      }
+      return next;
+    });
+  };
+
+  const getExpenseTypeIcon = (type: string) => {
+    switch (type) {
+      case 'receipt':
+        return <Receipt className="w-3 h-3" />;
+      case 'mileage':
+        return <Car className="w-3 h-3" />;
+      case 'kit_rental':
+        return <Briefcase className="w-3 h-3" />;
+      case 'per_diem':
+        return <DollarSign className="w-3 h-3" />;
+      case 'invoice_line_item':
+        return <Receipt className="w-3 h-3" />;
+      default:
+        return <DollarSign className="w-3 h-3" />;
+    }
+  };
+
+  const getBreakdownTypeIcon = (type: string) => {
+    switch (type) {
+      case 'wardrobe':
+        return <Shirt className="w-3 h-3" />;
+      case 'prop':
+        return <Package className="w-3 h-3" />;
+      case 'vehicle':
+        return <Car className="w-3 h-3" />;
+      default:
+        return <Package className="w-3 h-3" />;
+    }
+  };
+
+  const formatExpenseType = (type: string) => {
+    return type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  };
+
+  return (
+    <div className="space-y-4">
+      <button
+        className="flex items-center gap-2 w-full text-left"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        {isExpanded ? (
+          <ChevronDown className="w-5 h-5 text-muted-gray" />
+        ) : (
+          <ChevronRight className="w-5 h-5 text-muted-gray" />
+        )}
+        <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+          <Film className="w-5 h-5 text-accent-yellow" />
+          Scene Costs
+        </h3>
+        <Badge className="ml-2 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30">
+          {sceneCosts.scenes.length} {sceneCosts.scenes.length === 1 ? 'scene' : 'scenes'}
+        </Badge>
+        <div className="ml-auto text-bone-white font-medium">
+          {formatCurrency(sceneCosts.grand_total, currency)}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="space-y-3">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Breakdown Items</div>
+              <div className="text-lg font-semibold text-bone-white">
+                {formatCurrency(sceneCosts.total_breakdown_costs, currency)}
+              </div>
+              <div className="text-xs text-muted-gray">Props, wardrobe, etc.</div>
+            </div>
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Linked Expenses</div>
+              <div className="text-lg font-semibold text-blue-400">
+                {formatCurrency(sceneCosts.total_expense_costs, currency)}
+              </div>
+              <div className="text-xs text-muted-gray">Receipts, mileage, etc.</div>
+            </div>
+          </div>
+
+          {/* Scene List */}
+          <div className="space-y-2">
+            {sceneCosts.scenes.map((scene: SceneCostDetail) => {
+              const isSceneExpanded = expandedScenes.has(scene.scene_id);
+              const hasItems = scene.breakdown_items.length > 0 || scene.expenses.length > 0;
+
+              return (
+                <div
+                  key={scene.scene_id}
+                  className="bg-charcoal-black/40 rounded-lg overflow-hidden"
+                >
+                  {/* Scene Header */}
+                  <button
+                    className="w-full flex items-center justify-between py-3 px-4 hover:bg-charcoal-black/60 transition-colors"
+                    onClick={() => hasItems && toggleSceneExpanded(scene.scene_id)}
+                    disabled={!hasItems}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {hasItems ? (
+                        isSceneExpanded ? (
+                          <ChevronDown className="w-4 h-4 text-muted-gray flex-shrink-0" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-muted-gray flex-shrink-0" />
+                        )
+                      ) : (
+                        <div className="w-4 h-4" />
+                      )}
+                      <div className="min-w-0 text-left">
+                        <div className="font-medium text-bone-white flex items-center gap-2">
+                          <span className="bg-accent-yellow/20 text-accent-yellow px-1.5 py-0.5 rounded text-xs font-mono">
+                            {scene.scene_number || 'SC'}
+                          </span>
+                          <span className="truncate">
+                            {scene.scene_name || 'Untitled Scene'}
+                          </span>
+                        </div>
+                        <div className="text-xs text-muted-gray flex items-center gap-2 mt-0.5">
+                          {scene.int_ext && <span>{scene.int_ext}</span>}
+                          {scene.location && (
+                            <>
+                              <span>•</span>
+                              <MapPin className="w-3 h-3" />
+                              <span className="truncate">{scene.location}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {scene.breakdown_items.length > 0 && (
+                        <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                          {scene.breakdown_items.length} items
+                        </Badge>
+                      )}
+                      {scene.expenses.length > 0 && (
+                        <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                          {scene.expenses.length} expenses
+                        </Badge>
+                      )}
+                      <div className="font-medium text-bone-white min-w-[80px] text-right">
+                        {formatCurrency(scene.scene_total, currency)}
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Scene Details */}
+                  {isSceneExpanded && hasItems && (
+                    <div className="px-4 pb-4 space-y-3">
+                      {/* Breakdown Items */}
+                      {scene.breakdown_items.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-xs text-muted-gray font-medium uppercase tracking-wide mb-2">
+                            Breakdown Items
+                          </div>
+                          {scene.breakdown_items.map((item) => (
+                            <div
+                              key={item.id}
+                              className="flex items-center justify-between py-2 px-3 bg-charcoal-black/60 rounded"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                {getBreakdownTypeIcon(item.item_type)}
+                                <span className="text-sm text-bone-white truncate">
+                                  {item.description}
+                                </span>
+                                {item.quantity > 1 && (
+                                  <Badge variant="outline" className="text-xs">
+                                    x{item.quantity}
+                                  </Badge>
+                                )}
+                              </div>
+                              <span className="text-sm text-purple-400 font-medium">
+                                {formatCurrency(item.estimated_cost * item.quantity, currency)}
+                              </span>
+                            </div>
+                          ))}
+                          <div className="flex justify-end pt-1">
+                            <span className="text-xs text-muted-gray">
+                              Subtotal: {formatCurrency(scene.breakdown_subtotal, currency)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Expenses */}
+                      {scene.expenses.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-xs text-muted-gray font-medium uppercase tracking-wide mb-2">
+                            Linked Expenses
+                          </div>
+                          {scene.expenses.map((expense) => (
+                            <div
+                              key={expense.id}
+                              className="flex items-center justify-between py-2 px-3 bg-charcoal-black/60 rounded"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                {getExpenseTypeIcon(expense.expense_type)}
+                                <span className="text-sm text-bone-white truncate">
+                                  {expense.description || formatExpenseType(expense.expense_type)}
+                                </span>
+                                {expense.vendor && (
+                                  <span className="text-xs text-muted-gray">
+                                    ({expense.vendor})
+                                  </span>
+                                )}
+                                {expense.user_name && (
+                                  <span className="text-xs text-muted-gray">
+                                    • {expense.user_name}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-sm text-blue-400 font-medium">
+                                {formatCurrency(expense.amount, currency)}
+                              </span>
+                            </div>
+                          ))}
+                          <div className="flex justify-end pt-1">
+                            <span className="text-xs text-muted-gray">
+                              Subtotal: {formatCurrency(scene.expenses_subtotal, currency)}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Invoices Section (for production day)
+const InvoicesSection: React.FC<{
+  invoices: DailyInvoices | undefined;
+  isLoading: boolean;
+  currency: string;
+}> = ({ invoices, isLoading, currency }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [expandedInvoices, setExpandedInvoices] = useState<Set<string>>(new Set());
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-16" />
+      </div>
+    );
+  }
+
+  if (!invoices || invoices.invoices.length === 0) {
+    return null;
+  }
+
+  const toggleInvoiceExpanded = (invoiceId: string) => {
+    setExpandedInvoices((prev) => {
+      const next = new Set(prev);
+      if (next.has(invoiceId)) {
+        next.delete(invoiceId);
+      } else {
+        next.add(invoiceId);
+      }
+      return next;
+    });
+  };
+
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'approved':
+      case 'sent':
+      case 'paid':
+        return (
+          <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/30">
+            {status === 'paid' ? 'Paid' : status === 'sent' ? 'Sent' : 'Approved'}
+          </Badge>
+        );
+      case 'pending_approval':
+        return (
+          <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-400 border-amber-500/30">
+            Pending
+          </Badge>
+        );
+      case 'draft':
+        return (
+          <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-400 border-gray-500/30">
+            Draft
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="outline" className="text-xs">
+            {status}
+          </Badge>
+        );
+    }
+  };
+
+  const getLinkTypeBadge = (linkType: string) => {
+    if (linkType === 'production_day') {
+      return (
+        <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+          Day Linked
+        </Badge>
+      );
+    } else {
+      return (
+        <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+          Service Date
+        </Badge>
+      );
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <button
+        className="flex items-center gap-2 w-full text-left"
+        onClick={() => setIsExpanded(!isExpanded)}
+      >
+        {isExpanded ? (
+          <ChevronDown className="w-5 h-5 text-muted-gray" />
+        ) : (
+          <ChevronRight className="w-5 h-5 text-muted-gray" />
+        )}
+        <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+          <FileText className="w-5 h-5 text-accent-yellow" />
+          Invoices
+        </h3>
+        <Badge className="ml-2 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30">
+          {invoices.invoice_count} {invoices.invoice_count === 1 ? 'invoice' : 'invoices'}
+        </Badge>
+        <div className="ml-auto text-bone-white font-medium">
+          {formatCurrency(invoices.total_amount, currency)}
+        </div>
+      </button>
+
+      {isExpanded && (
+        <div className="space-y-3">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Approved</div>
+              <div className="text-lg font-semibold text-green-400">
+                {formatCurrency(invoices.approved_total, currency)}
+              </div>
+              <div className="text-xs text-muted-gray">
+                {invoices.approved_count} {invoices.approved_count === 1 ? 'invoice' : 'invoices'}
+              </div>
+            </div>
+            <div className="bg-charcoal-black/40 rounded-lg p-3">
+              <div className="text-xs text-muted-gray mb-1">Pending</div>
+              <div className="text-lg font-semibold text-amber-400">
+                {formatCurrency(invoices.pending_total, currency)}
+              </div>
+              <div className="text-xs text-muted-gray">
+                {invoices.pending_count} {invoices.pending_count === 1 ? 'invoice' : 'invoices'}
+              </div>
+            </div>
+          </div>
+
+          {/* Invoice List */}
+          <div className="space-y-2">
+            {invoices.invoices.map((invoice: DailyInvoiceEntry) => {
+              const isInvoiceExpanded = expandedInvoices.has(invoice.id);
+              const hasLineItems = invoice.line_items.length > 0;
+
+              return (
+                <div
+                  key={invoice.id}
+                  className="bg-charcoal-black/40 rounded-lg overflow-hidden"
+                >
+                  {/* Invoice Header */}
+                  <button
+                    className="w-full flex items-center justify-between py-3 px-4 hover:bg-charcoal-black/60 transition-colors"
+                    onClick={() => hasLineItems && toggleInvoiceExpanded(invoice.id)}
+                    disabled={!hasLineItems}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      {hasLineItems ? (
+                        isInvoiceExpanded ? (
+                          <ChevronDown className="w-4 h-4 text-muted-gray flex-shrink-0" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4 text-muted-gray flex-shrink-0" />
+                        )
+                      ) : (
+                        <div className="w-4 h-4" />
+                      )}
+                      <div className="min-w-0 text-left">
+                        <div className="font-medium text-bone-white flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-muted-gray" />
+                          <span className="truncate">
+                            {invoice.vendor_name || 'Unknown Vendor'}
+                          </span>
+                          {invoice.invoice_number && (
+                            <span className="text-xs text-muted-gray font-mono">
+                              #{invoice.invoice_number}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-gray flex items-center gap-2 mt-0.5">
+                          {invoice.invoice_date && (
+                            <span className="flex items-center gap-1">
+                              <CalendarIcon className="w-3 h-3" />
+                              {format(new Date(invoice.invoice_date), 'MMM d, yyyy')}
+                            </span>
+                          )}
+                          {invoice.due_date && (
+                            <>
+                              <span>•</span>
+                              <span>Due {format(new Date(invoice.due_date), 'MMM d')}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {getStatusBadge(invoice.status)}
+                      {getLinkTypeBadge(invoice.link_type)}
+                      <div className="font-medium text-bone-white min-w-[90px] text-right">
+                        {formatCurrency(invoice.total_amount, currency)}
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Invoice Details */}
+                  {isInvoiceExpanded && hasLineItems && (
+                    <div className="px-4 pb-4 space-y-2">
+                      <div className="text-xs text-muted-gray font-medium uppercase tracking-wide mb-2">
+                        Line Items
+                      </div>
+                      {invoice.line_items.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center justify-between py-2 px-3 bg-charcoal-black/60 rounded"
+                        >
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <span className="text-sm text-bone-white truncate">
+                              {item.description || 'Line item'}
+                            </span>
+                            {item.quantity > 1 && (
+                              <span className="text-xs text-muted-gray">
+                                x{item.quantity}
+                              </span>
+                            )}
+                            {item.scene_number && (
+                              <Badge variant="outline" className="text-xs bg-accent-yellow/10 text-accent-yellow border-accent-yellow/30">
+                                Sc. {item.scene_number}
+                              </Badge>
+                            )}
+                            {item.service_date && (
+                              <span className="text-xs text-muted-gray">
+                                • {format(new Date(item.service_date), 'MMM d')}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-sm text-bone-white font-medium">
+                            {formatCurrency(item.amount, currency)}
+                          </span>
+                        </div>
+                      ))}
+                      {invoice.tax_amount > 0 && (
+                        <div className="flex justify-between text-sm pt-2 border-t border-muted-gray/20">
+                          <span className="text-muted-gray">Tax</span>
+                          <span className="text-bone-white">
+                            {formatCurrency(invoice.tax_amount, currency)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Suggestions Panel
 const SuggestionsPanel: React.FC<{
   productionDayId: string;
@@ -388,6 +1121,13 @@ const DailyBudgetDetail: React.FC<{
   );
   const { data: budget } = useBudget(projectId);
   const { data: allLineItems } = useBudgetLineItems(budget?.id || null);
+  const { data: laborCosts, isLoading: laborCostsLoading } = useDailyLaborCosts(dailyBudget.id, {
+    includePending: true,
+  });
+  const { data: sceneCosts, isLoading: sceneCostsLoading } = useDailySceneCosts(dailyBudget.id);
+  const { data: dailyInvoices, isLoading: invoicesLoading } = useDailyInvoices(dailyBudget.id, {
+    includePending: true,
+  });
 
   const [showItemModal, setShowItemModal] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -605,6 +1345,27 @@ const DailyBudgetDetail: React.FC<{
           </div>
         )}
       </div>
+
+      {/* Labor Costs Section */}
+      <LaborCostsSection
+        laborCosts={laborCosts}
+        isLoading={laborCostsLoading}
+        currency={currency}
+      />
+
+      {/* Scene Costs Section */}
+      <SceneCostsSection
+        sceneCosts={sceneCosts}
+        isLoading={sceneCostsLoading}
+        currency={currency}
+      />
+
+      {/* Invoices Section */}
+      <InvoicesSection
+        invoices={dailyInvoices}
+        isLoading={invoicesLoading}
+        currency={currency}
+      />
 
       {/* Notes */}
       {dailyBudget.notes && (

@@ -2,7 +2,7 @@ import { useNotifications } from '@/hooks/useNotifications.tsx';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Bell, Check, Mail, MessageSquare, UserPlus, CheckCircle2, XCircle } from 'lucide-react';
+import { Bell, Check, Mail, MessageSquare, UserPlus, CheckCircle2, XCircle, ClipboardList, Star, Video, Gift, Briefcase } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -45,6 +45,19 @@ const NotificationIcon = ({ type }: { type: string }) => {
     case 'submission_received':
     case 'submission_updated':
       return <Mail className="h-5 w-5 text-muted-gray" />;
+    // Application notifications
+    case 'role_application':
+      return <ClipboardList className="h-5 w-5 text-blue-400" />;
+    case 'application_shortlisted':
+      return <Star className="h-5 w-5 text-yellow-400" />;
+    case 'application_interview':
+      return <Video className="h-5 w-5 text-purple-400" />;
+    case 'application_offered':
+      return <Gift className="h-5 w-5 text-green-400" />;
+    case 'application_booked':
+      return <Briefcase className="h-5 w-5 text-accent-yellow" />;
+    case 'application_rejected':
+      return <XCircle className="h-5 w-5 text-red-400" />;
     default:
       return <Bell className="h-5 w-5 text-muted-gray" />;
   }
@@ -98,6 +111,9 @@ const Notifications = () => {
     const conversationId = n.related_id || n.payload?.conversationId;
     const submissionId = n.related_id || n.payload?.submissionId;
     const requestId = n.related_id || n.payload?.requestId;
+    const projectId = n.payload?.project_id || n.data?.project_id;
+    const roleId = n.payload?.role_id || n.data?.role_id;
+    const applicationId = n.payload?.application_id || n.data?.application_id;
 
     if (t.startsWith('message') && conversationId) {
       navigate(`/messages?open=${conversationId}`);
@@ -110,6 +126,16 @@ const Notifications = () => {
     }
     if (t.startsWith('submission') && submissionId) {
       navigate(`/submissions/${submissionId}`);
+      return;
+    }
+    // Application notifications for project owners/admins
+    if (t === 'role_application' && projectId) {
+      navigate(`/backlot/${projectId}/workspace/cast-crew?tab=role-postings&roleId=${roleId}`);
+      return;
+    }
+    // Application notifications for applicants
+    if (t.startsWith('application_') && applicationId) {
+      navigate('/backlot/my-applications');
       return;
     }
     // Fallback

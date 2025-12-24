@@ -22,6 +22,14 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   FileText,
   StickyNote,
   Image,
@@ -36,11 +44,21 @@ import {
   Clapperboard,
   Fullscreen,
   X,
+  FileJson,
+  FileSpreadsheet,
+  ClipboardList,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useScripts, useScenes, useProductionDays } from '@/hooks/backlot';
 import { BacklotScript, BacklotScene } from '@/types/backlot';
 import { useToast } from '@/hooks/use-toast';
+import {
+  useExportTakes,
+  useExportNotes,
+  useExportDailyReport,
+  downloadFile,
+} from '@/hooks/backlot/useContinuity';
 
 // Sub-components (will be created)
 import LinedScriptOverlay from './scripty/LinedScriptOverlay';
@@ -108,6 +126,93 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
   const { scripts, isLoading: scriptsLoading } = useScripts({ projectId });
   const { scenes, isLoading: scenesLoading } = useScenes({ projectId });
   const { data: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
+
+  // Export hooks
+  const exportTakes = useExportTakes(projectId);
+  const exportNotes = useExportNotes(projectId);
+  const exportDailyReport = useExportDailyReport(projectId);
+
+  const isExporting = exportTakes.isPending || exportNotes.isPending || exportDailyReport.isPending;
+
+  // Export handlers
+  const handleExportTakes = async (format: 'csv' | 'json') => {
+    try {
+      const result = await exportTakes.mutateAsync({
+        format,
+        productionDayId: selectedDayId || undefined,
+      });
+
+      const filename = `takes_${new Date().toISOString().split('T')[0]}.${format}`;
+      const content = format === 'csv' ? result.data as string : JSON.stringify(result.data, null, 2);
+      const mimeType = format === 'csv' ? 'text/csv' : 'application/json';
+
+      downloadFile(content, filename, mimeType);
+      toast({
+        title: 'Export Complete',
+        description: `Takes exported as ${format.toUpperCase()}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Export Failed',
+        description: 'Could not export takes. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleExportNotes = async (format: 'csv' | 'json') => {
+    try {
+      const result = await exportNotes.mutateAsync({
+        format,
+        sceneId: selectedSceneId || undefined,
+      });
+
+      const filename = `continuity_notes_${new Date().toISOString().split('T')[0]}.${format}`;
+      const content = format === 'csv' ? result.data as string : JSON.stringify(result.data, null, 2);
+      const mimeType = format === 'csv' ? 'text/csv' : 'application/json';
+
+      downloadFile(content, filename, mimeType);
+      toast({
+        title: 'Export Complete',
+        description: `Notes exported as ${format.toUpperCase()}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Export Failed',
+        description: 'Could not export notes. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleExportDailyReport = async () => {
+    if (!selectedDayId) {
+      toast({
+        title: 'Select a Day',
+        description: 'Please select a production day to export the daily report.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      const report = await exportDailyReport.mutateAsync(selectedDayId);
+      const dayNumber = report?.production_day?.day_number || 'unknown';
+      const filename = `daily_report_day_${dayNumber}_${new Date().toISOString().split('T')[0]}.json`;
+
+      downloadFile(JSON.stringify(report, null, 2), filename, 'application/json');
+      toast({
+        title: 'Export Complete',
+        description: `Daily report for Day ${dayNumber} exported`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Export Failed',
+        description: 'Could not export daily report. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
 
   // Auto-select first script
   useEffect(() => {
@@ -276,10 +381,45 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
             </Button>
           )}
 
-          {/* Export Button */}
-          <Button variant="outline" size="icon" title="Export">
-            <Download className="w-4 h-4" />
-          </Button>
+          {/* Export Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="icon" title="Export" disabled={isExporting}>
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuLabel>Export Takes</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => handleExportTakes('csv')}>
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Takes (CSV)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExportTakes('json')}>
+                <FileJson className="w-4 h-4 mr-2" />
+                Takes (JSON)
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Export Notes</DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => handleExportNotes('csv')}>
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Notes (CSV)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExportNotes('json')}>
+                <FileJson className="w-4 h-4 mr-2" />
+                Notes (JSON)
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Daily Report</DropdownMenuLabel>
+              <DropdownMenuItem onClick={handleExportDailyReport}>
+                <ClipboardList className="w-4 h-4 mr-2" />
+                Daily Report (JSON)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           {/* Fullscreen Button */}
           <Button
@@ -467,6 +607,7 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
                     projectId={projectId}
                     sceneId={selectedSceneId}
                     productionDayId={selectedDayId}
+                    selectedSceneNumber={activeScene?.scene_number}
                     canEdit={canEdit}
                     isRecording={isRecording}
                     onTakeLogged={() => {

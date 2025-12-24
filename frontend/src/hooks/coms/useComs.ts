@@ -2,6 +2,7 @@
  * useComs - React Query hooks for the Coms (Communications) system
  * Handles channels, messages, members, presence, and templates
  */
+import React from 'react';
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type {
@@ -26,7 +27,8 @@ import type {
   ApplyTemplatesResponse,
 } from '@/types/coms';
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+// Use relative path for Vite proxy in dev, or full URL in production
+const API_BASE = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_URL || '');
 
 // ============================================================================
 // CHANNELS
@@ -208,7 +210,7 @@ export function useChannelMessages(channelId: string | null) {
   });
 }
 
-export function useSendMessage(channelId: string | null) {
+export function useSendMessage(channelId: string | null, currentUser?: { id: string; username?: string; full_name?: string; avatar_url?: string }) {
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -232,7 +234,62 @@ export function useSendMessage(channelId: string | null) {
 
       return (await response.json()) as ComsMessage;
     },
-    onSuccess: () => {
+    // Optimistic update - show message immediately
+    onMutate: async (input) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['coms-messages', channelId] });
+
+      // Snapshot previous value
+      const previousMessages = queryClient.getQueryData(['coms-messages', channelId]);
+
+      // Create optimistic message
+      const optimisticMessage: ComsMessage = {
+        id: `optimistic-${Date.now()}`,
+        channel_id: channelId || '',
+        sender_id: currentUser?.id || '',
+        content: input.content,
+        message_type: input.message_type || 'text',
+        created_at: new Date().toISOString(),
+        edited_at: null,
+        is_deleted: false,
+        is_pinned: false,
+        reply_to_id: input.reply_to_id || null,
+        reply_to: null,
+        attachments: [],
+        reactions: [],
+        sender: currentUser ? {
+          id: currentUser.id,
+          username: currentUser.username || null,
+          full_name: currentUser.full_name || null,
+          avatar_url: currentUser.avatar_url || null,
+          production_role: null,
+        } : null,
+      };
+
+      // Optimistically update the cache
+      queryClient.setQueryData(['coms-messages', channelId], (old: any) => {
+        if (!old?.pages) return old;
+        // Add message to the first page (most recent messages)
+        const newPages = [...old.pages];
+        if (newPages[0]) {
+          newPages[0] = {
+            ...newPages[0],
+            messages: [optimisticMessage, ...newPages[0].messages],
+          };
+        }
+        return { ...old, pages: newPages };
+      });
+
+      return { previousMessages };
+    },
+    onError: (_err, _input, context) => {
+      // Rollback on error
+      if (context?.previousMessages) {
+        queryClient.setQueryData(['coms-messages', channelId], context.previousMessages);
+      }
+    },
+    onSettled: () => {
+      // Refetch to sync with server
       queryClient.invalidateQueries({ queryKey: ['coms-messages', channelId] });
       queryClient.invalidateQueries({ queryKey: ['coms-channels'] });
     },
@@ -640,6 +697,138 @@ export function useApplyTemplates(projectId: string | null) {
       queryClient.invalidateQueries({ queryKey: ['coms-channels', { projectId }] });
     },
   });
+}
+
+// ============================================================================
+// TYPING INDICATORS
+// ============================================================================
+
+// Track typing users per channel
+const typingUsersMap = new Map<string, Map<string, { username: string; timeout: number }>>();
+
+export function useTypingIndicator(channelId: string | null, socket: any) {
+  const [typingUsers, setTypingUsers] = React.useState<Array<{ userId: string; username: string }>>([]);
+
+  React.useEffect(() => {
+    // Check if socket context exists and is connected
+    if (!channelId || !socket?.isConnected) return;
+
+    // Initialize map for this channel
+    if (!typingUsersMap.has(channelId)) {
+      typingUsersMap.set(channelId, new Map());
+    }
+
+    const handleUserTyping = (data: { channel_id: string; user_id: string; username: string }) => {
+      if (data.channel_id !== channelId) return;
+
+      const channelTyping = typingUsersMap.get(channelId)!;
+
+      // Clear existing timeout for this user
+      const existing = channelTyping.get(data.user_id);
+      if (existing?.timeout) {
+        clearTimeout(existing.timeout);
+      }
+
+      // Set new timeout (stop showing after 3 seconds of no typing)
+      const timeout = window.setTimeout(() => {
+        channelTyping.delete(data.user_id);
+        setTypingUsers(Array.from(channelTyping.entries()).map(([userId, { username }]) => ({ userId, username })));
+      }, 3000);
+
+      channelTyping.set(data.user_id, { username: data.username, timeout });
+      setTypingUsers(Array.from(channelTyping.entries()).map(([userId, { username }]) => ({ userId, username })));
+    };
+
+    const handleUserStoppedTyping = (data: { channel_id: string; user_id: string }) => {
+      if (data.channel_id !== channelId) return;
+
+      const channelTyping = typingUsersMap.get(channelId)!;
+      const existing = channelTyping.get(data.user_id);
+      if (existing?.timeout) {
+        clearTimeout(existing.timeout);
+      }
+      channelTyping.delete(data.user_id);
+      setTypingUsers(Array.from(channelTyping.entries()).map(([userId, { username }]) => ({ userId, username })));
+    };
+
+    socket.on('user_typing', handleUserTyping);
+    socket.on('user_stopped_typing', handleUserStoppedTyping);
+
+    return () => {
+      socket.off('user_typing', handleUserTyping);
+      socket.off('user_stopped_typing', handleUserStoppedTyping);
+    };
+  }, [channelId, socket?.isConnected, socket]);
+
+  return typingUsers;
+}
+
+// Hook to send typing events
+export function useSendTyping(channelId: string | null, socket: any) {
+  const typingTimeoutRef = React.useRef<number | null>(null);
+  const isTypingRef = React.useRef(false);
+
+  const startTyping = React.useCallback(() => {
+    // Use socket context's startTyping method if available, otherwise use emit
+    if (!channelId || !socket?.isConnected) return;
+
+    // Only send if not already typing
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      // Use the socket context's startTyping method
+      if (socket.startTyping) {
+        socket.startTyping(channelId);
+      } else if (socket.emit) {
+        socket.emit('typing_start', { channel_id: channelId });
+      }
+    }
+
+    // Reset timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Auto-stop after 2 seconds of no input
+    typingTimeoutRef.current = window.setTimeout(() => {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        if (socket.stopTyping) {
+          socket.stopTyping(channelId);
+        } else if (socket.emit) {
+          socket.emit('typing_stop', { channel_id: channelId });
+        }
+      }
+    }, 2000);
+  }, [channelId, socket]);
+
+  const stopTyping = React.useCallback(() => {
+    if (!channelId || !socket?.isConnected) return;
+
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+
+    if (isTypingRef.current) {
+      isTypingRef.current = false;
+      if (socket.stopTyping) {
+        socket.stopTyping(channelId);
+      } else if (socket.emit) {
+        socket.emit('typing_stop', { channel_id: channelId });
+      }
+    }
+  }, [channelId, socket]);
+
+  // Cleanup on unmount
+  React.useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  return { startTyping, stopTyping };
 }
 
 // ============================================================================

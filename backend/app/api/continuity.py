@@ -19,11 +19,21 @@ def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
     """Look up the profile ID from a Cognito user ID."""
     client = get_client()
     uid_str = str(cognito_user_id)
-    result = client.table("profiles").select("id").or_(
-        f"cognito_user_id.eq.{uid_str},id.eq.{uid_str}"
+
+    # Try cognito_user_id first
+    result = client.table("profiles").select("id").eq(
+        "cognito_user_id", uid_str
     ).limit(1).execute()
     if result.data:
         return result.data[0]["id"]
+
+    # Fallback: check if it's already a profile ID
+    result = client.table("profiles").select("id").eq(
+        "id", uid_str
+    ).limit(1).execute()
+    if result.data:
+        return result.data[0]["id"]
+
     return None
 
 # S3 Configuration
@@ -153,7 +163,8 @@ class TakeNote(BaseModel):
 
 
 class CreateTakeNoteRequest(BaseModel):
-    take_id: str
+    take_id: Optional[str] = None  # For camera dept slate logs
+    scripty_take_id: Optional[str] = None  # For script supervisor takes
     note_text: str
     note_category: str = "general"
     timecode: Optional[str] = None
@@ -282,9 +293,11 @@ async def create_lining_mark(
 ):
     """Create a new lining mark."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     # Check permission
@@ -328,9 +341,11 @@ async def update_lining_mark(
 ):
     """Update a lining mark."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     if not await can_edit_section(project_id, profile_id, "lining_marks"):
@@ -363,9 +378,11 @@ async def delete_lining_mark(
 ):
     """Delete a lining mark."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -417,41 +434,70 @@ async def create_take(
     authorization: str = Header(...),
 ):
     """Create a new take (slate log)."""
-    token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
-    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    import logging
+    logger = logging.getLogger(__name__)
 
-    if not await can_edit_section(project_id, profile_id, "take_notes"):
-        raise HTTPException(status_code=403, detail="No permission to log takes")
+    try:
+        # Auth
+        token = authorization.replace("Bearer ", "")
+        from app.core.cognito import CognitoAuth
+        user = CognitoAuth.verify_token(token)
+        if not user:
+            logger.error("[CreateTake] Invalid token")
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-    client = get_client()
+        cognito_user_id = user.get("id")
+        logger.info(f"[CreateTake] cognito_user_id: {cognito_user_id}")
 
-    take_data = {
-        "project_id": project_id,
-        "scene_id": request.scene_id,
-        "production_day_id": request.production_day_id,
-        "scene_number": request.scene_number,
-        "take_number": request.take_number,
-        "status": request.status,
-        "timecode_in": request.timecode_in,
-        "timecode_out": request.timecode_out,
-        "camera_label": request.camera_label,
-        "setup_label": request.setup_label,
-        "camera_roll": request.camera_roll,
-        "time_of_day": request.time_of_day,
-        "duration_seconds": request.duration_seconds,
-        "notes": request.notes,
-        "created_by": profile_id,
-    }
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+        logger.info(f"[CreateTake] profile_id: {profile_id}")
 
-    response = client.table("backlot_takes").insert(take_data).execute()
+        if not profile_id:
+            logger.error(f"[CreateTake] Could not find profile for cognito_id: {cognito_user_id}")
+            raise HTTPException(status_code=401, detail="User profile not found")
 
-    if not response.data:
-        raise HTTPException(status_code=500, detail="Failed to create take")
+        # Permissions
+        has_permission = await can_edit_section(project_id, profile_id, "take_notes")
+        if not has_permission:
+            logger.error(f"[CreateTake] No permission for profile {profile_id} on project {project_id}")
+            raise HTTPException(status_code=403, detail="No permission to log takes")
 
-    return response.data[0]
+        client = get_client()
+
+        take_data = {
+            "project_id": project_id,
+            "scene_id": request.scene_id,
+            "production_day_id": request.production_day_id,
+            "scene_number": request.scene_number,
+            "take_number": request.take_number,
+            "status": request.status,
+            "timecode_in": request.timecode_in,
+            "timecode_out": request.timecode_out,
+            "camera_label": request.camera_label,
+            "setup_label": request.setup_label,
+            "camera_roll": request.camera_roll,
+            "time_of_day": request.time_of_day,
+            "duration_seconds": request.duration_seconds,
+            "notes": request.notes,
+            "created_by": profile_id,
+        }
+
+        logger.info(f"[CreateTake] Inserting take: {take_data}")
+
+        response = client.table("backlot_takes").insert(take_data).execute()
+
+        if not response.data:
+            logger.error(f"[CreateTake] Insert failed, no data returned")
+            raise HTTPException(status_code=500, detail="Failed to create take - no data returned")
+
+        logger.info(f"[CreateTake] Success: {response.data[0].get('id')}")
+        return response.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"[CreateTake] Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create take: {str(e)}")
 
 
 @router.patch("/continuity/takes/{take_id}")
@@ -462,9 +508,11 @@ async def update_take(
 ):
     """Update a take."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -513,9 +561,11 @@ async def delete_take(
 ):
     """Delete a take."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -539,14 +589,22 @@ async def delete_take(
 async def get_take_notes(
     project_id: str,
     take_id: Optional[str] = None,
+    scripty_take_id: Optional[str] = None,
     authorization: str = Header(...),
 ):
-    """Get take notes for a project."""
+    """Get take notes for a project.
+
+    Can filter by either take_id (camera dept) or scripty_take_id (script supervisor).
+    """
     client = get_client()
 
     query = client.table("backlot_take_notes").select("*").eq("project_id", project_id)
 
-    if take_id:
+    if scripty_take_id:
+        # Filter by script supervisor take ID
+        query = query.eq("scripty_take_id", scripty_take_id)
+    elif take_id:
+        # Filter by camera dept take ID (backward compatibility)
         query = query.eq("take_id", take_id)
 
     query = query.order("created_at", desc=True)
@@ -561,21 +619,30 @@ async def create_take_note(
     request: CreateTakeNoteRequest,
     authorization: str = Header(...),
 ):
-    """Create a take note."""
+    """Create a take note.
+
+    Can be linked to either take_id (camera dept) or scripty_take_id (script supervisor).
+    At least one must be provided.
+    """
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     if not await can_edit_section(project_id, profile_id, "take_notes"):
         raise HTTPException(status_code=403, detail="No permission to add take notes")
 
+    # Validate that at least one take ID is provided
+    if not request.take_id and not request.scripty_take_id:
+        raise HTTPException(status_code=400, detail="Either take_id or scripty_take_id must be provided")
+
     client = get_client()
 
     note_data = {
         "project_id": project_id,
-        "take_id": request.take_id,
         "note_text": request.note_text,
         "note_category": request.note_category,
         "timecode": request.timecode,
@@ -586,6 +653,12 @@ async def create_take_note(
         "is_dialogue_related": request.is_dialogue_related,
         "created_by": profile_id,
     }
+
+    # Add the appropriate take ID field
+    if request.scripty_take_id:
+        note_data["scripty_take_id"] = request.scripty_take_id
+    if request.take_id:
+        note_data["take_id"] = request.take_id
 
     response = client.table("backlot_take_notes").insert(note_data).execute()
 
@@ -650,9 +723,11 @@ async def upload_continuity_photo(
 ):
     """Upload a continuity photo."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     if not await can_edit_section(project_id, profile_id, "continuity_photos"):
@@ -714,9 +789,11 @@ async def update_continuity_photo(
 ):
     """Update a continuity photo."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -747,9 +824,11 @@ async def delete_continuity_photo(
 ):
     """Delete a continuity photo."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -838,9 +917,11 @@ async def create_scene_continuity_note(
 ):
     """Create a scene-level continuity note."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     if not await can_edit_section(project_id, profile_id, "continuity_notes"):
@@ -873,9 +954,11 @@ async def update_scene_continuity_note(
 ):
     """Update a scene continuity note."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()
@@ -913,9 +996,11 @@ async def delete_scene_continuity_note(
 ):
     """Delete a scene continuity note."""
     token = authorization.replace("Bearer ", "")
-    from app.core.auth import verify_token
-    payload = verify_token(token)
-    cognito_user_id = payload.get("sub")
+    from app.core.cognito import CognitoAuth
+    user = CognitoAuth.verify_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    cognito_user_id = user.get("id")
     profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
     client = get_client()

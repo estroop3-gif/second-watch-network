@@ -11,6 +11,8 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 export const BACKLOT_ROLES = [
   { value: 'showrunner', label: 'Showrunner', description: 'Full project control' },
   { value: 'producer', label: 'Producer', description: 'Production oversight and budget access' },
+  { value: 'line_producer', label: 'Line Producer', description: 'Budget oversight and approvals' },
+  { value: 'upm', label: 'UPM', description: 'Unit production management and approvals' },
   { value: 'director', label: 'Director', description: 'Creative control, no budget' },
   { value: 'first_ad', label: '1st AD', description: 'Scheduling and on-set management' },
   { value: 'dp', label: 'DP', description: 'Camera and lighting focus' },
@@ -20,6 +22,9 @@ export const BACKLOT_ROLES = [
 ] as const;
 
 export type BacklotRoleValue = typeof BACKLOT_ROLES[number]['value'];
+
+// Roles that can approve expenses, invoices, timecards, and purchase orders
+export const APPROVER_ROLES: BacklotRoleValue[] = ['showrunner', 'producer', 'line_producer', 'upm'];
 
 export interface BacklotProjectRole {
   id: string;
@@ -73,6 +78,32 @@ export const DEFAULT_VIEW_CONFIGS: Record<string, ViewConfig> = {
     sections: { budget_numbers: true, admin_tools: true },
   },
   producer: {
+    tabs: {
+      overview: true, script: true, scenes: true, 'shot-lists': true, coverage: true,
+      schedule: true, days: true, 'call-sheets': true, casting: true, people: true, locations: true,
+      gear: true, 'hot-set': true, 'camera-continuity': true, scripty: true, dailies: true, checkin: true,
+      review: true, assets: true,
+      budget: true, 'daily-budget': true, timecards: true, expenses: true, invoices: true, receipts: true, analytics: true,
+      tasks: true, coms: true, updates: true, contacts: true,
+      clearances: true, credits: true, 'my-space': true, 'church-tools': true,
+      access: false, roles: false, settings: false,
+    },
+    sections: { budget_numbers: true, admin_tools: false },
+  },
+  line_producer: {
+    tabs: {
+      overview: true, script: true, scenes: true, 'shot-lists': true, coverage: true,
+      schedule: true, days: true, 'call-sheets': true, casting: true, people: true, locations: true,
+      gear: true, 'hot-set': true, 'camera-continuity': true, scripty: true, dailies: true, checkin: true,
+      review: true, assets: true,
+      budget: true, 'daily-budget': true, timecards: true, expenses: true, invoices: true, receipts: true, analytics: true,
+      tasks: true, coms: true, updates: true, contacts: true,
+      clearances: true, credits: true, 'my-space': true, 'church-tools': true,
+      access: false, roles: false, settings: false,
+    },
+    sections: { budget_numbers: true, admin_tools: false },
+  },
+  upm: {
     tabs: {
       overview: true, script: true, scenes: true, 'shot-lists': true, coverage: true,
       schedule: true, days: true, 'call-sheets': true, casting: true, people: true, locations: true,
@@ -574,4 +605,33 @@ export function useCanViewAsRole(projectId: string | null) {
     },
     enabled: !!projectId,
   });
+}
+
+// Helper to check approval permissions for the current user
+export function useCanApprove(projectId: string | null) {
+  const { data: myRoles, isLoading } = useMyProjectRoles(projectId);
+
+  // Get user's primary backlot role (or first role if no primary)
+  const primaryRole = myRoles?.find(r => r.is_primary) || myRoles?.[0];
+  const backlotRole = primaryRole?.backlot_role;
+
+  // Check if user has any approver role
+  const isApprover = backlotRole ? APPROVER_ROLES.includes(backlotRole) : false;
+  const isFirstAD = backlotRole === 'first_ad';
+  const isDepartmentHead = backlotRole === 'department_head';
+
+  return {
+    isLoading,
+    backlotRole,
+    // Full approvers can approve all expenses
+    canApproveExpenses: isApprover || isDepartmentHead,
+    // Full approvers can approve all invoices
+    canApproveInvoices: isApprover,
+    // Full approvers + 1st AD can approve timecards (1st AD for crew, dept head for dept)
+    canApproveTimecards: isApprover || isFirstAD || isDepartmentHead,
+    // Full approvers + dept head can approve POs (dept head for dept only)
+    canApprovePOs: isApprover || isDepartmentHead,
+    // Can see the unified approvals dashboard (full approvers only)
+    canViewApprovalsDashboard: isApprover,
+  };
 }

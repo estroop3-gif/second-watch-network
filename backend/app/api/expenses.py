@@ -56,6 +56,11 @@ class MileageEntry(BaseModel):
     notes: Optional[str] = None
     created_at: str
     updated_at: str
+    # Budget linking
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    # Scene linking
+    scene_id: Optional[str] = None
     # Computed
     user_name: Optional[str] = None
 
@@ -71,6 +76,9 @@ class CreateMileageRequest(BaseModel):
     purpose: Optional[str] = None
     receipt_id: Optional[str] = None
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 class UpdateMileageRequest(BaseModel):
@@ -83,6 +91,9 @@ class UpdateMileageRequest(BaseModel):
     purpose: Optional[str] = None
     receipt_id: Optional[str] = None
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 # Kit Rental Models
@@ -111,6 +122,11 @@ class KitRental(BaseModel):
     notes: Optional[str] = None
     created_at: str
     updated_at: str
+    # Budget linking
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    # Scene linking
+    scene_id: Optional[str] = None
     # Computed
     user_name: Optional[str] = None
 
@@ -124,6 +140,9 @@ class CreateKitRentalRequest(BaseModel):
     end_date: Optional[str] = None
     rental_type: str = "daily"
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 class UpdateKitRentalRequest(BaseModel):
@@ -134,6 +153,9 @@ class UpdateKitRentalRequest(BaseModel):
     end_date: Optional[str] = None
     rental_type: Optional[str] = None
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 # Per Diem Models
@@ -156,6 +178,11 @@ class PerDiemEntry(BaseModel):
     notes: Optional[str] = None
     created_at: str
     updated_at: str
+    # Budget linking
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    # Scene linking
+    scene_id: Optional[str] = None
     # Computed
     user_name: Optional[str] = None
 
@@ -166,6 +193,9 @@ class CreatePerDiemRequest(BaseModel):
     amount: float
     location: Optional[str] = None
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 class BulkPerDiemRequest(BaseModel):
@@ -175,6 +205,9 @@ class BulkPerDiemRequest(BaseModel):
     amount: float
     location: Optional[str] = None
     notes: Optional[str] = None
+    budget_category_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
+    scene_id: Optional[str] = None
 
 
 # Expense Settings Models
@@ -236,6 +269,14 @@ class ApproveRejectRequest(BaseModel):
 
 class MarkReimbursedRequest(BaseModel):
     via: Optional[str] = None  # check, direct_deposit, petty_cash
+
+
+class ApprovalNotesRequest(BaseModel):
+    notes: Optional[str] = None  # Optional notes when approving
+
+
+class DenyExpenseRequest(BaseModel):
+    reason: str  # Required - reason for denial (permanent rejection)
 
 
 # =============================================================================
@@ -441,6 +482,9 @@ async def create_mileage(
         "receipt_id": request.receipt_id,
         "notes": request.notes or None,
         "status": "pending",
+        "budget_category_id": request.budget_category_id,
+        "budget_line_item_id": request.budget_line_item_id,
+        "scene_id": request.scene_id,
     }
 
     resp = client.table("backlot_mileage_entries").insert(entry_data).execute()
@@ -475,8 +519,8 @@ async def update_mileage(
     if entry["user_id"] != user["id"] and not is_manager:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if entry["status"] != "pending" and not is_manager:
-        raise HTTPException(status_code=400, detail="Cannot edit a non-pending entry")
+    if entry["status"] not in ["pending", "rejected", "denied"] and not is_manager:
+        raise HTTPException(status_code=400, detail="Cannot edit this entry")
 
     # Build update data
     update_data = {}
@@ -498,6 +542,12 @@ async def update_mileage(
         update_data["receipt_id"] = request.receipt_id
     if request.notes is not None:
         update_data["notes"] = request.notes
+    if request.budget_category_id is not None:
+        update_data["budget_category_id"] = request.budget_category_id
+    if request.budget_line_item_id is not None:
+        update_data["budget_line_item_id"] = request.budget_line_item_id
+    if request.scene_id is not None:
+        update_data["scene_id"] = request.scene_id
 
     if not update_data:
         return MileageEntry(**entry, total_amount=calculate_mileage_total(entry["miles"], entry.get("rate_per_mile", 0.67), entry.get("is_round_trip", False)))
@@ -532,8 +582,8 @@ async def delete_mileage(
     if entry["user_id"] != user["id"] and not is_manager:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if entry["status"] != "pending" and not is_manager:
-        raise HTTPException(status_code=400, detail="Cannot delete a non-pending entry")
+    if entry["status"] not in ["pending", "rejected", "denied"] and not is_manager:
+        raise HTTPException(status_code=400, detail="Cannot delete this entry")
 
     client.table("backlot_mileage_entries").delete().eq("id", mileage_id).execute()
     return {"success": True}
@@ -543,9 +593,10 @@ async def delete_mileage(
 async def approve_mileage(
     project_id: str,
     mileage_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None)
 ):
-    """Approve a mileage entry"""
+    """Approve a mileage entry with optional notes"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -560,11 +611,15 @@ async def approve_mileage(
     if entry["status"] != "pending":
         raise HTTPException(status_code=400, detail="Only pending entries can be approved")
 
-    client.table("backlot_mileage_entries").update({
+    update_data = {
         "status": "approved",
         "approved_by": user["id"],
         "approved_at": datetime.utcnow().isoformat(),
-    }).eq("id", mileage_id).execute()
+    }
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    client.table("backlot_mileage_entries").update(update_data).eq("id", mileage_id).execute()
 
     # Auto-add to user's draft invoice
     from app.services.invoice_auto_sync import auto_add_mileage_to_invoice
@@ -607,6 +662,78 @@ async def reject_mileage(
     }).eq("id", mileage_id).execute()
 
     return {"success": True, "status": "rejected"}
+
+
+@router.post("/projects/{project_id}/mileage/{mileage_id}/deny")
+async def deny_mileage(
+    project_id: str,
+    mileage_id: str,
+    request: DenyExpenseRequest,
+    authorization: str = Header(None)
+):
+    """Permanently deny a mileage entry. Cannot be resubmitted."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await can_approve_expenses(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to deny expenses")
+
+    entry_resp = client.table("backlot_mileage_entries").select("*").eq("id", mileage_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Mileage entry not found")
+
+    entry = entry_resp.data[0]
+    if entry["status"] not in ["pending", "rejected"]:
+        raise HTTPException(status_code=400, detail="Only pending or rejected entries can be denied")
+
+    client.table("backlot_mileage_entries").update({
+        "status": "denied",
+        "denied_by": user["id"],
+        "denied_at": datetime.utcnow().isoformat(),
+        "denial_reason": request.reason,
+    }).eq("id", mileage_id).execute()
+
+    return {"success": True, "status": "denied"}
+
+
+@router.post("/projects/{project_id}/mileage/{mileage_id}/resubmit")
+async def resubmit_mileage(
+    project_id: str,
+    mileage_id: str,
+    authorization: str = Header(None)
+):
+    """Resubmit a rejected or denied mileage entry for approval."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    entry_resp = client.table("backlot_mileage_entries").select("*").eq("id", mileage_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Mileage entry not found")
+
+    entry = entry_resp.data[0]
+
+    # Only owner can resubmit
+    if entry["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can resubmit this entry")
+
+    if entry["status"] not in ["rejected", "denied"]:
+        raise HTTPException(status_code=400, detail="Only rejected or denied entries can be resubmitted")
+
+    # Clear rejection/denial fields and set back to pending
+    update_data = {
+        "status": "pending",
+        "rejected_by": None,
+        "rejected_at": None,
+        "rejection_reason": None,
+        "denied_by": None,
+        "denied_at": None,
+        "denial_reason": None,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    client.table("backlot_mileage_entries").update(update_data).eq("id", mileage_id).execute()
+
+    return {"success": True, "status": "pending"}
 
 
 @router.post("/projects/{project_id}/mileage/{mileage_id}/mark-reimbursed")
@@ -737,6 +864,9 @@ async def create_kit_rental(
         "total_amount": total,
         "notes": request.notes,
         "status": "pending",
+        "budget_category_id": request.budget_category_id,
+        "budget_line_item_id": request.budget_line_item_id,
+        "scene_id": request.scene_id,
     }
 
     resp = client.table("backlot_kit_rentals").insert(entry_data).execute()
@@ -767,8 +897,8 @@ async def update_kit_rental(
     if entry["user_id"] != user["id"] and not is_manager:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if entry["status"] not in ["pending", "rejected"] and not is_manager:
-        raise HTTPException(status_code=400, detail="Cannot edit an approved or active rental")
+    if entry["status"] not in ["pending", "rejected", "denied"] and not is_manager:
+        raise HTTPException(status_code=400, detail="Cannot edit this rental")
 
     update_data = {}
     if request.kit_name is not None:
@@ -785,6 +915,12 @@ async def update_kit_rental(
         update_data["rental_type"] = request.rental_type
     if request.notes is not None:
         update_data["notes"] = request.notes
+    if request.budget_category_id is not None:
+        update_data["budget_category_id"] = request.budget_category_id
+    if request.budget_line_item_id is not None:
+        update_data["budget_line_item_id"] = request.budget_line_item_id
+    if request.scene_id is not None:
+        update_data["scene_id"] = request.scene_id
 
     # Recalculate total
     daily_rate = update_data.get("daily_rate", entry["daily_rate"])
@@ -825,8 +961,8 @@ async def delete_kit_rental(
     if entry["user_id"] != user["id"] and not is_manager:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if entry["status"] not in ["pending", "rejected"] and not is_manager:
-        raise HTTPException(status_code=400, detail="Cannot delete an approved or active rental")
+    if entry["status"] not in ["pending", "rejected", "denied"] and not is_manager:
+        raise HTTPException(status_code=400, detail="Cannot delete this rental")
 
     client.table("backlot_kit_rentals").delete().eq("id", rental_id).execute()
     return {"success": True}
@@ -836,9 +972,10 @@ async def delete_kit_rental(
 async def approve_kit_rental(
     project_id: str,
     rental_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None)
 ):
-    """Approve a kit rental (moves to active status)"""
+    """Approve a kit rental (moves to active status) with optional notes"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -853,11 +990,15 @@ async def approve_kit_rental(
     if entry["status"] != "pending":
         raise HTTPException(status_code=400, detail="Only pending rentals can be approved")
 
-    client.table("backlot_kit_rentals").update({
+    update_data = {
         "status": "active",
         "approved_by": user["id"],
         "approved_at": datetime.utcnow().isoformat(),
-    }).eq("id", rental_id).execute()
+    }
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    client.table("backlot_kit_rentals").update(update_data).eq("id", rental_id).execute()
 
     # Auto-add to user's draft invoice(s) - may split across multiple invoices by date
     from app.services.invoice_auto_sync import auto_add_kit_rental_to_invoice
@@ -903,6 +1044,78 @@ async def reject_kit_rental(
     }).eq("id", rental_id).execute()
 
     return {"success": True, "status": "rejected"}
+
+
+@router.post("/projects/{project_id}/kit-rentals/{rental_id}/deny")
+async def deny_kit_rental(
+    project_id: str,
+    rental_id: str,
+    request: DenyExpenseRequest,
+    authorization: str = Header(None)
+):
+    """Permanently deny a kit rental. Cannot be resubmitted."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await can_approve_expenses(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to deny expenses")
+
+    entry_resp = client.table("backlot_kit_rentals").select("*").eq("id", rental_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Kit rental not found")
+
+    entry = entry_resp.data[0]
+    if entry["status"] not in ["pending", "rejected"]:
+        raise HTTPException(status_code=400, detail="Only pending or rejected rentals can be denied")
+
+    client.table("backlot_kit_rentals").update({
+        "status": "denied",
+        "denied_by": user["id"],
+        "denied_at": datetime.utcnow().isoformat(),
+        "denial_reason": request.reason,
+    }).eq("id", rental_id).execute()
+
+    return {"success": True, "status": "denied"}
+
+
+@router.post("/projects/{project_id}/kit-rentals/{rental_id}/resubmit")
+async def resubmit_kit_rental(
+    project_id: str,
+    rental_id: str,
+    authorization: str = Header(None)
+):
+    """Resubmit a rejected or denied kit rental for approval."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    entry_resp = client.table("backlot_kit_rentals").select("*").eq("id", rental_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Kit rental not found")
+
+    entry = entry_resp.data[0]
+
+    # Only owner can resubmit
+    if entry["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can resubmit this rental")
+
+    if entry["status"] not in ["rejected", "denied"]:
+        raise HTTPException(status_code=400, detail="Only rejected or denied rentals can be resubmitted")
+
+    # Clear rejection/denial fields and set back to pending
+    update_data = {
+        "status": "pending",
+        "rejected_by": None,
+        "rejected_at": None,
+        "rejection_reason": None,
+        "denied_by": None,
+        "denied_at": None,
+        "denial_reason": None,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    client.table("backlot_kit_rentals").update(update_data).eq("id", rental_id).execute()
+
+    return {"success": True, "status": "pending"}
 
 
 @router.post("/projects/{project_id}/kit-rentals/{rental_id}/complete")
@@ -1061,6 +1274,9 @@ async def create_per_diem(
         "location": request.location,
         "notes": request.notes,
         "status": "pending",
+        "budget_category_id": request.budget_category_id,
+        "budget_line_item_id": request.budget_line_item_id,
+        "scene_id": request.scene_id,
     }
 
     resp = client.table("backlot_per_diem").insert(entry_data).execute()
@@ -1119,6 +1335,9 @@ async def create_bulk_per_diem(
                 "location": request.location,
                 "notes": request.notes,
                 "status": "pending",
+                "budget_category_id": request.budget_category_id,
+                "budget_line_item_id": request.budget_line_item_id,
+                "scene_id": request.scene_id,
             }
             client.table("backlot_per_diem").insert(entry_data).execute()
             created_count += 1
@@ -1148,8 +1367,8 @@ async def delete_per_diem(
     if entry["user_id"] != user["id"] and not is_manager:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    if entry["status"] != "pending" and not is_manager:
-        raise HTTPException(status_code=400, detail="Cannot delete a non-pending entry")
+    if entry["status"] not in ["pending", "rejected", "denied"] and not is_manager:
+        raise HTTPException(status_code=400, detail="Cannot delete this entry")
 
     client.table("backlot_per_diem").delete().eq("id", entry_id).execute()
     return {"success": True}
@@ -1159,9 +1378,10 @@ async def delete_per_diem(
 async def approve_per_diem(
     project_id: str,
     entry_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None)
 ):
-    """Approve a per diem entry"""
+    """Approve a per diem entry with optional notes"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -1176,11 +1396,15 @@ async def approve_per_diem(
     if entry["status"] != "pending":
         raise HTTPException(status_code=400, detail="Only pending entries can be approved")
 
-    client.table("backlot_per_diem").update({
+    update_data = {
         "status": "approved",
         "approved_by": user["id"],
         "approved_at": datetime.utcnow().isoformat(),
-    }).eq("id", entry_id).execute()
+    }
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    client.table("backlot_per_diem").update(update_data).eq("id", entry_id).execute()
 
     # Auto-add to user's draft invoice
     from app.services.invoice_auto_sync import auto_add_per_diem_to_invoice
@@ -1223,6 +1447,78 @@ async def reject_per_diem(
     }).eq("id", entry_id).execute()
 
     return {"success": True, "status": "rejected"}
+
+
+@router.post("/projects/{project_id}/per-diem/{entry_id}/deny")
+async def deny_per_diem(
+    project_id: str,
+    entry_id: str,
+    request: DenyExpenseRequest,
+    authorization: str = Header(None)
+):
+    """Permanently deny a per diem entry. Cannot be resubmitted."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await can_approve_expenses(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to deny expenses")
+
+    entry_resp = client.table("backlot_per_diem").select("*").eq("id", entry_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Per diem entry not found")
+
+    entry = entry_resp.data[0]
+    if entry["status"] not in ["pending", "rejected"]:
+        raise HTTPException(status_code=400, detail="Only pending or rejected entries can be denied")
+
+    client.table("backlot_per_diem").update({
+        "status": "denied",
+        "denied_by": user["id"],
+        "denied_at": datetime.utcnow().isoformat(),
+        "denial_reason": request.reason,
+    }).eq("id", entry_id).execute()
+
+    return {"success": True, "status": "denied"}
+
+
+@router.post("/projects/{project_id}/per-diem/{entry_id}/resubmit")
+async def resubmit_per_diem(
+    project_id: str,
+    entry_id: str,
+    authorization: str = Header(None)
+):
+    """Resubmit a rejected or denied per diem entry for approval."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    entry_resp = client.table("backlot_per_diem").select("*").eq("id", entry_id).eq("project_id", project_id).execute()
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="Per diem entry not found")
+
+    entry = entry_resp.data[0]
+
+    # Only owner can resubmit
+    if entry["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can resubmit this entry")
+
+    if entry["status"] not in ["rejected", "denied"]:
+        raise HTTPException(status_code=400, detail="Only rejected or denied entries can be resubmitted")
+
+    # Clear rejection/denial fields and set back to pending
+    update_data = {
+        "status": "pending",
+        "rejected_by": None,
+        "rejected_at": None,
+        "rejection_reason": None,
+        "denied_by": None,
+        "denied_at": None,
+        "denial_reason": None,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    client.table("backlot_per_diem").update(update_data).eq("id", entry_id).execute()
+
+    return {"success": True, "status": "pending"}
 
 
 @router.post("/projects/{project_id}/per-diem/{entry_id}/mark-reimbursed")
@@ -1518,9 +1814,10 @@ async def submit_receipt_for_reimbursement(
 async def approve_receipt_reimbursement(
     project_id: str,
     receipt_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None),
 ):
-    """Approve a receipt for reimbursement"""
+    """Approve a receipt for reimbursement with optional notes"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -1542,12 +1839,16 @@ async def approve_receipt_reimbursement(
         raise HTTPException(status_code=400, detail="Only pending receipts can be approved")
 
     # Update status
-    client.table("backlot_receipts").update({
+    update_data = {
         "reimbursement_status": "approved",
         "approved_by": user["id"],
         "approved_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
-    }).eq("id", receipt_id).execute()
+    }
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
 
     # Auto-add to user's draft invoice (receipts use created_by_user_id)
     from app.services.invoice_auto_sync import auto_add_receipt_to_invoice
@@ -1599,6 +1900,90 @@ async def reject_receipt_reimbursement(
     client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
 
     return {"success": True, "status": "rejected"}
+
+
+@router.post("/projects/{project_id}/receipts/{receipt_id}/deny-reimbursement")
+async def deny_receipt_reimbursement(
+    project_id: str,
+    receipt_id: str,
+    request: DenyExpenseRequest,
+    authorization: str = Header(None),
+):
+    """Permanently deny a receipt reimbursement. Cannot be resubmitted."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check if user can deny
+    if not await can_approve_expenses(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to deny reimbursements")
+
+    # Get the receipt
+    resp = client.table("backlot_receipts").select("*").eq("id", receipt_id).eq("project_id", project_id).single().execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    receipt = resp.data
+
+    # Can deny pending or not_applicable (after rejection)
+    if receipt.get("reimbursement_status") not in ["pending", "not_applicable"]:
+        raise HTTPException(status_code=400, detail="Only pending receipts can be denied")
+
+    # Update status to denied
+    client.table("backlot_receipts").update({
+        "reimbursement_status": "denied",
+        "denied_by": user["id"],
+        "denied_at": datetime.utcnow().isoformat(),
+        "denial_reason": request.reason,
+        "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", receipt_id).execute()
+
+    return {"success": True, "status": "denied"}
+
+
+@router.post("/projects/{project_id}/receipts/{receipt_id}/resubmit-reimbursement")
+async def resubmit_receipt_reimbursement(
+    project_id: str,
+    receipt_id: str,
+    authorization: str = Header(None),
+):
+    """Resubmit a rejected or denied receipt for reimbursement."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await verify_project_member(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get the receipt
+    resp = client.table("backlot_receipts").select("*").eq("id", receipt_id).eq("project_id", project_id).single().execute()
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    receipt = resp.data
+
+    # Only owner can resubmit (receipts use created_by_user_id)
+    if receipt.get("created_by_user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can resubmit this receipt")
+
+    # Can resubmit from not_applicable (after rejection) or denied
+    if receipt.get("reimbursement_status") not in ["not_applicable", "denied"]:
+        raise HTTPException(status_code=400, detail="Only rejected or denied receipts can be resubmitted")
+
+    # Clear denial fields and set back to pending
+    update_data = {
+        "reimbursement_status": "pending",
+        "denied_by": None,
+        "denied_at": None,
+        "denial_reason": None,
+        "notes": None,  # Clear rejection notes
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+
+    client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
+
+    return {"success": True, "status": "pending"}
 
 
 @router.post("/projects/{project_id}/receipts/{receipt_id}/mark-reimbursed")

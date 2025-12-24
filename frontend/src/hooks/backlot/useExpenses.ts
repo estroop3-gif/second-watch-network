@@ -36,6 +36,8 @@ export interface MileageEntry {
   created_at: string;
   updated_at: string;
   user_name?: string | null;
+  // Scene linking
+  scene_id: string | null;
 }
 
 export interface CreateMileageData {
@@ -49,6 +51,7 @@ export interface CreateMileageData {
   purpose?: string | null;
   receipt_id?: string | null;
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 export interface UpdateMileageData {
@@ -61,6 +64,7 @@ export interface UpdateMileageData {
   purpose?: string | null;
   receipt_id?: string | null;
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 // Kit Rental Types
@@ -90,6 +94,8 @@ export interface KitRental {
   created_at: string;
   updated_at: string;
   user_name?: string | null;
+  // Scene linking
+  scene_id: string | null;
 }
 
 export interface CreateKitRentalData {
@@ -101,6 +107,7 @@ export interface CreateKitRentalData {
   end_date?: string | null;
   rental_type?: 'daily' | 'weekly' | 'flat';
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 export interface UpdateKitRentalData {
@@ -111,6 +118,7 @@ export interface UpdateKitRentalData {
   end_date?: string | null;
   rental_type?: 'daily' | 'weekly' | 'flat';
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 // Per Diem Types
@@ -134,6 +142,8 @@ export interface PerDiemEntry {
   created_at: string;
   updated_at: string;
   user_name?: string | null;
+  // Scene linking
+  scene_id: string | null;
 }
 
 export interface CreatePerDiemData {
@@ -142,6 +152,7 @@ export interface CreatePerDiemData {
   amount: number;
   location?: string | null;
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 export interface BulkPerDiemData {
@@ -151,6 +162,7 @@ export interface BulkPerDiemData {
   amount: number;
   location?: string | null;
   notes?: string | null;
+  scene_id?: string | null;
 }
 
 // Expense Settings Types
@@ -226,6 +238,22 @@ export function useMileageEntries(projectId: string | null, filters?: MileageFil
   });
 }
 
+/**
+ * Get a single mileage entry by ID
+ */
+export function useMileageEntry(projectId: string | null, mileageId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'expenses', 'mileage', projectId, mileageId],
+    queryFn: async () => {
+      if (!projectId || !mileageId) return null;
+      return apiClient.get<MileageEntry>(
+        `/api/v1/backlot/projects/${projectId}/mileage/${mileageId}`
+      );
+    },
+    enabled: !!projectId && !!mileageId,
+  });
+}
+
 export function useCreateMileage(projectId: string | null) {
   const queryClient = useQueryClient();
 
@@ -275,13 +303,16 @@ export function useApproveMileage(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (mileageId: string) => {
+    mutationFn: async ({ mileageId, notes }: { mileageId: string; notes?: string }) => {
       if (!projectId) throw new Error('Project ID required');
-      return apiClient.post(`/api/v1/backlot/projects/${projectId}/mileage/${mileageId}/approve`);
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/mileage/${mileageId}/approve`, notes ? { notes } : {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'mileage', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget and invoice queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'importable'] });
     },
   });
 }
@@ -297,6 +328,40 @@ export function useRejectMileage(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'mileage', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useDenyMileage(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ mileageId, reason }: { mileageId: string; reason: string }) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/mileage/${mileageId}/deny`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'mileage', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useResubmitMileage(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (mileageId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/mileage/${mileageId}/resubmit`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'mileage', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }
@@ -312,6 +377,8 @@ export function useMarkMileageReimbursed(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'mileage', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }
@@ -339,6 +406,22 @@ export function useKitRentals(projectId: string | null, filters?: KitRentalFilte
       );
     },
     enabled: !!projectId,
+  });
+}
+
+/**
+ * Get a single kit rental by ID
+ */
+export function useKitRental(projectId: string | null, kitRentalId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'expenses', 'kit-rentals', projectId, kitRentalId],
+    queryFn: async () => {
+      if (!projectId || !kitRentalId) return null;
+      return apiClient.get<KitRental>(
+        `/api/v1/backlot/projects/${projectId}/kit-rentals/${kitRentalId}`
+      );
+    },
+    enabled: !!projectId && !!kitRentalId,
   });
 }
 
@@ -391,13 +474,16 @@ export function useApproveKitRental(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (rentalId: string) => {
+    mutationFn: async ({ rentalId, notes }: { rentalId: string; notes?: string }) => {
       if (!projectId) throw new Error('Project ID required');
-      return apiClient.post(`/api/v1/backlot/projects/${projectId}/kit-rentals/${rentalId}/approve`);
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/kit-rentals/${rentalId}/approve`, notes ? { notes } : {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget and invoice queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'importable'] });
     },
   });
 }
@@ -413,6 +499,40 @@ export function useRejectKitRental(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useDenyKitRental(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ rentalId, reason }: { rentalId: string; reason: string }) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/kit-rentals/${rentalId}/deny`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useResubmitKitRental(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (rentalId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/kit-rentals/${rentalId}/resubmit`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }
@@ -428,6 +548,9 @@ export function useCompleteKitRental(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget and invoice queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'importable'] });
     },
   });
 }
@@ -443,6 +566,8 @@ export function useMarkKitRentalReimbursed(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'kit-rentals', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }
@@ -474,6 +599,22 @@ export function usePerDiemEntries(projectId: string | null, filters?: PerDiemFil
       );
     },
     enabled: !!projectId,
+  });
+}
+
+/**
+ * Get a single per diem entry by ID
+ */
+export function usePerDiemEntry(projectId: string | null, perDiemId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'expenses', 'per-diem', projectId, perDiemId],
+    queryFn: async () => {
+      if (!projectId || !perDiemId) return null;
+      return apiClient.get<PerDiemEntry>(
+        `/api/v1/backlot/projects/${projectId}/per-diem/${perDiemId}`
+      );
+    },
+    enabled: !!projectId && !!perDiemId,
   });
 }
 
@@ -529,13 +670,16 @@ export function useApprovePerDiem(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (entryId: string) => {
+    mutationFn: async ({ entryId, notes }: { entryId: string; notes?: string }) => {
       if (!projectId) throw new Error('Project ID required');
-      return apiClient.post(`/api/v1/backlot/projects/${projectId}/per-diem/${entryId}/approve`);
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/per-diem/${entryId}/approve`, notes ? { notes } : {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'per-diem', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget and invoice queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'importable'] });
     },
   });
 }
@@ -551,6 +695,40 @@ export function useRejectPerDiem(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'per-diem', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useDenyPerDiem(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ entryId, reason }: { entryId: string; reason: string }) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/per-diem/${entryId}/deny`, { reason });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'per-diem', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
+    },
+  });
+}
+
+export function useResubmitPerDiem(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post(`/api/v1/backlot/projects/${projectId}/per-diem/${entryId}/resubmit`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'per-diem', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }
@@ -566,6 +744,8 @@ export function useMarkPerDiemReimbursed(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'per-diem', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'expenses', 'summary', projectId] });
+      // Also invalidate budget queries for cross-tab sync
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'budget', projectId] });
     },
   });
 }

@@ -168,9 +168,13 @@ class Invoice(BaseModel):
     submitted_for_approval_at: Optional[str] = None
     approved_at: Optional[str] = None
     approved_by: Optional[str] = None
+    approval_notes: Optional[str] = None
     changes_requested_at: Optional[str] = None
     changes_requested_by: Optional[str] = None
     change_request_reason: Optional[str] = None
+    denied_at: Optional[str] = None
+    denied_by: Optional[str] = None
+    denial_reason: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -308,6 +312,14 @@ class MarkPaidRequest(BaseModel):
 
 class RequestChangesRequest(BaseModel):
     reason: str  # Required - feedback for crew
+
+
+class ApprovalNotesRequest(BaseModel):
+    notes: Optional[str] = None  # Optional notes when approving
+
+
+class DenyRequest(BaseModel):
+    reason: str  # Required - reason for denial
 
 
 # =============================================================================
@@ -913,8 +925,8 @@ async def update_invoice(
     if existing["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this invoice")
 
-    # Only draft, changes_requested, and sent can be edited
-    if existing["status"] not in ["draft", "changes_requested", "sent"]:
+    # Only draft, changes_requested, sent, and denied can be edited
+    if existing["status"] not in ["draft", "changes_requested", "sent", "denied"]:
         raise HTTPException(status_code=400, detail=f"Cannot edit invoice with status '{existing['status']}'")
 
     # Build update data
@@ -1009,7 +1021,7 @@ async def add_line_item(
     if invoice["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to edit this invoice")
 
-    if invoice["status"] not in ["draft", "changes_requested", "sent"]:
+    if invoice["status"] not in ["draft", "changes_requested", "sent", "denied"]:
         raise HTTPException(status_code=400, detail="Cannot add items to this invoice")
 
     # Get next sort order
@@ -1299,8 +1311,8 @@ async def submit_for_approval(
     if invoice["user_id"] != user_id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # Can submit from draft or changes_requested
-    if invoice["status"] not in ["draft", "changes_requested"]:
+    # Can submit from draft, changes_requested, or denied
+    if invoice["status"] not in ["draft", "changes_requested", "denied"]:
         raise HTTPException(status_code=400, detail=f"Cannot submit invoice with status '{invoice['status']}'")
 
     # Check has at least one line item
@@ -1312,11 +1324,25 @@ async def submit_for_approval(
     if not count or count["cnt"] == 0:
         raise HTTPException(status_code=400, detail="Invoice must have at least one line item")
 
-    client.table("backlot_invoices").update({
+    update_data = {
         "status": "pending_approval",
         "submitted_for_approval_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat()
-    }).eq("id", invoice_id).execute()
+    }
+
+    # Clear denial fields if resubmitting from denied status
+    if invoice["status"] == "denied":
+        update_data["denied_at"] = None
+        update_data["denied_by"] = None
+        update_data["denial_reason"] = None
+
+    # Clear change request fields if resubmitting from changes_requested status
+    if invoice["status"] == "changes_requested":
+        update_data["changes_requested_at"] = None
+        update_data["changes_requested_by"] = None
+        update_data["change_request_reason"] = None
+
+    client.table("backlot_invoices").update(update_data).eq("id", invoice_id).execute()
 
     return {"success": True, "status": "pending_approval"}
 
@@ -1325,9 +1351,10 @@ async def submit_for_approval(
 async def approve_invoice(
     project_id: str,
     invoice_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None)
 ):
-    """Approve an invoice (managers only)."""
+    """Approve an invoice (managers only). Optionally include approval notes."""
     current_user = await get_current_user_from_token(authorization)
     user_id = get_profile_id_from_cognito_id(current_user["id"])
     if not user_id:
@@ -1350,14 +1377,61 @@ async def approve_invoice(
     if invoice["status"] != "pending_approval":
         raise HTTPException(status_code=400, detail="Only pending approval invoices can be approved")
 
-    client.table("backlot_invoices").update({
+    update_data = {
         "status": "approved",
         "approved_at": datetime.utcnow().isoformat(),
         "approved_by": user_id,
         "updated_at": datetime.utcnow().isoformat()
-    }).eq("id", invoice_id).execute()
+    }
+
+    # Add approval notes if provided
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    client.table("backlot_invoices").update(update_data).eq("id", invoice_id).execute()
 
     return {"success": True, "status": "approved"}
+
+
+@router.post("/projects/{project_id}/invoices/{invoice_id}/deny")
+async def deny_invoice(
+    project_id: str,
+    invoice_id: str,
+    request: DenyRequest,
+    authorization: str = Header(None)
+):
+    """Deny an invoice permanently (managers only). Cannot be resubmitted."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = get_profile_id_from_cognito_id(current_user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
+    if not check_project_admin(project_id, user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to deny invoices")
+
+    client = get_client()
+
+    # Get invoice
+    invoice = execute_single(
+        "SELECT * FROM backlot_invoices WHERE id = :id AND project_id = :project_id",
+        {"id": invoice_id, "project_id": project_id}
+    )
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice["status"] not in ["pending_approval", "changes_requested"]:
+        raise HTTPException(status_code=400, detail="Only pending or changes requested invoices can be denied")
+
+    client.table("backlot_invoices").update({
+        "status": "denied",
+        "denied_at": datetime.utcnow().isoformat(),
+        "denied_by": user_id,
+        "denial_reason": request.reason,
+        "updated_at": datetime.utcnow().isoformat()
+    }).eq("id", invoice_id).execute()
+
+    return {"success": True, "status": "denied"}
 
 
 @router.post("/projects/{project_id}/invoices/{invoice_id}/request-changes")

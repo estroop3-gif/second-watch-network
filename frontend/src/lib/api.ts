@@ -105,6 +105,14 @@ class APIClient {
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const token = this.getToken()
+    const url = `${this.baseURL}${endpoint}`
+
+    // Debug logging for POST requests
+    if (options.method === 'POST' || options.method === 'PATCH') {
+      console.log(`[API] ${options.method} ${url}`)
+      console.log(`[API] Token present: ${!!token}`)
+    }
+
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...options.headers,
@@ -114,17 +122,30 @@ class APIClient {
       headers['Authorization'] = `Bearer ${token}`
     }
 
-    const response = await fetch(`${this.baseURL}${endpoint}`, {
-      ...options,
-      headers,
-    })
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      })
 
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'Request failed' }))
-      throw new Error(error.detail || 'Request failed')
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Request failed' }))
+        // Only log errors for non-expected failures (skip 401/403 for optional features)
+        const isExpectedFailure = response.status === 401 || response.status === 403 || response.status === 404
+        if (!isExpectedFailure) {
+          console.error(`[API] Error response (${response.status}):`, error)
+        }
+        throw new Error(error.detail || 'Request failed')
+      }
+
+      return response.json()
+    } catch (err: any) {
+      // Log network errors
+      if (err.name === 'TypeError' && err.message.includes('NetworkError')) {
+        console.error(`[API] Network error for ${options.method} ${url}:`, err.message)
+      }
+      throw err
     }
-
-    return response.json()
   }
 
   // Generic REST methods for modular API files

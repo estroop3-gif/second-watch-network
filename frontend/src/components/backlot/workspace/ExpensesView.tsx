@@ -6,6 +6,7 @@
  * - Mileage (mileage tracking)
  * - Kit Rentals (equipment rental declarations)
  * - Per Diem (meal allowances)
+ * - Purchase Orders (budget requests)
  * - Summary (aggregate reporting)
  */
 import React, { useState, useMemo } from 'react';
@@ -17,6 +18,7 @@ import {
   Car,
   Briefcase,
   Utensils,
+  ShoppingCart,
   BarChart3,
   DollarSign,
   Clock,
@@ -27,9 +29,11 @@ import ReceiptsView from './ReceiptsView';
 import MileageView from './MileageView';
 import KitRentalsView from './KitRentalsView';
 import PerDiemView from './PerDiemView';
+import PurchaseOrdersView from './PurchaseOrdersView';
 import ExpensesSummaryView from './ExpensesSummaryView';
 import {
   useExpenseSummary,
+  usePurchaseOrderSummary,
 } from '@/hooks/backlot';
 
 interface ExpensesViewProps {
@@ -64,6 +68,12 @@ const EXPENSE_TABS = [
     description: 'Claim meal allowances',
   },
   {
+    id: 'purchase-orders',
+    label: 'Purchase Orders',
+    icon: ShoppingCart,
+    description: 'Budget requests and approvals',
+  },
+  {
     id: 'summary',
     label: 'Summary',
     icon: BarChart3,
@@ -78,23 +88,26 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
 
   // Fetch summary for quick stats
   const { data: summaryData } = useExpenseSummary(projectId);
+  const { data: poSummary } = usePurchaseOrderSummary(projectId);
   const summary = summaryData?.summary;
 
   // Calculate pending counts for badges
   const pendingCounts = useMemo(() => {
-    if (!summary) return { receipts: 0, mileage: 0, kitRentals: 0, perDiem: 0, total: 0 };
+    if (!summary) return { receipts: 0, mileage: 0, kitRentals: 0, perDiem: 0, purchaseOrders: 0, total: 0 };
 
     return {
       receipts: summary.pending_receipts || 0,
       mileage: summary.pending_mileage || 0,
       kitRentals: summary.pending_kit_rentals || 0,
       perDiem: summary.pending_per_diem || 0,
+      purchaseOrders: poSummary?.pending_count || 0,
       total: (summary.pending_receipts || 0) +
              (summary.pending_mileage || 0) +
              (summary.pending_kit_rentals || 0) +
-             (summary.pending_per_diem || 0),
+             (summary.pending_per_diem || 0) +
+             (poSummary?.pending_count || 0),
     };
-  }, [summary]);
+  }, [summary, poSummary]);
 
   // Get pending count for a specific tab
   const getPendingCount = (tabId: ExpenseTabId): number => {
@@ -103,6 +116,7 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
       case 'mileage': return pendingCounts.mileage;
       case 'kit-rentals': return pendingCounts.kitRentals;
       case 'per-diem': return pendingCounts.perDiem;
+      case 'purchase-orders': return pendingCounts.purchaseOrders;
       default: return 0;
     }
   };
@@ -241,6 +255,10 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
 
           <TabsContent value="per-diem" className="h-full m-0">
             <PerDiemView projectId={projectId} canEdit={canEdit} />
+          </TabsContent>
+
+          <TabsContent value="purchase-orders" className="h-full m-0">
+            <PurchaseOrdersView projectId={projectId} canEdit={canEdit} />
           </TabsContent>
 
           <TabsContent value="summary" className="h-full m-0">

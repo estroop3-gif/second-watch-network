@@ -45,6 +45,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": True, "edit": True},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace
             "continuity": {"view": True, "edit": True},
             # Utilities
@@ -99,6 +100,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": True, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace - view only for producer
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -153,6 +155,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace - view only for director
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -207,6 +210,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace - view only for 1st AD
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -261,6 +265,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - DP has full access
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace - view only for DP
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -315,6 +320,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - editor has view only
             "camera-continuity": {"view": True, "edit": False},
+            "camera": {"view": True, "edit": False},
             # Continuity workspace - view only for editor
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -369,6 +375,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - dept head can view, edit continuity for their dept
             "camera-continuity": {"view": True, "edit": False},
+            "camera": {"view": True, "edit": False},
             # Continuity workspace - view only for department head
             "continuity": {"view": True, "edit": False},
             # Utilities
@@ -423,6 +430,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - crew has view only
             "camera-continuity": {"view": True, "edit": False},
+            "camera": {"view": True, "edit": False},
             # Continuity workspace - crew has view only
             "continuity": {"view": True, "edit": False},
             # Utilities - can check in
@@ -478,6 +486,7 @@ DEFAULT_VIEW_CONFIGS: Dict[str, Dict[str, Any]] = {
             "access": {"view": False, "edit": False},
             # Camera & Continuity tools - full access
             "camera-continuity": {"view": True, "edit": True},
+            "camera": {"view": True, "edit": True},
             # Continuity workspace - FULL ACCESS (primary role)
             "continuity": {"view": True, "edit": True},
             # Utilities

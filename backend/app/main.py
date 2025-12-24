@@ -16,7 +16,7 @@ from app.api import (
     profiles, submissions, notifications, connections,
     admin, availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
-    camera_continuity, continuity, utilities, billing, expenses,
+    camera_continuity, continuity, utilities, billing, expenses, camera_log,
     church_services, church_people, church_content, church_planning,
     church_resources, church_readiness, cast_crew, hot_set, invoices, coms
 )
@@ -140,6 +140,7 @@ app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory
 
 # Camera & Continuity and Utilities
 app.include_router(camera_continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Camera & Continuity"])
+app.include_router(camera_log.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Camera Log"])
 app.include_router(continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Scripty Continuity"])
 app.include_router(utilities.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Utilities"])
 app.include_router(hot_set.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Hot Set"])

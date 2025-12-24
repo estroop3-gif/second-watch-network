@@ -177,20 +177,22 @@ class DatabaseTable:
     def _parse_select_columns(self, columns: str):
         """
         Parse Supabase-style select string and extract embedded joins.
-        Format: "*, alias:foreign_key(col1, col2)" or "*, alias:table_name(col1, col2)"
+        Format: "*, alias:foreign_key(col1, col2)" or "*, alias:table_name!fk_column(col1, col2)"
         """
         import re
         self._embedded_joins = []
 
-        # Pattern to match embedded joins: alias:table_or_fk(columns)
-        pattern = r'(\w+):(\w+)\(([^)]+)\)'
+        # Pattern to match embedded joins: alias:table_or_fk(columns) or alias:table!fk_column(columns)
+        pattern = r'(\w+):(\w+)(?:!(\w+))?\(([^)]+)\)'
 
         # Find all embedded joins
         for match in re.finditer(pattern, columns):
             alias = match.group(1)
-            fk_or_table = match.group(2)
-            cols = match.group(3)
-            self._embedded_joins.append((alias, fk_or_table, cols.strip()))
+            table_or_fk = match.group(2)
+            fk_column = match.group(3)  # May be None if not specified
+            cols = match.group(4)
+            # Store as tuple: (alias, table_name, fk_column, select_cols)
+            self._embedded_joins.append((alias, table_or_fk, fk_column, cols.strip()))
 
         # Remove embedded joins from the select columns
         clean_cols = re.sub(pattern, '', columns)
@@ -296,16 +298,29 @@ class DatabaseTable:
     def _resolve_embedded_joins(self, results: list) -> list:
         """
         Fetch related data for embedded joins and attach to results.
-        Supports format: alias:foreign_key(columns) where foreign_key ends with _id
+        Supports formats:
+        - alias:foreign_key(columns) where foreign_key ends with _id
+        - alias:table_name!fk_column(columns) with explicit FK column
         """
         if not self._embedded_joins or not results:
             return results
 
-        for alias, fk_or_table, cols in self._embedded_joins:
+        for join_tuple in self._embedded_joins:
+            # Handle both 3-tuple (old) and 4-tuple (new) formats
+            if len(join_tuple) == 4:
+                alias, table_or_fk, explicit_fk_col, cols = join_tuple
+            else:
+                alias, table_or_fk, cols = join_tuple
+                explicit_fk_col = None
+
             # Determine the foreign key column and target table
-            if fk_or_table.endswith("_id"):
+            if explicit_fk_col:
+                # Explicit format: production_day:backlot_production_days!production_day_id(cols)
+                target_table = table_or_fk
+                fk_column = explicit_fk_col
+            elif table_or_fk.endswith("_id"):
                 # foreign_key pattern: profile:user_id(name) -> profiles table via user_id column
-                fk_column = fk_or_table
+                fk_column = table_or_fk
                 # Derive table name from foreign key (user_id -> users, profile_id -> profiles)
                 # Common patterns in this codebase
                 if fk_column == "user_id":
@@ -318,6 +333,12 @@ class DatabaseTable:
                     target_table = "backlot_timecards"
                 elif fk_column == "label_id":
                     target_table = "backlot_task_labels"
+                elif fk_column == "scene_id":
+                    target_table = "backlot_scenes"
+                elif fk_column == "production_day_id":
+                    target_table = "backlot_production_days"
+                elif fk_column == "project_id":
+                    target_table = "backlot_projects"
                 elif fk_column == "created_by":
                     target_table = "profiles"
                     fk_column = "created_by"
@@ -330,8 +351,8 @@ class DatabaseTable:
                     target_table = base + "s" if not base.endswith("s") else base
             else:
                 # Direct table reference: profile:profiles(name)
-                target_table = fk_or_table
-                fk_column = fk_or_table + "_id"  # Assume standard FK naming
+                target_table = table_or_fk
+                fk_column = table_or_fk + "_id"  # Assume standard FK naming
 
             # Collect all foreign key values
             fk_values = list(set(

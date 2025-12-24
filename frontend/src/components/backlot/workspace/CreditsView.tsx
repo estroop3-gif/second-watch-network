@@ -45,6 +45,8 @@ import {
   ExternalLink,
   GripVertical,
   Loader2,
+  Sparkles,
+  Link,
 } from 'lucide-react';
 import {
   useCredits,
@@ -504,6 +506,18 @@ const CreditCard: React.FC<CreditCardProps> = ({
               <Badge variant="outline" className="text-xs border-muted-gray/50 text-muted-gray">
                 <EyeOff className="w-3 h-3 mr-1" />
                 Hidden
+              </Badge>
+            )}
+            {credit.auto_created && (
+              <Badge variant="secondary" className="text-xs gap-1">
+                <Sparkles className="w-3 h-3" />
+                Auto
+              </Badge>
+            )}
+            {credit.source_role_id && (
+              <Badge variant="outline" className="text-xs gap-1 text-muted-foreground">
+                <Link className="w-3 h-3" />
+                Linked Role
               </Badge>
             )}
             {credit.imdb_id && (

@@ -127,6 +127,14 @@ class ApproveRejectRequest(BaseModel):
     reason: Optional[str] = None  # Required for rejection
 
 
+class ApprovalNotesRequest(BaseModel):
+    notes: Optional[str] = None  # Optional notes when approving
+
+
+class DenyTimecardRequest(BaseModel):
+    reason: str  # Required - reason for denial (permanent rejection)
+
+
 class TimecardSummary(BaseModel):
     total_timecards: int = 0
     draft_count: int = 0
@@ -675,7 +683,7 @@ async def create_or_update_entry(
     if tc["user_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="You can only edit your own timecard")
 
-    if tc["status"] not in ["draft", "rejected"]:
+    if tc["status"] not in ["draft", "rejected", "denied"]:
         raise HTTPException(status_code=400, detail="Cannot edit a submitted or approved timecard")
 
     # Get union settings for project
@@ -798,7 +806,7 @@ async def delete_entry(
     if tc["user_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="You can only edit your own timecard")
 
-    if tc["status"] not in ["draft", "rejected"]:
+    if tc["status"] not in ["draft", "rejected", "denied"]:
         raise HTTPException(status_code=400, detail="Cannot edit a submitted or approved timecard")
 
     # Delete entry
@@ -839,7 +847,7 @@ async def import_checkins_to_timecard(
     if tc["user_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="You can only edit your own timecard")
 
-    if tc["status"] not in ["draft", "rejected"]:
+    if tc["status"] not in ["draft", "rejected", "denied"]:
         raise HTTPException(status_code=400, detail="Cannot edit a submitted or approved timecard")
 
     # Get the week dates for this timecard
@@ -1400,7 +1408,7 @@ async def get_timecard_preview(
 
     # Determine if can submit
     has_errors = any(w.severity == "error" for w in warnings)
-    can_submit = not has_errors and tc["status"] in ["draft", "rejected"]
+    can_submit = not has_errors and tc["status"] in ["draft", "rejected", "denied"]
 
     return TimecardPreviewResponse(
         timecard_id=timecard_id,
@@ -1438,16 +1446,29 @@ async def submit_timecard(
     if tc["user_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="You can only submit your own timecard")
 
-    if tc["status"] not in ["draft", "rejected"]:
+    if tc["status"] not in ["draft", "rejected", "denied"]:
         raise HTTPException(status_code=400, detail="Timecard has already been submitted")
 
-    # Update status
-    update_resp = client.table("backlot_timecards").update({
+    # Update status, clearing any rejection/denial fields
+    update_data = {
         "status": "submitted",
         "submitted_at": datetime.utcnow().isoformat(),
         "submitted_by_user_id": user["id"],
         "rejection_reason": None,  # Clear any previous rejection
-    }).eq("id", timecard_id).execute()
+    }
+
+    # Clear denial fields if resubmitting from denied status
+    if tc["status"] == "denied":
+        update_data["denied_at"] = None
+        update_data["denied_by"] = None
+        update_data["denial_reason"] = None
+
+    # Clear rejection fields if resubmitting from rejected status
+    if tc["status"] == "rejected":
+        update_data["rejected_at"] = None
+        update_data["rejected_by_user_id"] = None
+
+    update_resp = client.table("backlot_timecards").update(update_data).eq("id", timecard_id).execute()
 
     if not update_resp.data:
         raise HTTPException(status_code=500, detail="Failed to submit timecard")
@@ -1459,10 +1480,11 @@ async def submit_timecard(
 async def approve_timecard(
     project_id: str,
     timecard_id: str,
+    request: ApprovalNotesRequest = None,
     authorization: str = Header(None)
 ):
     """
-    Approve a submitted timecard
+    Approve a submitted timecard with optional notes
     """
     user = await get_current_user_from_token(authorization)
     client = get_client()
@@ -1480,11 +1502,15 @@ async def approve_timecard(
         raise HTTPException(status_code=400, detail="Only submitted timecards can be approved")
 
     # Update status
-    update_resp = client.table("backlot_timecards").update({
+    update_data = {
         "status": "approved",
         "approved_at": datetime.utcnow().isoformat(),
         "approved_by_user_id": user["id"],
-    }).eq("id", timecard_id).execute()
+    }
+    if request and request.notes:
+        update_data["approval_notes"] = request.notes
+
+    update_resp = client.table("backlot_timecards").update(update_data).eq("id", timecard_id).execute()
 
     if not update_resp.data:
         raise HTTPException(status_code=500, detail="Failed to approve timecard")
@@ -1540,3 +1566,42 @@ async def reject_timecard(
         raise HTTPException(status_code=500, detail="Failed to reject timecard")
 
     return {"success": True, "status": "rejected"}
+
+
+@router.post("/projects/{project_id}/timecards/{timecard_id}/deny")
+async def deny_timecard(
+    project_id: str,
+    timecard_id: str,
+    request: DenyTimecardRequest,
+    authorization: str = Header(None)
+):
+    """
+    Permanently deny a timecard. Cannot be resubmitted.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    if not await can_approve_timecards(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="You don't have permission to deny timecards")
+
+    # Verify timecard exists
+    tc_resp = client.table("backlot_timecards").select("*").eq("id", timecard_id).eq("project_id", project_id).execute()
+    if not tc_resp.data:
+        raise HTTPException(status_code=404, detail="Timecard not found")
+
+    tc = tc_resp.data[0]
+    if tc["status"] not in ["submitted", "rejected"]:
+        raise HTTPException(status_code=400, detail="Only submitted or rejected timecards can be denied")
+
+    # Update status to denied
+    update_resp = client.table("backlot_timecards").update({
+        "status": "denied",
+        "denied_at": datetime.utcnow().isoformat(),
+        "denied_by": user["id"],
+        "denial_reason": request.reason,
+    }).eq("id", timecard_id).execute()
+
+    if not update_resp.data:
+        raise HTTPException(status_code=500, detail="Failed to deny timecard")
+
+    return {"success": True, "status": "denied"}

@@ -47,6 +47,7 @@ import {
   useRejectMileage,
   useMarkMileageReimbursed,
   useExpenseSettings,
+  useBudget,
   MileageEntry,
   CreateMileageData,
   MILEAGE_PURPOSE_OPTIONS,
@@ -55,6 +56,9 @@ import {
   calculateMileageTotal,
 } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
+import BudgetCategorySelect from '../shared/BudgetCategorySelect';
+import BudgetLineItemSelect from '../shared/BudgetLineItemSelect';
+import SceneSelect from '../shared/SceneSelect';
 
 interface MileageViewProps {
   projectId: string;
@@ -427,8 +431,12 @@ function MileageFormModal({
     is_round_trip: entry?.is_round_trip || false,
     purpose: entry?.purpose || '',
     notes: entry?.notes || '',
+    budget_category_id: (entry as any)?.budget_category_id || null,
+    budget_line_item_id: (entry as any)?.budget_line_item_id || null,
   });
 
+  const { data: budget } = useBudget(projectId);
+  const budgetId = budget?.id || null;
   const createMileage = useCreateMileage(projectId);
   const updateMileage = useUpdateMileage(projectId);
 
@@ -448,6 +456,9 @@ function MileageFormModal({
         is_round_trip: entry.is_round_trip,
         purpose: entry.purpose || '',
         notes: entry.notes || '',
+        budget_category_id: (entry as any)?.budget_category_id || null,
+        budget_line_item_id: (entry as any)?.budget_line_item_id || null,
+        scene_id: entry.scene_id || null,
       });
     } else {
       setFormData({
@@ -460,6 +471,9 @@ function MileageFormModal({
         is_round_trip: false,
         purpose: '',
         notes: '',
+        budget_category_id: null,
+        budget_line_item_id: null,
+        scene_id: null,
       });
     }
   }, [entry, defaultRate]);
@@ -592,6 +606,47 @@ function MileageFormModal({
               rows={2}
             />
           </div>
+
+          {/* Budget Linking */}
+          {budgetId && (
+            <div className="space-y-4 pt-2 border-t border-muted-gray/10">
+              <div className="text-xs font-medium text-muted-gray uppercase tracking-wider">
+                Budget Allocation
+              </div>
+              <BudgetCategorySelect
+                projectId={projectId}
+                value={formData.budget_category_id || null}
+                onChange={(categoryId) => {
+                  setFormData({
+                    ...formData,
+                    budget_category_id: categoryId,
+                    budget_line_item_id: null, // Reset line item when category changes
+                  });
+                }}
+                label="Budget Category"
+                placeholder="Select category (optional)"
+              />
+              <BudgetLineItemSelect
+                budgetId={budgetId}
+                categoryId={formData.budget_category_id || null}
+                value={formData.budget_line_item_id || null}
+                onChange={(lineItemId) => {
+                  setFormData({ ...formData, budget_line_item_id: lineItemId });
+                }}
+                label="Budget Line Item"
+                placeholder="Select line item (optional)"
+              />
+              <SceneSelect
+                projectId={projectId}
+                value={formData.scene_id || null}
+                onChange={(sceneId) => {
+                  setFormData({ ...formData, scene_id: sceneId });
+                }}
+                label="Related Scene"
+                placeholder="Select scene (optional)"
+              />
+            </div>
+          )}
 
           <Card className="bg-muted/50">
             <CardContent className="py-3">

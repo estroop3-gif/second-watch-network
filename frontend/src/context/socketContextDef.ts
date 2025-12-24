@@ -1,16 +1,11 @@
 /**
  * Socket context definition - separated for Fast Refresh compatibility
+ * Uses native WebSocket with AWS API Gateway WebSocket API
  */
 import { createContext } from 'react';
-import type { Socket } from 'socket.io-client';
 
-// Socket events types
+// Socket events types (server to client)
 export interface SocketEvents {
-  // Connection
-  connect: () => void;
-  disconnect: (reason: string) => void;
-  connect_error: (error: Error) => void;
-
   // Messages
   new_message: (data: {
     channel_id: string;
@@ -60,7 +55,7 @@ export interface SocketEvents {
 }
 
 export interface SocketContextValue {
-  socket: Socket | null;
+  socket: WebSocket | null;
   isConnected: boolean;
   isConnecting: boolean;
   error: Error | null;
@@ -86,6 +81,9 @@ export interface SocketContextValue {
   // Event subscription
   on: <K extends keyof SocketEvents>(event: K, handler: SocketEvents[K]) => void;
   off: <K extends keyof SocketEvents>(event: K, handler: SocketEvents[K]) => void;
+
+  // Direct emit for custom events
+  emit?: (event: string, data: Record<string, unknown>) => void;
 }
 
 export const SocketContext = createContext<SocketContextValue | null>(null);

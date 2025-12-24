@@ -6,6 +6,10 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Peer from 'simple-peer';
 import { useSocket } from '@/hooks/useSocket';
 import { useAuth } from '@/context/AuthContext';
+import { api } from '@/lib/api';
+
+// Use relative path for Vite proxy in dev, or full URL in production
+const API_BASE = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_URL || '');
 
 // ICE servers for WebRTC
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
@@ -16,7 +20,7 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 
 interface VoicePeer {
   peerId: string;
-  userId: string;
+  odaUserId: string;
   username: string;
   peer: Peer.Instance;
   stream?: MediaStream;
@@ -87,12 +91,13 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
       });
 
       peer.on('signal', (signal) => {
-        console.log(`[Voice] Sending signal to ${targetUsername}:`, signal.type);
+        console.log(`[Voice] Sending signal to ${targetUsername}:`, signal.type || 'candidate');
         if (signal.type === 'offer') {
           socket.sendVoiceOffer(targetUserId, signal);
         } else if (signal.type === 'answer') {
           socket.sendVoiceAnswer(targetUserId, signal);
-        } else if (signal.candidate) {
+        } else if ('candidate' in signal) {
+          // Send the full signal object for ICE candidates
           socket.sendIceCandidate(targetUserId, signal);
         }
       });
@@ -130,7 +135,7 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
 
       const voicePeer: VoicePeer = {
         peerId: targetPeerId,
-        userId: targetUserId,
+        odaUserId: targetUserId,
         username: targetUsername,
         peer,
         isTransmitting: false,
@@ -146,6 +151,8 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
 
   // Join voice channel
   const joinVoice = useCallback(async () => {
+    console.log('[Voice] joinVoice called', { channelId, isConnected: socket.isConnected });
+
     if (!channelId || !socket.isConnected) {
       setError('Not connected to server');
       return;
@@ -155,6 +162,7 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
     setError(null);
 
     try {
+      console.log('[Voice] Requesting microphone access...');
       // Request microphone access
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -166,16 +174,41 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
       });
 
       localStreamRef.current = stream;
+      console.log('[Voice] Microphone access granted');
 
       // Start muted
       stream.getAudioTracks().forEach((track) => {
         track.enabled = false;
       });
 
-      // Join via socket
+      // Register in database via REST API (for participant tracking)
+      const token = api.getToken();
+      console.log('[Voice] Registering in database, token:', !!token, 'API_BASE:', API_BASE || '(empty/proxy)');
+      if (token) {
+        try {
+          const url = `${API_BASE}/api/v1/coms/channels/${channelId}/voice/join`;
+          console.log('[Voice] POST to:', url);
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          console.log('[Voice] Join response:', response.status, response.ok);
+          if (!response.ok) {
+            const text = await response.text();
+            console.error('[Voice] Join failed:', text);
+          } else {
+            console.log('[Voice] Successfully registered in database');
+          }
+        } catch (err) {
+          console.warn('[Voice] Failed to register in database:', err);
+        }
+      }
+
+      // Join via socket (for WebRTC signaling)
       socket.joinVoice(channelId, myPeerIdRef.current);
       setIsInVoice(true);
       setIsConnecting(false);
+      console.log('[Voice] Joined voice channel successfully');
     } catch (err) {
       console.error('[Voice] Failed to get microphone:', err);
       setError('Failed to access microphone. Please check permissions.');
@@ -186,6 +219,8 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
   // Leave voice channel
   const leaveVoice = useCallback(() => {
     if (!channelId) return;
+
+    console.log('[Voice] Leaving voice channel');
 
     // Stop local stream
     if (localStreamRef.current) {
@@ -201,8 +236,17 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
     audioRefs.current.forEach((audio) => audio.pause());
     audioRefs.current.clear();
 
-    // Leave via socket
+    // Leave via socket (for WebRTC signaling)
     socket.leaveVoice(channelId);
+
+    // Unregister from database via REST API (for participant tracking)
+    const token = api.getToken();
+    if (token) {
+      fetch(`${API_BASE}/api/v1/coms/channels/${channelId}/voice/leave`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch((err) => console.warn('[Voice] Failed to unregister from database:', err));
+    }
 
     setIsInVoice(false);
     setIsPTTActive(false);
@@ -247,23 +291,24 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
 
   // Socket event handlers
   useEffect(() => {
-    if (!socket.socket || !channelId) return;
+    if (!socket.socket || !channelId || !isInVoice) return;
 
     // Handle new user joining voice
     const handleUserJoined = (data: { channel_id: string; user_id: string; username: string; peer_id: string }) => {
       if (data.channel_id !== channelId) return;
       if (data.user_id === user?.id) return;
 
-      console.log(`[Voice] User joined: ${data.username}`);
+      console.log(`[Voice] User joined: ${data.username || data.user_id}`);
 
       // Create peer as initiator (we were here first)
-      createPeer(data.user_id, data.peer_id, data.username, true);
+      createPeer(data.user_id, data.peer_id, data.username || 'Unknown', true);
     };
 
     // Handle user leaving
     const handleUserLeft = (data: { channel_id: string; user_id: string }) => {
       if (data.channel_id !== channelId) return;
 
+      console.log(`[Voice] User left: ${data.user_id}`);
       const voicePeer = peersRef.current.get(data.user_id);
       if (voicePeer) {
         voicePeer.peer.destroy();
@@ -291,16 +336,25 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
       console.log(`[Voice] Received answer from ${data.from_user_id}`);
 
       const voicePeer = peersRef.current.get(data.from_user_id);
-      if (voicePeer) {
-        voicePeer.peer.signal(data.answer);
+      if (voicePeer && !voicePeer.peer.destroyed) {
+        try {
+          voicePeer.peer.signal(data.answer);
+        } catch (err) {
+          console.warn('[Voice] Error signaling answer:', err);
+        }
       }
     };
 
     // Handle ICE candidate
     const handleIceCandidate = (data: { from_user_id: string; candidate: RTCIceCandidateInit }) => {
       const voicePeer = peersRef.current.get(data.from_user_id);
-      if (voicePeer) {
-        voicePeer.peer.signal({ candidate: data.candidate } as Peer.SignalData);
+      if (voicePeer && !voicePeer.peer.destroyed) {
+        try {
+          // Pass the candidate directly - simple-peer expects the full signal object
+          voicePeer.peer.signal(data.candidate);
+        } catch (err) {
+          console.warn('[Voice] Error signaling ICE candidate:', err);
+        }
       }
     };
 
@@ -330,7 +384,7 @@ export function useVoice({ channelId, iceServers = DEFAULT_ICE_SERVERS }: UseVoi
       socket.off('voice_ice_candidate', handleIceCandidate);
       socket.off('ptt_active', handlePTT);
     };
-  }, [socket, channelId, user?.id, createPeer, updatePeersState]);
+  }, [socket, channelId, user?.id, createPeer, updatePeersState, isInVoice]);
 
   // Cleanup on unmount or channel change
   useEffect(() => {

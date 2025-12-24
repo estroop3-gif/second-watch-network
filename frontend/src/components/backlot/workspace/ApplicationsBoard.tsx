@@ -28,13 +28,19 @@ import {
   useRoleApplications,
   useUpdateApplicationStatus,
   useProjectRoleMutations,
+  useDealMemos,
+  useDealMemoMutations,
 } from '@/hooks/backlot';
+import { DealMemoDialog } from './DealMemoDialog';
+import { DealMemoStatusBadge } from './DealMemoStatus';
+import { CreditPreferencesForm } from './CreditPreferencesForm';
 import {
   BacklotProjectRole,
   BacklotRoleApplication,
   BacklotApplicationStatus,
   APPLICATION_STATUS_LABELS,
   APPLICATION_STATUS_COLORS,
+  DealMemo,
 } from '@/types/backlot';
 import {
   MoreVertical,
@@ -52,6 +58,8 @@ import {
   ChevronRight,
   ChevronDown,
   Loader2,
+  FileSignature,
+  Award,
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -76,11 +84,28 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
   const { data, isLoading, refetch } = useRoleApplications(role.id);
   const updateStatus = useUpdateApplicationStatus();
   const { bookRole } = useProjectRoleMutations(projectId);
+  const { dealMemos } = useDealMemos(projectId);
+  const { createDealMemo, createRateFromDealMemo } = useDealMemoMutations(projectId);
 
   const [selectedApplication, setSelectedApplication] = useState<BacklotRoleApplication | null>(
     null
   );
   const [expandedColumn, setExpandedColumn] = useState<string | null>(null);
+
+  // Deal memo dialog state
+  const [dealMemoDialogOpen, setDealMemoDialogOpen] = useState(false);
+  const [dealMemoApplication, setDealMemoApplication] = useState<BacklotRoleApplication | null>(null);
+
+  // Credit preferences dialog state
+  const [creditPrefsOpen, setCreditPrefsOpen] = useState(false);
+  const [creditPrefsApplication, setCreditPrefsApplication] = useState<BacklotRoleApplication | null>(null);
+
+  // Get deal memo for an application (by user_id and role_id)
+  const getDealMemoForApplication = (app: BacklotRoleApplication): DealMemo | undefined => {
+    return dealMemos.find(
+      (dm) => dm.user_id === app.applicant_user_id && dm.role_id === role.id
+    );
+  };
 
   const handleStatusChange = async (
     application: BacklotRoleApplication,
@@ -141,6 +166,36 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
     }
   };
 
+  // Open deal memo dialog for an application
+  const handleOpenDealMemo = (application: BacklotRoleApplication) => {
+    setDealMemoApplication(application);
+    setDealMemoDialogOpen(true);
+  };
+
+  // Handle deal memo creation success
+  const handleDealMemoSuccess = async () => {
+    setDealMemoDialogOpen(false);
+    setDealMemoApplication(null);
+    toast({
+      title: 'Deal Memo Created',
+      description: 'The deal memo has been saved. You can send it for signature.',
+    });
+  };
+
+  // Open credit preferences dialog
+  const handleOpenCreditPrefs = (application: BacklotRoleApplication) => {
+    setCreditPrefsApplication(application);
+    setCreditPrefsOpen(true);
+  };
+
+  // Book with credit preferences
+  const handleBookWithCredits = async (application: BacklotRoleApplication) => {
+    // First book the role
+    await handleBook(application);
+    // Then offer to set credit preferences
+    handleOpenCreditPrefs(application);
+  };
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -192,10 +247,12 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
                         key={app.id}
                         application={app}
                         currentStatus={column.key}
+                        dealMemo={getDealMemoForApplication(app)}
                         onStatusChange={(newStatus) => handleStatusChange(app, newStatus)}
                         onBook={() => handleBook(app)}
                         onRating={(rating) => handleRating(app, rating)}
                         onViewDetails={() => setSelectedApplication(app)}
+                        onSendDealMemo={() => handleOpenDealMemo(app)}
                         isBookingPending={bookRole.isPending}
                       />
                     ))
@@ -224,6 +281,7 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
           {selectedApplication && (
             <ApplicationDetails
               application={selectedApplication}
+              dealMemo={getDealMemoForApplication(selectedApplication)}
               onStatusChange={(newStatus) => {
                 handleStatusChange(selectedApplication, newStatus);
                 setSelectedApplication(null);
@@ -232,10 +290,54 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
                 handleBook(selectedApplication);
                 setSelectedApplication(null);
               }}
+              onSendDealMemo={() => {
+                setSelectedApplication(null);
+                handleOpenDealMemo(selectedApplication);
+              }}
+              onSetCreditPrefs={() => {
+                setSelectedApplication(null);
+                handleOpenCreditPrefs(selectedApplication);
+              }}
             />
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Deal Memo Dialog */}
+      {dealMemoApplication && (
+        <DealMemoDialog
+          open={dealMemoDialogOpen}
+          onOpenChange={(open) => {
+            setDealMemoDialogOpen(open);
+            if (!open) setDealMemoApplication(null);
+          }}
+          projectId={projectId}
+          roleId={role.id}
+          userId={dealMemoApplication.applicant_user_id}
+          userName={dealMemoApplication.applicant_profile_snapshot.name}
+          roleName={role.title}
+          onSuccess={handleDealMemoSuccess}
+        />
+      )}
+
+      {/* Credit Preferences Dialog */}
+      {creditPrefsApplication && (
+        <CreditPreferencesForm
+          open={creditPrefsOpen}
+          onOpenChange={(open) => {
+            setCreditPrefsOpen(open);
+            if (!open) setCreditPrefsApplication(null);
+          }}
+          userId={creditPrefsApplication.applicant_user_id}
+          projectId={projectId}
+          roleId={role.id}
+          roleName={role.title}
+          onSuccess={() => {
+            setCreditPrefsOpen(false);
+            setCreditPrefsApplication(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -247,20 +349,24 @@ export function ApplicationsBoard({ projectId, role, onClose }: ApplicationsBoar
 interface ApplicationCardProps {
   application: BacklotRoleApplication;
   currentStatus: BacklotApplicationStatus;
+  dealMemo?: DealMemo;
   onStatusChange: (status: BacklotApplicationStatus) => void;
   onBook: () => void;
   onRating: (rating: number) => void;
   onViewDetails: () => void;
+  onSendDealMemo: () => void;
   isBookingPending: boolean;
 }
 
 function ApplicationCard({
   application,
   currentStatus,
+  dealMemo,
   onStatusChange,
   onBook,
   onRating,
   onViewDetails,
+  onSendDealMemo,
   isBookingPending,
 }: ApplicationCardProps) {
   const profile = application.applicant_profile_snapshot;
@@ -311,6 +417,12 @@ function ApplicationCard({
                   Make Offer
                 </DropdownMenuItem>
               )}
+              {!dealMemo && (currentStatus === 'offered' || currentStatus === 'interview' || currentStatus === 'shortlisted') && (
+                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onSendDealMemo(); }}>
+                  <FileSignature className="w-4 h-4 mr-2" />
+                  Create Deal Memo
+                </DropdownMenuItem>
+              )}
               {currentStatus !== 'booked' && (
                 <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onBook(); }} disabled={isBookingPending}>
                   <UserCheck className="w-4 h-4 mr-2" />
@@ -331,21 +443,26 @@ function ApplicationCard({
           </DropdownMenu>
         </div>
 
-        {/* Rating Stars */}
-        <div className="flex items-center gap-0.5 mt-2" onClick={(e) => e.stopPropagation()}>
-          {[1, 2, 3, 4, 5].map((star) => (
-            <button
-              key={star}
-              onClick={() => onRating(star)}
-              className="p-0.5 hover:scale-110 transition-transform"
-            >
-              {star <= (application.rating || 0) ? (
-                <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-              ) : (
-                <StarOff className="w-3 h-3 text-gray-300" />
-              )}
-            </button>
-          ))}
+        {/* Rating Stars & Deal Memo Status */}
+        <div className="flex items-center justify-between mt-2">
+          <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                onClick={() => onRating(star)}
+                className="p-0.5 hover:scale-110 transition-transform"
+              >
+                {star <= (application.rating || 0) ? (
+                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                ) : (
+                  <StarOff className="w-3 h-3 text-gray-300" />
+                )}
+              </button>
+            ))}
+          </div>
+          {dealMemo && (
+            <DealMemoStatusBadge status={dealMemo.status} className="text-[10px] px-1.5 py-0" />
+          )}
         </div>
 
         {/* Quick Info */}
@@ -385,11 +502,21 @@ function ApplicationCard({
 
 interface ApplicationDetailsProps {
   application: BacklotRoleApplication;
+  dealMemo?: DealMemo;
   onStatusChange: (status: BacklotApplicationStatus) => void;
   onBook: () => void;
+  onSendDealMemo: () => void;
+  onSetCreditPrefs: () => void;
 }
 
-function ApplicationDetails({ application, onStatusChange, onBook }: ApplicationDetailsProps) {
+function ApplicationDetails({
+  application,
+  dealMemo,
+  onStatusChange,
+  onBook,
+  onSendDealMemo,
+  onSetCreditPrefs,
+}: ApplicationDetailsProps) {
   const profile = application.applicant_profile_snapshot;
 
   return (
@@ -524,6 +651,30 @@ function ApplicationDetails({ application, onStatusChange, onBook }: Application
         </div>
       )}
 
+      {/* Deal Memo Status */}
+      {dealMemo && (
+        <div className="p-3 bg-muted/50 rounded-lg border">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileSignature className="w-4 h-4 text-muted-foreground" />
+              <span className="text-sm font-medium">Deal Memo</span>
+            </div>
+            <DealMemoStatusBadge status={dealMemo.status} />
+          </div>
+          <div className="mt-2 text-sm text-muted-foreground">
+            <span>
+              {dealMemo.rate_amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+              /{dealMemo.rate_type}
+            </span>
+            {dealMemo.start_date && (
+              <span className="ml-2">
+                Starting {new Date(dealMemo.start_date).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Current Status */}
       <div className="flex items-center gap-2 pt-2 border-t">
         <span className="text-sm text-muted-foreground">Current Status:</span>
@@ -552,10 +703,22 @@ function ApplicationDetails({ application, onStatusChange, onBook }: Application
             Offer
           </Button>
         )}
+        {!dealMemo && (application.status === 'offered' || application.status === 'interview' || application.status === 'shortlisted') && (
+          <Button variant="outline" size="sm" onClick={onSendDealMemo}>
+            <FileSignature className="w-4 h-4 mr-1" />
+            Deal Memo
+          </Button>
+        )}
         {application.status !== 'booked' && (
           <Button size="sm" onClick={onBook}>
             <UserCheck className="w-4 h-4 mr-1" />
             Book Now
+          </Button>
+        )}
+        {application.status === 'booked' && (
+          <Button variant="outline" size="sm" onClick={onSetCreditPrefs}>
+            <Award className="w-4 h-4 mr-1" />
+            Credit Preferences
           </Button>
         )}
         {application.status !== 'rejected' && (

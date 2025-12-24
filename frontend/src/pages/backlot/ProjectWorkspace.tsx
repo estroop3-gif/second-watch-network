@@ -5,6 +5,7 @@
  */
 import React, { useState, Suspense, lazy, startTransition } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { VoiceProvider } from '@/context/VoiceContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -38,7 +39,7 @@ import {
   BarChart3,
   Radio,
 } from 'lucide-react';
-import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, BACKLOT_ROLES } from '@/hooks/backlot';
+import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, useCanApprove, BACKLOT_ROLES, useTodayShootDay } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
 import {
   Select,
@@ -101,13 +102,15 @@ const PeopleView = lazy(() => import('@/components/backlot/workspace/PeopleView'
 const PersonDetailView = lazy(() => import('@/components/backlot/workspace/PersonDetailView'));
 const TimecardsView = lazy(() => import('@/components/backlot/workspace/TimecardsView'));
 const TeamAccessView = lazy(() => import('@/components/backlot/workspace/TeamAccessView'));
-const CameraAndContinuityView = lazy(() => import('@/components/backlot/workspace/CameraAndContinuityView'));
+const CameraLogView = lazy(() => import('@/components/backlot/workspace/CameraLogView'));
 const CheckInView = lazy(() => import('@/components/backlot/workspace/CheckInView'));
 const MySpacePanel = lazy(() => import('@/components/backlot/workspace/MySpacePanel'));
 const ChurchToolsView = lazy(() => import('@/components/backlot/workspace/ChurchToolsView'));
 const HotSetView = lazy(() => import('@/components/backlot/workspace/HotSetView'));
 const InvoicesView = lazy(() => import('@/components/backlot/workspace/InvoicesView'));
 const ComsView = lazy(() => import('@/components/backlot/workspace/ComsView'));
+const ApprovalsView = lazy(() => import('@/components/backlot/workspace/ApprovalsView'));
+const BudgetComparisonView = lazy(() => import('@/components/backlot/workspace/BudgetComparisonView'));
 
 // Lazy loaded named exports (need wrapper)
 const CastingCrewTab = lazy(() =>
@@ -121,7 +124,7 @@ const ReviewDetailView = lazy(() =>
 );
 
 import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame } from 'lucide-react';
+import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -197,8 +200,8 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'On Set & Dailies',
     items: [
       { id: 'hot-set', label: 'Production Day', icon: Flame },
-      { id: 'camera-continuity', label: 'Camera & Continuity', icon: Aperture },
-      { id: 'scripty', label: 'Scripty', icon: ClipboardList },
+      { id: 'camera', label: 'Camera', icon: Aperture },
+      // { id: 'scripty', label: 'Scripty', icon: ClipboardList },  // Hidden for now
       { id: 'dailies', label: 'Dailies', icon: Video },
       { id: 'checkin', label: 'Check-In', icon: QrCode },
     ],
@@ -213,11 +216,13 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Budget & Finance',
     items: [
+      { id: 'approvals', label: 'Approvals', icon: ClipboardCheck },
       { id: 'budget', label: 'Budget', icon: DollarSign },
       { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
       { id: 'timecards', label: 'Timecards', icon: Timer },
       { id: 'expenses', label: 'Expenses', icon: Receipt },
       { id: 'invoices', label: 'Invoices', icon: FileText },
+      { id: 'budget-comparison', label: 'Comparison', icon: Scale, adminOnly: true },
       { id: 'analytics', label: 'Analytics', icon: BarChart3, adminOnly: true },
     ],
   },
@@ -285,6 +290,8 @@ const ProjectWorkspace: React.FC = () => {
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
   const { data: viewConfig, isLoading: viewConfigLoading } = useViewConfig(projectId || null, viewAsRole);
   const { data: canViewAsRole } = useCanViewAsRole(projectId || null);
+  const { todayDay, hasShootToday } = useTodayShootDay(projectId || null);
+  const { canViewApprovalsDashboard } = useCanApprove(projectId || null);
 
   const isLoading = projectLoading || permissionLoading || viewConfigLoading;
 
@@ -329,6 +336,8 @@ const ProjectWorkspace: React.FC = () => {
   // Filter nav items based on both permissions and view config
   const visibleNavItems = NAV_ITEMS.filter((item) => {
     if (item.adminOnly && !permission?.isAdmin) return false;
+    // Approvals tab only visible to users who can approve
+    if (item.id === 'approvals' && !canViewApprovalsDashboard) return false;
     return isTabVisible(item.id);
   });
 
@@ -338,6 +347,35 @@ const ProjectWorkspace: React.FC = () => {
     startTransition(() => {
       setActiveView(view);
     });
+    setSidebarOpen(false);
+  };
+
+  const handleGoToToday = () => {
+    if (todayDay) {
+      // Navigate to days view and select today's day
+      startTransition(() => {
+        setActiveView('days');
+        // Convert production day to DayListItem format for the detail view
+        setSelectedDayForView({
+          id: todayDay.id,
+          day_number: todayDay.day_number,
+          date: todayDay.date,
+          title: todayDay.title || null,
+          is_completed: todayDay.is_completed,
+          general_call_time: todayDay.general_call_time || null,
+          location_name: todayDay.location_name || null,
+          has_call_sheet: false, // Will be refreshed when view loads
+          dailies_count: 0,
+          task_count: 0,
+          crew_count: 0,
+        });
+      });
+    } else {
+      // No shoot today, just go to days view
+      startTransition(() => {
+        setActiveView('days');
+      });
+    }
     setSidebarOpen(false);
   };
 
@@ -392,6 +430,7 @@ const ProjectWorkspace: React.FC = () => {
   }
 
   return (
+    <VoiceProvider projectId={project.id}>
     <div className="min-h-screen bg-charcoal-black">
       {/* Header - fixed below the main AppHeader (top-20 = 5rem = 80px) */}
       <header className="fixed top-20 left-0 right-0 z-40 h-14 bg-charcoal-black border-b border-muted-gray/20">
@@ -433,6 +472,24 @@ const ProjectWorkspace: React.FC = () => {
               <p className="text-sm text-muted-gray truncate hidden md:block">{project.logline}</p>
             )}
           </div>
+
+          {/* Go to Today Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleGoToToday}
+            className={cn(
+              'hidden sm:flex items-center gap-2 border-muted-gray/30',
+              hasShootToday && 'border-green-500/50 text-green-400 hover:bg-green-500/10'
+            )}
+          >
+            <CalendarCheck className="w-4 h-4" />
+            {hasShootToday ? (
+              <span>Day {todayDay?.day_number}</span>
+            ) : (
+              <span>Today</span>
+            )}
+          </Button>
 
           {/* View as Role (for admins/showrunners) */}
           {canViewAsRole && (
@@ -495,6 +552,8 @@ const ProjectWorkspace: React.FC = () => {
               // Filter items based on permissions and view config
               const visibleItems = section.items.filter((item) => {
                 if (item.adminOnly && !permission?.isAdmin) return false;
+                // Approvals tab only visible to users who can approve
+                if (item.id === 'approvals' && !canViewApprovalsDashboard) return false;
                 return isTabVisible(item.id);
               });
               if (visibleItems.length === 0) return null;
@@ -657,8 +716,8 @@ const ProjectWorkspace: React.FC = () => {
           {activeView === 'dailies' && (
             <DailiesView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
-          {activeView === 'camera-continuity' && (
-            <CameraAndContinuityView projectId={project.id} canEdit={permission?.canEdit || false} />
+          {activeView === 'camera' && (
+            <CameraLogView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'scripty' && (
             <div className="space-y-6">
@@ -734,6 +793,20 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'analytics' && (
             <AnalyticsView projectId={project.id} />
+          )}
+          {activeView === 'budget-comparison' && (
+            <BudgetComparisonView />
+          )}
+          {activeView === 'approvals' && (
+            <ApprovalsView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              onNavigateToTab={(tab, subTab) => {
+                startTransition(() => {
+                  setActiveView(tab as BacklotWorkspaceView);
+                });
+              }}
+            />
           )}
           {activeView === 'clearances' && (
             <ClearancesView projectId={project.id} canEdit={permission?.canEdit || false} />
@@ -826,6 +899,7 @@ const ProjectWorkspace: React.FC = () => {
         />
       )}
     </div>
+    </VoiceProvider>
   );
 };
 

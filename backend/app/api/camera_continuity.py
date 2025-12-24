@@ -6,10 +6,25 @@ from fastapi import APIRouter, HTTPException, Header, Query
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
-from app.core.database import get_client
+from app.core.database import get_client, execute_single
 from app.core.backlot_permissions import can_edit_tab, can_view_tab
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
+    """Look up the profile ID from a Cognito user ID."""
+    uid_str = str(cognito_user_id)
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
+        {"cuid": uid_str, "uid": uid_str}
+    )
+    if not profile_row:
+        return None
+    return profile_row["id"]
 
 
 # =============================================================================
@@ -224,9 +239,15 @@ async def get_shot_list(
 ):
     """Get shot list for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_shot_lists").select("*").eq("project_id", project_id)
@@ -250,13 +271,19 @@ async def create_shot(
 ):
     """Create a new shot in the shot list"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     # Check edit permission
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for camera tools")
 
     shot_data = {
@@ -271,7 +298,7 @@ async def create_shot(
         "is_circle_take": data.is_circle_take,
         "sort_order": data.sort_order,
         "notes": data.notes,
-        "created_by": user["id"],
+        "created_by": profile_id,
     }
 
     response = client.table("backlot_shot_lists").insert(shot_data).execute()
@@ -291,12 +318,18 @@ async def update_shot(
 ):
     """Update an existing shot"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for camera tools")
 
     update_data = {k: v for k, v in data.dict().items() if v is not None}
@@ -319,12 +352,18 @@ async def delete_shot(
 ):
     """Delete a shot from the shot list"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for camera tools")
 
     client.table("backlot_shot_lists").delete().eq("id", shot_id).eq("project_id", project_id).execute()
@@ -345,9 +384,15 @@ async def get_slate_logs(
 ):
     """Get slate logs for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_slate_logs").select("*").eq("project_id", project_id)
@@ -372,12 +417,18 @@ async def create_slate_log(
 ):
     """Log a new take/slate"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for slate logging")
 
     log_data = {
@@ -391,7 +442,7 @@ async def create_slate_log(
         "is_circle_take": data.is_circle_take,
         "notes": data.notes,
         "recorded_at": data.recorded_at or datetime.utcnow().isoformat(),
-        "logged_by": user["id"],
+        "logged_by": profile_id,
     }
 
     response = client.table("backlot_slate_logs").insert(log_data).execute()
@@ -411,12 +462,18 @@ async def update_slate_log(
 ):
     """Update an existing slate log"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for slate logging")
 
     update_data = {k: v for k, v in data.dict().items() if v is not None}
@@ -439,12 +496,18 @@ async def delete_slate_log(
 ):
     """Delete a slate log"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    if not await can_edit_tab(project_id, profile_id, "camera-continuity"):
         raise HTTPException(status_code=403, detail="No edit permission for slate logging")
 
     client.table("backlot_slate_logs").delete().eq("id", log_id).eq("project_id", project_id).execute()
@@ -461,9 +524,15 @@ async def get_next_take_number(
 ):
     """Get the next take number for a scene/shot combination"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_slate_logs").select("take_number").eq("project_id", project_id).eq("scene_number", scene_number)
@@ -494,9 +563,15 @@ async def get_camera_media(
 ):
     """Get camera media items for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_camera_media").select("*").eq("project_id", project_id)
@@ -520,12 +595,21 @@ async def create_camera_media(
 ):
     """Register a new camera media item (card, SSD, etc.)"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for camera media")
 
     media_data = {
@@ -556,12 +640,21 @@ async def update_camera_media(
 ):
     """Update camera media status and details"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for camera media")
 
     update_data = {k: v for k, v in data.dict().items() if v is not None}
@@ -584,12 +677,21 @@ async def delete_camera_media(
 ):
     """Delete a camera media item"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for camera media")
 
     client.table("backlot_camera_media").delete().eq("id", media_id).eq("project_id", project_id).execute()
@@ -611,9 +713,15 @@ async def get_continuity_notes(
 ):
     """Get continuity notes for a project with optional filters"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
     query = client.table("backlot_continuity_notes").select("*").eq("project_id", project_id)
@@ -639,12 +747,21 @@ async def create_continuity_note(
 ):
     """Create a new continuity note"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for continuity notes")
 
     note_data = {
@@ -655,7 +772,7 @@ async def create_continuity_note(
         "note": data.note,
         "image_url": data.image_url,
         "image_urls": data.image_urls,
-        "created_by": user["id"],
+        "created_by": profile_id,
     }
 
     response = client.table("backlot_continuity_notes").insert(note_data).execute()
@@ -675,12 +792,21 @@ async def update_continuity_note(
 ):
     """Update an existing continuity note"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for continuity notes")
 
     update_data = {k: v for k, v in data.dict().items() if v is not None}
@@ -703,14 +829,24 @@ async def delete_continuity_note(
 ):
     """Delete a continuity note"""
     user = await get_current_user_from_token(authorization)
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(user["id"])
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
     client = get_client()
 
-    if not await verify_project_member(client, project_id, user["id"]):
+    if not await verify_project_member(client, project_id, profile_id):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    if not await can_edit_tab(project_id, user["id"], "camera-continuity"):
+    # Check for either "camera" or "camera-continuity" permission (consolidated tabs)
+    has_camera_perm = await can_edit_tab(project_id, profile_id, "camera")
+    has_continuity_perm = await can_edit_tab(project_id, profile_id, "camera-continuity")
+    if not has_camera_perm and not has_continuity_perm:
         raise HTTPException(status_code=403, detail="No edit permission for continuity notes")
 
     client.table("backlot_continuity_notes").delete().eq("id", note_id).eq("project_id", project_id).execute()
 
     return {"success": True}
+# Force rebuild Tue Dec 23 01:07:09 EST 2025

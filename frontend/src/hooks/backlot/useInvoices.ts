@@ -523,20 +523,30 @@ export function useSubmitForApproval(projectId: string | null) {
 }
 
 /**
- * Approve an invoice (managers only)
+ * Approve an invoice (managers only) with optional notes
  */
 export function useApproveInvoice(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (invoiceId: string): Promise<{ success: boolean; status: string }> => {
+    mutationFn: async ({
+      invoiceId,
+      notes,
+    }: {
+      invoiceId: string;
+      notes?: string;
+    }): Promise<{ success: boolean; status: string }> => {
       if (!projectId) throw new Error('Project ID required');
       const token = api.getToken();
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/invoices/${invoiceId}/approve`,
         {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(notes ? { notes } : {}),
         }
       );
       if (!response.ok) {
@@ -545,7 +555,9 @@ export function useApproveInvoice(projectId: string | null) {
       return response.json();
     },
     onSuccess: () => {
+      // Invalidate all invoice-related queries
       queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'summary'] });
     },
   });
 }
@@ -579,6 +591,44 @@ export function useRequestChanges(projectId: string | null) {
       );
       if (!response.ok) {
         await handleApiError(response, 'Failed to request changes');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId] });
+    },
+  });
+}
+
+/**
+ * Deny an invoice permanently (managers only)
+ */
+export function useDenyInvoice(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      invoiceId,
+      reason,
+    }: {
+      invoiceId: string;
+      reason: string;
+    }): Promise<{ success: boolean; status: string }> => {
+      if (!projectId) throw new Error('Project ID required');
+      const token = api.getToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/invoices/${invoiceId}/deny`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ reason }),
+        }
+      );
+      if (!response.ok) {
+        await handleApiError(response, 'Failed to deny invoice');
       }
       return response.json();
     },

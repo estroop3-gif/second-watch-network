@@ -46,6 +46,8 @@ import {
   useProjectRoles,
   useProjectRoleMutations,
   useBookedPeople,
+  useDealMemos,
+  useDealMemoMutations,
 } from '@/hooks/backlot';
 import {
   BacklotProjectRole,
@@ -54,10 +56,15 @@ import {
   PROJECT_ROLE_TYPE_LABELS,
   PROJECT_ROLE_STATUS_LABELS,
   PROJECT_ROLE_STATUS_COLORS,
+  DealMemo,
 } from '@/types/backlot';
 import { RolePostingForm } from './RolePostingForm';
 import { ApplicationsBoard } from './ApplicationsBoard';
 import { AvailabilityCalendar } from './AvailabilityCalendar';
+import { CrewRatesTab } from './CrewRatesTab';
+import { DealMemoSummary, DealMemoStatusBadge, DealMemoStatus, DealMemoWorkflow, DealMemoHistory } from './DealMemoStatus';
+import { DealMemoDialog } from './DealMemoDialog';
+import { useDealMemoHistory } from '@/hooks/backlot';
 import {
   Plus,
   Users,
@@ -91,7 +98,7 @@ interface CastingCrewTabProps {
   projectId: string;
 }
 
-type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'communication';
+type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'communication' | 'rates';
 
 export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
   const { toast } = useToast();
@@ -254,10 +261,14 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabType)}>
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="roles">Role Postings</TabsTrigger>
           <TabsTrigger value="booked">Booked ({bookedPeople?.length || 0})</TabsTrigger>
           <TabsTrigger value="availability">Availability</TabsTrigger>
+          <TabsTrigger value="rates">
+            <DollarSign className="w-4 h-4 mr-1" />
+            Rates
+          </TabsTrigger>
           <TabsTrigger value="documents">
             <FileSignature className="w-4 h-4 mr-1" />
             Documents
@@ -403,6 +414,11 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
         {/* Availability Tab */}
         <TabsContent value="availability">
           <AvailabilityCalendar projectId={projectId} bookedPeople={bookedPeople || []} />
+        </TabsContent>
+
+        {/* Rates Tab */}
+        <TabsContent value="rates">
+          <CrewRatesTab projectId={projectId} />
         </TabsContent>
 
         {/* Documents Tab */}
@@ -650,6 +666,44 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
   const [selectedRecipients, setSelectedRecipients] = useState<string[]>([]);
   const [documentMessage, setDocumentMessage] = useState('');
 
+  // Deal memo state
+  const [showDealMemoDialog, setShowDealMemoDialog] = useState(false);
+  const [selectedDealMemo, setSelectedDealMemo] = useState<DealMemo | null>(null);
+  const [showDealMemoDetails, setShowDealMemoDetails] = useState<DealMemo | null>(null);
+
+  // Fetch deal memos
+  const { data: dealMemos = [], isLoading: dealMemosLoading } = useDealMemos(projectId);
+  const { updateDealMemoStatus, sendDealMemo, voidDealMemo, resendDealMemo, deleteDealMemo } = useDealMemoMutations(projectId);
+
+  // Fetch history for selected deal memo
+  const { data: dealMemoHistory = [], isLoading: historyLoading } = useDealMemoHistory(showDealMemoDetails?.id);
+
+  const handleUpdateStatus = async (
+    dealMemoId: string,
+    status: 'sent' | 'viewed' | 'signed' | 'declined',
+    notes?: string,
+    signedDocumentUrl?: string
+  ) => {
+    try {
+      await updateDealMemoStatus.mutateAsync({
+        dealMemoId,
+        status,
+        notes,
+        signedDocumentUrl,
+      });
+      toast({
+        title: 'Status updated',
+        description: `Deal memo marked as ${status}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to update status',
+        variant: 'destructive',
+      });
+    }
+  };
+
   // Fetch document templates
   const { data: templates, isLoading: templatesLoading } = useQuery({
     queryKey: ['document-templates', projectId],
@@ -741,6 +795,71 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
           <Send className="w-4 h-4 mr-2" />
           Send Document
         </Button>
+      </div>
+
+      {/* Deal Memos Section */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium">Deal Memos</h4>
+          <Button variant="outline" size="sm" onClick={() => setShowDealMemoDialog(true)}>
+            <FileSignature className="w-4 h-4 mr-2" />
+            New Deal Memo
+          </Button>
+        </div>
+        {dealMemosLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-6 h-6 animate-spin" />
+          </div>
+        ) : dealMemos.length === 0 ? (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <FileSignature className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+              <p className="text-muted-foreground">No deal memos yet</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                Create deal memos when offering roles to capture rates and terms
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {dealMemos.map((memo) => (
+              <div key={memo.id} className="group">
+                <DealMemoStatus
+                  dealMemo={memo}
+                  onEdit={() => {
+                    setSelectedDealMemo(memo);
+                    setShowDealMemoDialog(true);
+                  }}
+                  onUpdateStatus={(status, notes, signedDocUrl) =>
+                    handleUpdateStatus(memo.id, status, notes, signedDocUrl)
+                  }
+                  onSend={() => sendDealMemo.mutate(memo.id)}
+                  onVoid={() => voidDealMemo.mutate(memo.id)}
+                  onResend={() => resendDealMemo.mutate(memo.id)}
+                  onDelete={() => {
+                    if (confirm('Are you sure you want to delete this deal memo?')) {
+                      deleteDealMemo.mutate(memo.id);
+                    }
+                  }}
+                  onDownload={() => {
+                    if (memo.signed_document_url) {
+                      window.open(memo.signed_document_url, '_blank');
+                    }
+                  }}
+                  isUpdating={updateDealMemoStatus.isPending}
+                />
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="text-xs text-muted-foreground mt-1"
+                  onClick={() => setShowDealMemoDetails(memo)}
+                >
+                  View details & history
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Document Templates */}
@@ -936,6 +1055,130 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
                 <Send className="w-4 h-4 mr-2" />
               )}
               Send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Deal Memo Dialog */}
+      <DealMemoDialog
+        open={showDealMemoDialog}
+        onOpenChange={(open) => {
+          setShowDealMemoDialog(open);
+          if (!open) setSelectedDealMemo(null);
+        }}
+        projectId={projectId}
+        dealMemo={selectedDealMemo || undefined}
+        onSuccess={() => {
+          setShowDealMemoDialog(false);
+          setSelectedDealMemo(null);
+        }}
+      />
+
+      {/* Deal Memo Details Dialog */}
+      <Dialog open={!!showDealMemoDetails} onOpenChange={(open) => !open && setShowDealMemoDetails(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Deal Memo Details</DialogTitle>
+            <DialogDescription>
+              {showDealMemoDetails?.position_title} - {showDealMemoDetails?.user?.display_name}
+            </DialogDescription>
+          </DialogHeader>
+
+          {showDealMemoDetails && (
+            <div className="space-y-6 py-4">
+              {/* Workflow Stepper */}
+              <div>
+                <h4 className="text-sm font-medium mb-3">Paperwork Status</h4>
+                <DealMemoWorkflow
+                  dealMemo={showDealMemoDetails}
+                  onUpdateStatus={(status, notes, signedDocUrl) =>
+                    handleUpdateStatus(showDealMemoDetails.id, status, notes, signedDocUrl)
+                  }
+                  isUpdating={updateDealMemoStatus.isPending}
+                />
+              </div>
+
+              {/* Deal Terms Summary */}
+              <div>
+                <h4 className="text-sm font-medium mb-3">Deal Terms</h4>
+                <Card>
+                  <CardContent className="py-4 grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Rate:</span>{' '}
+                      <span className="font-medium">
+                        ${showDealMemoDetails.rate_amount}/{showDealMemoDetails.rate_type}
+                      </span>
+                    </div>
+                    {showDealMemoDetails.overtime_multiplier && (
+                      <div>
+                        <span className="text-muted-foreground">OT:</span>{' '}
+                        <span>{showDealMemoDetails.overtime_multiplier}x</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.double_time_multiplier && (
+                      <div>
+                        <span className="text-muted-foreground">DT:</span>{' '}
+                        <span>{showDealMemoDetails.double_time_multiplier}x</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.kit_rental_rate && (
+                      <div>
+                        <span className="text-muted-foreground">Kit:</span>{' '}
+                        <span>${showDealMemoDetails.kit_rental_rate}/day</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.car_allowance && (
+                      <div>
+                        <span className="text-muted-foreground">Car:</span>{' '}
+                        <span>${showDealMemoDetails.car_allowance}/day</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.per_diem_rate && (
+                      <div>
+                        <span className="text-muted-foreground">Per Diem:</span>{' '}
+                        <span>${showDealMemoDetails.per_diem_rate}/day</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.start_date && (
+                      <div>
+                        <span className="text-muted-foreground">Start:</span>{' '}
+                        <span>{format(new Date(showDealMemoDetails.start_date), 'MMM d, yyyy')}</span>
+                      </div>
+                    )}
+                    {showDealMemoDetails.end_date && (
+                      <div>
+                        <span className="text-muted-foreground">End:</span>{' '}
+                        <span>{format(new Date(showDealMemoDetails.end_date), 'MMM d, yyyy')}</span>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Status History */}
+              <div>
+                <h4 className="text-sm font-medium mb-3">Status History</h4>
+                <Card>
+                  <CardContent className="py-4">
+                    <DealMemoHistory history={dealMemoHistory} isLoading={historyLoading} />
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDealMemoDetails(null)}>
+              Close
+            </Button>
+            <Button onClick={() => {
+              setSelectedDealMemo(showDealMemoDetails);
+              setShowDealMemoDetails(null);
+              setShowDealMemoDialog(true);
+            }}>
+              <Edit className="w-4 h-4 mr-2" />
+              Edit Deal Memo
             </Button>
           </DialogFooter>
         </DialogContent>

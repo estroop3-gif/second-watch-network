@@ -608,3 +608,404 @@ export function useCheckAvailabilityConflicts() {
     },
   });
 }
+
+// =============================================================================
+// DEAL MEMO HOOKS
+// =============================================================================
+
+import type { DealMemo, DealMemoInput } from '@/types/backlot';
+
+/**
+ * Get all deal memos for a project
+ */
+export function useDealMemos(
+  projectId: string | undefined,
+  options?: {
+    status?: string;
+    userId?: string;
+  }
+) {
+  const { session } = useAuth();
+
+  return useQuery({
+    queryKey: ['backlot-deal-memos', projectId, options],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (options?.status) params.append('status', options.status);
+      if (options?.userId) params.append('user_id', options.userId);
+
+      const url = `${API_BASE}/api/v1/backlot/projects/${projectId}/deal-memos${params.toString() ? `?${params}` : ''}`;
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!response.ok) throw new Error('Failed to fetch deal memos');
+      const data = await response.json();
+      return data.deal_memos as DealMemo[];
+    },
+    enabled: !!projectId && !!session?.access_token,
+  });
+}
+
+/**
+ * Get a single deal memo
+ */
+export function useDealMemo(dealMemoId: string | undefined) {
+  const { session } = useAuth();
+
+  return useQuery({
+    queryKey: ['backlot-deal-memo', dealMemoId],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}`,
+        {
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to fetch deal memo');
+      const data = await response.json();
+      return data.deal_memo as DealMemo;
+    },
+    enabled: !!dealMemoId && !!session?.access_token,
+  });
+}
+
+/**
+ * Status history entry for a deal memo
+ */
+export interface DealMemoStatusHistory {
+  id: string;
+  deal_memo_id: string;
+  status: string;
+  changed_by: string;
+  changed_by_name?: string;
+  notes?: string;
+  created_at: string;
+}
+
+/**
+ * Get status history for a deal memo
+ */
+export function useDealMemoHistory(dealMemoId: string | undefined) {
+  const { session } = useAuth();
+
+  return useQuery({
+    queryKey: ['backlot-deal-memo-history', dealMemoId],
+    queryFn: async () => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/history`,
+        {
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to fetch deal memo history');
+      const data = await response.json();
+      return data.history as DealMemoStatusHistory[];
+    },
+    enabled: !!dealMemoId && !!session?.access_token,
+  });
+}
+
+/**
+ * Deal memo mutations (create, update, delete)
+ */
+export function useDealMemoMutations(projectId: string | undefined) {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  const createDealMemo = useMutation({
+    mutationFn: async (input: DealMemoInput) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/deal-memos`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+    },
+  });
+
+  const updateDealMemo = useMutation({
+    mutationFn: async ({ id, ...input }: DealMemoInput & { id: string }) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${id}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memo', variables.id] });
+    },
+  });
+
+  const deleteDealMemo = useMutation({
+    mutationFn: async (dealMemoId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to delete deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+    },
+  });
+
+  const createRateFromDealMemo = useMutation({
+    mutationFn: async (dealMemoId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/create-rate`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to create rate from deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-rates', projectId] });
+    },
+  });
+
+  const sendDealMemo = useMutation({
+    mutationFn: async (dealMemoId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/send`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to send deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+    },
+  });
+
+  const voidDealMemo = useMutation({
+    mutationFn: async (dealMemoId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/void`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to void deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+    },
+  });
+
+  const resendDealMemo = useMutation({
+    mutationFn: async (dealMemoId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/resend`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to resend deal memo');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+    },
+  });
+
+  // Paperwork tracking mutations
+  const updateDealMemoStatus = useMutation({
+    mutationFn: async ({
+      dealMemoId,
+      status,
+      notes,
+      signedDocumentUrl,
+    }: {
+      dealMemoId: string;
+      status: 'sent' | 'viewed' | 'signed' | 'declined';
+      notes?: string;
+      signedDocumentUrl?: string;
+    }) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/status`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({
+            status,
+            notes,
+            signed_document_url: signedDocumentUrl,
+          }),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to update deal memo status');
+      }
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memo', variables.dealMemoId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memo-history', variables.dealMemoId] });
+      // If signed, also invalidate crew rates since one might have been auto-created
+      if (variables.status === 'signed') {
+        queryClient.invalidateQueries({ queryKey: ['backlot-crew-rates', projectId] });
+      }
+    },
+  });
+
+  const uploadSignedDocument = useMutation({
+    mutationFn: async ({
+      dealMemoId,
+      signedDocumentUrl,
+    }: {
+      dealMemoId: string;
+      signedDocumentUrl: string;
+    }) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/deal-memos/${dealMemoId}/upload-signed`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ signed_document_url: signedDocumentUrl }),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to upload signed document');
+      }
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memos', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-deal-memo', variables.dealMemoId] });
+    },
+  });
+
+  return {
+    createDealMemo,
+    updateDealMemo,
+    deleteDealMemo,
+    createRateFromDealMemo,
+    sendDealMemo,
+    voidDealMemo,
+    resendDealMemo,
+    updateDealMemoStatus,
+    uploadSignedDocument,
+  };
+}
+
+// =============================================================================
+// POST ROLE TO COMMUNITY HOOKS
+// =============================================================================
+
+/**
+ * Post a role to the community job board
+ */
+export function usePostRoleToCommunity() {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (roleId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/roles/${roleId}/post-to-community`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to post role to community');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
+    },
+  });
+}
+
+/**
+ * Remove a role from the community job board
+ */
+export function useRemoveRoleFromCommunity() {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (roleId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/roles/${roleId}/remove-from-community`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to remove role from community');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
+    },
+  });
+}
