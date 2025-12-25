@@ -176,7 +176,30 @@ export function useSceneHub(projectId: string | null, sceneId: string | null) {
       );
     },
     enabled: !!projectId && !!sceneId,
+    // Keep data fresh for 5 minutes to avoid refetching when sidebar opens
+    staleTime: 5 * 60 * 1000,
+    // Keep cached data for 30 minutes
+    gcTime: 30 * 60 * 1000,
   });
+}
+
+/**
+ * Prefetch scene hub data - used to preload data before user clicks
+ */
+export function usePrefetchSceneHub() {
+  const queryClient = useQueryClient();
+
+  return (projectId: string, sceneId: string) => {
+    queryClient.prefetchQuery({
+      queryKey: ['backlot', 'scenes', projectId, sceneId, 'hub'],
+      queryFn: async () => {
+        return apiClient.get<SceneHubData>(
+          `/api/v1/backlot/projects/${projectId}/scenes/${sceneId}/hub`
+        );
+      },
+      staleTime: 5 * 60 * 1000,
+    });
+  };
 }
 
 /**

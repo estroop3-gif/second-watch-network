@@ -2,7 +2,7 @@
  * BudgetView - Main budget management view for Backlot projects
  * Professional film/TV budget with Top Sheet, Detail, and Daily Budget sync
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -59,6 +59,7 @@ import {
   Layers,
   AlertCircle,
   CheckCircle2,
+  Package,
 } from 'lucide-react';
 import {
   useBudget,
@@ -80,6 +81,8 @@ import {
   useComputeTopSheet,
   useSyncBudgetToDaily,
   useExportBudgetPdf,
+  useGearCosts,
+  useSyncGearToBudget,
 } from '@/hooks/backlot';
 import { BudgetCreationModal } from './BudgetCreationModal';
 import { BudgetDeleteConfirmDialog } from './BudgetDeleteConfirmDialog';
@@ -440,6 +443,7 @@ const LineItemRow: React.FC<{
 // Budget Stats Cards
 const BudgetStatsCards: React.FC<{
   budget: BacklotBudget;
+  categories: BacklotBudgetCategory[];
   stats: {
     estimated_total: number;
     actual_total: number;
@@ -450,10 +454,27 @@ const BudgetStatsCards: React.FC<{
     categories_over_budget: number;
     categories_under_budget: number;
   } | null;
-}> = ({ budget, stats }) => {
-  const variance = stats?.variance || budget.variance;
-  const variancePercent = stats?.variance_percent ||
-    (budget.estimated_total > 0 ? (variance / budget.estimated_total) * 100 : 0);
+}> = ({ budget, categories, stats }) => {
+  // Compute estimated total from categories for LIVE updates
+  const computedEstimatedTotal = useMemo(() => {
+    return categories.reduce((sum, cat) => sum + (cat.estimated_subtotal || 0), 0);
+  }, [categories]);
+
+  // Compute actual total from categories for LIVE updates
+  const computedActualTotal = useMemo(() => {
+    return categories.reduce((sum, cat) => sum + (cat.actual_subtotal || 0), 0);
+  }, [categories]);
+
+  // Use computed values for live updates
+  const estimatedTotal = computedEstimatedTotal || budget.estimated_total;
+  const actualTotal = computedActualTotal || budget.actual_total;
+
+  // Compute contingency amount dynamically from the computed estimated total
+  const contingencyPercent = budget.contingency_percent || 0;
+  const contingencyAmount = estimatedTotal * (contingencyPercent / 100);
+
+  const variance = actualTotal - estimatedTotal;
+  const variancePercent = estimatedTotal > 0 ? (variance / estimatedTotal) * 100 : 0;
   const isOverBudget = variance > 0;
 
   return (
@@ -465,11 +486,11 @@ const BudgetStatsCards: React.FC<{
           <span className="text-sm">Estimated</span>
         </div>
         <div className="text-2xl font-bold text-bone-white">
-          {formatCurrency(budget.estimated_total, budget.currency)}
+          {formatCurrency(estimatedTotal, budget.currency)}
         </div>
-        {budget.contingency_percent > 0 && (
+        {contingencyPercent > 0 && (
           <div className="text-xs text-muted-gray mt-1">
-            +{budget.contingency_percent}% contingency ({formatCurrency(budget.contingency_amount, budget.currency)})
+            +{contingencyPercent}% contingency ({formatCurrency(contingencyAmount, budget.currency)})
           </div>
         )}
       </div>
@@ -481,7 +502,7 @@ const BudgetStatsCards: React.FC<{
           <span className="text-sm">Actual Spent</span>
         </div>
         <div className="text-2xl font-bold text-bone-white">
-          {formatCurrency(budget.actual_total, budget.currency)}
+          {formatCurrency(actualTotal, budget.currency)}
         </div>
         {stats && stats.unmapped_receipt_total > 0 && (
           <div className="text-xs text-yellow-400 mt-1">
@@ -538,13 +559,13 @@ const BudgetStatsCards: React.FC<{
 
 // Main Budget View Component
 const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
-  const { data: budget, isLoading: budgetLoading } = useBudget(projectId);
-  const { data: summary } = useBudgetSummary(projectId);
-  const { data: stats } = useBudgetStats(projectId);
-  const { data: categories } = useBudgetCategories(budget?.id || null);
-  const { data: lineItems } = useBudgetLineItems(budget?.id || null);
-  const { data: topSheet, isLoading: topSheetLoading } = useTopSheet(projectId);
+  const { data: budget, isLoading: budgetLoading, refetch: refetchBudget } = useBudget(projectId);
+  const { data: summary, refetch: refetchSummary } = useBudgetSummary(projectId);
+  const { data: stats, refetch: refetchStats } = useBudgetStats(projectId);
+  const { data: topSheet, isLoading: topSheetLoading, refetch: refetchTopSheet } = useTopSheet(projectId);
   const { data: templateTypes } = useBudgetTemplateTypes();
+  const { data: gearCosts } = useGearCosts(projectId);
+  const syncGearToBudget = useSyncGearToBudget();
 
   // Multiple budgets support
   const { data: allBudgets } = useProjectBudgets(projectId);
@@ -554,6 +575,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const activeBudget = selectedBudgetId
     ? allBudgets?.find((b) => b.id === selectedBudgetId) || budget
     : (budget || allBudgets?.[0] || null);
+
+  // Use activeBudget.id for queries to match the mutation invalidation keys
+  const { data: categories, isLoading: categoriesLoading, refetch: refetchCategories } = useBudgetCategories(activeBudget?.id || null);
+  const { data: lineItems, isLoading: lineItemsLoading, refetch: refetchLineItems } = useBudgetLineItems(activeBudget?.id || null);
 
   const createBudget = useCreateBudget();
   const updateBudget = useUpdateBudget();
@@ -847,6 +872,15 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           category_id: selectedCategoryId || undefined,
         });
       }
+      // Force refetch all budget data to get updated totals
+      await Promise.all([
+        refetchCategories(),
+        refetchLineItems(),
+        refetchBudget(),
+        refetchSummary(),
+        refetchStats(),
+        refetchTopSheet(),
+      ]);
       setShowLineItemModal(false);
     } catch (err) {
       console.error('Failed to save line item:', err);
@@ -859,6 +893,15 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     if (!confirm('Delete this line item?')) return;
     try {
       await deleteLineItem.mutateAsync(id);
+      // Force refetch all budget data to get updated totals
+      await Promise.all([
+        refetchCategories(),
+        refetchLineItems(),
+        refetchBudget(),
+        refetchSummary(),
+        refetchStats(),
+        refetchTopSheet(),
+      ]);
     } catch (err) {
       console.error('Failed to delete line item:', err);
     }
@@ -878,7 +921,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     return acc;
   }, {} as Record<BacklotCategoryType, BacklotBudgetCategory[]>);
 
-  if (budgetLoading) {
+  // Show loading skeleton while budget or its dependent data is loading
+  const isInitialLoading = budgetLoading || (budget && (categoriesLoading || lineItemsLoading));
+
+  if (isInitialLoading) {
     return (
       <div className="space-y-4">
         <div className="flex justify-between items-center">
@@ -1094,7 +1140,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     );
   }
 
-  const statusBadge = getStatusBadge(budget.status);
+  const statusBadge = getStatusBadge(activeBudget.status);
 
   return (
     <div className="space-y-6">
@@ -1105,7 +1151,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
             {/* Budget selector when multiple budgets exist */}
             {allBudgets && allBudgets.length > 1 ? (
               <Select
-                value={budget.id}
+                value={activeBudget.id}
                 onValueChange={(id) => setSelectedBudgetId(id)}
               >
                 <SelectTrigger className="w-auto min-w-[200px] h-auto py-1 text-2xl font-heading text-bone-white border-none bg-transparent hover:bg-muted-gray/10">
@@ -1184,10 +1230,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                     <FolderOpen className="w-4 h-4 mr-2" />
                     Add Category
                   </DropdownMenuItem>
+                  {/* Hidden for now - Daily Budgets sync
                   <DropdownMenuItem onClick={() => setShowSyncModal(true)}>
                     <CalendarDays className="w-4 h-4 mr-2" />
                     Sync to Daily Budgets
                   </DropdownMenuItem>
+                  */}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     onClick={() => setShowCreationModal(true)}
@@ -1218,7 +1266,70 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       </div>
 
       {/* Stats Cards */}
-      <BudgetStatsCards budget={budget} stats={stats || null} />
+      <BudgetStatsCards budget={budget} categories={categories || []} stats={stats || null} />
+
+      {/* Gear Costs Section */}
+      {gearCosts && gearCosts.total_cost > 0 && (
+        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Package className="w-5 h-5 text-accent-yellow" />
+              <h3 className="text-lg font-medium text-bone-white">Gear Costs</h3>
+            </div>
+            {canEdit && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  try {
+                    await syncGearToBudget.mutateAsync({ projectId });
+                  } catch (err) {
+                    console.error('Failed to sync gear:', err);
+                  }
+                }}
+                disabled={syncGearToBudget.isPending}
+              >
+                {syncGearToBudget.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                )}
+                Sync to Budget
+              </Button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div>
+              <span className="text-muted-gray">Rental Total</span>
+              <p className="text-bone-white font-medium">${gearCosts.total_rental_cost.toLocaleString()}</p>
+            </div>
+            <div>
+              <span className="text-muted-gray">Owned Equipment</span>
+              <p className="text-bone-white font-medium">${gearCosts.total_purchase_cost.toLocaleString()}</p>
+            </div>
+            <div>
+              <span className="text-muted-gray">Total Gear Cost</span>
+              <p className="text-accent-yellow font-medium">${gearCosts.total_cost.toLocaleString()}</p>
+            </div>
+            <div>
+              <span className="text-muted-gray">Items</span>
+              <p className="text-bone-white font-medium">{gearCosts.items.length} items</p>
+            </div>
+          </div>
+          {Object.keys(gearCosts.by_category).length > 0 && (
+            <div className="mt-3 pt-3 border-t border-muted-gray/20">
+              <span className="text-xs text-muted-gray">By Category:</span>
+              <div className="flex flex-wrap gap-2 mt-1">
+                {Object.entries(gearCosts.by_category).map(([cat, data]) => (
+                  <Badge key={cat} variant="outline" className="text-xs">
+                    {cat}: ${(data.rental_cost + data.purchase_cost).toLocaleString()} ({data.count})
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Tabbed Content */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -1624,10 +1735,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                   type="number"
                   min={0}
                   step={0.01}
-                  value={lineItemForm.rate_amount}
-                  onChange={(e) =>
-                    setLineItemForm({ ...lineItemForm, rate_amount: parseFloat(e.target.value) || 0 })
-                  }
+                  value={lineItemForm.rate_amount === 0 ? '' : lineItemForm.rate_amount}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setLineItemForm({ ...lineItemForm, rate_amount: val === '' ? 0 : parseFloat(val) || 0 });
+                  }}
+                  placeholder="0.00"
                 />
               </div>
               <div className="space-y-2">
@@ -1637,10 +1750,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                   type="number"
                   min={0}
                   step={0.5}
-                  value={lineItemForm.quantity}
-                  onChange={(e) =>
-                    setLineItemForm({ ...lineItemForm, quantity: parseFloat(e.target.value) || 1 })
-                  }
+                  value={lineItemForm.quantity === 0 ? '' : lineItemForm.quantity}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setLineItemForm({ ...lineItemForm, quantity: val === '' ? 0 : parseFloat(val) || 0 });
+                  }}
+                  placeholder="1"
                 />
               </div>
             </div>

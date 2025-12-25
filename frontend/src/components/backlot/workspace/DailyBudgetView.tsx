@@ -1,7 +1,7 @@
 /**
  * DailyBudgetView - View and manage daily budgets per production day
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -76,6 +76,7 @@ import {
   useDailyLaborCosts,
   useDailySceneCosts,
   useDailyInvoices,
+  useDailyGearCosts,
 } from '@/hooks/backlot';
 import {
   BacklotDailyBudget,
@@ -1128,6 +1129,7 @@ const DailyBudgetDetail: React.FC<{
   const { data: dailyInvoices, isLoading: invoicesLoading } = useDailyInvoices(dailyBudget.id, {
     includePending: true,
   });
+  const { data: gearCosts, isLoading: gearCostsLoading } = useDailyGearCosts(dailyBudget.id);
 
   const [showItemModal, setShowItemModal] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -1367,6 +1369,53 @@ const DailyBudgetDetail: React.FC<{
         currency={currency}
       />
 
+      {/* Gear Costs Section */}
+      {gearCostsLoading ? (
+        <Skeleton className="h-24" />
+      ) : gearCosts && gearCosts.items.length > 0 && (
+        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Package className="w-5 h-5 text-accent-yellow" />
+              <h4 className="font-medium text-bone-white">
+                Gear Costs
+              </h4>
+              <Badge variant="outline" className="text-xs">
+                {gearCosts.items.length} items
+              </Badge>
+            </div>
+            <span className="text-lg font-bold text-accent-yellow">
+              {formatCurrency(gearCosts.gear_total, currency)}/day
+            </span>
+          </div>
+          <div className="space-y-2">
+            {gearCosts.items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-center justify-between py-2 border-b border-muted-gray/10 last:border-0"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-bone-white">{item.name}</span>
+                  {item.category && (
+                    <Badge variant="outline" className="text-xs">
+                      {item.category}
+                    </Badge>
+                  )}
+                  {item.source === 'manual_assignment' && (
+                    <Badge variant="outline" className="text-xs border-purple-500/30 text-purple-400">
+                      Assigned
+                    </Badge>
+                  )}
+                </div>
+                <span className="text-sm text-muted-gray">
+                  {formatCurrency(item.daily_cost, currency)}/day
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Notes */}
       {dailyBudget.notes && (
         <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
@@ -1544,14 +1593,58 @@ const DailyBudgetDetail: React.FC<{
 const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit }) => {
   const { data: summaries, isLoading } = useDailyBudgets(projectId);
   const { data: budget } = useBudget(projectId);
-  const { days } = useProductionDays(projectId);
+  const { days, isLoading: daysLoading } = useProductionDays(projectId);
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
-  const { data: selectedDailyBudget } = useDailyBudgetForDay(selectedDayId);
+  const { data: selectedDailyBudget, isLoading: dailyBudgetLoading, error: dailyBudgetError } = useDailyBudgetForDay(selectedDayId);
 
   const currency = budget?.currency || 'USD';
 
-  // Calculate totals
-  const totals = (summaries || []).reduce(
+  // Merge production days with their daily budget summaries
+  // This ensures we show ALL production days, not just ones with existing daily budgets
+  const mergedDays = useMemo(() => {
+    if (!days || days.length === 0) return [];
+
+    // Create a map of existing daily budget summaries by production day
+    const summaryMap = new Map<string, DailyBudgetSummary>();
+    (summaries || []).forEach(s => {
+      // Match by day_number and date
+      const key = `${s.production_day_number}-${s.date}`;
+      summaryMap.set(key, s);
+    });
+
+    // Map production days to display items, merging with existing summaries
+    return days
+      .filter(day => day.date) // Only show days with dates
+      .sort((a, b) => new Date(a.date!).getTime() - new Date(b.date!).getTime())
+      .map(day => {
+        const key = `${day.day_number}-${day.date}`;
+        const existingSummary = summaryMap.get(key);
+
+        if (existingSummary) {
+          return { ...existingSummary, productionDayId: day.id };
+        }
+
+        // Create a placeholder summary for days without daily budgets
+        return {
+          id: `placeholder-${day.id}`,
+          date: day.date!,
+          production_day_number: day.day_number,
+          production_day_title: day.title,
+          estimated_total: 0,
+          actual_total: 0,
+          variance: 0,
+          variance_percent: 0,
+          item_count: 0,
+          receipt_count: 0,
+          has_call_sheet: !!day.call_sheet_id,
+          productionDayId: day.id,
+          isPlaceholder: true,
+        };
+      });
+  }, [days, summaries]);
+
+  // Calculate totals from merged days (only count non-placeholders)
+  const totals = mergedDays.reduce(
     (acc, s) => ({
       estimated: acc.estimated + s.estimated_total,
       actual: acc.actual + s.actual_total,
@@ -1560,7 +1653,7 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
     { estimated: 0, actual: 0, variance: 0 }
   );
 
-  if (isLoading) {
+  if (isLoading || daysLoading) {
     return (
       <div className="space-y-4">
         <div className="flex justify-between items-center">
@@ -1579,16 +1672,74 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
   }
 
   // Show detail view if a day is selected
-  if (selectedDayId && selectedDailyBudget) {
+  if (selectedDayId) {
+    // Loading state while fetching/creating daily budget
+    if (dailyBudgetLoading) {
+      return (
+        <div className="space-y-4">
+          <Button variant="ghost" onClick={() => setSelectedDayId(null)} className="mb-4">
+            ← Back to Daily Budgets
+          </Button>
+          <div className="flex justify-between items-center">
+            <Skeleton className="h-8 w-48" />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Skeleton key={i} className="h-24" />
+            ))}
+          </div>
+          <Skeleton className="h-64" />
+        </div>
+      );
+    }
+
+    // Error state
+    if (dailyBudgetError) {
+      return (
+        <div className="space-y-4">
+          <Button variant="ghost" onClick={() => setSelectedDayId(null)} className="mb-4">
+            ← Back to Daily Budgets
+          </Button>
+          <div className="text-center py-12 bg-charcoal-black/50 border border-red-500/30 rounded-lg">
+            <h3 className="text-lg font-medium text-bone-white mb-2">Failed to load daily budget</h3>
+            <p className="text-muted-gray">
+              {dailyBudgetError instanceof Error ? dailyBudgetError.message : 'An error occurred'}
+            </p>
+            <p className="text-sm text-muted-gray mt-2">
+              Make sure a budget exists for this project first.
+            </p>
+          </div>
+        </div>
+      );
+    }
+
+    // Show detail if we have the daily budget
+    if (selectedDailyBudget) {
+      return (
+        <DailyBudgetDetail
+          dailyBudget={selectedDailyBudget}
+          productionDayId={selectedDayId}
+          currency={currency}
+          canEdit={canEdit}
+          projectId={projectId}
+          onBack={() => setSelectedDayId(null)}
+        />
+      );
+    }
+
+    // Fallback - waiting for data or it returned null
     return (
-      <DailyBudgetDetail
-        dailyBudget={selectedDailyBudget}
-        productionDayId={selectedDayId}
-        currency={currency}
-        canEdit={canEdit}
-        projectId={projectId}
-        onBack={() => setSelectedDayId(null)}
-      />
+      <div className="space-y-4">
+        <Button variant="ghost" onClick={() => setSelectedDayId(null)} className="mb-4">
+          ← Back to Daily Budgets
+        </Button>
+        <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+          <h3 className="text-lg font-medium text-bone-white mb-2">No daily budget available</h3>
+          <p className="text-muted-gray">
+            Create a main budget for this project first to enable daily budget tracking.
+          </p>
+        </div>
+      </div>
     );
   }
 
@@ -1604,7 +1755,7 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
       </div>
 
       {/* Summary Cards */}
-      {summaries && summaries.length > 0 && (
+      {mergedDays.length > 0 && (totals.estimated > 0 || totals.actual > 0) && (
         <div className="grid grid-cols-3 gap-4">
           <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
             <div className="text-sm text-muted-gray mb-1">Total Estimated</div>
@@ -1636,22 +1787,19 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
         </div>
       )}
 
-      {/* Daily Budget List */}
-      {summaries && summaries.length > 0 ? (
+      {/* Daily Budget List - shows all production days */}
+      {mergedDays.length > 0 ? (
         <div className="space-y-3">
-          {summaries.map((summary) => (
+          {mergedDays.map((summary) => (
             <DailyBudgetCard
               key={summary.id}
-              summary={summary}
+              summary={summary as DailyBudgetSummary}
               currency={currency}
               onClick={() => {
-                // Find the production day ID from days list
-                const day = days.find((d) =>
-                  d.day_number === summary.production_day_number &&
-                  d.date === summary.date
-                );
-                if (day) {
-                  setSelectedDayId(day.id);
+                // Use the productionDayId we attached to the merged item
+                const dayId = (summary as any).productionDayId;
+                if (dayId) {
+                  setSelectedDayId(dayId);
                 }
               }}
             />
@@ -1660,10 +1808,9 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
       ) : (
         <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
           <Calendar className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-bone-white mb-2">No daily budgets yet</h3>
+          <h3 className="text-lg font-medium text-bone-white mb-2">No production days yet</h3>
           <p className="text-muted-gray max-w-md mx-auto">
-            Daily budgets are automatically created when you add production days.
-            Visit the Schedule tab to add your first shoot day.
+            Add production days in the Schedule tab to track daily budgets.
           </p>
         </div>
       )}

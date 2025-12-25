@@ -13,6 +13,8 @@ export interface SceneListItem {
   int_ext: string | null;
   day_night: string | null;
   page_length: number | null;
+  page_start: number | null;
+  page_end: number | null;
   is_scheduled: boolean;
   is_shot: boolean;
   needs_pickup: boolean;
@@ -158,13 +160,23 @@ export function useScenesList(projectId: string | null, params?: ScenesListParam
           slugline = parts.length > 0 ? parts.join(' ') : null;
         }
 
+        // Calculate page_length from page_start/page_end if not set directly
+        let pageLength = scene.page_length || scene.page_count;
+        const pageStart = scene.page_start;
+        const pageEnd = scene.page_end;
+        if (!pageLength && pageStart != null && pageEnd != null) {
+          pageLength = pageEnd - pageStart;
+        }
+
         return {
           id: scene.id,
           scene_number: scene.scene_number || '',
           slugline,
           int_ext: scene.int_ext,
           day_night: scene.time_of_day || scene.day_night, // Handle both field names
-          page_length: scene.page_length || scene.page_count,
+          page_length: pageLength,
+          page_start: pageStart,
+          page_end: pageEnd,
           is_scheduled: scene.is_scheduled || scene.coverage_status === 'scheduled',
           is_shot: scene.is_shot || scene.coverage_status === 'shot',
           needs_pickup: scene.needs_pickup || scene.coverage_status === 'needs_pickup',

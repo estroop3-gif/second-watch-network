@@ -214,7 +214,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const [newSessionDayType, setNewSessionDayType] = useState<HotSetDayType>('10hr');
 
   // Queries
-  const { data: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
+  const { days: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
   const { data: callSheets } = useCallSheets(projectId);
   const { data: sessions, isLoading: sessionsLoading } = useHotSetSessions(projectId);
   const { data: dashboard, isLoading: dashboardLoading } = useHotSetDashboard(selectedSessionId, {
@@ -230,13 +230,15 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const skipScene = useSkipScene();
   const addMarker = useAddMarker();
 
-  // Auto-select active session
+  // Auto-select ONLY if there's an active (in_progress) session - otherwise show all days
   useEffect(() => {
     if (sessions && sessions.length > 0 && !selectedSessionId) {
-      // Prefer in_progress session, then most recent
+      // Only auto-select if there's an active session in progress
       const activeSession = sessions.find((s) => s.status === 'in_progress');
-      const session = activeSession || sessions[0];
-      setSelectedSessionId(session.id);
+      if (activeSession) {
+        setSelectedSessionId(activeSession.id);
+      }
+      // Don't auto-select otherwise - let user see all production days
     }
   }, [sessions, selectedSessionId]);
 
@@ -344,8 +346,20 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* View All Days Button - Always visible when a session is selected */}
+          {selectedSessionId && (
+            <Button
+              variant="outline"
+              onClick={() => setSelectedSessionId(null)}
+              className="border-muted-gray/30"
+            >
+              <Calendar className="w-4 h-4 mr-2" />
+              All Days
+            </Button>
+          )}
+
           {/* Session Selector */}
-          {sessions && sessions.length > 0 && (
+          {sessions && sessions.length > 0 && selectedSessionId && (
             <Select value={selectedSessionId || ''} onValueChange={setSelectedSessionId}>
               <SelectTrigger className="w-48 bg-charcoal-black border-muted-gray/30">
                 <SelectValue placeholder="Select day" />
@@ -364,7 +378,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           )}
 
           {/* Create New Session */}
-          {canEdit && availableDays.length > 0 && (
+          {canEdit && availableDays.length > 0 && selectedSessionId && (
             <Button
               onClick={() => setShowCreateModal(true)}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
@@ -376,28 +390,155 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
         </div>
       </div>
 
-      {/* No Session Selected */}
+      {/* No Session Selected - Show Production Days */}
       {!selectedSessionId && (
-        <Card className="bg-soft-black border-muted-gray/20">
-          <CardContent className="py-12 text-center">
-            <Calendar className="w-12 h-12 mx-auto text-muted-gray mb-4" />
-            <h3 className="text-lg font-medium text-bone-white mb-2">No Production Day Selected</h3>
-            <p className="text-muted-gray mb-4">
-              {availableDays.length > 0
-                ? 'Create a new production day session to start tracking.'
-                : 'All production days have sessions or are completed.'}
-            </p>
-            {canEdit && availableDays.length > 0 && (
-              <Button
-                onClick={() => setShowCreateModal(true)}
-                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Create Session
-              </Button>
-            )}
-          </CardContent>
-        </Card>
+        <div className="space-y-6">
+          {/* Available Production Days */}
+          {productionDays && productionDays.length > 0 ? (
+            <Card className="bg-soft-black border-muted-gray/20">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-bone-white flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-accent-yellow" />
+                  Production Days from Schedule
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {productionDays
+                  .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                  .map((day) => {
+                    const existingSession = sessions?.find((s) => s.production_day_id === day.id);
+                    const hasSession = !!existingSession;
+                    const isPast = new Date(day.date) < new Date(new Date().toDateString());
+                    const isToday = new Date(day.date).toDateString() === new Date().toDateString();
+
+                    return (
+                      <div
+                        key={day.id}
+                        className={cn(
+                          'flex items-center gap-4 p-4 rounded-lg border transition-all cursor-pointer',
+                          hasSession
+                            ? 'bg-green-500/5 border-green-500/30 hover:bg-green-500/10'
+                            : day.is_completed
+                            ? 'bg-muted-gray/5 border-muted-gray/20 cursor-default opacity-60'
+                            : isToday
+                            ? 'bg-accent-yellow/10 border-accent-yellow/50 hover:border-accent-yellow'
+                            : 'bg-charcoal-black/50 border-muted-gray/20 hover:border-muted-gray/40'
+                        )}
+                        onClick={() => {
+                          if (hasSession && existingSession) {
+                            setSelectedSessionId(existingSession.id);
+                          } else if (!day.is_completed && canEdit) {
+                            setNewSessionDayId(day.id);
+                            setShowCreateModal(true);
+                          }
+                        }}
+                      >
+                        {/* Day Number */}
+                        <div
+                          className={cn(
+                            'flex-shrink-0 w-14 h-14 rounded-lg flex flex-col items-center justify-center font-bold',
+                            hasSession
+                              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                              : day.is_completed
+                              ? 'bg-muted-gray/20 text-muted-gray border border-muted-gray/30'
+                              : isToday
+                              ? 'bg-accent-yellow/20 text-accent-yellow border border-accent-yellow/30'
+                              : isPast
+                              ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                              : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                          )}
+                        >
+                          <span className="text-xs">Day</span>
+                          <span className="text-xl">{day.day_number}</span>
+                        </div>
+
+                        {/* Day Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-medium text-bone-white">
+                              {new Date(day.date).toLocaleDateString('en-US', {
+                                weekday: 'long',
+                                month: 'short',
+                                day: 'numeric',
+                              })}
+                            </span>
+                            {isToday && (
+                              <Badge className="bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30 text-xs">
+                                Today
+                              </Badge>
+                            )}
+                            {day.is_completed && (
+                              <Badge className="bg-muted-gray/20 text-muted-gray border-muted-gray/30 text-xs">
+                                <CheckCircle2 className="w-3 h-3 mr-1" />
+                                Completed
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-4 text-sm text-muted-gray">
+                            {day.title && <span>{day.title}</span>}
+                            {day.general_call_time && (
+                              <span className="flex items-center gap-1">
+                                <Clock className="w-3 h-3" />
+                                Call: {day.general_call_time}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Session Status */}
+                        <div className="flex items-center gap-2">
+                          {hasSession ? (
+                            <>
+                              <Badge
+                                className={cn(
+                                  'capitalize',
+                                  existingSession?.status === 'in_progress' &&
+                                    'bg-green-500/20 text-green-400 border-green-500/30',
+                                  existingSession?.status === 'wrapped' &&
+                                    'bg-blue-500/20 text-blue-400 border-blue-500/30',
+                                  existingSession?.status === 'pending' &&
+                                    'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                                )}
+                              >
+                                {existingSession?.status === 'in_progress' && <Play className="w-3 h-3 mr-1" />}
+                                {existingSession?.status === 'wrapped' && <CheckCircle2 className="w-3 h-3 mr-1" />}
+                                {existingSession?.status?.replace('_', ' ')}
+                              </Badge>
+                              <ChevronRight className="w-5 h-5 text-muted-gray" />
+                            </>
+                          ) : !day.is_completed && canEdit ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setNewSessionDayId(day.id);
+                                setShowCreateModal(true);
+                              }}
+                            >
+                              <Play className="w-4 h-4 mr-1" />
+                              Start Day
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </CardContent>
+            </Card>
+          ) : (
+            <Card className="bg-soft-black border-muted-gray/20">
+              <CardContent className="py-12 text-center">
+                <Calendar className="w-12 h-12 mx-auto text-muted-gray mb-4" />
+                <h3 className="text-lg font-medium text-bone-white mb-2">No Production Days Scheduled</h3>
+                <p className="text-muted-gray mb-4">
+                  Add production days in the Schedule tab first to start managing shoot days here.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       )}
 
       {/* Dashboard */}

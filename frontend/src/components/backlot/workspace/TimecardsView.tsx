@@ -2,7 +2,7 @@
  * TimecardsView - Timecard management for crew and managers
  * Shows personal timecards for crew, review interface for showrunner/producers
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -54,6 +54,9 @@ import {
   CircleX,
   CheckCircle2,
   Printer,
+  Play,
+  Square,
+  UtensilsCrossed,
 } from 'lucide-react';
 import {
   useMyTimecards,
@@ -68,9 +71,18 @@ import {
   useApproveTimecard,
   useRejectTimecard,
   useMyCheckins,
+  useTodayClockStatus,
+  useClockIn,
+  useClockOut,
+  useResetClock,
+  useUnwrap,
+  useLunchStart,
+  useLunchEnd,
+  calculateRunningDuration,
   TimecardListItem,
   TimecardEntry,
   TimecardPreview,
+  ClockStatus,
   getWeekStartDate,
   getWeekDates,
   formatWeekRange,
@@ -108,6 +120,696 @@ const RATE_TYPES = [
   { value: 'flat', label: 'Flat Rate' },
 ] as const;
 
+// LiveClockWidget Component - shows live time tracking at top of view
+interface LiveClockWidgetProps {
+  projectId: string;
+  onTimecardCreated?: (timecardId: string) => void;
+}
+
+// Optimistic state type for instant UI updates
+type OptimisticState =
+  | { type: 'idle' }
+  | { type: 'clocked_in'; clockInTime: string }
+  | { type: 'on_lunch'; clockInTime: string; lunchStartTime: string }
+  | { type: 'wrapped'; clockInTime: string; wrapTime: string };
+
+function LiveClockWidget({ projectId, onTimecardCreated }: LiveClockWidgetProps) {
+  const { data: clockStatus, isLoading, isError, refetch } = useTodayClockStatus(projectId);
+  const clockIn = useClockIn(projectId);
+  const clockOut = useClockOut(projectId);
+  const resetClock = useResetClock(projectId);
+  const unwrap = useUnwrap(projectId);
+  const lunchStart = useLunchStart(projectId);
+  const lunchEnd = useLunchEnd(projectId);
+
+  // Optimistic state for instant UI updates
+  const [optimistic, setOptimistic] = useState<OptimisticState>({ type: 'idle' });
+
+  // Confirmation dialog states
+  const [showCallConfirm, setShowCallConfirm] = useState(false);
+  const [showWrapConfirm, setShowWrapConfirm] = useState(false);
+  const [resetConfirmStep, setResetConfirmStep] = useState(0); // 0 = closed, 1-3 = confirmation steps
+
+  // Running timer state - updates every second
+  const [runningTime, setRunningTime] = useState({ hours: 0, minutes: 0, seconds: 0 });
+  const [lunchTime, setLunchTime] = useState({ hours: 0, minutes: 0, seconds: 0 });
+
+  // Derive effective state from optimistic or server state
+  const effectiveState = React.useMemo(() => {
+    // If we have optimistic state, use it
+    if (optimistic.type !== 'idle') {
+      return {
+        is_clocked_in: optimistic.type === 'clocked_in' || optimistic.type === 'on_lunch',
+        is_on_lunch: optimistic.type === 'on_lunch',
+        is_wrapped: optimistic.type === 'wrapped',
+        clock_in_time: optimistic.type !== 'idle' ? (optimistic as any).clockInTime : null,
+        lunch_start_time: optimistic.type === 'on_lunch' ? optimistic.lunchStartTime : null,
+        wrap_time: optimistic.type === 'wrapped' ? optimistic.wrapTime : null,
+      };
+    }
+    // Otherwise use server state
+    return {
+      is_clocked_in: clockStatus?.is_clocked_in || false,
+      is_on_lunch: clockStatus?.is_on_lunch || false,
+      is_wrapped: !clockStatus?.is_clocked_in && !!clockStatus?.clock_out_time,
+      clock_in_time: clockStatus?.clock_in_time || null,
+      lunch_start_time: clockStatus?.lunch_start_time || null,
+      wrap_time: clockStatus?.clock_out_time || null,
+    };
+  }, [optimistic, clockStatus]);
+
+  // Log for debugging
+  useEffect(() => {
+    console.log('[LiveClockWidget] Status:', { isLoading, isError, clockStatus, optimistic: optimistic.type });
+  }, [isLoading, isError, clockStatus, optimistic]);
+
+  // Update timer every second based on effective state
+  useEffect(() => {
+    if (!effectiveState.is_clocked_in && !effectiveState.is_on_lunch) {
+      setRunningTime({ hours: 0, minutes: 0, seconds: 0 });
+      setLunchTime({ hours: 0, minutes: 0, seconds: 0 });
+      return;
+    }
+
+    const updateTimer = () => {
+      if (effectiveState.is_on_lunch && effectiveState.lunch_start_time) {
+        setLunchTime(calculateRunningDuration(effectiveState.lunch_start_time));
+        // Also keep running time updated (paused during lunch display)
+        if (effectiveState.clock_in_time) {
+          setRunningTime(calculateRunningDuration(effectiveState.clock_in_time));
+        }
+      } else if (effectiveState.clock_in_time) {
+        setRunningTime(calculateRunningDuration(effectiveState.clock_in_time));
+      }
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [effectiveState.is_clocked_in, effectiveState.is_on_lunch, effectiveState.clock_in_time, effectiveState.lunch_start_time]);
+
+  // Clear optimistic state when server data catches up
+  useEffect(() => {
+    if (optimistic.type === 'idle') return;
+
+    // Check if server state matches our optimistic state
+    if (optimistic.type === 'clocked_in' && clockStatus?.is_clocked_in && !clockStatus?.is_on_lunch) {
+      setOptimistic({ type: 'idle' });
+    } else if (optimistic.type === 'on_lunch' && clockStatus?.is_on_lunch) {
+      setOptimistic({ type: 'idle' });
+    } else if (optimistic.type === 'wrapped' && clockStatus?.clock_out_time) {
+      setOptimistic({ type: 'idle' });
+    }
+  }, [clockStatus, optimistic.type]);
+
+  // Show confirmation dialog for clock in
+  const handleClockInClick = () => {
+    setShowCallConfirm(true);
+  };
+
+  // Actually perform clock in after confirmation
+  const handleClockInConfirm = async () => {
+    setShowCallConfirm(false);
+    const now = new Date().toISOString();
+    // Optimistic update - instantly show clocked in state
+    setOptimistic({ type: 'clocked_in', clockInTime: now });
+
+    try {
+      const result = await clockIn.mutateAsync();
+      if (result.timecard_id && onTimecardCreated) {
+        onTimecardCreated(result.timecard_id);
+      }
+      refetch();
+    } catch (error) {
+      console.error('Failed to clock in:', error);
+      // Revert optimistic update on error
+      setOptimistic({ type: 'idle' });
+    }
+  };
+
+  // Show confirmation dialog for clock out
+  const handleClockOutClick = () => {
+    setShowWrapConfirm(true);
+  };
+
+  // Actually perform clock out after confirmation
+  const handleClockOutConfirm = async () => {
+    setShowWrapConfirm(false);
+    const now = new Date().toISOString();
+    const clockInTime = effectiveState.clock_in_time || now;
+    // Optimistic update - instantly show wrapped state
+    setOptimistic({ type: 'wrapped', clockInTime, wrapTime: now });
+
+    try {
+      await clockOut.mutateAsync(clockStatus?.entry_id);
+      refetch();
+    } catch (error) {
+      console.error('Failed to clock out:', error);
+      // Revert to clocked in state on error
+      setOptimistic({ type: 'clocked_in', clockInTime });
+    }
+  };
+
+  // Open reset confirmation dialog (3-step process)
+  const handleClearDayClick = () => {
+    setResetConfirmStep(1);
+  };
+
+  // Handle reset confirmation steps
+  const handleResetConfirmNext = () => {
+    if (resetConfirmStep < 3) {
+      setResetConfirmStep(resetConfirmStep + 1);
+    }
+  };
+
+  // Final reset after all 3 confirmations
+  const handleClearDayConfirm = async () => {
+    setResetConfirmStep(0);
+    setOptimistic({ type: 'idle' });
+
+    try {
+      await resetClock.mutateAsync();
+      refetch();
+    } catch (error) {
+      console.error('Failed to reset clock:', error);
+    }
+  };
+
+  const handleLunchStart = async () => {
+    const now = new Date().toISOString();
+    const clockInTime = effectiveState.clock_in_time || now;
+    // Optimistic update - instantly show on lunch state
+    setOptimistic({ type: 'on_lunch', clockInTime, lunchStartTime: now });
+
+    try {
+      await lunchStart.mutateAsync(clockStatus?.entry_id);
+      refetch();
+    } catch (error) {
+      console.error('Failed to start lunch:', error);
+      // Revert to clocked in state on error
+      setOptimistic({ type: 'clocked_in', clockInTime });
+    }
+  };
+
+  const handleLunchEnd = async () => {
+    const clockInTime = effectiveState.clock_in_time || new Date().toISOString();
+    // Optimistic update - instantly show back on set
+    setOptimistic({ type: 'clocked_in', clockInTime });
+
+    try {
+      await lunchEnd.mutateAsync(clockStatus?.entry_id);
+      refetch();
+    } catch (error) {
+      console.error('Failed to end lunch:', error);
+      // Revert to on lunch state on error
+      const lunchStartTime = effectiveState.lunch_start_time || new Date().toISOString();
+      setOptimistic({ type: 'on_lunch', clockInTime, lunchStartTime });
+    }
+  };
+
+  const handleUnwrap = async () => {
+    const clockInTime = effectiveState.clock_in_time || new Date().toISOString();
+    // Optimistic update - instantly show back to clocked in state
+    setOptimistic({ type: 'clocked_in', clockInTime });
+
+    try {
+      await unwrap.mutateAsync();
+      refetch();
+    } catch (error) {
+      console.error('Failed to unwrap:', error);
+      // Revert to wrapped state on error
+      const wrapTime = effectiveState.wrap_time || new Date().toISOString();
+      setOptimistic({ type: 'wrapped', clockInTime, wrapTime });
+    }
+  };
+
+  const formatTime = (h: number, m: number, s: number) => {
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const formatCallTime = (isoString: string | null) => {
+    if (!isoString) return '--:--';
+    // Ensure UTC times are parsed correctly - add 'Z' if no timezone info
+    let timeStr = isoString;
+    if (!timeStr.endsWith('Z') && !timeStr.includes('+') && !timeStr.includes('-', 10)) {
+      timeStr = timeStr + 'Z';
+    }
+    const date = new Date(timeStr);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // Confirmation dialogs (shared across all states)
+  const confirmationDialogs = (
+    <>
+      <Dialog open={showCallConfirm} onOpenChange={setShowCallConfirm}>
+        <DialogContent className="bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">Start Your Day?</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              This will clock you in at the current time. Are you sure you want to start?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowCallConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleClockInConfirm}
+              className="bg-green-500 hover:bg-green-600 text-white"
+            >
+              <Play className="w-4 h-4 mr-2" />
+              Yes, Clock In
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showWrapConfirm} onOpenChange={setShowWrapConfirm}>
+        <DialogContent className="bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">Wrap for the Day?</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              This will clock you out and calculate your hours. Are you sure you want to wrap?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2 text-center">
+            <p className="text-2xl font-mono font-bold text-green-400">
+              {formatTime(runningTime.hours, runningTime.minutes, runningTime.seconds)}
+            </p>
+            <p className="text-xs text-muted-gray">Time worked today</p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowWrapConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleClockOutConfirm}
+              className="bg-red-500 hover:bg-red-600 text-white"
+            >
+              <Square className="w-4 h-4 mr-2" />
+              Yes, Wrap
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 3-Step Reset Confirmation Dialog */}
+      <Dialog open={resetConfirmStep > 0} onOpenChange={(open) => !open && setResetConfirmStep(0)}>
+        <DialogContent className="bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <TriangleAlert className="w-5 h-5 text-red-400" />
+              Reset Today's Clock - Step {resetConfirmStep} of 3
+            </DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              {resetConfirmStep === 1 && (
+                "This will clear all clock data for today. This action cannot be undone."
+              )}
+              {resetConfirmStep === 2 && (
+                "Are you absolutely sure? Your call time, wrap time, and lunch data will be lost."
+              )}
+              {resetConfirmStep === 3 && (
+                "Final confirmation: Click 'Reset' to permanently clear today's clock data."
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* Progress indicator */}
+          <div className="flex justify-center gap-2 py-4">
+            {[1, 2, 3].map((step) => (
+              <div
+                key={step}
+                className={cn(
+                  "w-3 h-3 rounded-full transition-colors",
+                  step <= resetConfirmStep ? "bg-red-500" : "bg-muted-gray/30"
+                )}
+              />
+            ))}
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setResetConfirmStep(0)}>
+              Cancel
+            </Button>
+            {resetConfirmStep < 3 ? (
+              <Button
+                onClick={handleResetConfirmNext}
+                className="bg-red-500/80 hover:bg-red-500 text-white"
+              >
+                Continue ({resetConfirmStep}/3)
+              </Button>
+            ) : (
+              <Button
+                onClick={handleClearDayConfirm}
+                className="bg-red-600 hover:bg-red-700 text-white"
+              >
+                <X className="w-4 h-4 mr-2" />
+                Reset Clock
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+
+  if (isLoading && optimistic.type === 'idle') {
+    return (
+      <>
+        <Card className="bg-charcoal-black border-muted-gray/20">
+          <CardContent className="p-4">
+            <Skeleton className="h-16 w-full" />
+          </CardContent>
+        </Card>
+        {confirmationDialogs}
+      </>
+    );
+  }
+
+  // State: Timecard is submitted or approved - cannot clock in
+  const timecardStatus = clockStatus?.timecard_status;
+  if (timecardStatus && !['draft', 'rejected'].includes(timecardStatus)) {
+    const statusLabels: Record<string, string> = {
+      submitted: 'submitted for approval',
+      approved: 'approved',
+      pending_approval: 'pending approval',
+    };
+    const statusLabel = statusLabels[timecardStatus] || timecardStatus;
+
+    return (
+      <>
+        <Card className="bg-gradient-to-r from-charcoal-black to-charcoal-black/80 border-amber-500/30">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <FileText className="w-6 h-6 text-amber-400" />
+              </div>
+              <div>
+                <p className="text-lg font-medium text-bone-white">Timecard {statusLabel}</p>
+                <p className="text-sm text-muted-gray">
+                  This week's timecard has been {statusLabel}. You cannot clock in until it's processed or rejected.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        {confirmationDialogs}
+      </>
+    );
+  }
+
+  // State: Not clocked in yet (or error/no data - show Call button as default)
+  if (!effectiveState.is_clocked_in && !effectiveState.is_on_lunch && !effectiveState.is_wrapped) {
+    return (
+      <>
+        <Card className="bg-gradient-to-r from-charcoal-black to-charcoal-black/80 border-green-500/30">
+          <CardContent className="p-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center">
+                  <Play className="w-6 h-6 text-green-400" />
+                </div>
+                <div>
+                  <p className="text-lg font-medium text-bone-white">Ready to start your day?</p>
+                  <p className="text-sm text-muted-gray">Tap Call to clock in and start tracking time</p>
+                </div>
+              </div>
+              <Button
+                size="lg"
+                onClick={handleClockInClick}
+                disabled={clockIn.isPending}
+                className="bg-green-500 hover:bg-green-600 text-white px-8"
+              >
+                {clockIn.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    <Play className="w-5 h-5 mr-2" />
+                    Call
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+        {confirmationDialogs}
+      </>
+    );
+  }
+
+  // State: Wrapped for the day - show summary
+  if (effectiveState.is_wrapped) {
+    const entry = clockStatus?.today_entry;
+    const ot = clockStatus?.overtime_breakdown;
+    const pay = clockStatus?.pay_breakdown;
+
+    // Calculate hours for optimistic display
+    let displayHours = ot?.total_hours || entry?.hours_worked || 0;
+    if (optimistic.type === 'wrapped' && effectiveState.clock_in_time && effectiveState.wrap_time) {
+      const start = new Date(effectiveState.clock_in_time).getTime();
+      const end = new Date(effectiveState.wrap_time).getTime();
+      const rawHours = (end - start) / (1000 * 60 * 60);
+      // Show at least 0.1 for any positive time, round to 2 decimal places for precision
+      displayHours = rawHours > 0 ? Math.max(0.1, Math.round(rawHours * 100) / 100) : 0;
+    }
+    // Ensure displayHours is a valid number
+    if (isNaN(displayHours) || displayHours === undefined) {
+      displayHours = 0;
+    }
+
+    return (
+      <>
+      <Card className="bg-gradient-to-r from-charcoal-black to-charcoal-black/80 border-blue-500/30">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                <CheckCircle2 className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-lg font-medium text-bone-white">Today's Summary</p>
+                <p className="text-sm text-muted-gray">
+                  {formatCallTime(effectiveState.clock_in_time || entry?.call_time)} - {formatCallTime(effectiveState.wrap_time || entry?.wrap_time)}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="bg-muted-gray/10 rounded-lg p-3 text-center">
+              <p className="text-2xl font-bold text-bone-white">
+                {displayHours < 1 ? displayHours.toFixed(2) : displayHours.toFixed(1)}
+              </p>
+              <p className="text-xs text-muted-gray">Total Hours</p>
+            </div>
+            {ot && ot.regular_hours > 0 && (
+              <div className="bg-muted-gray/10 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold text-green-400">{ot.regular_hours.toFixed(1)}</p>
+                <p className="text-xs text-muted-gray">Regular</p>
+              </div>
+            )}
+            {ot && ot.overtime_hours > 0 && (
+              <div className="bg-muted-gray/10 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold text-accent-yellow">{ot.overtime_hours.toFixed(1)}</p>
+                <p className="text-xs text-muted-gray">OT (1.5x)</p>
+              </div>
+            )}
+            {ot && ot.double_time_hours > 0 && (
+              <div className="bg-muted-gray/10 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold text-orange-400">{ot.double_time_hours.toFixed(1)}</p>
+                <p className="text-xs text-muted-gray">DT (2x)</p>
+              </div>
+            )}
+            {pay && pay.total_pay > 0 && (
+              <div className="bg-green-500/10 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold text-green-400">
+                  ${pay.total_pay.toFixed(2)}
+                </p>
+                <p className="text-xs text-muted-gray">Today's Pay</p>
+              </div>
+            )}
+          </div>
+
+          {pay && pay.total_pay > 0 && (
+            <div className="mt-4 pt-4 border-t border-muted-gray/20">
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted-gray">
+                {pay.regular_pay > 0 && (
+                  <span>Regular: ${pay.regular_pay.toFixed(2)}</span>
+                )}
+                {pay.overtime_pay > 0 && (
+                  <span className="text-accent-yellow">OT: ${pay.overtime_pay.toFixed(2)}</span>
+                )}
+                {pay.double_time_pay > 0 && (
+                  <span className="text-orange-400">DT: ${pay.double_time_pay.toFixed(2)}</span>
+                )}
+                <span className="text-muted-gray/60">
+                  ({pay.rate_type === 'daily' ? 'Day Rate' : 'Hourly'}: ${pay.rate_amount})
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Unwrap and Clear buttons */}
+          <div className="mt-4 flex justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleUnwrap}
+              disabled={unwrap.isPending}
+              className="border-green-500/30 text-green-400 hover:bg-green-500/10 hover:text-green-300"
+            >
+              {unwrap.isPending ? (
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+              ) : (
+                <Play className="w-4 h-4 mr-1" />
+              )}
+              Unwrap
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClearDayClick}
+              className="text-muted-gray hover:text-bone-white"
+            >
+              <X className="w-4 h-4 mr-1" />
+              Clear & Start Over
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+      {confirmationDialogs}
+      </>
+    );
+  }
+
+  // State: On lunch
+  if (effectiveState.is_on_lunch) {
+    return (
+      <>
+      <Card className="bg-gradient-to-r from-charcoal-black to-amber-900/20 border-amber-500/30">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center animate-pulse">
+                <UtensilsCrossed className="w-6 h-6 text-amber-400" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">
+                    At Lunch
+                  </Badge>
+                </div>
+                <p className="text-sm text-muted-gray mt-1">
+                  Started: {formatCallTime(effectiveState.lunch_start_time)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-6">
+              <div className="text-right">
+                <p className="text-3xl font-mono font-bold text-amber-400">
+                  {formatTime(lunchTime.hours, lunchTime.minutes, lunchTime.seconds)}
+                </p>
+                <p className="text-xs text-muted-gray">Lunch Duration</p>
+              </div>
+
+              <Button
+                size="lg"
+                onClick={handleLunchEnd}
+                disabled={lunchEnd.isPending}
+                className="bg-amber-500 hover:bg-amber-600 text-white px-8"
+              >
+                {lunchEnd.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    <Play className="w-5 h-5 mr-2" />
+                    Back
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      {confirmationDialogs}
+      </>
+    );
+  }
+
+  // State: Clocked in - on set
+  return (
+    <>
+    <Card className="bg-gradient-to-r from-charcoal-black to-green-900/20 border-green-500/30">
+      <CardContent className="p-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center">
+              <div className="w-3 h-3 rounded-full bg-green-400 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                  On Set
+                </Badge>
+              </div>
+              <p className="text-sm text-muted-gray mt-1">
+                Call: {formatCallTime(effectiveState.clock_in_time)}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6">
+            <div className="text-right">
+              <p className="text-3xl font-mono font-bold text-green-400">
+                {formatTime(runningTime.hours, runningTime.minutes, runningTime.seconds)}
+              </p>
+              <p className="text-xs text-muted-gray">Running</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="lg"
+                variant="outline"
+                onClick={handleLunchStart}
+                disabled={lunchStart.isPending}
+                className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10 px-6"
+              >
+                {lunchStart.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    <UtensilsCrossed className="w-5 h-5 mr-2" />
+                    Lunch
+                  </>
+                )}
+              </Button>
+
+              <Button
+                size="lg"
+                onClick={handleClockOutClick}
+                disabled={clockOut.isPending}
+                className="bg-red-500 hover:bg-red-600 text-white px-6"
+              >
+                {clockOut.isPending ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    <Square className="w-5 h-5 mr-2" />
+                    Wrap
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+    {confirmationDialogs}
+    </>
+  );
+}
+
 export default function TimecardsView({ projectId, canReview }: TimecardsViewProps) {
   const [activeTab, setActiveTab] = useState<'my' | 'review'>('my');
   const [selectedTimecardId, setSelectedTimecardId] = useState<string | null>(null);
@@ -115,6 +817,8 @@ export default function TimecardsView({ projectId, canReview }: TimecardsViewPro
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [rejectingTimecardId, setRejectingTimecardId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [selectedWeekStart, setSelectedWeekStart] = useState<string>(getWeekStartDate());
 
   // Queries
   const { data: myTimecards, isLoading: loadingMy } = useMyTimecards(projectId, statusFilter === 'all' ? undefined : statusFilter);
@@ -137,9 +841,39 @@ export default function TimecardsView({ projectId, canReview }: TimecardsViewPro
   // Check if current week timecard exists
   const hasCurrentWeekTimecard = myTimecards?.some(tc => tc.week_start_date === currentWeekStart);
 
-  const handleCreateCurrentWeek = async () => {
+  // Generate week options (current week and past 8 weeks)
+  const getWeekOptions = () => {
+    const options: { value: string; label: string; exists: boolean }[] = [];
+    const today = new Date();
+
+    for (let i = 0; i < 9; i++) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (i * 7));
+      const weekStart = getWeekStartDate(d);
+      const exists = myTimecards?.some(tc => tc.week_start_date === weekStart) || false;
+
+      options.push({
+        value: weekStart,
+        label: formatWeekRange(weekStart) + (i === 0 ? ' (Current)' : ''),
+        exists
+      });
+    }
+    return options;
+  };
+
+  const weekOptions = getWeekOptions();
+
+  const handleOpenCreateDialog = () => {
+    // Find first week without a timecard, preferring current week
+    const firstAvailableWeek = weekOptions.find(w => !w.exists)?.value || getWeekStartDate();
+    setSelectedWeekStart(firstAvailableWeek);
+    setCreateDialogOpen(true);
+  };
+
+  const handleCreateTimecard = async () => {
     try {
-      const result = await createTimecard.mutateAsync(currentWeekStart);
+      const result = await createTimecard.mutateAsync(selectedWeekStart);
+      setCreateDialogOpen(false);
       setSelectedTimecardId(result.id);
     } catch (error) {
       console.error('Failed to create timecard:', error);
@@ -218,17 +952,21 @@ export default function TimecardsView({ projectId, canReview }: TimecardsViewPro
             Track and submit your work hours
           </p>
         </div>
-        {!hasCurrentWeekTimecard && (
-          <Button
-            onClick={handleCreateCurrentWeek}
-            disabled={createTimecard.isPending}
-            className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            {createTimecard.isPending ? 'Creating...' : 'New Timecard'}
-          </Button>
-        )}
+        <Button
+          onClick={handleOpenCreateDialog}
+          disabled={createTimecard.isPending}
+          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+        >
+          <Plus className="w-4 h-4 mr-2" />
+          {createTimecard.isPending ? 'Creating...' : 'New Timecard'}
+        </Button>
       </div>
+
+      {/* Live Clock Widget */}
+      <LiveClockWidget
+        projectId={projectId}
+        onTimecardCreated={(id) => setSelectedTimecardId(id)}
+      />
 
       {/* Summary Cards */}
       {summary && (
@@ -362,6 +1100,70 @@ export default function TimecardsView({ projectId, canReview }: TimecardsViewPro
               disabled={rejectTimecard.isPending}
             >
               {rejectTimecard.isPending ? 'Rejecting...' : 'Reject Timecard'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Timecard Dialog */}
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="bg-charcoal-black border-muted-gray/20">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <Timer className="w-5 h-5 text-blue-400" />
+              Create Timecard
+            </DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              Select the week for your new timecard
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <label className="text-sm text-muted-gray block mb-2">Week Starting</label>
+            <Select value={selectedWeekStart} onValueChange={setSelectedWeekStart}>
+              <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                <SelectValue placeholder="Select week" />
+              </SelectTrigger>
+              <SelectContent>
+                {weekOptions.map(week => (
+                  <SelectItem
+                    key={week.value}
+                    value={week.value}
+                    disabled={week.exists}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-muted-gray" />
+                      <span>{week.label}</span>
+                      {week.exists && (
+                        <Badge variant="outline" className="ml-2 text-[10px] text-muted-gray border-muted-gray/30">
+                          Exists
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTimecard}
+              disabled={createTimecard.isPending || weekOptions.find(w => w.value === selectedWeekStart)?.exists}
+              className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+            >
+              {createTimecard.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Timecard
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -787,7 +1589,10 @@ function TimecardEditor({ projectId, timecard, onBack, onSubmit, canEdit }: Time
             {weekDates.map((date, idx) => {
               const entry = entriesByDate[date];
               const dayDate = new Date(date + 'T00:00:00');
-              const isToday = date === new Date().toISOString().split('T')[0];
+              // Use local date for "today" comparison, not UTC
+              const now = new Date();
+              const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+              const isToday = date === todayLocal;
               const isExpanded = expandedDays.has(date);
               const hasEntry = !!entry;
 
@@ -1009,6 +1814,26 @@ function TimecardEditor({ projectId, timecard, onBack, onSubmit, canEdit }: Time
                       <div>
                         <label className="text-xs text-muted-gray block mb-2">Day Type</label>
                         <div className="flex flex-wrap gap-2">
+                          {/* Work Day - default when no other types selected */}
+                          <Button
+                            size="sm"
+                            variant={(!entry?.is_travel_day && !entry?.is_prep_day && !entry?.is_wrap_day && !entry?.is_holiday) ? 'default' : 'outline'}
+                            className={cn(
+                              'h-7 text-xs',
+                              (!entry?.is_travel_day && !entry?.is_prep_day && !entry?.is_wrap_day && !entry?.is_holiday)
+                                ? 'bg-green-500/20 text-green-400 border-green-500/30 hover:bg-green-500/30'
+                                : 'border-muted-gray/30 text-muted-gray hover:bg-muted-gray/10'
+                            )}
+                            onClick={() => {
+                              // Clear all other day types to make this a work day
+                              if (entry?.is_travel_day) handleDayTypeToggle(date, 'is_travel_day');
+                              if (entry?.is_prep_day) handleDayTypeToggle(date, 'is_prep_day');
+                              if (entry?.is_wrap_day) handleDayTypeToggle(date, 'is_wrap_day');
+                              if (entry?.is_holiday) handleDayTypeToggle(date, 'is_holiday');
+                            }}
+                          >
+                            <Clock className="w-3 h-3 mr-1" /> Work Day
+                          </Button>
                           <Button
                             size="sm"
                             variant={entry?.is_travel_day ? 'default' : 'outline'}
@@ -1076,6 +1901,37 @@ function TimecardEditor({ projectId, timecard, onBack, onSubmit, canEdit }: Time
                           placeholder="Add notes for this day..."
                           className="bg-charcoal-black border-muted-gray/30 min-h-16 text-sm resize-none"
                         />
+                      </div>
+
+                      {/* Save Button */}
+                      <div className="flex justify-end pt-2 border-t border-muted-gray/10">
+                        <Button
+                          onClick={async () => {
+                            // Save all pending changes for this day
+                            const localDay = localValues[date];
+                            if (localDay) {
+                              for (const field of Object.keys(localDay) as Array<keyof TimecardEntry>) {
+                                await handleFieldBlur(date, field);
+                              }
+                            }
+                            // Collapse the day after saving
+                            toggleDayExpansion(date);
+                          }}
+                          disabled={upsertEntry.isPending}
+                          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                        >
+                          {upsertEntry.isPending ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Saving...
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-4 h-4 mr-2" />
+                              Save Day
+                            </>
+                          )}
+                        </Button>
                       </div>
                     </div>
                   )}

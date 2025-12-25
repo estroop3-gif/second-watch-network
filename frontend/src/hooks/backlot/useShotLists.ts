@@ -179,6 +179,10 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-list', shotListId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-lists'] });
+      // Also invalidate scenes list and coverage data so Coverage tab updates
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
     },
   });
 
@@ -194,6 +198,9 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-list', shotListId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-lists'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
     },
   });
 
@@ -208,6 +215,9 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-list', shotListId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-lists'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
     },
   });
 
@@ -218,6 +228,9 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-list', shotListId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-shot-lists'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
     },
   });
 
@@ -248,6 +261,23 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     },
   });
 
+  const cloneShot = useMutation({
+    mutationFn: async ({ shotId, destinationShotListId }: { shotId: string; destinationShotListId?: string }) => {
+      const result = await api.post<{ success: boolean; shot: BacklotShot }>(
+        `/api/v1/backlot/shots/${shotId}/clone`,
+        { destination_shot_list_id: destinationShotListId }
+      );
+      return result.shot;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-shot-list', shotListId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-shot-lists'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+    },
+  });
+
   return {
     createShot,
     bulkCreateShots,
@@ -255,5 +285,6 @@ export function useShotListShots(options: UseShotListShotsOptions) {
     deleteShot,
     toggleShotCompleted,
     reorderShots,
+    cloneShot,
   };
 }

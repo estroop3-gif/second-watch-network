@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import {
   FileText,
@@ -33,6 +34,13 @@ import {
   Mail,
   History,
   Copy,
+  Lightbulb,
+  FileSpreadsheet,
+  Download,
+  CheckSquare,
+  CalendarDays,
+  Check,
+  ArrowRight,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -41,12 +49,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useCallSheets } from '@/hooks/backlot';
-import { BacklotCallSheet } from '@/types/backlot';
+import { useCallSheets, useProductionDays, useCreateCallSheetFromDay } from '@/hooks/backlot';
+import { BacklotCallSheet, BacklotProductionDay } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
 import CallSheetSendModal from './CallSheetSendModal';
 import CallSheetDetailView from './CallSheetDetailView';
 import CallSheetCreateEditModal from './CallSheetCreateEditModal';
+import { SyncStatusBadge } from './SyncStatusBadge';
+import { BidirectionalSyncModal } from './BidirectionalSyncModal';
+import { RefreshCw } from 'lucide-react';
 
 interface CallSheetsViewProps {
   projectId: string;
@@ -63,7 +74,11 @@ const CallSheetCard: React.FC<{
   onEdit: (sheet: BacklotCallSheet) => void;
   onClone: (sheet: BacklotCallSheet) => void;
 }> = ({ sheet, canEdit, onPublish, onDelete, onSend, onView, onEdit, onClone }) => {
+  const [showSyncModal, setShowSyncModal] = React.useState(false);
+
   return (
+    <>
+
     <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
@@ -81,6 +96,14 @@ const CallSheetCard: React.FC<{
             >
               {sheet.is_published ? 'Published' : 'Draft'}
             </Badge>
+            {/* Sync Status Badge - only show if linked to a production day */}
+            {sheet.production_day_id && (
+              <SyncStatusBadge
+                dayId={sheet.production_day_id}
+                onSyncClick={() => setShowSyncModal(true)}
+                showQuickSync={true}
+              />
+            )}
           </div>
 
           {/* Details */}
@@ -187,6 +210,15 @@ const CallSheetCard: React.FC<{
                   <Send className="w-4 h-4 mr-2" />
                   {sheet.is_published ? 'Unpublish' : 'Publish'}
                 </DropdownMenuItem>
+                {sheet.production_day_id && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => setShowSyncModal(true)}>
+                      <RefreshCw className="w-4 h-4 mr-2" />
+                      Sync with Schedule
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-red-400" onClick={() => onDelete(sheet.id)}>
                   <Trash2 className="w-4 h-4 mr-2" />
@@ -198,11 +230,137 @@ const CallSheetCard: React.FC<{
         </div>
       </div>
     </div>
+
+      {/* Bidirectional Sync Modal */}
+      {sheet.production_day_id && (
+        <BidirectionalSyncModal
+          dayId={sheet.production_day_id}
+          open={showSyncModal}
+          onOpenChange={setShowSyncModal}
+        />
+      )}
+    </>
+  );
+};
+
+// Production Day Row - shows a day from the schedule with call sheet status
+const ProductionDayRow: React.FC<{
+  day: BacklotProductionDay;
+  projectId: string;
+  linkedCallSheet: BacklotCallSheet | null;
+  canEdit: boolean;
+  onViewCallSheet: (sheet: BacklotCallSheet) => void;
+}> = ({ day, projectId, linkedCallSheet, canEdit, onViewCallSheet }) => {
+  const createCallSheet = useCreateCallSheetFromDay(day.id);
+  const [isCreating, setIsCreating] = React.useState(false);
+
+  const handleCreateCallSheet = async () => {
+    setIsCreating(true);
+    try {
+      await createCallSheet.mutateAsync({ include_scenes: true });
+    } catch (err) {
+      console.error('Failed to create call sheet:', err);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const isPast = new Date(day.date) < new Date(new Date().toDateString());
+
+  return (
+    <div className="flex items-center gap-4 p-3 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg hover:border-muted-gray/40 transition-colors">
+      {/* Day Number Badge */}
+      <div className={`flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center font-bold text-lg ${
+        day.is_completed
+          ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+          : isPast
+          ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+          : 'bg-accent-yellow/20 text-accent-yellow border border-accent-yellow/30'
+      }`}>
+        {day.day_number}
+      </div>
+
+      {/* Day Info */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-bone-white">
+            {format(new Date(day.date), 'EEEE, MMM d, yyyy')}
+          </span>
+          {day.is_completed && (
+            <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+              <Check className="w-3 h-3 mr-1" />
+              Complete
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-4 text-sm text-muted-gray mt-1">
+          {day.title && <span>{day.title}</span>}
+          {day.general_call_time && (
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              Call: {day.general_call_time}
+            </span>
+          )}
+          {day.location_name && (
+            <span className="flex items-center gap-1">
+              <MapPin className="w-3 h-3" />
+              {day.location_name}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Call Sheet Status & Actions */}
+      <div className="flex items-center gap-2">
+        {linkedCallSheet ? (
+          <>
+            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+              <FileText className="w-3 h-3 mr-1" />
+              Call Sheet Ready
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onViewCallSheet(linkedCallSheet)}
+              className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/20"
+            >
+              <Eye className="w-4 h-4 mr-1" />
+              View
+            </Button>
+          </>
+        ) : canEdit ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCreateCallSheet}
+            disabled={isCreating}
+            className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+          >
+            {isCreating ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                Creating...
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4 mr-1" />
+                Create Call Sheet
+              </>
+            )}
+          </Button>
+        ) : (
+          <Badge variant="outline" className="bg-muted-gray/10 text-muted-gray border-muted-gray/30">
+            No Call Sheet
+          </Badge>
+        )}
+      </div>
+    </div>
   );
 };
 
 const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) => {
   const { callSheets, isLoading, publishCallSheet, deleteCallSheet, cloneCallSheet } = useCallSheets(projectId);
+  const { days, isLoading: loadingDays } = useProductionDays(projectId);
   const { toast } = useToast();
   const [sendModalSheet, setSendModalSheet] = useState<BacklotCallSheet | null>(null);
   const [viewSheet, setViewSheet] = useState<BacklotCallSheet | null>(null);
@@ -211,6 +369,7 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
   const [cloneSheet, setCloneSheet] = useState<BacklotCallSheet | null>(null);
   const [cloneDate, setCloneDate] = useState('');
   const [isCloning, setIsCloning] = useState(false);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
   const [cloneOptions, setCloneOptions] = useState({
     keep_people: true,
     keep_scenes: true,
@@ -316,6 +475,27 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
     }
   };
 
+  // Map call sheets to their production day IDs for quick lookup
+  // NOTE: These useMemo hooks must be before any early returns to maintain consistent hook ordering
+  const callSheetsByDayId = React.useMemo(() => {
+    const map = new Map<string, BacklotCallSheet>();
+    (callSheets || []).forEach((sheet) => {
+      if (sheet.production_day_id) {
+        map.set(sheet.production_day_id, sheet);
+      }
+    });
+    return map;
+  }, [callSheets]);
+
+  // Sort days by date
+  const sortedDays = React.useMemo(() => {
+    return [...(days || [])].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [days]);
+
+  // Count days with and without call sheets
+  const daysWithCallSheets = sortedDays.filter((d) => callSheetsByDayId.has(d.id)).length;
+  const daysWithoutCallSheets = sortedDays.length - daysWithCallSheets;
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -338,52 +518,121 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
           <h2 className="text-2xl font-heading text-bone-white">Call Sheets</h2>
           <p className="text-sm text-muted-gray">Create and manage call sheets for your crew</p>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-2">
+          {/* Tips Button */}
           <Button
-            onClick={handleCreate}
-            className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
           >
-            <Plus className="w-4 h-4 mr-2" />
-            New Call Sheet
+            <Lightbulb className="w-4 h-4 mr-1" />
+            Tips
           </Button>
-        )}
-      </div>
 
-      {/* Call Sheets List */}
-      {callSheets.length > 0 ? (
-        <div className="space-y-4">
-          {callSheets.map((sheet) => (
-            <CallSheetCard
-              key={sheet.id}
-              sheet={sheet}
-              canEdit={canEdit}
-              onPublish={handlePublish}
-              onDelete={handleDelete}
-              onSend={handleSend}
-              onView={handleView}
-              onEdit={handleEdit}
-              onClone={handleClone}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
-          <FileText className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-bone-white mb-2">No call sheets yet</h3>
-          <p className="text-muted-gray mb-4">
-            Create call sheets to communicate schedules with your crew.
-          </p>
           {canEdit && (
             <Button
               onClick={handleCreate}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             >
               <Plus className="w-4 h-4 mr-2" />
-              Create Call Sheet
+              New Call Sheet
             </Button>
           )}
         </div>
-      )}
+      </div>
+
+      {/* Tabs: Production Days and Call Sheets */}
+      <Tabs defaultValue="days" className="w-full">
+        <TabsList className="bg-charcoal-black/50 border border-muted-gray/20">
+          <TabsTrigger value="days" className="data-[state=active]:bg-accent-yellow/20 data-[state=active]:text-accent-yellow">
+            <CalendarDays className="w-4 h-4 mr-2" />
+            Production Days
+            {sortedDays.length > 0 && (
+              <Badge variant="outline" className="ml-2 text-xs">
+                {daysWithCallSheets}/{sortedDays.length}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="sheets" className="data-[state=active]:bg-accent-yellow/20 data-[state=active]:text-accent-yellow">
+            <FileText className="w-4 h-4 mr-2" />
+            Call Sheets
+            {callSheets.length > 0 && (
+              <Badge variant="outline" className="ml-2 text-xs">{callSheets.length}</Badge>
+            )}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Production Days Tab */}
+        <TabsContent value="days" className="mt-4">
+          {loadingDays ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <Skeleton key={i} className="h-20 w-full" />
+              ))}
+            </div>
+          ) : sortedDays.length > 0 ? (
+            <div className="space-y-3">
+              {sortedDays.map((day) => (
+                <ProductionDayRow
+                  key={day.id}
+                  day={day}
+                  projectId={projectId}
+                  linkedCallSheet={callSheetsByDayId.get(day.id) || null}
+                  canEdit={canEdit}
+                  onViewCallSheet={handleView}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+              <CalendarDays className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-bone-white mb-2">No production days scheduled</h3>
+              <p className="text-muted-gray mb-4">
+                Add production days in the Schedule tab first, then create call sheets for them here.
+              </p>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Call Sheets Tab */}
+        <TabsContent value="sheets" className="mt-4">
+          {callSheets.length > 0 ? (
+            <div className="space-y-4">
+              {callSheets.map((sheet) => (
+                <CallSheetCard
+                  key={sheet.id}
+                  sheet={sheet}
+                  canEdit={canEdit}
+                  onPublish={handlePublish}
+                  onDelete={handleDelete}
+                  onSend={handleSend}
+                  onView={handleView}
+                  onEdit={handleEdit}
+                  onClone={handleClone}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+              <FileText className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-bone-white mb-2">No call sheets yet</h3>
+              <p className="text-muted-gray mb-4">
+                Create call sheets to communicate schedules with your crew.
+              </p>
+              {canEdit && (
+                <Button
+                  onClick={handleCreate}
+                  className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Create Call Sheet
+                </Button>
+              )}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
 
       {/* Create/Edit Modal */}
       <CallSheetCreateEditModal
@@ -529,6 +778,89 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
                   Clone Call Sheet
                 </>
               )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <Lightbulb className="w-5 h-5 text-amber-400" />
+              Call Sheet Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <FileSpreadsheet className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Creating Call Sheets</h4>
+                <p className="text-sm text-muted-gray">
+                  Create call sheets from scratch or generate them from production days
+                  in the Schedule tab for faster setup.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Users className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Adding Cast & Crew</h4>
+                <p className="text-sm text-muted-gray">
+                  Add people with individual call times, roles, and notes.
+                  They'll receive their personalized call sheet by email.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <Send className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Publishing & Sending</h4>
+                <p className="text-sm text-muted-gray">
+                  Publish the call sheet to make it visible, then send via email.
+                  Track who has received it in the send history.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Copy className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Cloning Call Sheets</h4>
+                <p className="text-sm text-muted-gray">
+                  Clone a call sheet to reuse cast, crew, and locations
+                  for the next shoot day. Just update the date and details.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-cyan-500/10 rounded-lg">
+                <Download className="w-5 h-5 text-cyan-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">PDF Export</h4>
+                <p className="text-sm text-muted-gray">
+                  Download call sheets as PDF for printing or offline access.
+                  The PDF includes all scenes, cast, crew, and notes.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

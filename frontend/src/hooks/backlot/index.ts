@@ -33,6 +33,9 @@ export {
   useLinkedCallSheet,
   useCreateCallSheetFromDay,
   useSyncDayToCallSheet,
+  // Bidirectional Sync
+  useSyncStatus,
+  useBidirectionalSync,
   // Auto-Scheduler
   useAutoGenerateSchedule,
   useApplyScheduleSuggestion,
@@ -110,7 +113,21 @@ export {
   useGear,
   useGearItem,
   useGearCategories,
+  useGearCosts,
+  useSyncGearToBudget,
+  useDailyGearCosts,
   GEAR_CATEGORIES,
+} from './useGear';
+
+export type {
+  GearCostItem,
+  GearCostsByCategory,
+  GearCostsByDay,
+  GearCostsResponse,
+  SyncGearToBudgetOptions,
+  SyncGearToBudgetResponse,
+  DailyGearItem,
+  DailyGearCostsResponse,
 } from './useGear';
 
 // Updates
@@ -396,6 +413,17 @@ export {
   useShotListShots,
 } from './useShotLists';
 
+// Shot Templates
+export {
+  useShotTemplates,
+} from './useShotTemplates';
+export type {
+  ShotTemplate,
+  ShotTemplateData,
+  DefaultTemplate,
+  ShotTemplatesResponse,
+} from './useShotTemplates';
+
 // Task Lists (Notion-style Task Database)
 export {
   // Labels
@@ -574,10 +602,21 @@ export {
   useApproveTimecard,
   useRejectTimecard,
   useDenyTimecard,
+  // Live Clock Tracking
+  useTodayClockStatus,
+  useClockIn,
+  useClockOut,
+  useResetClock,
+  useUnwrap,
+  useLunchStart,
+  useLunchEnd,
+  calculateRunningDuration,
+  // Helpers
   getWeekStartDate,
   getWeekDates,
   formatWeekRange,
   calculateHoursFromTimes,
+  formatRunningTime,
   TIMECARD_STATUS_CONFIG,
   RATE_TYPES,
 } from './useTimecards';
@@ -592,6 +631,11 @@ export type {
   TimecardWarning,
   TimecardPreviewEntry,
   TimecardPreview,
+  // Live Clock Types
+  ClockStatus,
+  ClockActionResponse,
+  OvertimeBreakdown,
+  PayBreakdown,
 } from './useTimecards';
 
 // Camera & Continuity Tools

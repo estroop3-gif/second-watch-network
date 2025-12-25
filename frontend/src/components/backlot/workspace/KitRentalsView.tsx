@@ -181,13 +181,13 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">{rentals.length}</div>
             <div className="text-sm text-muted-foreground">Total Rentals</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-yellow-500">
               {formatCurrency(totalPending)}
@@ -195,7 +195,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
             <div className="text-sm text-muted-foreground">Pending</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-purple-500">
               {formatCurrency(totalActive)}
@@ -203,7 +203,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
             <div className="text-sm text-muted-foreground">Active</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">
               {rentals.filter(r => r.status === 'active').length}
@@ -216,7 +216,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
       {/* Rentals List */}
       <div className="space-y-3">
         {rentals.length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/20">
             <CardContent className="py-12 text-center text-muted-foreground">
               <Package className="w-12 h-12 mx-auto mb-4 opacity-20" />
               <p>No kit rentals found</p>
@@ -320,7 +320,7 @@ function KitRentalCard({
     : `${new Date(rental.start_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - Ongoing`;
 
   return (
-    <Card className="hover:border-foreground/20 transition-colors">
+    <Card className="bg-charcoal-black border-muted-gray/20 hover:border-muted-gray/40 transition-colors">
       <CardContent className="py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -683,7 +683,7 @@ function KitRentalFormModal({
           )}
 
           {estimatedTotal !== null && (
-            <Card className="bg-muted/50">
+            <Card className="bg-charcoal-black/50 border-muted-gray/20">
               <CardContent className="py-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">Estimated Total</span>

@@ -241,3 +241,190 @@ export const GEAR_CATEGORIES = [
   'Accessories',
   'Other',
 ] as const;
+
+
+// Types for gear costs
+export interface GearCostItem {
+  id: string;
+  name: string;
+  category: string | null;
+  is_owned: boolean;
+  rental_house: string | null;
+  rental_cost_per_day: number | null;
+  pickup_date: string | null;
+  return_date: string | null;
+  purchase_cost: number | null;
+  budget_line_item_id: string | null;
+  status: string;
+  calculated_rental_cost: number;
+  rental_days: number;
+  daily_rate: number;
+}
+
+export interface GearCostsByCategory {
+  [category: string]: {
+    rental_cost: number;
+    purchase_cost: number;
+    count: number;
+  };
+}
+
+export interface GearCostsByDay {
+  [date: string]: {
+    total: number;
+    items: { id: string; name: string; daily_rate: number }[];
+  };
+}
+
+export interface GearCostsResponse {
+  total_rental_cost: number;
+  total_purchase_cost: number;
+  total_cost: number;
+  by_category: GearCostsByCategory;
+  by_day: GearCostsByDay;
+  items: GearCostItem[];
+}
+
+// Fetch gear costs summary for a project
+export function useGearCosts(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-gear-costs', projectId],
+    queryFn: async (): Promise<GearCostsResponse | null> => {
+      if (!projectId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/gear/costs`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch gear costs' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+// Sync gear costs to budget
+export interface SyncGearToBudgetOptions {
+  projectId: string;
+  createLineItems?: boolean;
+  updateActuals?: boolean;
+  categoryName?: string;
+}
+
+export interface SyncGearToBudgetResponse {
+  success: boolean;
+  created: number;
+  updated: number;
+  linked: number;
+  category_id: string;
+}
+
+export function useSyncGearToBudget() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (options: SyncGearToBudgetOptions): Promise<SyncGearToBudgetResponse> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const params = new URLSearchParams();
+      if (options.createLineItems !== undefined) {
+        params.append('create_line_items', String(options.createLineItems));
+      }
+      if (options.updateActuals !== undefined) {
+        params.append('update_actuals', String(options.updateActuals));
+      }
+      if (options.categoryName) {
+        params.append('category_name', options.categoryName);
+      }
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${options.projectId}/budget/sync-gear?${params.toString()}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync gear to budget' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: (_data, variables) => {
+      // Invalidate related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-gear'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-gear-costs'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories'] });
+    },
+  });
+}
+
+// Get daily gear costs for a specific daily budget
+export interface DailyGearItem {
+  id: string;
+  name: string;
+  category: string | null;
+  rental_cost_per_day: number | null;
+  rental_house: string | null;
+  pickup_date: string | null;
+  return_date: string | null;
+  is_owned: boolean;
+  purchase_cost: number | null;
+  status: string;
+  source: 'date_range' | 'manual_assignment';
+  daily_cost: number;
+}
+
+export interface DailyGearCostsResponse {
+  daily_budget_id: string;
+  shoot_date: string | null;
+  gear_total: number;
+  items: DailyGearItem[];
+}
+
+export function useDailyGearCosts(dailyBudgetId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-daily-gear-costs', dailyBudgetId],
+    queryFn: async (): Promise<DailyGearCostsResponse | null> => {
+      if (!dailyBudgetId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/daily-budgets/${dailyBudgetId}/gear-costs`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch daily gear costs' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    enabled: !!dailyBudgetId,
+  });
+}

@@ -581,6 +581,30 @@ def auto_add_receipt_to_invoice(
     return (True, matched_invoice["id"])
 
 
+def calculate_ot_breakdown(hours_worked: float, ot_threshold: float = 8.0, dt_threshold: float = 12.0) -> Dict[str, float]:
+    """Calculate regular, overtime, and double time hours for a single day."""
+    if hours_worked <= 0:
+        return {"regular": 0, "overtime": 0, "double_time": 0}
+
+    regular = min(hours_worked, ot_threshold)
+    overtime = 0.0
+    double_time = 0.0
+
+    if hours_worked > ot_threshold:
+        overtime_eligible = hours_worked - ot_threshold
+        if hours_worked > dt_threshold:
+            overtime = dt_threshold - ot_threshold
+            double_time = hours_worked - dt_threshold
+        else:
+            overtime = overtime_eligible
+
+    return {
+        "regular": round(regular, 2),
+        "overtime": round(overtime, 2),
+        "double_time": round(double_time, 2)
+    }
+
+
 def auto_add_timecard_to_invoice(
     project_id: str,
     user_id: str,
@@ -588,6 +612,7 @@ def auto_add_timecard_to_invoice(
 ) -> List[Tuple[bool, Optional[str]]]:
     """
     Auto-add a timecard to user's draft invoices with date-aware splitting.
+    Creates SEPARATE line items for regular hours, overtime (1.5x), and double time (2x).
     If the timecard entries span multiple invoice date ranges, hours will be split accordingly.
     Returns list of (success, invoice_id) tuples for each split.
     """
@@ -597,6 +622,22 @@ def auto_add_timecard_to_invoice(
         logger.info(f"[AutoSync] Timecard {timecard['id']} already imported, skipping")
         return [(False, None)]
 
+    # Get project settings for OT thresholds and auto-lunch
+    client = get_client()
+    project_result = client.table("backlot_projects").select("timecard_settings").eq(
+        "id", project_id
+    ).execute()
+
+    project_settings = {}
+    if project_result.data:
+        project_settings = project_result.data[0].get("timecard_settings") or {}
+
+    ot_threshold = float(project_settings.get("ot_threshold_hours", 8))
+    dt_threshold = float(project_settings.get("dt_threshold_hours", 12))
+    auto_lunch_enabled = project_settings.get("auto_lunch_enabled", True)
+    auto_lunch_minutes = int(project_settings.get("auto_lunch_minutes", 30))
+    auto_lunch_after_hours = float(project_settings.get("auto_lunch_after_hours", 6))
+
     # Get ALL draft invoices for date-aware splitting
     invoices = get_all_draft_invoices(project_id, user_id)
     if not invoices:
@@ -605,9 +646,8 @@ def auto_add_timecard_to_invoice(
         return [(False, None)]
 
     # Get all timecard entries with their dates and hours
-    client = get_client()
     entries_result = client.table("backlot_timecard_entries").select(
-        "shoot_date, hours_worked, rate_amount, rate_type"
+        "shoot_date, hours_worked, overtime_hours, double_time_hours, rate_amount, rate_type, meal_break_minutes, break_start, break_end"
     ).eq("timecard_id", timecard["id"]).execute()
 
     entries = entries_result.data or []
@@ -616,6 +656,7 @@ def auto_add_timecard_to_invoice(
         return [(False, None)]
 
     # Group hours by invoice based on shoot_date
+    # Now tracking regular/OT/DT separately
     invoice_hours: Dict[str, Dict[str, Any]] = {}
 
     for entry in entries:
@@ -626,6 +667,31 @@ def auto_add_timecard_to_invoice(
         hours = float(entry.get("hours_worked") or 0)
         rate = float(entry.get("rate_amount") or 0)
         rate_type = entry.get("rate_type", "hourly")
+        meal_break = entry.get("meal_break_minutes") or 0
+        has_logged_lunch = entry.get("break_start") is not None or meal_break > 0
+
+        # Apply auto-lunch deduction if enabled and no lunch was logged
+        auto_lunch_deducted = False
+        if auto_lunch_enabled and not has_logged_lunch and hours > auto_lunch_after_hours:
+            # Deduct lunch from hours
+            hours = hours - (auto_lunch_minutes / 60)
+            auto_lunch_deducted = True
+            logger.info(f"[AutoSync] Auto-deducted {auto_lunch_minutes}min lunch for {entry_date}")
+
+        # Calculate OT breakdown using stored values or calculate fresh
+        if entry.get("overtime_hours") is not None:
+            # Use pre-calculated values from entry
+            ot_breakdown = {
+                "regular": float(entry.get("hours_worked", 0)) - float(entry.get("overtime_hours", 0)) - float(entry.get("double_time_hours", 0)),
+                "overtime": float(entry.get("overtime_hours", 0)),
+                "double_time": float(entry.get("double_time_hours", 0))
+            }
+            # Ensure regular isn't negative
+            if ot_breakdown["regular"] < 0:
+                ot_breakdown["regular"] = min(hours, ot_threshold)
+        else:
+            # Calculate from hours worked
+            ot_breakdown = calculate_ot_breakdown(hours, ot_threshold, dt_threshold)
 
         # Find matching invoice for this date
         matched_invoice = None
@@ -644,13 +710,20 @@ def auto_add_timecard_to_invoice(
             inv_id = matched_invoice["id"]
             if inv_id not in invoice_hours:
                 invoice_hours[inv_id] = {
-                    "hours": 0,
+                    "regular_hours": 0,
+                    "overtime_hours": 0,
+                    "double_time_hours": 0,
                     "rate": rate,
                     "rate_type": rate_type,
                     "start_date": entry_date,
-                    "end_date": entry_date
+                    "end_date": entry_date,
+                    "auto_lunch_deducted": False
                 }
-            invoice_hours[inv_id]["hours"] += hours
+
+            invoice_hours[inv_id]["regular_hours"] += ot_breakdown["regular"]
+            invoice_hours[inv_id]["overtime_hours"] += ot_breakdown["overtime"]
+            invoice_hours[inv_id]["double_time_hours"] += ot_breakdown["double_time"]
+
             # Keep highest rate if multiple entries
             if rate > invoice_hours[inv_id]["rate"]:
                 invoice_hours[inv_id]["rate"] = rate
@@ -659,78 +732,143 @@ def auto_add_timecard_to_invoice(
                 invoice_hours[inv_id]["start_date"] = entry_date
             if entry_date > invoice_hours[inv_id]["end_date"]:
                 invoice_hours[inv_id]["end_date"] = entry_date
+            # Track if any auto-lunch was applied
+            if auto_lunch_deducted:
+                invoice_hours[inv_id]["auto_lunch_deducted"] = True
 
     if not invoice_hours:
-        # Fallback to most recent invoice
-        invoice = find_most_recent_draft_invoice(project_id, user_id)
-        if not invoice:
-            return [(False, None)]
+        logger.warning(f"[AutoSync] Could not match any entries to invoices for {timecard['id']}")
+        return [(False, None)]
 
-        totals = execute_single(
-            """SELECT
-                COALESCE(SUM(hours_worked), 0) as total_hours,
-                MAX(rate_amount) as rate_amount,
-                MAX(rate_type) as rate_type,
-                MIN(shoot_date) as start_date,
-                MAX(shoot_date) as end_date
-            FROM backlot_timecard_entries WHERE timecard_id = :id""",
-            {"id": timecard["id"]}
-        )
-
-        if not totals or not totals["total_hours"]:
-            return [(False, None)]
-
-        add_line_item_to_invoice(
-            invoice_id=invoice["id"],
-            description=f"Labor - Week of {timecard.get('week_start_date', '')}",
-            rate_type=totals["rate_type"] or "hourly",
-            rate_amount=float(totals["rate_amount"]) if totals["rate_amount"] else 0,
-            quantity=float(totals["total_hours"]),
-            units="hours",
-            source_type="timecard",
-            source_id=timecard["id"],
-            service_date_start=totals["start_date"],
-            service_date_end=totals["end_date"],
-            auto_added=True
-        )
-
-        logger.info(f"[AutoSync] Auto-added timecard {timecard['id']} to invoice {invoice['id']} (fallback)")
-        return [(True, invoice["id"])]
-
-    # Create line item for each invoice split
+    # Create separate line items for regular, OT, and DT hours for each invoice
     results = []
     week_start = timecard.get('week_start_date', '')
 
     for invoice_id, split_info in invoice_hours.items():
-        hours = split_info["hours"]
+        regular_hours = round(split_info["regular_hours"], 2)
+        overtime_hours = round(split_info["overtime_hours"], 2)
+        double_time_hours = round(split_info["double_time_hours"], 2)
         rate = split_info["rate"]
         rate_type = split_info["rate_type"]
         split_start = split_info["start_date"]
         split_end = split_info["end_date"]
+        auto_lunch_applied = split_info["auto_lunch_deducted"]
 
-        description = f"Labor - Week of {week_start}"
+        date_suffix = ""
         if len(invoice_hours) > 1:
-            # Add date range to description when split across multiple invoices
-            description += f" ({split_start.strftime('%m/%d')} - {split_end.strftime('%m/%d')})"
+            date_suffix = f" ({split_start.strftime('%m/%d')} - {split_end.strftime('%m/%d')})"
 
-        add_line_item_to_invoice(
-            invoice_id=invoice_id,
-            description=description,
-            rate_type=rate_type or "hourly",
-            rate_amount=rate,
-            quantity=hours,
-            units="hours",
-            source_type="timecard",
-            source_id=timecard["id"],
-            service_date_start=split_start.isoformat(),
-            service_date_end=split_end.isoformat(),
-            auto_added=True
-        )
+        # Calculate hourly equivalent for daily rate
+        if rate_type == "daily":
+            hourly_equivalent = rate / 8
+        else:
+            hourly_equivalent = rate
 
-        logger.info(f"[AutoSync] Auto-added timecard {timecard['id']} to invoice {invoice_id} ({hours} hours)")
-        results.append((True, invoice_id))
+        line_items_added = 0
 
-    return results
+        # Regular hours line item
+        if regular_hours > 0:
+            if rate_type == "daily":
+                # For daily rate: show day rate as the rate, quantity as days
+                days_worked = regular_hours / 8  # Approximate days
+                description = f"Day Rate{date_suffix}"
+                if days_worked >= 1:
+                    add_line_item_to_invoice(
+                        invoice_id=invoice_id,
+                        description=description,
+                        rate_type="daily",
+                        rate_amount=rate,
+                        quantity=round(days_worked, 1),
+                        units="days",
+                        source_type="timecard",
+                        source_id=timecard["id"],
+                        service_date_start=split_start.isoformat(),
+                        service_date_end=split_end.isoformat(),
+                        auto_added=True
+                    )
+                    line_items_added += 1
+                else:
+                    # Less than a full day - show as hourly
+                    add_line_item_to_invoice(
+                        invoice_id=invoice_id,
+                        description=f"Regular Hours{date_suffix}",
+                        rate_type="hourly",
+                        rate_amount=hourly_equivalent,
+                        quantity=regular_hours,
+                        units="hours",
+                        source_type="timecard",
+                        source_id=timecard["id"],
+                        service_date_start=split_start.isoformat(),
+                        service_date_end=split_end.isoformat(),
+                        auto_added=True
+                    )
+                    line_items_added += 1
+            else:
+                description = f"Regular Hours{date_suffix}"
+                add_line_item_to_invoice(
+                    invoice_id=invoice_id,
+                    description=description,
+                    rate_type="hourly",
+                    rate_amount=hourly_equivalent,
+                    quantity=regular_hours,
+                    units="hours",
+                    source_type="timecard",
+                    source_id=timecard["id"],
+                    service_date_start=split_start.isoformat(),
+                    service_date_end=split_end.isoformat(),
+                    auto_added=True
+                )
+                line_items_added += 1
+
+        # Overtime hours line item (1.5x)
+        if overtime_hours > 0:
+            ot_rate = round(hourly_equivalent * 1.5, 2)
+            description = f"Overtime (1.5x){date_suffix}"
+            add_line_item_to_invoice(
+                invoice_id=invoice_id,
+                description=description,
+                rate_type="hourly",
+                rate_amount=ot_rate,
+                quantity=overtime_hours,
+                units="hours",
+                source_type="timecard",
+                source_id=timecard["id"],
+                service_date_start=split_start.isoformat(),
+                service_date_end=split_end.isoformat(),
+                auto_added=True
+            )
+            line_items_added += 1
+
+        # Double time hours line item (2x)
+        if double_time_hours > 0:
+            dt_rate = round(hourly_equivalent * 2.0, 2)
+            description = f"Double Time (2x){date_suffix}"
+            add_line_item_to_invoice(
+                invoice_id=invoice_id,
+                description=description,
+                rate_type="hourly",
+                rate_amount=dt_rate,
+                quantity=double_time_hours,
+                units="hours",
+                source_type="timecard",
+                source_id=timecard["id"],
+                service_date_start=split_start.isoformat(),
+                service_date_end=split_end.isoformat(),
+                auto_added=True
+            )
+            line_items_added += 1
+
+        # Add note about auto-lunch deduction if applicable
+        if auto_lunch_applied:
+            logger.info(f"[AutoSync] Note: Auto-deducted lunch applied for timecard {timecard['id']}")
+
+        if line_items_added > 0:
+            total_hours = regular_hours + overtime_hours + double_time_hours
+            logger.info(f"[AutoSync] Auto-added timecard {timecard['id']} to invoice {invoice_id}: "
+                       f"{regular_hours}h regular, {overtime_hours}h OT, {double_time_hours}h DT")
+            results.append((True, invoice_id))
+
+    return results if results else [(False, None)]
 
 
 def get_pending_import_count(project_id: str, user_id: str) -> Dict[str, int]:

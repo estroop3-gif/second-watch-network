@@ -96,8 +96,6 @@ const DailiesView = lazy(() => import('@/components/backlot/workspace/DailiesVie
 const RolesManagementView = lazy(() => import('@/components/backlot/workspace/RolesManagementView'));
 const ScenesView = lazy(() => import('@/components/backlot/workspace/ScenesView'));
 const SceneDetailView = lazy(() => import('@/components/backlot/workspace/SceneDetailView'));
-const DaysView = lazy(() => import('@/components/backlot/workspace/DaysView'));
-const DayDetailView = lazy(() => import('@/components/backlot/workspace/DayDetailView'));
 const PeopleView = lazy(() => import('@/components/backlot/workspace/PeopleView'));
 const PersonDetailView = lazy(() => import('@/components/backlot/workspace/PersonDetailView'));
 const TimecardsView = lazy(() => import('@/components/backlot/workspace/TimecardsView'));
@@ -123,8 +121,8 @@ const ReviewDetailView = lazy(() =>
   import('@/components/backlot/review').then(m => ({ default: m.ReviewDetailView }))
 );
 
-import { SceneListItem, DayListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, CalendarCheck, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale } from 'lucide-react';
+import { SceneListItem, PersonListItem } from '@/hooks/backlot';
+import { SquarePlay, Video, UserCog, Timer, Layers, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -188,7 +186,6 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Planning & Scheduling',
     items: [
       { id: 'schedule', label: 'Schedule', icon: Calendar },
-      { id: 'days', label: 'Shoot Days', icon: CalendarCheck },
       { id: 'call-sheets', label: 'Call Sheets', icon: FileText },
       { id: 'casting', label: 'Casting & Crew', icon: UserPlus },
       { id: 'people', label: 'Team', icon: Users },
@@ -203,7 +200,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'camera', label: 'Camera', icon: Aperture },
       // { id: 'scripty', label: 'Scripty', icon: ClipboardList },  // Hidden for now
       { id: 'dailies', label: 'Dailies', icon: Video },
-      { id: 'checkin', label: 'Check-In', icon: QrCode },
+      // { id: 'checkin', label: 'Check-In', icon: QrCode },  // Hidden for now
     ],
   },
   {
@@ -218,7 +215,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'approvals', label: 'Approvals', icon: ClipboardCheck },
       { id: 'budget', label: 'Budget', icon: DollarSign },
-      { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays },
+      // { id: 'daily-budget', label: 'Daily Budget', icon: CalendarDays }, // Hidden for now
       { id: 'timecards', label: 'Timecards', icon: Timer },
       { id: 'expenses', label: 'Expenses', icon: Receipt },
       { id: 'invoices', label: 'Invoices', icon: FileText },
@@ -281,9 +278,8 @@ const ProjectWorkspace: React.FC = () => {
   const [showTaskShareModal, setShowTaskShareModal] = useState(false);
   const [selectedReviewAssetId, setSelectedReviewAssetId] = useState<string | null>(null);
   const [viewAsRole, setViewAsRole] = useState<string | null>(null);
-  // New view states for scenes, days, people
+  // New view states for scenes, people
   const [selectedSceneForView, setSelectedSceneForView] = useState<SceneListItem | null>(null);
-  const [selectedDayForView, setSelectedDayForView] = useState<DayListItem | null>(null);
   const [selectedPersonForView, setSelectedPersonForView] = useState<PersonListItem | null>(null);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
@@ -351,31 +347,10 @@ const ProjectWorkspace: React.FC = () => {
   };
 
   const handleGoToToday = () => {
-    if (todayDay) {
-      // Navigate to days view and select today's day
-      startTransition(() => {
-        setActiveView('days');
-        // Convert production day to DayListItem format for the detail view
-        setSelectedDayForView({
-          id: todayDay.id,
-          day_number: todayDay.day_number,
-          date: todayDay.date,
-          title: todayDay.title || null,
-          is_completed: todayDay.is_completed,
-          general_call_time: todayDay.general_call_time || null,
-          location_name: todayDay.location_name || null,
-          has_call_sheet: false, // Will be refreshed when view loads
-          dailies_count: 0,
-          task_count: 0,
-          crew_count: 0,
-        });
-      });
-    } else {
-      // No shoot today, just go to days view
-      startTransition(() => {
-        setActiveView('days');
-      });
-    }
+    // Navigate to schedule view
+    startTransition(() => {
+      setActiveView('schedule');
+    });
     setSidebarOpen(false);
   };
 
@@ -483,7 +458,7 @@ const ProjectWorkspace: React.FC = () => {
               hasShootToday && 'border-green-500/50 text-green-400 hover:bg-green-500/10'
             )}
           >
-            <CalendarCheck className="w-4 h-4" />
+            <Calendar className="w-4 h-4" />
             {hasShootToday ? (
               <span>Day {todayDay?.day_number}</span>
             ) : (
@@ -640,22 +615,6 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'schedule' && (
             <ScheduleView projectId={project.id} canEdit={permission?.canEdit || false} />
-          )}
-          {activeView === 'days' && (
-            selectedDayForView ? (
-              <DayDetailView
-                projectId={project.id}
-                dayId={selectedDayForView.id}
-                canEdit={permission?.canEdit || false}
-                onBack={() => setSelectedDayForView(null)}
-              />
-            ) : (
-              <DaysView
-                projectId={project.id}
-                canEdit={permission?.canEdit || false}
-                onSelectDay={(day) => setSelectedDayForView(day)}
-              />
-            )
           )}
           {activeView === 'call-sheets' && (
             <CallSheetsView projectId={project.id} canEdit={permission?.canEdit || false} />

@@ -24,6 +24,9 @@ import {
   CallSheetPdfGenerateResponse,
   CallSheetSyncRequest,
   CallSheetSyncResponse,
+  SyncStatusResponse,
+  BidirectionalSyncRequest,
+  BidirectionalSyncResponse,
 } from '@/types/backlot';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -2480,5 +2483,83 @@ export function useTodayShootDay(projectId: string | null) {
     todayDay,
     isLoading,
     hasShootToday: !!todayDay,
+  };
+}
+
+// =====================================================
+// Production Day / Call Sheet Sync
+// =====================================================
+
+/**
+ * Hook to get sync status between a production day and its linked call sheet
+ */
+export function useSyncStatus(dayId: string | null) {
+  const { data, isLoading, error, refetch } = useQuery<SyncStatusResponse>({
+    queryKey: ['sync-status', dayId],
+    queryFn: async () => {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/api/backlot/production-days/${dayId}/sync-status`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch sync status');
+      }
+
+      return response.json();
+    },
+    enabled: !!dayId,
+    staleTime: 30000, // 30 seconds
+  });
+
+  return {
+    syncStatus: data,
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+/**
+ * Hook for bidirectional sync between production day and call sheet
+ */
+export function useBidirectionalSync(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation<BidirectionalSyncResponse, Error, BidirectionalSyncRequest>({
+    mutationFn: async (syncRequest) => {
+      const token = getAuthToken();
+      const response = await fetch(`${API_BASE}/api/backlot/production-days/${dayId}/bidirectional-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(syncRequest),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync' }));
+        throw new Error(error.detail || 'Failed to sync');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate all related queries
+      queryClient.invalidateQueries({ queryKey: ['sync-status', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-days'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets'] });
+    },
+  });
+
+  return {
+    sync: mutation.mutate,
+    syncAsync: mutation.mutateAsync,
+    isLoading: mutation.isPending,
+    error: mutation.error,
+    result: mutation.data,
   };
 }

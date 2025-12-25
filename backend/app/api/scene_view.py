@@ -583,7 +583,7 @@ async def get_scene_hub(
             breakdown_by_type[item.type] = []
         breakdown_by_type[item.type].append(item)
 
-    # Get shots from shot list
+    # Get shots from scene shots table (old coverage tracker)
     shots_resp = client.table("backlot_scene_shots").select("*").eq("scene_id", scene_id).order("sort_order").execute()
     shots = [ShotSummary(
         id=str(shot["id"]),
@@ -594,6 +594,19 @@ async def get_scene_hub(
         is_covered=shot.get("coverage_status") == "shot",
         circle_take_count=0,
     ) for shot in (shots_resp.data or [])]
+
+    # Also get shots from shot lists (backlot_shots) that are linked to this scene
+    shot_list_shots_resp = client.table("backlot_shots").select("*").eq("scene_id", scene_id).order("sort_order").execute()
+    for shot in (shot_list_shots_resp.data or []):
+        shots.append(ShotSummary(
+            id=str(shot["id"]),
+            shot_number=shot.get("shot_number", ""),
+            description=shot.get("description"),
+            frame_size=shot.get("frame_size"),
+            camera_movement=shot.get("movement"),
+            is_covered=shot.get("is_completed", False),
+            circle_take_count=0,
+        ))
 
     # Get locations
     locations = []

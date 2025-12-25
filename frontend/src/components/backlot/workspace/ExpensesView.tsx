@@ -126,7 +126,7 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
       {/* Quick Stats Header */}
       {summary && (
         <div className="flex-shrink-0 mb-4">
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/20">
             <CardContent className="p-4">
               <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div className="flex items-center gap-6">

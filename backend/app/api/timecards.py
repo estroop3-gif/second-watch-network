@@ -549,6 +549,640 @@ async def get_timecard_summary(
     )
 
 
+# =============================================================================
+# LIVE TIME TRACKING ENDPOINTS
+# =============================================================================
+# NOTE: These routes MUST be defined BEFORE the /{timecard_id} route to prevent
+# FastAPI from matching "today-status", "clock-in", etc. as timecard IDs.
+
+def get_monday_of_week(d: date) -> date:
+    """Get the Monday of the week for a given date"""
+    return d - timedelta(days=d.weekday())
+
+
+def calculate_hours_from_times(clock_in: datetime, clock_out: datetime, lunch_minutes: int = 0) -> float:
+    """Calculate hours worked from clock times, minus lunch"""
+    if not clock_in or not clock_out:
+        return 0
+    diff = clock_out - clock_in
+    hours = diff.total_seconds() / 3600
+    hours -= lunch_minutes / 60  # Subtract lunch break
+    return round(max(0, hours), 2)
+
+
+def calculate_pay_breakdown(
+    hours_worked: float,
+    rate_type: str,
+    rate_amount: float,
+    union_settings: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Calculate pay breakdown including regular, OT, and DT pay
+    """
+    if not rate_amount or rate_amount <= 0:
+        return {
+            "regular_hours": hours_worked or 0,
+            "overtime_hours": 0,
+            "double_time_hours": 0,
+            "regular_pay": 0,
+            "ot_pay": 0,
+            "dt_pay": 0,
+            "total_pay": 0
+        }
+
+    ot_threshold = union_settings.get("ot_threshold_hours", 8)
+    dt_threshold = union_settings.get("dt_threshold_hours", 12)
+
+    # Calculate hour breakdown
+    if hours_worked <= ot_threshold:
+        regular_hours = hours_worked
+        ot_hours = 0
+        dt_hours = 0
+    elif hours_worked <= dt_threshold:
+        regular_hours = ot_threshold
+        ot_hours = hours_worked - ot_threshold
+        dt_hours = 0
+    else:
+        regular_hours = ot_threshold
+        ot_hours = dt_threshold - ot_threshold
+        dt_hours = hours_worked - dt_threshold
+
+    # Calculate pay based on rate type
+    if rate_type == "hourly":
+        hourly_rate = rate_amount
+        regular_pay = regular_hours * hourly_rate
+        ot_pay = ot_hours * hourly_rate * 1.5
+        dt_pay = dt_hours * hourly_rate * 2.0
+    elif rate_type == "daily":
+        # Day rate covers 8 hours, OT calculated on hourly equivalent
+        hourly_equivalent = rate_amount / 8
+        regular_pay = rate_amount if regular_hours >= 8 else (regular_hours / 8) * rate_amount
+        ot_pay = ot_hours * hourly_equivalent * 1.5
+        dt_pay = dt_hours * hourly_equivalent * 2.0
+    else:
+        # Weekly or flat - no OT calculation
+        regular_pay = rate_amount
+        ot_pay = 0
+        dt_pay = 0
+
+    return {
+        "regular_hours": round(regular_hours, 2),
+        "overtime_hours": round(ot_hours, 2),
+        "double_time_hours": round(dt_hours, 2),
+        "regular_pay": round(regular_pay, 2),
+        "ot_pay": round(ot_pay, 2),
+        "dt_pay": round(dt_pay, 2),
+        "total_pay": round(regular_pay + ot_pay + dt_pay, 2)
+    }
+
+
+@router.get("/projects/{project_id}/timecards/today-status")
+async def get_today_clock_status(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get the current user's clock status for today.
+    Returns whether they're clocked in, on lunch, etc.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+
+    # Find or get the timecard for this week
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    timecard = tc_resp.data[0] if tc_resp.data else None
+
+    # Find today's entry if it exists
+    entry = None
+    if timecard:
+        entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+            "timecard_id", timecard["id"]
+        ).eq("shoot_date", today.isoformat()).execute()
+        entry = entry_resp.data[0] if entry_resp.data else None
+
+    # Get project timecard settings and union settings for pay calculation
+    proj_resp = client.table("backlot_projects").select("timecard_settings, union_mode, union_settings").eq("id", project_id).execute()
+    project_settings = proj_resp.data[0] if proj_resp.data else {}
+    timecard_settings = project_settings.get("timecard_settings") or {}
+    union_settings = {**DEFAULT_UNION_SETTINGS, **(project_settings.get("union_settings") or {})}
+
+    # Get rate from timecard, crew rate, or project default
+    rate_type = None
+    rate_amount = None
+    if timecard:
+        rate_type = timecard.get("rate_type")
+        rate_amount = timecard.get("rate_amount")
+
+    if not rate_amount:
+        # Check crew rate
+        crew_rate_resp = client.table("backlot_crew_rates").select("*").eq(
+            "project_id", project_id
+        ).eq("user_id", user["id"]).execute()
+        if crew_rate_resp.data:
+            crew_rate = crew_rate_resp.data[0]
+            rate_type = rate_type or crew_rate.get("rate_type")
+            rate_amount = rate_amount or crew_rate.get("rate_amount")
+
+    if not rate_amount:
+        # Use project default
+        rate_type = rate_type or "daily"
+        rate_amount = timecard_settings.get("default_day_rate") if rate_type == "daily" else timecard_settings.get("default_hourly_rate")
+
+    # Calculate running hours if clocked in
+    running_hours = 0
+    running_seconds = 0
+    pay_breakdown = None
+
+    if entry:
+        is_clocked_in = entry.get("is_clocked_in", False)
+        is_on_lunch = entry.get("is_on_lunch", False)
+        clock_in_time = entry.get("clock_in_time")
+        clock_out_time = entry.get("clock_out_time")
+        lunch_start = entry.get("lunch_start_time")
+        lunch_end = entry.get("lunch_end_time")
+        meal_break_minutes = entry.get("meal_break_minutes") or 0
+
+        if clock_in_time and is_clocked_in:
+            # Calculate running time
+            start = datetime.fromisoformat(clock_in_time.replace("Z", "+00:00"))
+            from datetime import timezone as tz
+            now = datetime.now(start.tzinfo) if start.tzinfo else datetime.now(tz.utc)
+
+            # Subtract lunch if taken
+            lunch_mins = meal_break_minutes
+            if is_on_lunch and lunch_start:
+                # Currently on lunch, don't count this time
+                lunch_start_dt = datetime.fromisoformat(lunch_start.replace("Z", "+00:00"))
+                diff = now - start
+                running_seconds = diff.total_seconds() - (now - lunch_start_dt).total_seconds()
+            else:
+                diff = now - start
+                running_seconds = diff.total_seconds() - (lunch_mins * 60)
+
+            running_hours = round(max(0, running_seconds / 3600), 2)
+
+        elif clock_out_time:
+            # Already wrapped, calculate final hours
+            hours_worked = entry.get("hours_worked") or 0
+            if rate_amount:
+                pay_breakdown = calculate_pay_breakdown(hours_worked, rate_type, rate_amount, union_settings)
+
+        return {
+            "timecard_id": timecard["id"] if timecard else None,
+            "timecard_status": timecard.get("status") if timecard else None,
+            "entry_id": entry["id"] if entry else None,
+            "is_clocked_in": entry.get("is_clocked_in", False),
+            "is_on_lunch": entry.get("is_on_lunch", False),
+            "clock_in_time": entry.get("clock_in_time"),
+            "clock_out_time": entry.get("clock_out_time"),
+            "lunch_start_time": entry.get("lunch_start_time"),
+            "lunch_end_time": entry.get("lunch_end_time"),
+            "meal_break_minutes": entry.get("meal_break_minutes") or 0,
+            "running_hours": running_hours,
+            "running_seconds": int(running_seconds),
+            "hours_worked": entry.get("hours_worked"),
+            "rate_type": rate_type,
+            "rate_amount": rate_amount,
+            "pay_breakdown": pay_breakdown,
+            "today": today.isoformat()
+        }
+
+    return {
+        "timecard_id": timecard["id"] if timecard else None,
+        "timecard_status": timecard.get("status") if timecard else None,
+        "entry_id": None,
+        "is_clocked_in": False,
+        "is_on_lunch": False,
+        "clock_in_time": None,
+        "clock_out_time": None,
+        "lunch_start_time": None,
+        "lunch_end_time": None,
+        "meal_break_minutes": 0,
+        "running_hours": 0,
+        "running_seconds": 0,
+        "hours_worked": None,
+        "rate_type": rate_type,
+        "rate_amount": rate_amount,
+        "pay_breakdown": None,
+        "today": today.isoformat()
+    }
+
+
+@router.post("/projects/{project_id}/timecards/clock-in")
+async def clock_in(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Clock in (Call) - Start the work day.
+    Creates a timecard for this week if needed, and creates/updates today's entry.
+    """
+    from datetime import timezone
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+    now = datetime.now(timezone.utc)
+
+    # Get or create timecard for this week
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if tc_resp.data:
+        timecard = tc_resp.data[0]
+        if timecard["status"] not in ["draft", "rejected"]:
+            raise HTTPException(status_code=400, detail="Cannot clock in - timecard is already submitted")
+    else:
+        # Create new timecard
+        new_tc = client.table("backlot_timecards").insert({
+            "project_id": project_id,
+            "user_id": user["id"],
+            "week_start_date": week_start.isoformat(),
+            "status": "draft"
+        }).execute()
+        if not new_tc.data:
+            raise HTTPException(status_code=500, detail="Failed to create timecard")
+        timecard = new_tc.data[0]
+
+    # Check if already clocked in today
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if entry_resp.data:
+        entry = entry_resp.data[0]
+        if entry.get("is_clocked_in"):
+            raise HTTPException(status_code=400, detail="Already clocked in for today")
+        if entry.get("clock_out_time"):
+            raise HTTPException(status_code=400, detail="Already wrapped for today. Use edit to modify times.")
+
+        # Update existing entry with clock in
+        updated = client.table("backlot_timecard_entries").update({
+            "is_clocked_in": True,
+            "clock_in_time": now.isoformat(),
+            "call_time": now.isoformat()
+        }).eq("id", entry["id"]).execute()
+        entry = updated.data[0] if updated.data else entry
+    else:
+        # Create new entry for today
+        new_entry = client.table("backlot_timecard_entries").insert({
+            "timecard_id": timecard["id"],
+            "project_id": project_id,
+            "shoot_date": today.isoformat(),
+            "entry_type": "work",
+            "is_clocked_in": True,
+            "clock_in_time": now.isoformat(),
+            "call_time": now.isoformat()
+        }).execute()
+        if not new_entry.data:
+            raise HTTPException(status_code=500, detail="Failed to create entry")
+        entry = new_entry.data[0]
+
+    return {
+        "success": True,
+        "timecard_id": timecard["id"],
+        "entry_id": entry["id"],
+        "clock_in_time": entry.get("clock_in_time"),
+        "message": "Clocked in successfully"
+    }
+
+
+@router.post("/projects/{project_id}/timecards/clock-out")
+async def clock_out(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Clock out (Wrap) - End the work day.
+    Calculates hours worked and OT.
+    """
+    from datetime import timezone
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+    now = datetime.now(timezone.utc)
+
+    # Get timecard
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if not tc_resp.data:
+        raise HTTPException(status_code=404, detail="No timecard found for this week")
+    timecard = tc_resp.data[0]
+
+    # Get today's entry
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="No entry found for today. Clock in first.")
+    entry = entry_resp.data[0]
+
+    if not entry.get("is_clocked_in"):
+        raise HTTPException(status_code=400, detail="Not clocked in")
+
+    # End any ongoing lunch
+    if entry.get("is_on_lunch"):
+        lunch_start = entry.get("lunch_start_time")
+        if lunch_start:
+            lunch_start_dt = datetime.fromisoformat(lunch_start.replace("Z", "+00:00"))
+            lunch_minutes = int((now - lunch_start_dt).total_seconds() / 60)
+            entry["meal_break_minutes"] = (entry.get("meal_break_minutes") or 0) + lunch_minutes
+            entry["lunch_end_time"] = now.isoformat()
+
+    # Calculate hours worked
+    clock_in = entry.get("clock_in_time")
+    if clock_in:
+        clock_in_dt = datetime.fromisoformat(clock_in.replace("Z", "+00:00"))
+        hours_worked = calculate_hours_from_times(clock_in_dt, now, entry.get("meal_break_minutes") or 0)
+    else:
+        hours_worked = 0
+
+    # Get union settings for OT calculation
+    union_data = get_project_union_settings(client, project_id)
+    ot_breakdown = calculate_overtime_breakdown(hours_worked, union_data["union_mode"], union_data["settings"])
+
+    # Update entry
+    updated = client.table("backlot_timecard_entries").update({
+        "is_clocked_in": False,
+        "is_on_lunch": False,
+        "clock_out_time": now.isoformat(),
+        "wrap_time": now.isoformat(),
+        "lunch_end_time": entry.get("lunch_end_time") or (now.isoformat() if entry.get("is_on_lunch") else None),
+        "break_end": entry.get("lunch_end_time") or (now.isoformat() if entry.get("is_on_lunch") else None),
+        "meal_break_minutes": entry.get("meal_break_minutes") or 0,
+        "hours_worked": hours_worked,
+        "overtime_hours": ot_breakdown["overtime"],
+        "double_time_hours": ot_breakdown["double_time"]
+    }).eq("id", entry["id"]).execute()
+
+    updated_entry = updated.data[0] if updated.data else entry
+
+    # Get rate for pay calculation
+    rate_type = timecard.get("rate_type") or "daily"
+    rate_amount = timecard.get("rate_amount")
+
+    if not rate_amount:
+        crew_rate_resp = client.table("backlot_crew_rates").select("*").eq(
+            "project_id", project_id
+        ).eq("user_id", user["id"]).execute()
+        if crew_rate_resp.data:
+            rate_type = crew_rate_resp.data[0].get("rate_type") or rate_type
+            rate_amount = crew_rate_resp.data[0].get("rate_amount")
+
+    pay_breakdown = None
+    if rate_amount:
+        pay_breakdown = calculate_pay_breakdown(hours_worked, rate_type, rate_amount, union_data["settings"])
+
+    return {
+        "success": True,
+        "entry_id": entry["id"],
+        "clock_out_time": now.isoformat(),
+        "hours_worked": hours_worked,
+        "overtime_hours": ot_breakdown["overtime"],
+        "double_time_hours": ot_breakdown["double_time"],
+        "pay_breakdown": pay_breakdown,
+        "message": "Wrapped successfully"
+    }
+
+
+@router.post("/projects/{project_id}/timecards/reset-clock")
+async def reset_clock(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Reset today's clock entry - clears all clock data for today.
+    Used when user wants to start over for the day.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+
+    # Get timecard
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if not tc_resp.data:
+        # No timecard means nothing to reset
+        return {"success": True, "message": "No clock data to reset"}
+
+    timecard = tc_resp.data[0]
+
+    # Get today's entry
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if not entry_resp.data:
+        return {"success": True, "message": "No clock data to reset"}
+
+    entry = entry_resp.data[0]
+
+    # Delete the entry entirely to reset the day
+    client.table("backlot_timecard_entries").delete().eq("id", entry["id"]).execute()
+
+    return {
+        "success": True,
+        "message": "Clock reset successfully. You can start fresh."
+    }
+
+
+@router.post("/projects/{project_id}/timecards/unwrap")
+async def unwrap(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Unwrap - Undo clock out and go back to clocked in state.
+    Used when user wrapped by mistake and wants to continue tracking.
+    """
+    from datetime import timezone
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+
+    # Get timecard
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if not tc_resp.data:
+        raise HTTPException(status_code=404, detail="No timecard found for this week")
+    timecard = tc_resp.data[0]
+
+    # Check timecard status - can only unwrap if draft or rejected
+    if timecard["status"] not in ["draft", "rejected"]:
+        raise HTTPException(status_code=400, detail="Cannot unwrap - timecard is already submitted")
+
+    # Get today's entry
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="No entry found for today")
+    entry = entry_resp.data[0]
+
+    if entry.get("is_clocked_in"):
+        raise HTTPException(status_code=400, detail="Already clocked in - nothing to unwrap")
+
+    if not entry.get("clock_out_time"):
+        raise HTTPException(status_code=400, detail="No wrap time found - nothing to unwrap")
+
+    # Unwrap: set back to clocked in, clear wrap time
+    updated = client.table("backlot_timecard_entries").update({
+        "is_clocked_in": True,
+        "clock_out_time": None,
+        "wrap_time": None,
+        "hours_worked": None,
+        "overtime_hours": None,
+        "double_time_hours": None
+    }).eq("id", entry["id"]).execute()
+
+    updated_entry = updated.data[0] if updated.data else entry
+
+    return {
+        "success": True,
+        "entry_id": entry["id"],
+        "clock_in_time": entry.get("clock_in_time"),
+        "message": "Unwrapped successfully - you're back on set"
+    }
+
+
+@router.post("/projects/{project_id}/timecards/lunch-start")
+async def lunch_start(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Start lunch break.
+    """
+    from datetime import timezone
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+    now = datetime.now(timezone.utc)
+
+    # Get timecard
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if not tc_resp.data:
+        raise HTTPException(status_code=404, detail="No timecard found. Clock in first.")
+    timecard = tc_resp.data[0]
+
+    # Get today's entry
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="No entry for today. Clock in first.")
+    entry = entry_resp.data[0]
+
+    if not entry.get("is_clocked_in"):
+        raise HTTPException(status_code=400, detail="Not clocked in")
+    if entry.get("is_on_lunch"):
+        raise HTTPException(status_code=400, detail="Already on lunch")
+
+    # Start lunch
+    updated = client.table("backlot_timecard_entries").update({
+        "is_on_lunch": True,
+        "lunch_start_time": now.isoformat(),
+        "break_start": now.isoformat()
+    }).eq("id", entry["id"]).execute()
+
+    return {
+        "success": True,
+        "entry_id": entry["id"],
+        "lunch_start_time": now.isoformat(),
+        "message": "Lunch started"
+    }
+
+
+@router.post("/projects/{project_id}/timecards/lunch-end")
+async def lunch_end(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    End lunch break.
+    """
+    from datetime import timezone
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+    today = date.today()
+    week_start = get_monday_of_week(today)
+    now = datetime.now(timezone.utc)
+
+    # Get timecard
+    tc_resp = client.table("backlot_timecards").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user["id"]).eq("week_start_date", week_start.isoformat()).execute()
+
+    if not tc_resp.data:
+        raise HTTPException(status_code=404, detail="No timecard found")
+    timecard = tc_resp.data[0]
+
+    # Get today's entry
+    entry_resp = client.table("backlot_timecard_entries").select("*").eq(
+        "timecard_id", timecard["id"]
+    ).eq("shoot_date", today.isoformat()).execute()
+
+    if not entry_resp.data:
+        raise HTTPException(status_code=404, detail="No entry for today")
+    entry = entry_resp.data[0]
+
+    if not entry.get("is_on_lunch"):
+        raise HTTPException(status_code=400, detail="Not on lunch")
+
+    # Calculate lunch duration
+    lunch_start = entry.get("lunch_start_time")
+    lunch_minutes = 0
+    if lunch_start:
+        lunch_start_dt = datetime.fromisoformat(lunch_start.replace("Z", "+00:00"))
+        lunch_minutes = int((now - lunch_start_dt).total_seconds() / 60)
+
+    total_lunch = (entry.get("meal_break_minutes") or 0) + lunch_minutes
+
+    # End lunch
+    updated = client.table("backlot_timecard_entries").update({
+        "is_on_lunch": False,
+        "lunch_end_time": now.isoformat(),
+        "break_end": now.isoformat(),
+        "meal_break_minutes": total_lunch
+    }).eq("id", entry["id"]).execute()
+
+    return {
+        "success": True,
+        "entry_id": entry["id"],
+        "lunch_end_time": now.isoformat(),
+        "lunch_duration_minutes": lunch_minutes,
+        "total_meal_break_minutes": total_lunch,
+        "message": "Back from lunch"
+    }
+
+
+# =============================================================================
+# END LIVE TIME TRACKING ENDPOINTS
+# =============================================================================
+
+
 @router.get("/projects/{project_id}/timecards/{timecard_id}", response_model=TimecardWithEntries)
 async def get_timecard(
     project_id: str,
@@ -741,6 +1375,7 @@ async def create_or_update_entry(
         "timecard_id": timecard_id,
         "project_id": project_id,
         "shoot_date": request.shoot_date,
+        "entry_type": "work",
         "call_time": request.call_time,
         "wrap_time": request.wrap_time,
         "break_start": request.break_start,
@@ -905,6 +1540,7 @@ async def import_checkins_to_timecard(
             "timecard_id": timecard_id,
             "project_id": project_id,
             "shoot_date": shoot_date,
+            "entry_type": "work",
             "call_time": call_time,
             "wrap_time": wrap_time,
             "hours_worked": hours_worked,
@@ -1449,24 +2085,15 @@ async def submit_timecard(
     if tc["status"] not in ["draft", "rejected", "denied"]:
         raise HTTPException(status_code=400, detail="Timecard has already been submitted")
 
-    # Update status, clearing any rejection/denial fields
+    # Update status, clearing any previous denial
+    from datetime import timezone
     update_data = {
         "status": "submitted",
-        "submitted_at": datetime.utcnow().isoformat(),
-        "submitted_by_user_id": user["id"],
-        "rejection_reason": None,  # Clear any previous rejection
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "denial_reason": None,
+        "denied_at": None,
+        "denied_by": None,
     }
-
-    # Clear denial fields if resubmitting from denied status
-    if tc["status"] == "denied":
-        update_data["denied_at"] = None
-        update_data["denied_by"] = None
-        update_data["denial_reason"] = None
-
-    # Clear rejection fields if resubmitting from rejected status
-    if tc["status"] == "rejected":
-        update_data["rejected_at"] = None
-        update_data["rejected_by_user_id"] = None
 
     update_resp = client.table("backlot_timecards").update(update_data).eq("id", timecard_id).execute()
 
@@ -1502,10 +2129,11 @@ async def approve_timecard(
         raise HTTPException(status_code=400, detail="Only submitted timecards can be approved")
 
     # Update status
+    from datetime import timezone
     update_data = {
         "status": "approved",
-        "approved_at": datetime.utcnow().isoformat(),
-        "approved_by_user_id": user["id"],
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "approved_by": user["id"],
     }
     if request and request.notes:
         update_data["approval_notes"] = request.notes
@@ -1554,18 +2182,19 @@ async def reject_timecard(
     if tc["status"] != "submitted":
         raise HTTPException(status_code=400, detail="Only submitted timecards can be rejected")
 
-    # Update status
+    # Update status (use denied columns since rejected columns don't exist)
+    from datetime import timezone
     update_resp = client.table("backlot_timecards").update({
-        "status": "rejected",
-        "rejected_at": datetime.utcnow().isoformat(),
-        "rejected_by_user_id": user["id"],
-        "rejection_reason": request.reason,
+        "status": "denied",
+        "denied_at": datetime.now(timezone.utc).isoformat(),
+        "denied_by": user["id"],
+        "denial_reason": request.reason,
     }).eq("id", timecard_id).execute()
 
     if not update_resp.data:
         raise HTTPException(status_code=500, detail="Failed to reject timecard")
 
-    return {"success": True, "status": "rejected"}
+    return {"success": True, "status": "denied"}
 
 
 @router.post("/projects/{project_id}/timecards/{timecard_id}/deny")
@@ -1605,3 +2234,4 @@ async def deny_timecard(
         raise HTTPException(status_code=500, detail="Failed to deny timecard")
 
     return {"success": True, "status": "denied"}
+

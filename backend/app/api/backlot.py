@@ -8041,12 +8041,17 @@ async def export_budget_pdf(
 
     # Get top sheet cache if available, or compute it dynamically
     top_sheet = None
-    top_sheet_response = client.table("backlot_budget_top_sheet_cache").select("*").eq(
-        "budget_id", budget_id
-    ).execute()
-    if top_sheet_response.data:
-        top_sheet = top_sheet_response.data[0]
-    else:
+    try:
+        top_sheet_response = client.table("backlot_budget_top_sheet_cache").select("*").eq(
+            "budget_id", budget_id
+        ).execute()
+        if top_sheet_response.data:
+            top_sheet = top_sheet_response.data[0]
+    except Exception:
+        # Table may not exist, compute dynamically
+        pass
+
+    if top_sheet is None:
         # Compute top sheet dynamically from categories
         above_the_line_total = 0
         production_total = 0
@@ -8101,22 +8106,169 @@ async def export_budget_pdf(
         options=options
     )
 
-    # Convert HTML to PDF using weasyprint
+    # Generate PDF using fpdf2 (pure Python, no system dependencies)
     filename = f"{project.get('title', 'budget')}-budget-{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+    project_title = project.get('title', 'Project')
+    currency = budget.get('currency', 'USD')
 
     try:
-        from weasyprint import HTML
-        pdf_bytes = HTML(string=html_content).write_pdf()
+        from fpdf import FPDF
+        import io
+
+        def fmt_currency(value, curr):
+            if curr == 'USD':
+                return f"${value:,.2f}"
+            elif curr == 'GBP':
+                return f"£{value:,.2f}"
+            elif curr == 'EUR':
+                return f"€{value:,.2f}"
+            return f"{curr} {value:,.2f}"
+
+        # Create PDF
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+
+        # Title
+        pdf.set_font('Helvetica', 'B', 18)
+        pdf.cell(0, 10, f"{project_title} - Production Budget", ln=True, align='C')
+        pdf.ln(5)
+
+        # Budget metadata
+        pdf.set_font('Helvetica', '', 10)
+        pdf.cell(0, 6, f"Generated: {datetime.utcnow().strftime('%B %d, %Y')}", ln=True, align='C')
+        pdf.ln(10)
+
+        # Top Sheet Section (if requested)
+        if include_top_sheet and top_sheet:
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.set_fill_color(51, 51, 51)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, "  TOP SHEET SUMMARY", ln=True, fill=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(3)
+
+            pdf.set_font('Helvetica', '', 11)
+
+            # Summary rows
+            summary_items = [
+                ("Above the Line", top_sheet.get('above_the_line_total', 0) or 0),
+                ("Production", top_sheet.get('production_total', 0) or 0),
+                ("Post Production", top_sheet.get('post_total', 0) or 0),
+                ("Other", top_sheet.get('other_total', 0) or 0),
+            ]
+
+            for label, amount in summary_items:
+                pdf.cell(120, 7, f"  {label}", border=0)
+                pdf.cell(0, 7, fmt_currency(amount, currency), ln=True, align='R')
+
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.cell(120, 7, "  Subtotal", border='T')
+            pdf.cell(0, 7, fmt_currency(top_sheet.get('subtotal', 0) or 0, currency), ln=True, align='R', border='T')
+
+            contingency = top_sheet.get('contingency_amount', 0) or 0
+            if contingency > 0:
+                pdf.set_font('Helvetica', '', 11)
+                pdf.cell(120, 7, f"  Contingency ({budget.get('contingency_percent', 0)}%)", border=0)
+                pdf.cell(0, 7, fmt_currency(contingency, currency), ln=True, align='R')
+
+            pdf.set_font('Helvetica', 'B', 12)
+            pdf.set_fill_color(230, 230, 230)
+            pdf.cell(120, 8, "  GRAND TOTAL", fill=True)
+            pdf.cell(0, 8, fmt_currency(top_sheet.get('grand_total', 0) or 0, currency), ln=True, align='R', fill=True)
+            pdf.ln(10)
+
+        # Detail Section (if requested)
+        if include_detail and categories:
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.set_fill_color(51, 51, 51)
+            pdf.set_text_color(255, 255, 255)
+            pdf.cell(0, 8, "  BUDGET DETAIL", ln=True, fill=True)
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(3)
+
+            for cat in categories:
+                cat_id = cat.get('id')
+                cat_name = cat.get('name', 'Unnamed Category')
+                cat_code = cat.get('account_code', '')
+                estimated_subtotal = cat.get('estimated_subtotal', 0) or 0
+                actual_subtotal = cat.get('actual_subtotal', 0) or 0
+
+                # Category header
+                pdf.set_font('Helvetica', 'B', 11)
+                pdf.set_fill_color(200, 200, 200)
+                cat_title = f"  {cat_code} - {cat_name}" if cat_code else f"  {cat_name}"
+                pdf.cell(0, 7, cat_title, ln=True, fill=True)
+
+                # Line items for this category
+                cat_items = [li for li in line_items if li.get('category_id') == cat_id]
+
+                if cat_items:
+                    # Table header
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_fill_color(240, 240, 240)
+                    pdf.cell(20, 6, "Code", border=1, fill=True)
+                    pdf.cell(60, 6, "Description", border=1, fill=True)
+                    pdf.cell(25, 6, "Rate", border=1, align='R', fill=True)
+                    pdf.cell(15, 6, "Qty", border=1, align='R', fill=True)
+                    pdf.cell(30, 6, "Estimated", border=1, align='R', fill=True)
+                    if show_actuals:
+                        pdf.cell(30, 6, "Actual", border=1, align='R', fill=True)
+                    pdf.ln()
+
+                    # Line items
+                    pdf.set_font('Helvetica', '', 9)
+                    for li in cat_items:
+                        account_code = li.get('account_code', '') or ''
+                        description = li.get('description', '') or ''
+                        rate = li.get('rate_amount', 0) or 0
+                        qty = li.get('quantity', 0) or 0
+                        estimated = li.get('estimated_total', 0) or 0
+                        actual = li.get('actual_total', 0) or 0
+
+                        # Truncate description if too long
+                        if len(description) > 35:
+                            description = description[:32] + '...'
+
+                        pdf.cell(20, 5, str(account_code)[:10], border=1)
+                        pdf.cell(60, 5, description, border=1)
+                        pdf.cell(25, 5, fmt_currency(rate, currency), border=1, align='R')
+                        pdf.cell(15, 5, str(qty), border=1, align='R')
+                        pdf.cell(30, 5, fmt_currency(estimated, currency), border=1, align='R')
+                        if show_actuals:
+                            pdf.cell(30, 5, fmt_currency(actual, currency), border=1, align='R')
+                        pdf.ln()
+
+                # Category subtotal
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.cell(120, 6, "  Subtotal:", border=0, align='R')
+                pdf.cell(30, 6, fmt_currency(estimated_subtotal, currency), border='T', align='R')
+                if show_actuals:
+                    pdf.cell(30, 6, fmt_currency(actual_subtotal, currency), border='T', align='R')
+                pdf.ln(8)
+
+        # Footer
+        pdf.ln(10)
+        pdf.set_font('Helvetica', 'I', 8)
+        pdf.set_text_color(128, 128, 128)
+        pdf.cell(0, 5, "Generated by Second Watch Network - Backlot Production Management", align='C')
+
+        # Output PDF
+        pdf_bytes = pdf.output()
 
         return Response(
-            content=pdf_bytes,
+            content=bytes(pdf_bytes),
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"'
             }
         )
-    except ImportError:
-        # Fallback to HTML if weasyprint is not installed
+    except Exception as pdf_err:
+        print(f"PDF generation failed: {pdf_err}")
+        import traceback
+        traceback.print_exc()
+
+        # Fallback to HTML download
         filename = filename.replace('.pdf', '.html')
         return Response(
             content=html_content,
@@ -16043,12 +16195,12 @@ async def create_scene_shot(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/shots/{shot_id}")
-async def get_shot(
+@router.get("/scene-shots/{shot_id}")
+async def get_scene_shot(
     shot_id: str,
     authorization: str = Header(None)
 ):
-    """Get a single shot by ID"""
+    """Get a single scene shot by ID"""
     await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -16072,13 +16224,13 @@ async def get_shot(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/shots/{shot_id}")
-async def update_shot(
+@router.put("/scene-shots/{shot_id}")
+async def update_scene_shot(
     shot_id: str,
     shot: SceneShotInput,
     authorization: str = Header(None)
 ):
-    """Update a shot"""
+    """Update a scene shot (from shot list coverage tracking)"""
     await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -16122,12 +16274,12 @@ async def update_shot(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/shots/{shot_id}")
-async def delete_shot(
+@router.delete("/scene-shots/{shot_id}")
+async def delete_scene_shot(
     shot_id: str,
     authorization: str = Header(None)
 ):
-    """Delete a shot"""
+    """Delete a scene shot"""
     await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -16146,6 +16298,186 @@ async def delete_shot(
         raise
     except Exception as e:
         print(f"Error deleting shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CloneShotInput(BaseModel):
+    """Input for cloning a shot"""
+    destination_scene_id: Optional[str] = None
+
+
+def generate_next_shot_number(existing_shot_number: str, existing_shots: list) -> str:
+    """Generate next shot number for cloned shot.
+    If shot_number is '1', tries '1A', '1B', etc.
+    If shot_number is '1A', tries '1B', '1C', etc.
+    """
+    import re
+
+    # Get all existing shot numbers in the scene
+    existing_numbers = {s.get("shot_number", "").upper() for s in existing_shots}
+
+    # Check if original has a letter suffix
+    match = re.match(r'^(\d+)([A-Z])?$', existing_shot_number.upper())
+    if not match:
+        # Non-standard format, just append 'A'
+        candidate = f"{existing_shot_number}A"
+        counter = 0
+        while candidate.upper() in existing_numbers and counter < 26:
+            candidate = f"{existing_shot_number}{chr(65 + counter)}"
+            counter += 1
+        return candidate
+
+    base_number = match.group(1)
+    current_letter = match.group(2)
+
+    if current_letter:
+        # Already has letter, increment it
+        start_ord = ord(current_letter)
+    else:
+        # No letter, start with 'A'
+        start_ord = ord('A') - 1
+
+    # Try letters A-Z
+    for i in range(1, 27):
+        next_letter = chr(start_ord + i)
+        if next_letter > 'Z':
+            next_letter = chr(ord('A') + (i - 1) % 26)
+        candidate = f"{base_number}{next_letter}"
+        if candidate.upper() not in existing_numbers:
+            return candidate
+
+    # Fallback: append number
+    counter = 2
+    while f"{existing_shot_number}-{counter}".upper() in existing_numbers:
+        counter += 1
+    return f"{existing_shot_number}-{counter}"
+
+
+@router.post("/scene-shots/{shot_id}/clone")
+async def clone_scene_shot(
+    shot_id: str,
+    input_data: CloneShotInput = Body(default=CloneShotInput()),
+    authorization: str = Header(None)
+):
+    """Clone a scene shot, optionally to a different scene"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Fetch the original shot
+        original = client.table("backlot_scene_shots").select("*").eq("id", shot_id).execute()
+        if not original.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        shot_data = original.data[0]
+        destination_scene_id = input_data.destination_scene_id or shot_data["scene_id"]
+
+        # Get existing shots in destination scene for shot number generation
+        existing_shots = client.table("backlot_scene_shots").select("shot_number, sort_order").eq("scene_id", destination_scene_id).execute()
+
+        # Generate new shot number
+        new_shot_number = generate_next_shot_number(shot_data["shot_number"], existing_shots.data or [])
+
+        # Get max sort_order in destination scene
+        max_sort = max([s.get("sort_order", 0) for s in (existing_shots.data or [])], default=0)
+
+        # Create cloned shot
+        cloned_data = {
+            "project_id": shot_data["project_id"],
+            "scene_id": destination_scene_id,
+            "shot_number": new_shot_number,
+            "shot_type": shot_data.get("shot_type"),
+            "lens": shot_data.get("lens"),
+            "camera_movement": shot_data.get("camera_movement"),
+            "description": shot_data.get("description"),
+            "est_time_minutes": shot_data.get("est_time_minutes"),
+            "priority": shot_data.get("priority"),
+            "notes": shot_data.get("notes"),
+            "sort_order": max_sort + 1,
+            "coverage_status": "not_shot",  # Reset coverage
+            "created_by_user_id": user["id"],
+        }
+
+        result = client.table("backlot_scene_shots").insert(cloned_data).select().execute()
+
+        return {"success": True, "shot": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error cloning shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BulkCloneShotsInput(BaseModel):
+    """Input for bulk cloning shots"""
+    shot_ids: List[str]
+    destination_scene_id: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/shots/bulk-clone")
+async def bulk_clone_shots(
+    project_id: str,
+    input_data: BulkCloneShotsInput,
+    authorization: str = Header(None)
+):
+    """Clone multiple shots, optionally to a different scene"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        if not input_data.shot_ids:
+            raise HTTPException(status_code=400, detail="No shots to clone")
+
+        # Fetch all original shots
+        originals = client.table("backlot_scene_shots").select("*").in_("id", input_data.shot_ids).execute()
+        if not originals.data:
+            raise HTTPException(status_code=404, detail="No shots found")
+
+        # Use first shot's scene as destination if not specified
+        destination_scene_id = input_data.destination_scene_id or originals.data[0]["scene_id"]
+
+        # Get existing shots in destination scene
+        existing_shots = client.table("backlot_scene_shots").select("shot_number, sort_order").eq("scene_id", destination_scene_id).execute()
+        existing_data = existing_shots.data or []
+
+        # Get max sort_order
+        max_sort = max([s.get("sort_order", 0) for s in existing_data], default=0)
+
+        cloned_shots = []
+        for shot_data in originals.data:
+            # Generate new shot number (update existing_data after each to avoid duplicates)
+            new_shot_number = generate_next_shot_number(shot_data["shot_number"], existing_data)
+            existing_data.append({"shot_number": new_shot_number, "sort_order": max_sort + 1})
+
+            max_sort += 1
+
+            cloned_data = {
+                "project_id": project_id,
+                "scene_id": destination_scene_id,
+                "shot_number": new_shot_number,
+                "shot_type": shot_data.get("shot_type"),
+                "lens": shot_data.get("lens"),
+                "camera_movement": shot_data.get("camera_movement"),
+                "description": shot_data.get("description"),
+                "est_time_minutes": shot_data.get("est_time_minutes"),
+                "priority": shot_data.get("priority"),
+                "notes": shot_data.get("notes"),
+                "sort_order": max_sort,
+                "coverage_status": "not_shot",
+                "created_by_user_id": user["id"],
+            }
+            cloned_shots.append(cloned_data)
+
+        # Bulk insert
+        result = client.table("backlot_scene_shots").insert(cloned_shots).select().execute()
+
+        return {"success": True, "shots": result.data, "count": len(result.data)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk cloning shots: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -16177,12 +16509,12 @@ async def reorder_shot(
 # SHOT IMAGES (STORYBOARDS) ENDPOINTS
 # =============================================================================
 
-@router.get("/shots/{shot_id}/images")
-async def get_shot_images(
+@router.get("/scene-shots/{shot_id}/images")
+async def get_scene_shot_images(
     shot_id: str,
     authorization: str = Header(None)
 ):
-    """Get all images for a shot"""
+    """Get all images for a scene shot"""
     await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -16196,13 +16528,13 @@ async def get_shot_images(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/shots/{shot_id}/images")
-async def add_shot_image(
+@router.post("/scene-shots/{shot_id}/images")
+async def add_scene_shot_image(
     shot_id: str,
     image: ShotImageInput,
     authorization: str = Header(None)
 ):
-    """Add an image to a shot"""
+    """Add an image to a scene shot"""
     await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -16288,13 +16620,13 @@ async def delete_shot_image(
 # COVERAGE TRACKING ENDPOINTS
 # =============================================================================
 
-@router.patch("/shots/{shot_id}/coverage")
-async def update_shot_coverage(
+@router.patch("/scene-shots/{shot_id}/coverage")
+async def update_scene_shot_coverage(
     shot_id: str,
     coverage: CoverageUpdateInput,
     authorization: str = Header(None)
 ):
-    """Update coverage status for a shot"""
+    """Update coverage status for a scene shot"""
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
     client = get_client()
@@ -16427,39 +16759,54 @@ async def get_coverage_summary(
     client = get_client()
 
     try:
-        # Get all shots
-        shots_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority, est_time_minutes").eq("project_id", project_id).execute()
-        shots = shots_result.data or []
+        # Get shots from backlot_scene_shots (legacy coverage tracker)
+        legacy_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority, est_time_minutes").eq("project_id", project_id).execute()
+        legacy_shots = legacy_result.data or []
 
-        # Calculate summary
-        total_shots = len(shots)
-        shot_count = len([s for s in shots if s["coverage_status"] == "shot"])
-        not_shot_count = len([s for s in shots if s["coverage_status"] == "not_shot"])
-        alt_needed_count = len([s for s in shots if s["coverage_status"] == "alt_needed"])
-        dropped_count = len([s for s in shots if s["coverage_status"] == "dropped"])
+        # Get shots from backlot_shots (Shot Lists) with scene_id
+        sl_result = client.table("backlot_shots").select("id, scene_id, is_completed, est_time_minutes").eq("project_id", project_id).execute()
+        # Filter in Python since Supabase neq(None) doesn't work correctly
+        sl_shots = [s for s in (sl_result.data or []) if s.get("scene_id")]
 
-        must_have_total = len([s for s in shots if s["priority"] == "must_have"])
-        must_have_shot = len([s for s in shots if s["priority"] == "must_have" and s["coverage_status"] == "shot"])
+        # Calculate legacy summary
+        legacy_total = len(legacy_shots)
+        legacy_shot = len([s for s in legacy_shots if s["coverage_status"] == "shot"])
+        legacy_not_shot = len([s for s in legacy_shots if s["coverage_status"] == "not_shot"])
+        legacy_alt_needed = len([s for s in legacy_shots if s["coverage_status"] == "alt_needed"])
+        legacy_dropped = len([s for s in legacy_shots if s["coverage_status"] == "dropped"])
+        must_have_total = len([s for s in legacy_shots if s["priority"] == "must_have"])
+        must_have_shot = len([s for s in legacy_shots if s["priority"] == "must_have" and s["coverage_status"] == "shot"])
+        legacy_est_total = sum([s["est_time_minutes"] or 0 for s in legacy_shots])
+        legacy_est_remaining = sum([s["est_time_minutes"] or 0 for s in legacy_shots if s["coverage_status"] == "not_shot"])
+        legacy_scenes = set([s["scene_id"] for s in legacy_shots])
 
-        est_total = sum([s["est_time_minutes"] or 0 for s in shots])
-        est_remaining = sum([s["est_time_minutes"] or 0 for s in shots if s["coverage_status"] == "not_shot"])
+        # Calculate shot list summary
+        sl_total = len(sl_shots)
+        sl_completed = len([s for s in sl_shots if s.get("is_completed")])
+        sl_not_completed = sl_total - sl_completed
+        sl_est_total = sum([s.get("est_time_minutes") or 0 for s in sl_shots])
+        sl_est_remaining = sum([s.get("est_time_minutes") or 0 for s in sl_shots if not s.get("is_completed")])
+        sl_scenes = set([s["scene_id"] for s in sl_shots])
 
-        # Get unique scenes
-        unique_scenes = set([s["scene_id"] for s in shots])
+        # Combined totals
+        total_shots = legacy_total + sl_total
+        shot_count = legacy_shot + sl_completed
+        not_shot_count = legacy_not_shot + sl_not_completed
+        unique_scenes = legacy_scenes.union(sl_scenes)
 
         summary = {
             "total_scenes": len(unique_scenes),
             "total_shots": total_shots,
             "shot": shot_count,
             "not_shot": not_shot_count,
-            "alt_needed": alt_needed_count,
-            "dropped": dropped_count,
+            "alt_needed": legacy_alt_needed,
+            "dropped": legacy_dropped,
             "coverage_percentage": round(100.0 * shot_count / total_shots, 1) if total_shots > 0 else 0,
             "must_have_total": must_have_total,
             "must_have_shot": must_have_shot,
             "must_have_coverage": round(100.0 * must_have_shot / must_have_total, 1) if must_have_total > 0 else 100,
-            "est_total_minutes": est_total,
-            "est_remaining_minutes": est_remaining,
+            "est_total_minutes": legacy_est_total + sl_est_total,
+            "est_remaining_minutes": legacy_est_remaining + sl_est_remaining,
         }
 
         return {"success": True, "summary": summary}
@@ -16483,35 +16830,74 @@ async def get_coverage_by_scene(
         scenes_result = client.table("backlot_scenes").select("id, scene_number, slugline, description").eq("project_id", project_id).order("scene_number").execute()
         scenes = scenes_result.data or []
 
-        # Get all shots grouped by scene
-        shots_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority").eq("project_id", project_id).execute()
-        shots = shots_result.data or []
+        # Get shots from backlot_scene_shots (legacy coverage tracker)
+        scene_shots_result = client.table("backlot_scene_shots").select("id, scene_id, coverage_status, priority").eq("project_id", project_id).execute()
+        scene_shots = scene_shots_result.data or []
 
-        # Group shots by scene
+        # Get shots from backlot_shots (Shot Lists) - these have scene_id
+        shot_list_shots_result = client.table("backlot_shots").select("id, scene_id, is_completed").eq("project_id", project_id).execute()
+        # Filter in Python since Supabase neq(None) doesn't work correctly
+        shot_list_shots = [s for s in (shot_list_shots_result.data or []) if s.get("scene_id")]
+        print(f"[COVERAGE] Found {len(shot_list_shots_result.data or [])} total shots, {len(shot_list_shots)} with scene_id")
+
+        # Group shots by scene (combining both tables)
         shots_by_scene = {}
-        for shot in shots:
+
+        # Add legacy scene shots
+        for shot in scene_shots:
             scene_id = shot["scene_id"]
             if scene_id not in shots_by_scene:
-                shots_by_scene[scene_id] = []
-            shots_by_scene[scene_id].append(shot)
+                shots_by_scene[scene_id] = {"legacy": [], "shot_list": []}
+            shots_by_scene[scene_id]["legacy"].append(shot)
+
+        # Add shot list shots
+        for shot in shot_list_shots:
+            scene_id = shot["scene_id"]
+            if scene_id not in shots_by_scene:
+                shots_by_scene[scene_id] = {"legacy": [], "shot_list": []}
+            shots_by_scene[scene_id]["shot_list"].append(shot)
 
         # Build scene coverage data
         scene_coverage = []
         for scene in scenes:
-            scene_shots = shots_by_scene.get(scene["id"], [])
-            total = len(scene_shots)
-            shot_count = len([s for s in scene_shots if s["coverage_status"] == "shot"])
-            not_shot_count = len([s for s in scene_shots if s["coverage_status"] == "not_shot"])
-            alt_needed_count = len([s for s in scene_shots if s["coverage_status"] == "alt_needed"])
+            scene_data = shots_by_scene.get(scene["id"], {"legacy": [], "shot_list": []})
+            legacy_shots = scene_data["legacy"]
+            sl_shots = scene_data["shot_list"]
+
+            # Count from legacy shots
+            legacy_total = len(legacy_shots)
+            legacy_shot_count = len([s for s in legacy_shots if s["coverage_status"] == "shot"])
+            legacy_not_shot = len([s for s in legacy_shots if s["coverage_status"] == "not_shot"])
+            legacy_alt_needed = len([s for s in legacy_shots if s["coverage_status"] == "alt_needed"])
+
+            # Count from shot list shots (is_completed = covered)
+            sl_total = len(sl_shots)
+            sl_completed = len([s for s in sl_shots if s.get("is_completed")])
+            sl_not_completed = sl_total - sl_completed
+
+            # Combined totals
+            total = legacy_total + sl_total
+            shot_count = legacy_shot_count + sl_completed
+            not_shot_count = legacy_not_shot + sl_not_completed
+            alt_needed_count = legacy_alt_needed
 
             scene_coverage.append({
-                "scene": scene,
+                "scene_id": scene["id"],
+                "scene_number": scene["scene_number"],
+                "scene_heading": scene.get("slugline"),
                 "total_shots": total,
                 "shot": shot_count,
                 "not_shot": not_shot_count,
                 "alt_needed": alt_needed_count,
+                "dropped": 0,
                 "coverage_percentage": round(100.0 * shot_count / total, 1) if total > 0 else 0,
             })
+
+        # Log shots found for debugging
+        scenes_with_shots = [s for s in scene_coverage if s["total_shots"] > 0]
+        print(f"[COVERAGE] Returning {len(scene_coverage)} scenes, {len(scenes_with_shots)} with shots")
+        for s in scenes_with_shots[:3]:
+            print(f"[COVERAGE]   Scene {s['scene_number']}: {s['total_shots']} shots")
 
         return {"success": True, "scenes": scene_coverage}
 
@@ -18721,6 +19107,99 @@ async def delete_shot(
         raise
     except Exception as e:
         print(f"Error deleting shot: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CloneShotListShotInput(BaseModel):
+    """Input for cloning a shot in a shot list"""
+    destination_shot_list_id: Optional[str] = None
+
+
+@router.post("/shots/{shot_id}/clone")
+async def clone_shot_list_shot(
+    shot_id: str,
+    input_data: CloneShotListShotInput,
+    authorization: str = Header(None)
+):
+    """
+    Clone a shot within a shot list, optionally to a different shot list.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get original shot
+        shot_result = client.table("backlot_shots").select("*").eq("id", shot_id).single().execute()
+        if not shot_result.data:
+            raise HTTPException(status_code=404, detail="Shot not found")
+
+        original = shot_result.data
+        project_id = original["project_id"]
+        source_shot_list_id = original["shot_list_id"]
+
+        # Determine destination
+        dest_shot_list_id = input_data.destination_shot_list_id or source_shot_list_id
+
+        # Verify edit access
+        has_access = await verify_shot_list_edit_access(client, project_id, user["id"])
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have permission to clone shots")
+
+        # If different shot list, verify it belongs to same project
+        if dest_shot_list_id != source_shot_list_id:
+            dest_list = client.table("backlot_shot_lists").select("project_id").eq("id", dest_shot_list_id).single().execute()
+            if not dest_list.data:
+                raise HTTPException(status_code=404, detail="Destination shot list not found")
+            if dest_list.data["project_id"] != project_id:
+                raise HTTPException(status_code=400, detail="Cannot clone to shot list in different project")
+
+        # Get existing shots in destination to generate new shot number
+        existing = client.table("backlot_shots").select("shot_number, sort_order").eq("shot_list_id", dest_shot_list_id).execute()
+        existing_data = existing.data or []
+
+        # Generate new shot number
+        new_shot_number = generate_next_shot_number(original["shot_number"], existing_data)
+
+        # Get max sort order
+        max_sort = max([s.get("sort_order", 0) for s in existing_data], default=0)
+
+        # Get profile ID for created_by
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+
+        # Create clone
+        clone_data = {
+            "project_id": project_id,
+            "shot_list_id": dest_shot_list_id,
+            "shot_number": new_shot_number,
+            "scene_number": original.get("scene_number"),
+            "scene_id": original.get("scene_id"),
+            "camera_label": original.get("camera_label"),
+            "frame_size": original.get("frame_size"),
+            "lens": original.get("lens"),
+            "focal_length_mm": original.get("focal_length_mm"),
+            "camera_height": original.get("camera_height"),
+            "movement": original.get("movement"),
+            "location_hint": original.get("location_hint"),
+            "time_of_day": original.get("time_of_day"),
+            "description": original.get("description"),
+            "technical_notes": original.get("technical_notes"),
+            "performance_notes": original.get("performance_notes"),
+            "est_time_minutes": original.get("est_time_minutes"),
+            "is_completed": False,
+            "sort_order": max_sort + 1,
+            "created_by_user_id": profile_id,
+        }
+
+        result = client.table("backlot_shots").insert(clone_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to clone shot")
+
+        return {"success": True, "shot": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error cloning shot: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -24795,6 +25274,321 @@ async def get_gear_categories(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/gear/costs")
+async def get_gear_costs(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get gear cost summary for a project.
+    Returns:
+    - total_rental_cost: Sum of all gear rental costs
+    - total_purchase_cost: Sum of owned gear purchase costs
+    - by_category: Breakdown by gear category
+    - by_day: Daily breakdown based on pickup/return dates
+    - items: List of gear with calculated costs
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all gear items for project
+        result = client.table("backlot_gear_items").select(
+            "id, name, category, is_owned, rental_house, rental_cost_per_day, "
+            "pickup_date, return_date, purchase_cost, budget_line_item_id, status"
+        ).eq("project_id", project_id).execute()
+
+        items = result.data or []
+
+        # Calculate costs for each item
+        total_rental = 0.0
+        total_purchase = 0.0
+        by_category = {}
+        items_with_costs = []
+
+        for item in items:
+            rental_cost = 0.0
+            rental_days = 0
+
+            # Calculate rental cost if applicable
+            if not item.get("is_owned") and item.get("rental_cost_per_day"):
+                daily_rate = float(item["rental_cost_per_day"])
+                if item.get("pickup_date") and item.get("return_date"):
+                    from datetime import datetime
+                    pickup = datetime.fromisoformat(item["pickup_date"])
+                    return_date = datetime.fromisoformat(item["return_date"])
+                    rental_days = (return_date - pickup).days + 1
+                    rental_cost = daily_rate * rental_days
+                    total_rental += rental_cost
+
+            # Get purchase cost for owned gear
+            purchase = float(item.get("purchase_cost") or 0)
+            if item.get("is_owned") and purchase:
+                total_purchase += purchase
+
+            # Group by category
+            cat = item.get("category") or "Uncategorized"
+            if cat not in by_category:
+                by_category[cat] = {"rental_cost": 0, "purchase_cost": 0, "count": 0}
+            by_category[cat]["rental_cost"] += rental_cost
+            by_category[cat]["purchase_cost"] += purchase if item.get("is_owned") else 0
+            by_category[cat]["count"] += 1
+
+            items_with_costs.append({
+                **item,
+                "calculated_rental_cost": rental_cost,
+                "rental_days": rental_days,
+                "daily_rate": float(item.get("rental_cost_per_day") or 0)
+            })
+
+        # Calculate daily breakdown
+        by_day = {}
+        for item in items_with_costs:
+            if item.get("pickup_date") and item.get("return_date") and item.get("daily_rate"):
+                from datetime import datetime, timedelta
+                pickup = datetime.fromisoformat(item["pickup_date"])
+                return_date = datetime.fromisoformat(item["return_date"])
+                current = pickup
+                while current <= return_date:
+                    day_key = current.strftime("%Y-%m-%d")
+                    if day_key not in by_day:
+                        by_day[day_key] = {"total": 0, "items": []}
+                    by_day[day_key]["total"] += item["daily_rate"]
+                    by_day[day_key]["items"].append({
+                        "id": item["id"],
+                        "name": item["name"],
+                        "daily_rate": item["daily_rate"]
+                    })
+                    current += timedelta(days=1)
+
+        return {
+            "total_rental_cost": total_rental,
+            "total_purchase_cost": total_purchase,
+            "total_cost": total_rental + total_purchase,
+            "by_category": by_category,
+            "by_day": by_day,
+            "items": items_with_costs
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting gear costs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/budget/sync-gear")
+async def sync_gear_to_budget(
+    project_id: str,
+    create_line_items: bool = True,
+    update_actuals: bool = True,
+    category_name: str = "Equipment Rentals",
+    authorization: str = Header(None)
+):
+    """
+    Sync gear costs to budget.
+    - create_line_items: Create new line items for unlinked gear
+    - update_actuals: Update actual totals on linked line items
+    - category_name: Budget category to use for new items
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get project budget
+        budget_result = client.table("backlot_budgets").select("id").eq(
+            "project_id", project_id
+        ).limit(1).execute()
+
+        if not budget_result.data:
+            raise HTTPException(status_code=404, detail="No budget found for project")
+
+        budget_id = budget_result.data[0]["id"]
+
+        # Get or create the Equipment category
+        cat_result = client.table("backlot_budget_categories").select("id").eq(
+            "budget_id", budget_id
+        ).eq("name", category_name).limit(1).execute()
+
+        if cat_result.data:
+            category_id = cat_result.data[0]["id"]
+        else:
+            # Create category
+            new_cat = client.table("backlot_budget_categories").insert({
+                "budget_id": budget_id,
+                "name": category_name,
+                "sort_order": 100
+            }).execute()
+            category_id = new_cat.data[0]["id"]
+
+        # Get all gear items
+        gear_result = client.table("backlot_gear_items").select(
+            "id, name, category, is_owned, rental_cost_per_day, "
+            "pickup_date, return_date, purchase_cost, budget_line_item_id"
+        ).eq("project_id", project_id).execute()
+
+        items = gear_result.data or []
+        created = 0
+        updated = 0
+        linked = 0
+
+        for item in items:
+            # Calculate total cost
+            total_cost = 0.0
+            if not item.get("is_owned") and item.get("rental_cost_per_day"):
+                if item.get("pickup_date") and item.get("return_date"):
+                    from datetime import datetime
+                    pickup = datetime.fromisoformat(item["pickup_date"])
+                    return_date = datetime.fromisoformat(item["return_date"])
+                    days = (return_date - pickup).days + 1
+                    total_cost = float(item["rental_cost_per_day"]) * days
+            elif item.get("is_owned") and item.get("purchase_cost"):
+                total_cost = float(item["purchase_cost"])
+
+            if total_cost == 0:
+                continue
+
+            if item.get("budget_line_item_id") and update_actuals:
+                # Update existing line item actual
+                try:
+                    client.table("backlot_budget_line_items").update({
+                        "actual_total": total_cost,
+                        "updated_at": "now()"
+                    }).eq("id", item["budget_line_item_id"]).execute()
+                    updated += 1
+                except:
+                    pass
+            elif not item.get("budget_line_item_id") and create_line_items:
+                # Create new line item and link
+                line_item = client.table("backlot_budget_line_items").insert({
+                    "category_id": category_id,
+                    "description": f"{item['name']} ({item.get('category', 'Gear')})",
+                    "estimated_total": total_cost,
+                    "actual_total": total_cost,
+                    "quantity": 1,
+                    "unit_cost": total_cost,
+                    "notes": f"Auto-synced from gear: {item['name']}"
+                }).execute()
+
+                if line_item.data:
+                    # Link gear item to budget line item
+                    client.table("backlot_gear_items").update({
+                        "budget_line_item_id": line_item.data[0]["id"]
+                    }).eq("id", item["id"]).execute()
+                    created += 1
+                    linked += 1
+
+        return {
+            "success": True,
+            "created": created,
+            "updated": updated,
+            "linked": linked,
+            "category_id": category_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error syncing gear to budget: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/daily-budgets/{daily_budget_id}/gear-costs")
+async def get_daily_gear_costs(
+    daily_budget_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get gear costs for a specific daily budget.
+    Returns gear that is active on this day (by date range or manual assignment).
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get daily budget with its date and project
+        db_result = client.table("backlot_daily_budgets").select(
+            "id, shoot_date, production_day_id, "
+            "budget:backlot_budgets(id, project_id)"
+        ).eq("id", daily_budget_id).limit(1).execute()
+
+        if not db_result.data:
+            raise HTTPException(status_code=404, detail="Daily budget not found")
+
+        daily_budget = db_result.data[0]
+        shoot_date = daily_budget.get("shoot_date")
+        production_day_id = daily_budget.get("production_day_id")
+        project_id = daily_budget["budget"]["project_id"]
+
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get gear items active on this day
+        # Method 1: Date range - shoot_date falls between pickup and return
+        # Method 2: Manual assignment via assigned_production_day_id
+
+        gear_items = []
+
+        if shoot_date:
+            # Get items by date range
+            range_result = client.table("backlot_gear_items").select(
+                "id, name, category, rental_cost_per_day, rental_house, "
+                "pickup_date, return_date, is_owned, purchase_cost, status"
+            ).eq("project_id", project_id).lte(
+                "pickup_date", shoot_date
+            ).gte("return_date", shoot_date).execute()
+
+            for item in (range_result.data or []):
+                item["source"] = "date_range"
+                gear_items.append(item)
+
+        if production_day_id:
+            # Get items manually assigned to this production day
+            assigned_result = client.table("backlot_gear_items").select(
+                "id, name, category, rental_cost_per_day, rental_house, "
+                "pickup_date, return_date, is_owned, purchase_cost, status"
+            ).eq("project_id", project_id).eq(
+                "assigned_production_day_id", production_day_id
+            ).execute()
+
+            existing_ids = {i["id"] for i in gear_items}
+            for item in (assigned_result.data or []):
+                if item["id"] not in existing_ids:
+                    item["source"] = "manual_assignment"
+                    gear_items.append(item)
+
+        # Calculate daily total
+        daily_total = 0.0
+        items_with_costs = []
+
+        for item in gear_items:
+            daily_cost = 0.0
+            if not item.get("is_owned") and item.get("rental_cost_per_day"):
+                daily_cost = float(item["rental_cost_per_day"])
+                daily_total += daily_cost
+
+            items_with_costs.append({
+                **item,
+                "daily_cost": daily_cost
+            })
+
+        return {
+            "daily_budget_id": daily_budget_id,
+            "shoot_date": shoot_date,
+            "gear_total": daily_total,
+            "items": items_with_costs
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting daily gear costs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # SIMPLE TASKS (project-based, not task-list based)
 # =====================================================
@@ -25284,6 +26078,45 @@ async def update_production_day(
 
         result = client.table("backlot_production_days").update(update_data).eq("id", day_id).execute()
 
+        # Auto-sync to linked call sheets
+        if result.data:
+            updated_day = result.data[0]
+            project_id = updated_day.get("project_id") or existing.data[0]["project_id"]
+
+            # Find call sheets linked to this production day
+            linked_sheets = client.table("backlot_call_sheets").select("id").eq(
+                "production_day_id", day_id
+            ).execute()
+
+            if linked_sheets.data:
+                # Build sync data for call sheets
+                sync_data = {}
+
+                # Map production day fields to call sheet fields
+                if "date" in update_data:
+                    sync_data["date"] = update_data["date"]
+                if "day_number" in update_data:
+                    sync_data["shoot_day_number"] = update_data["day_number"]
+                if "general_call_time" in update_data:
+                    sync_data["crew_call_time"] = update_data["general_call_time"]
+                    sync_data["general_call_time"] = update_data["general_call_time"]
+                if "wrap_time" in update_data:
+                    sync_data["estimated_wrap_time"] = update_data["wrap_time"]
+                if "location_name" in update_data:
+                    sync_data["location_name"] = update_data["location_name"]
+                if "location_address" in update_data:
+                    sync_data["location_address"] = update_data["location_address"]
+
+                # Only sync if there are fields to sync
+                if sync_data:
+                    for sheet in linked_sheets.data:
+                        try:
+                            client.table("backlot_call_sheets").update(sync_data).eq(
+                                "id", sheet["id"]
+                            ).execute()
+                        except Exception as sync_error:
+                            print(f"Warning: Failed to sync to call sheet {sheet['id']}: {sync_error}")
+
         return {"day": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -25347,6 +26180,245 @@ async def delete_production_day(
         raise
     except Exception as e:
         print(f"Error deleting production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PRODUCTION DAY / CALL SHEET SYNC
+# =====================================================
+
+@router.get("/production-days/{day_id}/sync-status")
+async def get_production_day_sync_status(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get sync status between production day and linked call sheet"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get production day with all syncable fields
+        day_result = client.table("backlot_production_days").select(
+            "id, project_id, date, day_number, title, general_call_time, wrap_time, "
+            "location_name, location_address, updated_at"
+        ).eq("id", day_id).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = day_result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        # Find linked call sheet
+        sheet_result = client.table("backlot_call_sheets").select(
+            "id, date, shoot_day_number, title, crew_call_time, general_call_time, "
+            "estimated_wrap_time, location_name, location_address, updated_at"
+        ).eq("production_day_id", day_id).limit(1).execute()
+
+        if not sheet_result.data:
+            return {
+                "has_linked_call_sheet": False,
+                "call_sheet_id": None,
+                "is_in_sync": True,
+                "stale_entity": None,
+                "fields_differ": [],
+                "day_updated_at": day.get("updated_at"),
+                "sheet_updated_at": None
+            }
+
+        sheet = sheet_result.data[0]
+
+        # Compare fields
+        fields_differ = []
+
+        # Date comparison
+        if day.get("date") != sheet.get("date"):
+            fields_differ.append("date")
+
+        # Day number comparison
+        if day.get("day_number") != sheet.get("shoot_day_number"):
+            fields_differ.append("day_number")
+
+        # Call time comparison (production day general_call_time vs call sheet crew_call_time/general_call_time)
+        day_call_time = day.get("general_call_time")
+        sheet_call_time = sheet.get("general_call_time") or sheet.get("crew_call_time")
+        if day_call_time != sheet_call_time:
+            fields_differ.append("call_time")
+
+        # Wrap time comparison
+        if day.get("wrap_time") != sheet.get("estimated_wrap_time"):
+            fields_differ.append("wrap_time")
+
+        # Location name comparison
+        if day.get("location_name") != sheet.get("location_name"):
+            fields_differ.append("location_name")
+
+        # Location address comparison
+        if day.get("location_address") != sheet.get("location_address"):
+            fields_differ.append("location_address")
+
+        # Title comparison
+        if day.get("title") != sheet.get("title"):
+            fields_differ.append("title")
+
+        # Determine which entity is stale (older)
+        stale_entity = None
+        if fields_differ:
+            day_updated = day.get("updated_at")
+            sheet_updated = sheet.get("updated_at")
+            if day_updated and sheet_updated:
+                if day_updated > sheet_updated:
+                    stale_entity = "call_sheet"
+                else:
+                    stale_entity = "production_day"
+
+        return {
+            "has_linked_call_sheet": True,
+            "call_sheet_id": sheet["id"],
+            "is_in_sync": len(fields_differ) == 0,
+            "stale_entity": stale_entity,
+            "fields_differ": fields_differ,
+            "day_updated_at": day.get("updated_at"),
+            "sheet_updated_at": sheet.get("updated_at")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting sync status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/bidirectional-sync")
+async def bidirectional_sync_production_day(
+    day_id: str,
+    sync_request: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """
+    Perform bidirectional sync between production day and linked call sheet.
+
+    Request body:
+    - force_direction: "schedule_to_callsheet" | "callsheet_to_schedule" | null (auto)
+    - sync_date: boolean (default True)
+    - sync_times: boolean (default True)
+    - sync_location: boolean (default True)
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get production day
+        day_result = client.table("backlot_production_days").select(
+            "id, project_id, date, day_number, title, general_call_time, wrap_time, "
+            "location_name, location_address, updated_at"
+        ).eq("id", day_id).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = day_result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        # Find linked call sheet
+        sheet_result = client.table("backlot_call_sheets").select(
+            "id, date, shoot_day_number, title, crew_call_time, general_call_time, "
+            "estimated_wrap_time, location_name, location_address, updated_at"
+        ).eq("production_day_id", day_id).limit(1).execute()
+
+        if not sheet_result.data:
+            raise HTTPException(status_code=400, detail="No linked call sheet found")
+
+        sheet = sheet_result.data[0]
+
+        # Parse sync options
+        force_direction = sync_request.get("force_direction")
+        sync_date = sync_request.get("sync_date", True)
+        sync_times = sync_request.get("sync_times", True)
+        sync_location = sync_request.get("sync_location", True)
+
+        # Determine sync direction
+        if force_direction:
+            direction = force_direction
+        else:
+            # Auto-detect: most recent wins
+            day_updated = day.get("updated_at")
+            sheet_updated = sheet.get("updated_at")
+            if day_updated and sheet_updated:
+                direction = "schedule_to_callsheet" if day_updated > sheet_updated else "callsheet_to_schedule"
+            else:
+                direction = "schedule_to_callsheet"
+
+        # Perform sync
+        if direction == "schedule_to_callsheet":
+            # Update call sheet from production day
+            sync_data = {}
+            if sync_date:
+                if day.get("date"):
+                    sync_data["date"] = day["date"]
+                if day.get("day_number"):
+                    sync_data["shoot_day_number"] = day["day_number"]
+                if day.get("title"):
+                    sync_data["title"] = day["title"]
+            if sync_times:
+                if day.get("general_call_time"):
+                    sync_data["crew_call_time"] = day["general_call_time"]
+                    sync_data["general_call_time"] = day["general_call_time"]
+                if day.get("wrap_time"):
+                    sync_data["estimated_wrap_time"] = day["wrap_time"]
+            if sync_location:
+                if day.get("location_name"):
+                    sync_data["location_name"] = day["location_name"]
+                if day.get("location_address"):
+                    sync_data["location_address"] = day["location_address"]
+
+            if sync_data:
+                client.table("backlot_call_sheets").update(sync_data).eq("id", sheet["id"]).execute()
+
+            return {
+                "success": True,
+                "direction": direction,
+                "fields_synced": list(sync_data.keys()),
+                "source": "production_day",
+                "target": "call_sheet"
+            }
+        else:
+            # Update production day from call sheet
+            sync_data = {}
+            if sync_date:
+                if sheet.get("date"):
+                    sync_data["date"] = sheet["date"]
+                if sheet.get("shoot_day_number"):
+                    sync_data["day_number"] = sheet["shoot_day_number"]
+                if sheet.get("title"):
+                    sync_data["title"] = sheet["title"]
+            if sync_times:
+                call_time = sheet.get("general_call_time") or sheet.get("crew_call_time")
+                if call_time:
+                    sync_data["general_call_time"] = call_time
+                if sheet.get("estimated_wrap_time"):
+                    sync_data["wrap_time"] = sheet["estimated_wrap_time"]
+            if sync_location:
+                if sheet.get("location_name"):
+                    sync_data["location_name"] = sheet["location_name"]
+                if sheet.get("location_address"):
+                    sync_data["location_address"] = sheet["location_address"]
+
+            if sync_data:
+                client.table("backlot_production_days").update(sync_data).eq("id", day_id).execute()
+
+            return {
+                "success": True,
+                "direction": direction,
+                "fields_synced": list(sync_data.keys()),
+                "source": "call_sheet",
+                "target": "production_day"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error performing bidirectional sync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -26735,13 +27807,56 @@ async def create_call_sheet(
         # Fields that need JSON serialization for JSONB columns
         jsonb_fields = ["schedule_blocks", "custom_contacts"]
 
+        # Auto-create or auto-link production day if date provided but no production_day_id
+        production_day_id = sheet.get("production_day_id")
+        call_sheet_date = sheet.get("date")
+
+        if call_sheet_date and not production_day_id:
+            # Check if a production day exists for this date
+            existing_day = client.table("backlot_production_days").select("id").eq(
+                "project_id", project_id
+            ).eq("date", call_sheet_date).limit(1).execute()
+
+            if existing_day.data:
+                # Link to existing day
+                production_day_id = existing_day.data[0]["id"]
+            else:
+                # Auto-create new production day
+                max_day = client.table("backlot_production_days").select("day_number").eq(
+                    "project_id", project_id
+                ).order("day_number", desc=True).limit(1).execute()
+                next_day_num = (max_day.data[0]["day_number"] + 1) if max_day.data else 1
+
+                day_data = {
+                    "project_id": project_id,
+                    "date": call_sheet_date,
+                    "day_number": sheet.get("shoot_day_number") or next_day_num,
+                    "title": sheet.get("title"),
+                    "general_call_time": sheet.get("general_call_time") or sheet.get("crew_call_time"),
+                    "wrap_time": sheet.get("estimated_wrap_time"),
+                    "location_name": sheet.get("location_name"),
+                    "location_address": sheet.get("location_address"),
+                }
+                # Remove None values
+                day_data = {k: v for k, v in day_data.items() if v is not None}
+
+                day_result = client.table("backlot_production_days").insert(day_data).execute()
+                if day_result.data:
+                    production_day_id = day_result.data[0]["id"]
+
         sheet_data = {
             "project_id": project_id,
             "created_by_user_id": user_id,
         }
 
-        # Copy all allowed fields from input
+        # Add auto-linked production_day_id
+        if production_day_id:
+            sheet_data["production_day_id"] = production_day_id
+
+        # Copy all allowed fields from input (except production_day_id which we handle above)
         for field in allowed_fields:
+            if field == "production_day_id":
+                continue  # Already handled
             if field in sheet and sheet[field] is not None:
                 value = sheet[field]
                 # Serialize JSONB fields to JSON strings
@@ -30898,4 +32013,340 @@ async def get_deal_memo_history(
         raise
     except Exception as e:
         print(f"Error fetching deal memo history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# SHOT TEMPLATES
+# =============================================================================
+
+class ShotTemplateCreate(BaseModel):
+    """Request model for creating a shot template"""
+    name: str
+    description: Optional[str] = None
+    project_id: Optional[str] = None  # null = global/personal template
+    template_data: dict  # { frame_size, lens, movement, est_time_minutes, etc. }
+    is_default: bool = False
+
+
+class ShotTemplateUpdate(BaseModel):
+    """Request model for updating a shot template"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    template_data: Optional[dict] = None
+    is_default: Optional[bool] = None
+
+
+# Default system templates
+DEFAULT_TEMPLATES = [
+    {
+        "name": "Standard CU",
+        "description": "Close-up with 50mm lens",
+        "template_data": {
+            "frame_size": "CU",
+            "lens": "50mm Prime",
+            "movement": "static",
+            "est_time_minutes": 5
+        }
+    },
+    {
+        "name": "Standard WS",
+        "description": "Wide shot with 24mm lens",
+        "template_data": {
+            "frame_size": "WS",
+            "lens": "24mm Prime",
+            "movement": "static",
+            "est_time_minutes": 5
+        }
+    },
+    {
+        "name": "Tracking MS",
+        "description": "Medium shot with tracking movement",
+        "template_data": {
+            "frame_size": "MS",
+            "lens": "35mm Prime",
+            "movement": "tracking",
+            "est_time_minutes": 10
+        }
+    },
+    {
+        "name": "OTS Dialogue",
+        "description": "Over-the-shoulder for dialogue scenes",
+        "template_data": {
+            "frame_size": "OTS",
+            "lens": "85mm Prime",
+            "movement": "static",
+            "est_time_minutes": 5
+        }
+    },
+    {
+        "name": "Establishing",
+        "description": "Wide establishing shot",
+        "template_data": {
+            "frame_size": "EWS",
+            "lens": "14mm Prime",
+            "movement": "static",
+            "est_time_minutes": 10
+        }
+    },
+    {
+        "name": "Insert Detail",
+        "description": "Close insert of props/details",
+        "template_data": {
+            "frame_size": "INSERT",
+            "lens": "100mm Macro",
+            "movement": "static",
+            "est_time_minutes": 3
+        }
+    },
+    {
+        "name": "POV Handheld",
+        "description": "Point-of-view handheld shot",
+        "template_data": {
+            "frame_size": "POV",
+            "lens": "35mm Prime",
+            "movement": "handheld",
+            "est_time_minutes": 5
+        }
+    },
+    {
+        "name": "Gimbal Walk & Talk",
+        "description": "Smooth gimbal for walk & talk",
+        "template_data": {
+            "frame_size": "MS",
+            "lens": "24mm Prime",
+            "movement": "gimbal",
+            "est_time_minutes": 15
+        }
+    }
+]
+
+
+@router.get("/shot-templates")
+async def list_shot_templates(
+    project_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all shot templates available to the user"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        # Get user's personal templates (project_id is null)
+        personal_query = client.table("backlot_shot_templates").select("*").eq("user_id", profile_id).is_("project_id", "null")
+        personal_result = personal_query.execute()
+        personal_templates = personal_result.data or []
+
+        # Get system templates
+        system_query = client.table("backlot_shot_templates").select("*").eq("is_system", True)
+        system_result = system_query.execute()
+        system_templates = system_result.data or []
+
+        # Get project-specific templates if project_id provided
+        project_templates = []
+        if project_id:
+            project_query = client.table("backlot_shot_templates").select("*").eq("project_id", project_id)
+            project_result = project_query.execute()
+            project_templates = project_result.data or []
+
+        return {
+            "success": True,
+            "templates": {
+                "personal": personal_templates,
+                "project": project_templates,
+                "system": system_templates,
+                "defaults": DEFAULT_TEMPLATES,  # Always include built-in defaults
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing shot templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/shot-templates")
+async def create_shot_template(
+    input_data: ShotTemplateCreate,
+    authorization: str = Header(None)
+):
+    """Create a new shot template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        # If project-specific, verify user has access
+        if input_data.project_id:
+            has_access = await verify_shot_list_edit_access(client, input_data.project_id, user["id"])
+            if not has_access:
+                raise HTTPException(status_code=403, detail="Access denied to this project")
+
+        template_data = {
+            "user_id": profile_id,
+            "project_id": input_data.project_id,
+            "name": input_data.name,
+            "description": input_data.description,
+            "template_data": input_data.template_data,
+            "is_default": input_data.is_default,
+            "is_system": False,
+        }
+
+        result = client.table("backlot_shot_templates").insert(template_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create template")
+
+        return {
+            "success": True,
+            "template": result.data[0]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating shot template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/shot-templates/{template_id}")
+async def get_shot_template(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single shot template"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+
+        result = client.table("backlot_shot_templates").select("*").eq("id", template_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        template = result.data
+
+        # Verify access - system templates are public, personal templates belong to user
+        if not template.get("is_system"):
+            if template.get("user_id") != profile_id:
+                # Check if user has project access
+                if template.get("project_id"):
+                    has_access = await verify_shot_list_edit_access(client, template["project_id"], user["id"])
+                    if not has_access:
+                        raise HTTPException(status_code=403, detail="Access denied")
+                else:
+                    raise HTTPException(status_code=403, detail="Access denied")
+
+        return {
+            "success": True,
+            "template": template
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting shot template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/shot-templates/{template_id}")
+async def update_shot_template(
+    template_id: str,
+    input_data: ShotTemplateUpdate,
+    authorization: str = Header(None)
+):
+    """Update a shot template (only owner can update)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        # Get existing template
+        result = client.table("backlot_shot_templates").select("*").eq("id", template_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        template = result.data
+
+        # Cannot update system templates
+        if template.get("is_system"):
+            raise HTTPException(status_code=403, detail="Cannot modify system templates")
+
+        # Only owner can update
+        if template.get("user_id") != profile_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Build update data
+        update_data = {"updated_at": datetime.utcnow().isoformat()}
+        if input_data.name is not None:
+            update_data["name"] = input_data.name
+        if input_data.description is not None:
+            update_data["description"] = input_data.description
+        if input_data.template_data is not None:
+            update_data["template_data"] = input_data.template_data
+        if input_data.is_default is not None:
+            update_data["is_default"] = input_data.is_default
+
+        updated = client.table("backlot_shot_templates").update(update_data).eq("id", template_id).execute()
+
+        return {
+            "success": True,
+            "template": updated.data[0] if updated.data else template
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating shot template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/shot-templates/{template_id}")
+async def delete_shot_template(
+    template_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a shot template (only owner can delete)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(user["id"])
+        if not profile_id:
+            raise HTTPException(status_code=403, detail="Profile not found")
+
+        # Get existing template
+        result = client.table("backlot_shot_templates").select("*").eq("id", template_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        template = result.data
+
+        # Cannot delete system templates
+        if template.get("is_system"):
+            raise HTTPException(status_code=403, detail="Cannot delete system templates")
+
+        # Only owner can delete
+        if template.get("user_id") != profile_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        client.table("backlot_shot_templates").delete().eq("id", template_id).execute()
+
+        return {"success": True, "message": "Template deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting shot template: {e}")
         raise HTTPException(status_code=500, detail=str(e))

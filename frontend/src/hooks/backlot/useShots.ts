@@ -117,7 +117,7 @@ export function useShots(options: UseShotsOptions) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${id}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -145,7 +145,7 @@ export function useShots(options: UseShotsOptions) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${id}/coverage`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${id}/coverage`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -208,7 +208,7 @@ export function useShots(options: UseShotsOptions) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${id}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${id}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -231,7 +231,7 @@ export function useShots(options: UseShotsOptions) {
 
       // Send reorder requests for each shot
       const updates = shotIds.map((id, index) =>
-        fetch(`${API_BASE}/api/v1/backlot/shots/${id}`, {
+        fetch(`${API_BASE}/api/v1/backlot/scene-shots/${id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -248,6 +248,83 @@ export function useShots(options: UseShotsOptions) {
     },
   });
 
+  const cloneShot = useMutation({
+    mutationFn: async ({
+      shotId,
+      destinationSceneId,
+    }: {
+      shotId: string;
+      destinationSceneId?: string;
+    }): Promise<BacklotSceneShot> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${shotId}/clone`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ destination_scene_id: destinationSceneId }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to clone shot' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result.shot || result;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-shots'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+    },
+  });
+
+  const bulkCloneShots = useMutation({
+    mutationFn: async ({
+      projectId,
+      shotIds,
+      destinationSceneId,
+    }: {
+      projectId: string;
+      shotIds: string[];
+      destinationSceneId?: string;
+    }): Promise<{ shots: BacklotSceneShot[]; count: number }> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/shots/bulk-clone`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            shot_ids: shotIds,
+            destination_scene_id: destinationSceneId,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to clone shots' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-shots'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+    },
+  });
+
   return {
     shots: data || [],
     isLoading,
@@ -259,6 +336,8 @@ export function useShots(options: UseShotsOptions) {
     bulkUpdateCoverage,
     deleteShot,
     reorderShots,
+    cloneShot,
+    bulkCloneShots,
   };
 }
 
@@ -272,7 +351,7 @@ export function useShot(id: string | null) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${id}`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${id}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -302,7 +381,7 @@ export function useShotImages(shotId: string | null) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${shotId}/images`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${shotId}/images`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -324,7 +403,7 @@ export function useShotImages(shotId: string | null) {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(`${API_BASE}/api/v1/backlot/shots/${shotId}/images`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/scene-shots/${shotId}/images`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

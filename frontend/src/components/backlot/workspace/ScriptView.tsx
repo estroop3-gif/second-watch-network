@@ -10,6 +10,12 @@ import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -56,6 +62,13 @@ import {
   StickyNote,
   Download,
   ClipboardCheck,
+  Lightbulb,
+  Zap,
+  MousePointer2,
+  Highlighter,
+  Palette,
+  Layers,
+  Video,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -463,6 +476,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const generateBudgetSuggestions = useGenerateBudgetSuggestions();
   const { exportScript, isExporting } = useExportScriptWithHighlights();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   const handleCoverageChange = async (sceneId: string, status: BacklotSceneCoverageStatus) => {
     try {
@@ -585,15 +599,25 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             />
           )}
         </div>
-        {canEdit && (
-          <div className="flex items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Sparkles className="w-4 h-4 mr-2" />
-                  Generate
-                </Button>
-              </DropdownMenuTrigger>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-muted-gray/30"
+          >
+            <Lightbulb className="w-4 h-4 mr-2" />
+            Tips
+          </Button>
+          {canEdit && (
+            <>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Sparkles className="w-4 h-4 mr-2" />
+                    Generate
+                  </Button>
+                </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={handleGenerateTasks}>
                   <ListChecks className="w-4 h-4 mr-2" />
@@ -663,8 +687,9 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -1014,6 +1039,217 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Tips & Tricks Panel */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="max-w-2xl bg-charcoal-black border-muted-gray/20 max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <Lightbulb className="w-5 h-5 text-accent-yellow" />
+              Script & Breakdown Tips
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-6">
+            {/* Tabs Overview */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <Layers className="w-4 h-4" />
+                Tab Overview
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <BookOpen className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">View Script</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Read and annotate your script PDF. Add highlights, notes, and line the script.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <Edit className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Editor</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Edit script content, create new versions, and track revision history.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <Camera className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Scenes</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      View all scenes, filter by status, and track coverage progress.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <ListChecks className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Breakdown</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Tag elements like props, wardrobe, vehicles, and special effects per scene.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <ClipboardCheck className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Continuity</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Script supervisor workspace for tracking takes, coverage, and continuity notes.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <StickyNote className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Notes</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Add production notes, director's notes, and department annotations.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <MapPin className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Location Needs</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      See all locations needed with scene counts, page totals, and day/night breakdown.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Script Viewer Features */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-blue-400 flex items-center gap-2">
+                <Highlighter className="w-4 h-4" />
+                Script Viewer Features
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-blue-500/5 rounded-lg border border-blue-500/20">
+                  <Palette className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Highlight Text</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Select text and choose a color to highlight dialogue, action, or any element.
+                      Colors are saved and visible to the whole team.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-blue-500/5 rounded-lg border border-blue-500/20">
+                  <Video className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Lined Script</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Draw coverage lines on the script to track which shots cover which dialogue.
+                      Standard script supervisor workflow.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-blue-500/5 rounded-lg border border-blue-500/20">
+                  <StickyNote className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Page Notes</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Add notes to specific pages for blocking, technical requirements, or reminders.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Version Control */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-purple-400 flex items-center gap-2">
+                <GitBranch className="w-4 h-4" />
+                Version Control
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-purple-500/5 rounded-lg border border-purple-500/20">
+                  <History className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Script Versions</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Use the dropdown to switch between script versions.
+                      Each revision is color-coded (white, blue, pink, yellow, etc.).
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-purple-500/5 rounded-lg border border-purple-500/20">
+                  <Lock className="w-5 h-5 text-purple-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Lock Versions</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Lock a version to prevent edits. Useful for "locked" shooting scripts.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Automation */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-green-400 flex items-center gap-2">
+                <Sparkles className="w-4 h-4" />
+                Automation
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-green-500/5 rounded-lg border border-green-500/20">
+                  <ListChecks className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Generate Tasks</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Click <span className="text-green-400">Generate → Tasks from Breakdown</span> to automatically
+                      create tasks for each breakdown item (props to acquire, costumes to prep, etc.).
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-green-500/5 rounded-lg border border-green-500/20">
+                  <FileText className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Generate Budget</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Click <span className="text-green-400">Generate → Budget Suggestions</span> to create
+                      estimated costs based on your breakdown items.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-green-500/5 rounded-lg border border-green-500/20">
+                  <Download className="w-5 h-5 text-green-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Export Marked Script</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Download a PDF with all your highlights, lines, and notes baked in.
+                      Perfect for printing or sharing.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pro Tips */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <Lightbulb className="w-4 h-4" />
+                Pro Tips
+              </h3>
+              <div className="text-xs text-muted-gray space-y-2 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                <p>• Import your script PDF to enable the viewer, then use the Editor to make text changes</p>
+                <p>• Use color-coded versions (Pink, Blue, Yellow) to track script revisions</p>
+                <p>• Add breakdown items as you read through the script in the viewer</p>
+                <p>• Generate tasks before prep to create your department to-do lists</p>
+                <p>• Lock your shooting script version to prevent accidental edits</p>
+                <p>• Use the Continuity tab during production for script supervisor notes</p>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

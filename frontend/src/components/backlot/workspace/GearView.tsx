@@ -1,7 +1,7 @@
 /**
  * GearView - Manage production gear/equipment
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -32,6 +32,8 @@ import {
   Calendar,
   DollarSign,
   Tag,
+  Link2,
+  RefreshCw,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -39,10 +41,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useGear, GEAR_CATEGORIES } from '@/hooks/backlot';
+import { useGear, useGearCosts, useSyncGearToBudget, useBudget, useBudgetLineItems, GEAR_CATEGORIES } from '@/hooks/backlot';
 import { BacklotGearItem, GearItemInput, BacklotGearStatus } from '@/types/backlot';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
 
 interface GearViewProps {
   projectId: string;
@@ -57,13 +60,21 @@ const STATUS_CONFIG: Record<BacklotGearStatus, { label: string; color: string }>
   retired: { label: 'Retired', color: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30' },
 };
 
+interface GearCostInfo {
+  calculated_rental_cost: number;
+  rental_days: number;
+  daily_rate: number;
+}
+
 const GearCard: React.FC<{
   item: BacklotGearItem;
+  costInfo?: GearCostInfo;
   canEdit: boolean;
   onEdit: (item: BacklotGearItem) => void;
   onDelete: (id: string) => void;
-}> = ({ item, canEdit, onEdit, onDelete }) => {
+}> = ({ item, costInfo, canEdit, onEdit, onDelete }) => {
   const statusConfig = STATUS_CONFIG[item.status];
+  const totalCost = costInfo?.calculated_rental_cost || (item as any).purchase_cost || 0;
 
   return (
     <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
@@ -92,6 +103,12 @@ const GearCard: React.FC<{
             ) : (
               <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-400">
                 Rental
+              </Badge>
+            )}
+            {(item as any).budget_line_item_id && (
+              <Badge variant="outline" className="text-xs border-purple-500/30 text-purple-400">
+                <Link2 className="w-3 h-3 mr-1" />
+                Budgeted
               </Badge>
             )}
           </div>
@@ -126,6 +143,16 @@ const GearCard: React.FC<{
               </span>
             )}
           </div>
+
+          {/* Total Cost */}
+          {totalCost > 0 && (
+            <div className="mt-2 pt-2 border-t border-muted-gray/20">
+              <span className="text-sm font-medium text-accent-yellow">
+                ${totalCost.toLocaleString()}
+                {costInfo?.rental_days ? ` (${costInfo.rental_days} days)` : ' total'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -153,19 +180,45 @@ const GearCard: React.FC<{
   );
 };
 
+// Extended form data to include budget fields
+interface ExtendedFormData extends GearItemInput {
+  budget_line_item_id?: string;
+  purchase_cost?: number;
+}
+
 const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
+  const { toast } = useToast();
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const { gear, isLoading, createGear, updateGear, deleteGear } = useGear({
     projectId,
     category: categoryFilter !== 'all' ? categoryFilter : undefined,
   });
 
+  // Gear costs data
+  const { data: gearCosts, isLoading: costsLoading } = useGearCosts(projectId);
+  const syncGearToBudget = useSyncGearToBudget();
+
+  // Get budget first, then line items using the budget ID
+  const { data: budget } = useBudget(projectId);
+  const { data: budgetLineItems } = useBudgetLineItems(budget?.id || null);
+
+  // Create cost lookup map
+  const costMap = useMemo(() => {
+    if (!gearCosts?.items) return new Map<string, GearCostInfo>();
+    return new Map(gearCosts.items.map(item => [item.id, {
+      calculated_rental_cost: item.calculated_rental_cost,
+      rental_days: item.rental_days,
+      daily_rate: item.daily_rate,
+    }]));
+  }, [gearCosts?.items]);
+
   const [showForm, setShowForm] = useState(false);
   const [editingItem, setEditingItem] = useState<BacklotGearItem | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
-  // Form state
-  const [formData, setFormData] = useState<GearItemInput>({
+  // Form state with extended fields
+  const [formData, setFormData] = useState<ExtendedFormData>({
     name: '',
     category: '',
     description: '',
@@ -177,6 +230,8 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
     pickup_date: '',
     return_date: '',
     notes: '',
+    budget_line_item_id: undefined,
+    purchase_cost: undefined,
   });
 
   const resetForm = () => {
@@ -192,6 +247,8 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
       pickup_date: '',
       return_date: '',
       notes: '',
+      budget_line_item_id: undefined,
+      purchase_cost: undefined,
     });
   };
 
@@ -210,12 +267,33 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
         pickup_date: item.pickup_date || '',
         return_date: item.return_date || '',
         notes: item.notes || '',
+        budget_line_item_id: (item as any).budget_line_item_id || undefined,
+        purchase_cost: (item as any).purchase_cost || undefined,
       });
     } else {
       setEditingItem(null);
       resetForm();
     }
     setShowForm(true);
+  };
+
+  const handleSyncToBudget = async () => {
+    setIsSyncing(true);
+    try {
+      const result = await syncGearToBudget.mutateAsync({ projectId });
+      toast({
+        title: 'Gear synced to budget',
+        description: `Created ${result.created} line items, updated ${result.updated} existing.`,
+      });
+    } catch (err) {
+      toast({
+        title: 'Sync failed',
+        description: err instanceof Error ? err.message : 'Failed to sync gear to budget',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -281,7 +359,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
           <h2 className="text-2xl font-heading text-bone-white">Gear</h2>
           <p className="text-sm text-muted-gray">Track your production equipment</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
             <SelectTrigger className="w-40 bg-charcoal-black/50 border-muted-gray/30">
               <SelectValue placeholder="All Categories" />
@@ -295,6 +373,21 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               ))}
             </SelectContent>
           </Select>
+          {canEdit && gear.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleSyncToBudget}
+              disabled={isSyncing}
+              className="border-muted-gray/30"
+            >
+              {isSyncing ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <RefreshCw className="w-4 h-4 mr-2" />
+              )}
+              Sync to Budget
+            </Button>
+          )}
           {canEdit && (
             <Button
               onClick={() => handleOpenForm()}
@@ -306,6 +399,36 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
           )}
         </div>
       </div>
+
+      {/* Cost Summary */}
+      {gearCosts && gearCosts.total_cost > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+            <p className="text-xs text-muted-gray mb-1">Total Rental</p>
+            <p className="text-xl font-bold text-accent-yellow">
+              ${gearCosts.total_rental_cost.toLocaleString()}
+            </p>
+          </div>
+          <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+            <p className="text-xs text-muted-gray mb-1">Owned Equipment</p>
+            <p className="text-xl font-bold text-green-400">
+              ${gearCosts.total_purchase_cost.toLocaleString()}
+            </p>
+          </div>
+          <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+            <p className="text-xs text-muted-gray mb-1">Total Cost</p>
+            <p className="text-xl font-bold text-bone-white">
+              ${gearCosts.total_cost.toLocaleString()}
+            </p>
+          </div>
+          <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+            <p className="text-xs text-muted-gray mb-1">Items</p>
+            <p className="text-xl font-bold text-bone-white">
+              {gear.length}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Gear List */}
       {gear.length > 0 ? (
@@ -325,6 +448,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                     <GearCard
                       key={item.id}
                       item={item}
+                      costInfo={costMap.get(item.id)}
                       canEdit={canEdit}
                       onEdit={handleOpenForm}
                       onDelete={handleDelete}
@@ -341,6 +465,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               <GearCard
                 key={item.id}
                 item={item}
+                costInfo={costMap.get(item.id)}
                 canEdit={canEdit}
                 onEdit={handleOpenForm}
                 onDelete={handleDelete}
@@ -458,7 +583,26 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               />
             </div>
 
-            {!formData.is_owned && (
+            {formData.is_owned ? (
+              <div className="space-y-2">
+                <Label htmlFor="purchase_cost">Purchase Cost ($)</Label>
+                <Input
+                  id="purchase_cost"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="e.g., 5000.00"
+                  value={formData.purchase_cost || ''}
+                  onChange={(e) =>
+                    setFormData({
+                      ...formData,
+                      purchase_cost: e.target.value ? parseFloat(e.target.value) : undefined,
+                    })
+                  }
+                  disabled={isSubmitting}
+                />
+              </div>
+            ) : (
               <>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
@@ -513,6 +657,33 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                   </div>
                 </div>
               </>
+            )}
+
+            {/* Budget Link */}
+            {budgetLineItems && budgetLineItems.length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="budget_link">Link to Budget</Label>
+                <Select
+                  value={formData.budget_line_item_id || 'none'}
+                  onValueChange={(v) => setFormData({ ...formData, budget_line_item_id: v === 'none' ? undefined : v })}
+                  disabled={isSubmitting}
+                >
+                  <SelectTrigger id="budget_link">
+                    <SelectValue placeholder="No budget link" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">No budget link</SelectItem>
+                    {budgetLineItems.map((li: any) => (
+                      <SelectItem key={li.id} value={li.id}>
+                        {li.description} (${li.estimated_total?.toLocaleString() || 0})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-gray">
+                  Link this gear to an existing budget line item
+                </p>
+              </div>
             )}
 
             <div className="space-y-2">

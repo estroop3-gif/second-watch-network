@@ -3,9 +3,11 @@
  * Integrates shot lists, allows drag-and-drop status updates, and provides
  * scene detail management including shot list attachment
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -58,18 +60,17 @@ import {
 import {
   useScenes,
   useSceneMutations,
-  useShots,
   useCoverageByScene,
   useShotLists,
 } from '@/hooks/backlot';
+import { useSceneHub, usePrefetchSceneHub, ShotSummary, BreakdownItem } from '@/hooks/backlot/useSceneHub';
+import { BREAKDOWN_TYPES } from '@/hooks/backlot/useSceneView';
+import { api } from '@/lib/api';
 import {
   BacklotScene,
   BacklotSceneCoverageStatus,
   SCENE_COVERAGE_STATUS_LABELS,
-  BacklotSceneShot,
   CoverageByScene,
-  BacklotCoverageStatus,
-  SHOT_TYPE_SHORT_LABELS,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -155,6 +156,7 @@ const SceneCard: React.FC<{
   onDragEnd?: () => void;
   onClick?: () => void;
   onQuickStatusChange?: (scene: BacklotScene, newStatus: BacklotSceneCoverageStatus) => void;
+  onPrefetch?: (sceneId: string) => void;
 }> = ({
   scene,
   canEdit,
@@ -164,6 +166,7 @@ const SceneCard: React.FC<{
   onDragEnd,
   onClick,
   onQuickStatusChange,
+  onPrefetch,
 }) => {
   const TimeIcon = scene.time_of_day ? TIME_OF_DAY_ICONS[scene.time_of_day] || Sun : Sun;
   const hasShots = coverageData && coverageData.total_shots > 0;
@@ -177,6 +180,7 @@ const SceneCard: React.FC<{
       onDragStart={(e) => onDragStart?.(e, scene)}
       onDragEnd={onDragEnd}
       onClick={onClick}
+      onMouseEnter={() => onPrefetch?.(scene.id)}
       className={cn(
         'group bg-charcoal-black border border-muted-gray/20 rounded-lg p-3 cursor-pointer transition-all',
         'hover:border-muted-gray/40 hover:shadow-lg',
@@ -243,7 +247,7 @@ const SceneCard: React.FC<{
               </Badge>
             )}
             {!hasShots && (
-              <Badge variant="outline" className="text-xs px-1.5 py-0 text-muted-gray/60">
+              <Badge variant="outline" className="text-xs px-1.5 py-0 text-bone-white">
                 No shots
               </Badge>
             )}
@@ -348,6 +352,7 @@ const BoardColumn: React.FC<{
   draggingScene: BacklotScene | null;
   onDragStart: (e: React.DragEvent, scene: BacklotScene) => void;
   onDragEnd: () => void;
+  onPrefetch?: (sceneId: string) => void;
 }> = ({
   config,
   scenes,
@@ -362,6 +367,7 @@ const BoardColumn: React.FC<{
   draggingScene,
   onDragStart,
   onDragEnd,
+  onPrefetch,
 }) => {
   const Icon = config.icon;
 
@@ -425,6 +431,7 @@ const BoardColumn: React.FC<{
               onDragEnd={onDragEnd}
               onClick={() => onSceneClick?.(scene)}
               onQuickStatusChange={onQuickStatusChange}
+              onPrefetch={onPrefetch}
             />
           ))
         )}
@@ -443,15 +450,54 @@ const SceneDetailPanel: React.FC<{
   onStatusChange: (newStatus: BacklotSceneCoverageStatus) => void;
 }> = ({ scene, projectId, canEdit, coverageData, onClose, onStatusChange }) => {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [updatingShots, setUpdatingShots] = useState<Set<string>>(new Set());
 
-  // Fetch shots for this scene
-  const { shots, isLoading: shotsLoading, createShot, updateCoverage } = useShots({
-    projectId,
-    sceneId: scene.id,
-  });
+  // Fetch comprehensive scene hub data (includes shots from both tables)
+  const { data: hubData, isLoading: hubLoading } = useSceneHub(projectId, scene.id);
+  const shots = hubData?.shots || [];
+  const breakdownItems = hubData?.breakdown_items || [];
+  const breakdownByType = hubData?.breakdown_by_type || {};
+  const dailiesClips = hubData?.dailies_clips || [];
+  const hubCoverage = hubData?.coverage_summary;
 
   // Fetch shot lists for this project (to attach to scene)
   const { shotLists } = useShotLists({ projectId });
+
+  // Mutation to toggle shot completion
+  const toggleShotMutation = useMutation({
+    mutationFn: async ({ shotId, isCompleted }: { shotId: string; isCompleted: boolean }) => {
+      return api.put(`/api/v1/backlot/shots/${shotId}`, { is_completed: isCompleted });
+    },
+    onMutate: ({ shotId }) => {
+      setUpdatingShots((prev) => new Set(prev).add(shotId));
+    },
+    onSettled: (_, __, { shotId }) => {
+      setUpdatingShots((prev) => {
+        const next = new Set(prev);
+        next.delete(shotId);
+        return next;
+      });
+    },
+    onSuccess: () => {
+      // Invalidate queries to refresh the data
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes', projectId, scene.id, 'hub'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-by-scene'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage-summary'] });
+    },
+    onError: () => {
+      toast({
+        title: 'Error',
+        description: 'Failed to update shot status',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleToggleShot = useCallback((shotId: string, isCompleted: boolean) => {
+    toggleShotMutation.mutate({ shotId, isCompleted });
+  }, [toggleShotMutation]);
 
   // Filter shot lists that are linked to this scene
   const sceneShotLists = useMemo(
@@ -461,22 +507,9 @@ const SceneDetailPanel: React.FC<{
 
   const TimeIcon = scene.time_of_day ? TIME_OF_DAY_ICONS[scene.time_of_day] || Sun : Sun;
 
-  const handleMarkAllShot = async () => {
-    const unshotIds = shots.filter((s) => s.coverage_status !== 'shot').map((s) => s.id);
-    if (unshotIds.length === 0) return;
-
-    for (const id of unshotIds) {
-      await updateCoverage.mutateAsync({ id, coverage_status: 'shot' });
-    }
-    toast({
-      title: 'Shots Updated',
-      description: `Marked ${unshotIds.length} shots as complete`,
-    });
-  };
-
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-[500px] sm:max-w-[500px] overflow-y-auto">
+      <SheetContent className="w-[500px] sm:max-w-[500px] overflow-y-auto bg-charcoal-black border-l border-muted-gray/20">
         <SheetHeader>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="text-sm font-mono">
@@ -524,102 +557,105 @@ const SceneDetailPanel: React.FC<{
 
           <Separator />
 
-          {/* Shot Coverage Progress */}
+          {/* Shots */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-medium text-muted-gray">Shot Coverage</h4>
-              {canEdit && shots.length > 0 && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleMarkAllShot}
-                  disabled={shots.every((s) => s.coverage_status === 'shot')}
-                >
-                  <Check className="w-3 h-3 mr-1" />
-                  Mark All Shot
-                </Button>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-muted-gray">
+                Shots {shots.length > 0 && `(${shots.length})`}
+              </h4>
+              {shots.length > 0 && hubCoverage && (
+                <span className={cn(
+                  'text-xs font-medium',
+                  hubCoverage.coverage_percent === 100 ? 'text-green-400' :
+                  hubCoverage.coverage_percent > 50 ? 'text-blue-400' : 'text-muted-gray'
+                )}>
+                  {hubCoverage.covered_shots}/{hubCoverage.total_shots} covered
+                </span>
               )}
             </div>
 
-            {coverageData && coverageData.total_shots > 0 ? (
+            {shots.length > 0 ? (
               <div className="space-y-3">
-                <div className="grid grid-cols-4 gap-2 text-center">
-                  <div className="bg-green-500/10 rounded-lg p-2">
-                    <div className="text-lg font-bold text-green-400">{coverageData.shot}</div>
-                    <div className="text-xs text-muted-gray">Shot</div>
-                  </div>
-                  <div className="bg-muted-gray/10 rounded-lg p-2">
-                    <div className="text-lg font-bold text-muted-gray">
-                      {coverageData.not_shot}
-                    </div>
-                    <div className="text-xs text-muted-gray">Not Shot</div>
-                  </div>
-                  <div className="bg-orange-500/10 rounded-lg p-2">
-                    <div className="text-lg font-bold text-orange-400">
-                      {coverageData.alt_needed}
-                    </div>
-                    <div className="text-xs text-muted-gray">Alt Needed</div>
-                  </div>
-                  <div className="bg-red-500/10 rounded-lg p-2">
-                    <div className="text-lg font-bold text-red-400">{coverageData.dropped}</div>
-                    <div className="text-xs text-muted-gray">Dropped</div>
-                  </div>
-                </div>
+                {/* Coverage progress bar */}
+                {hubCoverage && hubCoverage.total_shots > 0 && (
+                  <Progress
+                    value={hubCoverage.coverage_percent}
+                    className="h-2"
+                  />
+                )}
 
-                <Progress
-                  value={(coverageData.shot / coverageData.total_shots) * 100}
-                  className="h-2"
-                />
+                {/* Shots list */}
+                <ScrollArea className="h-[200px]">
+                  <div className="space-y-2">
+                    {shots.map((shot) => (
+                      <ShotRow
+                        key={shot.id}
+                        shot={shot}
+                        onToggle={canEdit ? handleToggleShot : undefined}
+                        isUpdating={updatingShots.has(shot.id)}
+                      />
+                    ))}
+                  </div>
+                </ScrollArea>
               </div>
             ) : (
-              <div className="text-center py-6 text-muted-gray text-sm border border-dashed border-muted-gray/30 rounded-lg">
+              <div className="text-center py-6 text-bone-white text-sm border border-dashed border-muted-gray/30 rounded-lg">
                 <Video className="w-8 h-8 mx-auto mb-2 opacity-50" />
                 <p>No shots defined for this scene</p>
-                {canEdit && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2"
-                    onClick={() => {
-                      createShot.mutate({
-                        projectId,
-                        sceneId: scene.id,
-                        shot_type: 'MS',
-                        description: 'New shot',
-                      });
-                    }}
-                  >
-                    <Plus className="w-3 h-3 mr-1" />
-                    Add First Shot
-                  </Button>
-                )}
+                <p className="text-xs text-muted-gray mt-1">
+                  Add shots from the Shot Lists tab
+                </p>
               </div>
             )}
           </div>
 
-          <Separator />
-
-          {/* Shots List */}
-          {shots.length > 0 && (
-            <div>
-              <h4 className="text-sm font-medium text-muted-gray mb-2">
-                Shots ({shots.length})
-              </h4>
-              <ScrollArea className="h-[200px]">
-                <div className="space-y-2">
-                  {shots.map((shot) => (
-                    <ShotRow
-                      key={shot.id}
-                      shot={shot}
-                      canEdit={canEdit}
-                      onStatusChange={(status) =>
-                        updateCoverage.mutate({ id: shot.id, coverage_status: status })
-                      }
-                    />
-                  ))}
+          {/* Breakdown Summary */}
+          {breakdownItems.length > 0 && (
+            <>
+              <Separator />
+              <div>
+                <h4 className="text-sm font-medium text-muted-gray mb-2">Breakdown</h4>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(breakdownByType).map(([type, items]) => {
+                    const typeInfo = BREAKDOWN_TYPES.find((t) => t.value === type);
+                    return (
+                      <Badge
+                        key={type}
+                        variant="outline"
+                        className="text-xs"
+                        style={{
+                          borderColor: typeInfo?.color.replace('bg-', '') || undefined,
+                        }}
+                      >
+                        {items.length} {typeInfo?.label || type}
+                      </Badge>
+                    );
+                  })}
                 </div>
-              </ScrollArea>
-            </div>
+              </div>
+            </>
+          )}
+
+          {/* Dailies Summary */}
+          {dailiesClips.length > 0 && (
+            <>
+              <Separator />
+              <div>
+                <h4 className="text-sm font-medium text-muted-gray mb-2">Dailies</h4>
+                <div className="flex items-center gap-3 text-sm text-bone-white">
+                  <div className="flex items-center gap-1">
+                    <Video className="w-4 h-4 text-muted-gray" />
+                    <span>{dailiesClips.length} clips</span>
+                  </div>
+                  {hubCoverage && hubCoverage.circle_takes > 0 && (
+                    <div className="flex items-center gap-1">
+                      <CheckCircle2 className="w-4 h-4 text-green-400" />
+                      <span>{hubCoverage.circle_takes} circle takes</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
           )}
 
           {/* Linked Shot Lists */}
@@ -691,57 +727,44 @@ const SceneDetailPanel: React.FC<{
   );
 };
 
-// Shot row component for the detail panel
+// Shot row component for the detail panel (using ShotSummary from hub)
 const ShotRow: React.FC<{
-  shot: BacklotSceneShot;
-  canEdit: boolean;
-  onStatusChange: (status: BacklotCoverageStatus) => void;
-}> = ({ shot, canEdit, onStatusChange }) => {
-  const statusColors: Record<BacklotCoverageStatus, string> = {
-    not_shot: 'text-muted-gray',
-    shot: 'text-green-400',
-    alt_needed: 'text-orange-400',
-    dropped: 'text-red-400',
-  };
-
+  shot: ShotSummary;
+  onToggle?: (id: string, isCompleted: boolean) => void;
+  isUpdating?: boolean;
+}> = ({ shot, onToggle, isUpdating }) => {
   return (
-    <div className="flex items-center gap-3 bg-charcoal-black border border-muted-gray/20 rounded-lg p-2">
+    <div className={cn(
+      "flex items-center gap-3 bg-charcoal-black border border-muted-gray/20 rounded-lg p-2",
+      isUpdating && "opacity-50"
+    )}>
+      <Checkbox
+        checked={shot.is_covered}
+        onCheckedChange={(checked) => onToggle?.(shot.id, !!checked)}
+        disabled={isUpdating}
+        className="data-[state=checked]:bg-green-500 data-[state=checked]:border-green-500"
+      />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-xs font-mono shrink-0">
             {shot.shot_number}
           </Badge>
-          <Badge variant="secondary" className="text-xs">
-            {SHOT_TYPE_SHORT_LABELS[shot.shot_type] || shot.shot_type}
-          </Badge>
-          {shot.lens && <span className="text-xs text-muted-gray">{shot.lens}</span>}
+          {shot.frame_size && (
+            <Badge variant="secondary" className="text-xs">
+              {shot.frame_size}
+            </Badge>
+          )}
+          {shot.camera_movement && (
+            <span className="text-xs text-muted-gray">{shot.camera_movement}</span>
+          )}
         </div>
         {shot.description && (
-          <p className="text-xs text-muted-gray truncate mt-1">{shot.description}</p>
+          <p className={cn(
+            "text-xs truncate mt-1",
+            shot.is_covered ? "text-muted-gray line-through" : "text-muted-gray"
+          )}>{shot.description}</p>
         )}
       </div>
-
-      {canEdit ? (
-        <Select
-          value={shot.coverage_status}
-          onValueChange={(value) => onStatusChange(value as BacklotCoverageStatus)}
-        >
-          <SelectTrigger className="w-[100px] h-7 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="not_shot">Not Shot</SelectItem>
-            <SelectItem value="shot">Shot</SelectItem>
-            <SelectItem value="alt_needed">Alt Needed</SelectItem>
-            <SelectItem value="dropped">Dropped</SelectItem>
-          </SelectContent>
-        </Select>
-      ) : (
-        <Badge variant="outline" className={cn('text-xs', statusColors[shot.coverage_status])}>
-          {shot.coverage_status === 'shot' && <Check className="w-3 h-3 mr-1" />}
-          {shot.coverage_status.replace('_', ' ')}
-        </Badge>
-      )}
     </div>
   );
 };
@@ -763,6 +786,12 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
     scriptId,
   });
   const { updateScene } = useSceneMutations(projectId);
+
+  // Prefetch function for scene hub data on hover
+  const prefetchSceneHub = usePrefetchSceneHub();
+  const handlePrefetchScene = useCallback((sceneId: string) => {
+    prefetchSceneHub(projectId, sceneId);
+  }, [projectId, prefetchSceneHub]);
 
   // Fetch coverage data for all scenes
   const { data: coverageData } = useCoverageByScene(projectId);
@@ -983,6 +1012,7 @@ const CoverageBoard: React.FC<CoverageBoardProps> = ({
             draggingScene={draggingScene}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
+            onPrefetch={handlePrefetchScene}
           />
         ))}
       </div>

@@ -198,13 +198,13 @@ function PerDiemView({ projectId, canEdit }: PerDiemViewProps) {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">{entries.length}</div>
             <div className="text-sm text-muted-foreground">Total Claims</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-yellow-500">
               {formatCurrency(totalPending)}
@@ -212,7 +212,7 @@ function PerDiemView({ projectId, canEdit }: PerDiemViewProps) {
             <div className="text-sm text-muted-foreground">Pending</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-green-500">
               {formatCurrency(totalApproved)}
@@ -220,7 +220,7 @@ function PerDiemView({ projectId, canEdit }: PerDiemViewProps) {
             <div className="text-sm text-muted-foreground">Approved</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">
               {formatCurrency(settings?.per_diem_full_day ?? 65)}
@@ -233,7 +233,7 @@ function PerDiemView({ projectId, canEdit }: PerDiemViewProps) {
       {/* Entries List - Grouped by Date */}
       <div className="space-y-4">
         {sortedDates.length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/20">
             <CardContent className="py-12 text-center text-muted-foreground">
               <Utensils className="w-12 h-12 mx-auto mb-4 opacity-20" />
               <p>No per diem claims found</p>
@@ -249,7 +249,7 @@ function PerDiemView({ projectId, canEdit }: PerDiemViewProps) {
           </Card>
         ) : (
           sortedDates.map(date => (
-            <Card key={date}>
+            <Card key={date} className="bg-charcoal-black border-muted-gray/20">
               <CardHeader className="py-3">
                 <CardTitle className="text-sm font-medium flex items-center gap-2">
                   <Calendar className="w-4 h-4" />
@@ -804,7 +804,7 @@ function BulkPerDiemModal({
             </div>
           )}
 
-          <Card className="bg-muted/50">
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
             <CardContent className="py-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">

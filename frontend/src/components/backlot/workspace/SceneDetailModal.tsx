@@ -436,7 +436,7 @@ const SceneDetailModal: React.FC<SceneDetailModalProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col">
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden flex flex-col bg-charcoal-black border-muted-gray/20">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             <span className="text-2xl font-bold">{displayScene?.scene_number}</span>

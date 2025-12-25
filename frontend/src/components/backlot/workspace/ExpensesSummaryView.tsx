@@ -322,7 +322,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
       <div className="space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map((i) => (
-            <Card key={i}>
+            <Card key={i} className="bg-charcoal-black border-muted-gray/20">
               <CardContent className="p-6">
                 <Skeleton className="h-4 w-24 mb-2" />
                 <Skeleton className="h-8 w-32" />
@@ -330,7 +330,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
             </Card>
           ))}
         </div>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <Skeleton className="h-64 w-full" />
           </CardContent>
@@ -397,7 +397,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
 
       {/* Overview Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-muted-foreground mb-2">
               <DollarSign className="h-4 w-4" />
@@ -407,7 +407,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-amber-500 mb-2">
               <Clock className="h-4 w-4" />
@@ -417,7 +417,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-green-500 mb-2">
               <CheckCircle2 className="h-4 w-4" />
@@ -427,7 +427,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-blue-500 mb-2">
               <TrendingUp className="h-4 w-4" />
@@ -440,7 +440,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
 
       {/* Company Card vs Personal Card Breakdown */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-purple-500 mb-2">
               <Building2 className="h-4 w-4" />
@@ -453,7 +453,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-orange-500 mb-2">
               <Wallet className="h-4 w-4" />
@@ -466,7 +466,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="p-6">
             <div className="flex items-center gap-2 text-cyan-500 mb-2">
               <PieChart className="h-4 w-4" />
@@ -482,7 +482,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Expense Type Breakdown */}
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <BarChart3 className="h-5 w-5" />
@@ -545,7 +545,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
         </Card>
 
         {/* By Person Breakdown */}
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <User className="h-5 w-5" />
@@ -619,7 +619,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
 
       {/* Budget vs Actuals Comparison */}
       {(budgetActualsData?.categories?.length > 0 || budgetSummaryData?.categories?.length > 0) && (
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <PieChart className="h-5 w-5" />

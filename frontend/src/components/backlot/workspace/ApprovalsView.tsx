@@ -16,6 +16,12 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -36,6 +42,7 @@ import {
   Car,
   Briefcase,
   Utensils,
+  Lightbulb,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
@@ -122,6 +129,7 @@ export default function ApprovalsView({
   const [categoryFilter, setCategoryFilter] = useState<ApprovalCategory | 'all'>('all');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedItem, setSelectedItem] = useState<{ type: ApprovalItemType; id: string } | null>(null);
+  const [showTipsModal, setShowTipsModal] = useState(false);
 
   // Check permissions
   const {
@@ -399,6 +407,55 @@ export default function ApprovalsView({
           Refresh
         </Button>
       </div>
+
+      {/* Tips CTA Button */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setShowTipsModal(true)}
+        className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+      >
+        <Lightbulb className="w-4 h-4 mr-2" />
+        Tips for Approvals
+      </Button>
+
+      {/* Tips Modal */}
+      <Dialog open={showTipsModal} onOpenChange={setShowTipsModal}>
+        <DialogContent className="bg-deep-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <Lightbulb className="w-5 h-5 text-amber-400" />
+              Approval Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm text-muted-gray">
+            <div className="space-y-2">
+              <h4 className="font-medium text-bone-white">Getting Started</h4>
+              <ul className="space-y-1 ml-4">
+                <li>• Click any pending item to review its details</li>
+                <li>• Use the category cards to filter by expense, invoice, timecard, or PO</li>
+                <li>• Items are sorted by submission date (oldest first)</li>
+              </ul>
+            </div>
+            <div className="space-y-2">
+              <h4 className="font-medium text-bone-white">Approving Items</h4>
+              <ul className="space-y-1 ml-4">
+                <li>• Review all attached receipts and documentation</li>
+                <li>• Check that amounts match the supporting documents</li>
+                <li>• Add notes when rejecting to help the submitter fix issues</li>
+              </ul>
+            </div>
+            <div className="space-y-2">
+              <h4 className="font-medium text-bone-white">Workflow</h4>
+              <ul className="space-y-1 ml-4">
+                <li>• Approved items move to the next step automatically</li>
+                <li>• Rejected items are sent back to the submitter</li>
+                <li>• You'll receive notifications when new items need review</li>
+              </ul>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Quick Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

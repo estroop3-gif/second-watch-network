@@ -495,7 +495,10 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 
@@ -529,7 +532,10 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 
@@ -553,7 +559,11 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 
@@ -628,9 +638,11 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 
@@ -664,9 +676,11 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 
@@ -690,9 +704,11 @@ export function useLineItemMutations(budgetId: string | null, projectId: string 
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', projectId] });
     },
   });
 

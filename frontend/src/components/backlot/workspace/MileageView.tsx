@@ -173,13 +173,13 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
 
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">{entries.length}</div>
             <div className="text-sm text-muted-foreground">Total Entries</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-yellow-500">
               {formatCurrency(totalPending)}
@@ -187,7 +187,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
             <div className="text-sm text-muted-foreground">Pending</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold text-green-500">
               {formatCurrency(totalApproved)}
@@ -195,7 +195,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
             <div className="text-sm text-muted-foreground">Approved</div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">
               ${settings?.mileage_rate ?? 0.67}/mi
@@ -208,7 +208,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
       {/* Entries List */}
       <div className="space-y-3">
         {entries.length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/20">
             <CardContent className="py-12 text-center text-muted-foreground">
               <Car className="w-12 h-12 mx-auto mb-4 opacity-20" />
               <p>No mileage entries found</p>
@@ -306,7 +306,7 @@ function MileageEntryCard({
   const purposeLabel = MILEAGE_PURPOSE_OPTIONS.find(p => p.value === entry.purpose)?.label || entry.purpose;
 
   return (
-    <Card className="hover:border-foreground/20 transition-colors">
+    <Card className="bg-charcoal-black border-muted-gray/20 hover:border-muted-gray/40 transition-colors">
       <CardContent className="py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
@@ -648,7 +648,7 @@ function MileageFormModal({
             </div>
           )}
 
-          <Card className="bg-muted/50">
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
             <CardContent className="py-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">

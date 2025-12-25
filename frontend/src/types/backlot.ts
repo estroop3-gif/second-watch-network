@@ -146,6 +146,32 @@ export interface ProductionDaySceneReorderInput {
   scene_orders: { scene_id: string; sort_order: number }[];
 }
 
+// Production Day / Call Sheet Sync
+export interface SyncStatusResponse {
+  has_linked_call_sheet: boolean;
+  call_sheet_id: string | null;
+  is_in_sync: boolean;
+  stale_entity: 'production_day' | 'call_sheet' | null;
+  fields_differ: string[];
+  day_updated_at: string | null;
+  sheet_updated_at: string | null;
+}
+
+export interface BidirectionalSyncRequest {
+  force_direction?: 'schedule_to_callsheet' | 'callsheet_to_schedule';
+  sync_date?: boolean;
+  sync_times?: boolean;
+  sync_location?: boolean;
+}
+
+export interface BidirectionalSyncResponse {
+  success: boolean;
+  direction: 'schedule_to_callsheet' | 'callsheet_to_schedule';
+  fields_synced: string[];
+  source: 'production_day' | 'call_sheet';
+  target: 'production_day' | 'call_sheet';
+}
+
 // Call Sheet
 export interface BacklotCallSheet {
   id: string;
@@ -2508,6 +2534,8 @@ export interface SceneInput {
   set_name?: string | null;
   location_id?: string | null;
   page_start?: number | null;
+  page_end?: number | null;
+  page_length?: number | null;
   page_count?: string | null;
   synopsis?: string | null;
   notes?: string | null;

@@ -9,12 +9,13 @@ import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 import {
   Collapsible,
@@ -27,6 +28,7 @@ import {
   Clock,
   MapPin,
   Check,
+  CheckCircle2,
   MoreVertical,
   Edit,
   Trash2,
@@ -42,8 +44,16 @@ import {
   FileSpreadsheet,
   ExternalLink,
   Wand2,
+  Lightbulb,
+  Layers,
+  ListChecks,
+  Target,
+  Users,
 } from 'lucide-react';
 import { AutoSchedulerWizard } from './schedule/AutoSchedulerWizard';
+import { SyncStatusBadge } from './SyncStatusBadge';
+import { BidirectionalSyncModal } from './BidirectionalSyncModal';
+import { RefreshCw } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -420,6 +430,7 @@ const DayCard: React.FC<{
 }> = ({ day, projectId, canEdit, onEdit, onToggleComplete, onDelete, onViewDetail }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showScenePanel, setShowScenePanel] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
   const { scenes, isLoading: loadingScenes } = useProductionDayScenes(day.id);
   const { data: linkedData } = useLinkedCallSheet(day.id);
   const createCallSheet = useCreateCallSheetFromDay(day.id);
@@ -499,6 +510,13 @@ const DayCard: React.FC<{
                     Call Sheet
                   </Badge>
                 )}
+
+                {/* Sync Status Badge */}
+                <SyncStatusBadge
+                  dayId={day.id}
+                  onSyncClick={() => setShowSyncModal(true)}
+                  showQuickSync={linkedData?.hasCallSheet}
+                />
 
                 {day.is_completed && (
                   <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
@@ -582,16 +600,22 @@ const DayCard: React.FC<{
                     <DropdownMenuSeparator />
                     {/* Call Sheet Integration */}
                     {linkedData?.hasCallSheet ? (
-                      <DropdownMenuItem asChild>
-                        <a
-                          href={`/backlot/${projectId}/call-sheets/${linkedData.callSheet?.id}`}
-                          className="flex items-center"
-                        >
-                          <FileSpreadsheet className="w-4 h-4 mr-2" />
-                          View Call Sheet
-                          <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
-                        </a>
-                      </DropdownMenuItem>
+                      <>
+                        <DropdownMenuItem asChild>
+                          <a
+                            href={`/backlot/${projectId}/call-sheets/${linkedData.callSheet?.id}`}
+                            className="flex items-center"
+                          >
+                            <FileSpreadsheet className="w-4 h-4 mr-2" />
+                            View Call Sheet
+                            <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
+                          </a>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setShowSyncModal(true)}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Sync with Call Sheet
+                        </DropdownMenuItem>
+                      </>
                     ) : (
                       <DropdownMenuItem
                         onClick={handleCreateCallSheet}
@@ -715,6 +739,13 @@ const DayCard: React.FC<{
           />
         </div>
       )}
+
+      {/* Bidirectional Sync Modal */}
+      <BidirectionalSyncModal
+        dayId={day.id}
+        open={showSyncModal}
+        onOpenChange={setShowSyncModal}
+      />
     </div>
   );
 };
@@ -862,6 +893,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
   const [prefilledDate, setPrefilledDate] = useState<string | null>(null);
   const [showAutoScheduler, setShowAutoScheduler] = useState(false);
   const [viewingDay, setViewingDay] = useState<BacklotProductionDay | null>(null);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Scene selection state for Add/Edit Day form
   const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>([]);
@@ -1105,6 +1137,17 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
             </Button>
           </div>
 
+          {/* Tips Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <Lightbulb className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
+
           {canEdit && (
             <>
               <Button
@@ -1126,6 +1169,123 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
           )}
         </div>
       </div>
+
+      {/* Summary Stats */}
+      {days.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className="bg-charcoal-black border-muted-gray/20">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-500/10">
+                  <Calendar className="w-5 h-5 text-blue-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-bone-white">{days.length}</p>
+                  <p className="text-xs text-muted-gray">Total Days</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-charcoal-black border-muted-gray/20">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-green-500/10">
+                  <CheckCircle2 className="w-5 h-5 text-green-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-bone-white">
+                    {days.filter(d => d.is_completed).length}
+                  </p>
+                  <p className="text-xs text-muted-gray">Wrapped</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-charcoal-black border-muted-gray/20">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent-yellow/10">
+                  <CalendarDays className="w-5 h-5 text-accent-yellow" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-bone-white">
+                    {days.filter(d => !d.is_completed).length}
+                  </p>
+                  <p className="text-xs text-muted-gray">Remaining</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-charcoal-black border-muted-gray/20">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-purple-500/10">
+                  <Target className="w-5 h-5 text-purple-400" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-bone-white">
+                    {days.length > 0 ? Math.round((days.filter(d => d.is_completed).length / days.length) * 100) : 0}%
+                  </p>
+                  <p className="text-xs text-muted-gray">Complete</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Today's Shoot Banner */}
+      {(() => {
+        const today = format(new Date(), 'yyyy-MM-dd');
+        const todayShoot = days.find(d => d.date === today);
+        if (!todayShoot) return null;
+        return (
+          <Card
+            className="bg-gradient-to-r from-green-500/20 to-green-600/10 border-green-500/30 cursor-pointer hover:border-green-400/50 transition-colors"
+            onClick={() => setViewingDay(todayShoot)}
+          >
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className="flex flex-col items-center justify-center w-16 h-16 rounded-lg bg-green-500/30">
+                    <span className="text-[10px] font-bold text-green-300 uppercase">Today</span>
+                    <span className="text-2xl font-bold text-green-300">{todayShoot.day_number}</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-green-300 text-lg">Shooting Today</span>
+                      {todayShoot.title && (
+                        <span className="text-green-400/70">— {todayShoot.title}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-4 mt-1 text-sm text-green-400/80">
+                      {todayShoot.general_call_time && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5" />
+                          Call: {todayShoot.general_call_time}
+                        </span>
+                      )}
+                      {todayShoot.location_name && (
+                        <span className="flex items-center gap-1">
+                          <MapPin className="w-3.5 h-3.5" />
+                          {todayShoot.location_name}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-green-400">View Details</span>
+                  <ChevronRight className="w-5 h-5 text-green-400" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* View Content */}
       {viewMode === 'list' ? (
@@ -1432,6 +1592,89 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
         }}
         canEdit={canEdit}
       />
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <Lightbulb className="w-5 h-5 text-amber-400" />
+              Schedule Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <CalendarDays className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Production Days</h4>
+                <p className="text-sm text-muted-gray">
+                  Each production day represents a single shoot day. Add dates, call times,
+                  and locations to plan your schedule.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <Film className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Scene Assignment</h4>
+                <p className="text-sm text-muted-gray">
+                  Assign scenes to production days from the day menu. Group scenes by
+                  location or lighting to maximize efficiency.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Wand2 className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Auto-Scheduler</h4>
+                <p className="text-sm text-muted-gray">
+                  Use the Auto-Schedule wizard to automatically distribute scenes
+                  across production days based on page count and scene grouping.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-emerald-500/10 rounded-lg">
+                <FileSpreadsheet className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Call Sheets</h4>
+                <p className="text-sm text-muted-gray">
+                  Generate call sheets from production days with one click.
+                  Assigned scenes are automatically included on the call sheet.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <Check className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Day Completion</h4>
+                <p className="text-sm text-muted-gray">
+                  Mark days as complete after wrap to track your progress.
+                  Past due days are highlighted in orange.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

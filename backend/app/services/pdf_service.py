@@ -29,15 +29,19 @@ def generate_call_sheet_pdf_html(
     template_type: str,
     call_date: str,
     shoot_day: Optional[int],
+    total_shoot_days: Optional[int],
     general_call_time: str,
     crew_call_time: Optional[str],
     first_shot_time: Optional[str],
     wrap_time: Optional[str],
-    locations: List[Dict[str, Any]],
-    scenes: List[Dict[str, Any]],
-    cast: List[Dict[str, Any]],
-    crew: List[Dict[str, Any]],
-    schedule_blocks: List[Dict[str, Any]],
+    breakfast_time: Optional[str] = None,
+    lunch_time: Optional[str] = None,
+    dinner_time: Optional[str] = None,
+    locations: List[Dict[str, Any]] = None,
+    scenes: List[Dict[str, Any]] = None,
+    cast: List[Dict[str, Any]] = None,
+    crew: List[Dict[str, Any]] = None,
+    schedule_blocks: List[Dict[str, Any]] = None,
     weather_info: Optional[str] = None,
     sunrise_time: Optional[str] = None,
     sunset_time: Optional[str] = None,
@@ -46,9 +50,21 @@ def generate_call_sheet_pdf_html(
     hospital_name: Optional[str] = None,
     hospital_address: Optional[str] = None,
     hospital_phone: Optional[str] = None,
+    set_medic: Optional[str] = None,
+    fire_safety_officer: Optional[str] = None,
     key_contacts: Dict[str, Any] = None,
     custom_contacts: List[Dict[str, Any]] = None,
     department_notes: Dict[str, str] = None,
+    general_notes: Optional[str] = None,
+    advance_schedule: Optional[str] = None,
+    production_company: Optional[str] = None,
+    production_title: Optional[str] = None,
+    production_office_phone: Optional[str] = None,
+    production_email: Optional[str] = None,
+    fallback_location_name: Optional[str] = None,
+    fallback_location_address: Optional[str] = None,
+    fallback_parking_notes: Optional[str] = None,
+    fallback_basecamp: Optional[str] = None,
     logo_url: Optional[str] = None,
     logo_base64: Optional[str] = None,
 ) -> str:
@@ -74,31 +90,53 @@ def generate_call_sheet_pdf_html(
         logo_html = f'<img src="{logo_url}" alt="Logo" style="max-height: 60px; max-width: 200px;">'
 
     # Header info
-    shoot_day_text = f"Day {shoot_day}" if shoot_day else ""
+    shoot_day_text = ""
+    if shoot_day:
+        shoot_day_text = f"Day {shoot_day}"
+        if total_shoot_days:
+            shoot_day_text += f" of {total_shoot_days}"
     call_sheet_num = f"#{call_sheet_number}" if call_sheet_number else ""
+
+    # Production info
+    production_info_html = ""
+    if production_company or production_title:
+        prod_parts = []
+        if production_company:
+            prod_parts.append(production_company)
+        if production_title and production_title != project_title:
+            prod_parts.append(production_title)
+        if prod_parts:
+            production_info_html = f'<div class="production-info">{" • ".join(prod_parts)}</div>'
 
     # Locations HTML
     locations_html = ""
     for i, loc in enumerate(locations or []):
         loc_num = loc.get("location_number", i + 1)
+        parking = loc.get('parking_info') or loc.get('parking_instructions') or ''
+        basecamp = loc.get('basecamp_location') or loc.get('basecamp') or ''
+        call_time = loc.get('call_time') or ''
+        notes = loc.get('notes') or ''
+
         locations_html += f"""
         <div class="location-box">
-            <div class="location-header">Location {loc_num}</div>
+            <div class="location-header">Location {loc_num}{f' - Call: {call_time}' if call_time else ''}</div>
             <div class="location-name">{loc.get('name', '')}</div>
             <div class="location-address">{loc.get('address', '')}</div>
-            {f'<div class="location-parking">Parking: {loc.get("parking_info", "")}</div>' if loc.get("parking_info") else ''}
-            {f'<div class="location-notes">{loc.get("notes", "")}</div>' if loc.get("notes") else ''}
+            {f'<div class="location-parking"><strong>Parking:</strong> {parking}</div>' if parking else ''}
+            {f'<div class="location-basecamp"><strong>Basecamp:</strong> {basecamp}</div>' if basecamp else ''}
+            {f'<div class="location-notes">{notes}</div>' if notes else ''}
         </div>
         """
 
-    # Default single location if no locations array
-    if not locations_html and key_contacts:
-        loc = key_contacts.get("location") or {}
+    # Default single location if no locations array - use fallback fields from call sheet
+    if not locations_html and fallback_location_name:
         locations_html = f"""
         <div class="location-box">
             <div class="location-header">Location</div>
-            <div class="location-name">{loc.get('name', 'TBD')}</div>
-            <div class="location-address">{loc.get('address', '')}</div>
+            <div class="location-name">{fallback_location_name}</div>
+            {f'<div class="location-address">{fallback_location_address}</div>' if fallback_location_address else ''}
+            {f'<div class="location-parking"><strong>Parking:</strong> {fallback_parking_notes}</div>' if fallback_parking_notes else ''}
+            {f'<div class="location-basecamp"><strong>Basecamp:</strong> {fallback_basecamp}</div>' if fallback_basecamp else ''}
         </div>
         """
 
@@ -143,16 +181,23 @@ def generate_call_sheet_pdf_html(
     if cast:
         cast_rows = ""
         for person in cast:
+            # Get call time and format it
+            call_time = person.get('call_time', '')
+            if hasattr(call_time, 'strftime'):
+                call_time = call_time.strftime('%H:%M')
+            makeup_time = person.get('makeup_time', '')
+            if hasattr(makeup_time, 'strftime'):
+                makeup_time = makeup_time.strftime('%H:%M')
+
             cast_rows += f"""
             <tr>
-                <td class="cast-id">{person.get('cast_id', '')}</td>
+                <td class="cast-id">{person.get('cast_number', '') or person.get('cast_id', '')}</td>
                 <td class="cast-name">{person.get('name', '')}</td>
                 <td class="cast-character">{person.get('character_name', '') or person.get('role', '')}</td>
-                <td class="cast-call">{person.get('call_time', '')}</td>
-                <td class="cast-pickup">{person.get('pickup_time', '')}</td>
-                <td class="cast-mu">{person.get('makeup_time', '')}</td>
-                <td class="cast-set">{person.get('on_set_time', '')}</td>
-                <td class="cast-notes">{person.get('notes', '')}</td>
+                <td class="cast-call">{call_time}</td>
+                <td class="cast-mu">{makeup_time}</td>
+                <td class="cast-contact">{person.get('phone', '') or person.get('email', '')}</td>
+                <td class="cast-notes">{person.get('notes', '') or person.get('wardrobe_notes', '')}</td>
             </tr>
             """
         cast_html = f"""
@@ -165,9 +210,8 @@ def generate_call_sheet_pdf_html(
                         <th style="width: 120px;">Name</th>
                         <th style="width: 100px;">Character</th>
                         <th style="width: 60px;">Call</th>
-                        <th style="width: 60px;">Pickup</th>
                         <th style="width: 60px;">M/U</th>
-                        <th style="width: 60px;">On Set</th>
+                        <th style="width: 100px;">Contact</th>
                         <th>Notes</th>
                     </tr>
                 </thead>
@@ -183,26 +227,44 @@ def generate_call_sheet_pdf_html(
     if crew:
         departments: Dict[str, List] = {}
         for person in crew:
-            dept = person.get('department', 'Other')
+            dept = person.get('department', 'Other') or 'Other'
             if dept not in departments:
                 departments[dept] = []
             departments[dept].append(person)
 
+        dept_sections = ""
         for dept, members in departments.items():
             dept_rows = ""
             for person in members:
+                # Format call time
+                call_time = person.get('call_time', '')
+                if hasattr(call_time, 'strftime'):
+                    call_time = call_time.strftime('%H:%M')
+                # Get contact info
+                contact = person.get('phone', '') or person.get('email', '')
+
                 dept_rows += f"""
                 <tr>
                     <td class="crew-name">{person.get('name', '')}</td>
                     <td class="crew-role">{person.get('role', '')}</td>
-                    <td class="crew-call">{person.get('call_time', '')}</td>
+                    <td class="crew-call">{call_time}</td>
+                    <td class="crew-contact">{contact}</td>
                     <td class="crew-notes">{person.get('notes', '')}</td>
                 </tr>
                 """
-            crew_html += f"""
+            dept_sections += f"""
             <div class="department-section">
                 <div class="department-header">{dept}</div>
                 <table class="crew-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 120px;">Name</th>
+                            <th style="width: 100px;">Role</th>
+                            <th style="width: 60px;">Call</th>
+                            <th style="width: 100px;">Contact</th>
+                            <th>Notes</th>
+                        </tr>
+                    </thead>
                     <tbody>
                         {dept_rows}
                     </tbody>
@@ -213,7 +275,7 @@ def generate_call_sheet_pdf_html(
         crew_html = f"""
         <div class="section">
             <div class="section-header">Crew</div>
-            {crew_html}
+            {dept_sections}
         </div>
         """
 
@@ -249,33 +311,46 @@ def generate_call_sheet_pdf_html(
 
     # Key contacts section
     contacts_html = ""
-    if key_contacts or custom_contacts:
-        contact_items = ""
-        if key_contacts:
-            if key_contacts.get("producer", {}).get("name"):
-                p = key_contacts["producer"]
-                contact_items += f'<div class="contact-item"><span class="contact-title">Producer:</span> {p.get("name")} {p.get("phone", "")}</div>'
-            if key_contacts.get("upm", {}).get("name"):
-                p = key_contacts["upm"]
-                contact_items += f'<div class="contact-item"><span class="contact-title">UPM:</span> {p.get("name")} {p.get("phone", "")}</div>'
-            if key_contacts.get("first_ad", {}).get("name"):
-                p = key_contacts["first_ad"]
-                contact_items += f'<div class="contact-item"><span class="contact-title">1st AD:</span> {p.get("name")} {p.get("phone", "")}</div>'
-            if key_contacts.get("director", {}).get("name"):
-                p = key_contacts["director"]
-                contact_items += f'<div class="contact-item"><span class="contact-title">Director:</span> {p.get("name")} {p.get("phone", "")}</div>'
+    contact_items = ""
 
-        if custom_contacts:
-            for cc in custom_contacts:
-                contact_items += f'<div class="contact-item"><span class="contact-title">{cc.get("title", "")}:</span> {cc.get("name", "")} {cc.get("phone", "")}</div>'
+    # Production office info
+    if production_office_phone or production_email:
+        office_info = ""
+        if production_office_phone:
+            office_info += production_office_phone
+        if production_email:
+            office_info += f" | {production_email}" if office_info else production_email
+        contact_items += f'<div class="contact-item"><span class="contact-title">Production Office:</span> {office_info}</div>'
 
-        if contact_items:
-            contacts_html = f"""
-            <div class="contacts-box">
-                <div class="section-header">Key Contacts</div>
-                {contact_items}
-            </div>
-            """
+    # Key contacts from structured data
+    if key_contacts:
+        if key_contacts.get("producer", {}).get("name"):
+            p = key_contacts["producer"]
+            contact_items += f'<div class="contact-item"><span class="contact-title">Producer:</span> {p.get("name")} {p.get("phone", "")}</div>'
+        if key_contacts.get("upm", {}).get("name"):
+            p = key_contacts["upm"]
+            contact_items += f'<div class="contact-item"><span class="contact-title">UPM:</span> {p.get("name")} {p.get("phone", "")}</div>'
+        if key_contacts.get("first_ad", {}).get("name"):
+            p = key_contacts["first_ad"]
+            contact_items += f'<div class="contact-item"><span class="contact-title">1st AD:</span> {p.get("name")} {p.get("phone", "")}</div>'
+        if key_contacts.get("director", {}).get("name"):
+            p = key_contacts["director"]
+            contact_items += f'<div class="contact-item"><span class="contact-title">Director:</span> {p.get("name")} {p.get("phone", "")}</div>'
+
+    # Custom contacts
+    if custom_contacts:
+        for cc in custom_contacts:
+            cc_phone = f" {cc.get('phone', '')}" if cc.get('phone') else ""
+            cc_email = f" | {cc.get('email', '')}" if cc.get('email') else ""
+            contact_items += f'<div class="contact-item"><span class="contact-title">{cc.get("title", "")}:</span> {cc.get("name", "")}{cc_phone}{cc_email}</div>'
+
+    if contact_items:
+        contacts_html = f"""
+        <div class="contacts-box">
+            <div class="section-header">Key Contacts</div>
+            {contact_items}
+        </div>
+        """
 
     # Department notes
     dept_notes_html = ""
@@ -316,18 +391,28 @@ def generate_call_sheet_pdf_html(
 
     # Safety section
     safety_html = ""
-    if safety_notes or hospital_name:
+    if safety_notes or hospital_name or set_medic or fire_safety_officer:
         safety_content = ""
         if safety_notes:
             safety_content += f'<div class="safety-notes">{safety_notes}</div>'
+
+        # Safety personnel
+        safety_personnel = []
+        if set_medic:
+            safety_personnel.append(f"<strong>Set Medic:</strong> {set_medic}")
+        if fire_safety_officer:
+            safety_personnel.append(f"<strong>Fire Safety:</strong> {fire_safety_officer}")
+        if safety_personnel:
+            safety_content += f'<div class="safety-personnel">{" &bull; ".join(safety_personnel)}</div>'
+
         if hospital_name:
-            safety_content += f"""
-            <div class="hospital-info">
-                <strong>Nearest Hospital:</strong> {hospital_name}<br>
-                {hospital_address or ''}<br>
-                {hospital_phone or ''}
-            </div>
-            """
+            hospital_parts = [f"<strong>Nearest Hospital:</strong> {hospital_name}"]
+            if hospital_address:
+                hospital_parts.append(hospital_address)
+            if hospital_phone:
+                hospital_parts.append(hospital_phone)
+            safety_content += f'<div class="hospital-info">{" | ".join(hospital_parts)}</div>'
+
         safety_html = f"""
         <div class="section safety-section">
             <div class="section-header">Safety Information</div>
@@ -342,6 +427,42 @@ def generate_call_sheet_pdf_html(
         <div class="section">
             <div class="section-header">Special Instructions</div>
             <div class="special-instructions">{special_instructions}</div>
+        </div>
+        """
+
+    # General notes
+    general_notes_html = ""
+    if general_notes:
+        general_notes_html = f"""
+        <div class="section">
+            <div class="section-header">General Notes</div>
+            <div class="general-notes">{general_notes}</div>
+        </div>
+        """
+
+    # Advance schedule / Tomorrow
+    advance_html = ""
+    if advance_schedule:
+        advance_html = f"""
+        <div class="section advance-section">
+            <div class="section-header">Tomorrow / Advance Schedule</div>
+            <div class="advance-content">{advance_schedule}</div>
+        </div>
+        """
+
+    # Meal times section
+    meal_times_html = ""
+    meal_items = []
+    if breakfast_time:
+        meal_items.append(f"<span><strong>Breakfast:</strong> {breakfast_time}</span>")
+    if lunch_time:
+        meal_items.append(f"<span><strong>Lunch:</strong> {lunch_time}</span>")
+    if dinner_time:
+        meal_items.append(f"<span><strong>2nd Meal:</strong> {dinner_time}</span>")
+    if meal_items:
+        meal_times_html = f"""
+        <div class="meal-times-box">
+            {" &bull; ".join(meal_items)}
         </div>
         """
 
@@ -506,7 +627,7 @@ def generate_call_sheet_pdf_html(
             color: #333;
         }}
 
-        .location-parking, .location-notes {{
+        .location-parking, .location-notes, .location-basecamp {{
             font-size: 9px;
             color: #666;
             margin-top: 4px;
@@ -605,6 +726,11 @@ def generate_call_sheet_pdf_html(
             width: 70px;
         }}
 
+        .crew-contact, .cast-contact {{
+            font-size: 8px;
+            color: #666;
+        }}
+
         .schedule-time {{
             font-family: 'Courier New', monospace;
             font-weight: bold;
@@ -680,6 +806,52 @@ def generate_call_sheet_pdf_html(
             border: 1px solid #fff9c4;
         }}
 
+        .general-notes {{
+            padding: 8px;
+            font-size: 10px;
+            white-space: pre-wrap;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+        }}
+
+        .advance-section {{
+            border: 2px solid #1976d2;
+            background: #e3f2fd;
+        }}
+
+        .advance-section .section-header {{
+            background: #1976d2;
+        }}
+
+        .advance-content {{
+            padding: 8px;
+            font-size: 10px;
+            white-space: pre-wrap;
+        }}
+
+        .meal-times-box {{
+            padding: 6px 8px;
+            background: #fff3e0;
+            border: 1px solid #ffe0b2;
+            margin-bottom: 12px;
+            font-size: 10px;
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }}
+
+        .safety-personnel {{
+            padding: 6px 8px;
+            font-size: 10px;
+            border-bottom: 1px solid #fcc;
+        }}
+
+        .production-info {{
+            font-size: 9px;
+            color: #666;
+            margin-top: 2px;
+        }}
+
         .footer {{
             margin-top: 20px;
             padding-top: 8px;
@@ -696,6 +868,7 @@ def generate_call_sheet_pdf_html(
             <div class="logo">{logo_html}</div>
             <div class="project-title">{project_title}</div>
             <div class="call-sheet-title">{call_sheet_title}</div>
+            {production_info_html}
             <div class="template-type">{template_label}</div>
         </div>
         <div class="header-right">
@@ -729,6 +902,7 @@ def generate_call_sheet_pdf_html(
     </div>
 
     {weather_html}
+    {meal_times_html}
     {contacts_html}
     {scenes_html}
     {cast_html}
@@ -736,7 +910,9 @@ def generate_call_sheet_pdf_html(
     {schedule_html}
     {dept_notes_html}
     {instructions_html}
+    {general_notes_html}
     {safety_html}
+    {advance_html}
 
     <div class="footer">
         Generated by Second Watch Network Backlot &bull; {datetime.now().strftime("%B %d, %Y at %I:%M %p")}
@@ -800,12 +976,68 @@ async def generate_call_sheet_pdf(
         call_date_formatted = str(call_date_val) if call_date_val else ""
 
     # Separate cast and crew
-    cast = [p for p in people if p.get("person_type") == "cast" or p.get("character_name")]
-    crew = [p for p in people if p.get("person_type") == "crew" or (not p.get("character_name") and p.get("department"))]
+    cast = [p for p in people if p.get("person_type") == "cast" or p.get("character_name") or p.get("is_cast")]
+    crew = [p for p in people if p.get("person_type") == "crew" or (not p.get("character_name") and not p.get("is_cast") and p.get("department"))]
 
     # If no separation, put all in crew for now
     if not cast and not crew:
         crew = people
+
+    # Build key_contacts from individual fields
+    key_contacts = call_sheet.get("key_contacts") or {}
+    if not key_contacts:
+        key_contacts = {}
+        if call_sheet.get("director_name"):
+            key_contacts["director"] = {
+                "name": call_sheet.get("director_name"),
+                "phone": call_sheet.get("director_phone", "")
+            }
+        if call_sheet.get("producer_name"):
+            key_contacts["producer"] = {
+                "name": call_sheet.get("producer_name"),
+                "phone": call_sheet.get("producer_phone", "")
+            }
+        if call_sheet.get("upm_name"):
+            key_contacts["upm"] = {
+                "name": call_sheet.get("upm_name"),
+                "phone": call_sheet.get("upm_phone", "")
+            }
+        if call_sheet.get("first_ad_name"):
+            key_contacts["first_ad"] = {
+                "name": call_sheet.get("first_ad_name"),
+                "phone": call_sheet.get("first_ad_phone", "")
+            }
+
+    # Build department_notes from individual fields
+    department_notes = call_sheet.get("department_notes") or {}
+    if not department_notes:
+        department_notes = {}
+        if call_sheet.get("camera_notes"):
+            department_notes["camera"] = call_sheet.get("camera_notes")
+        if call_sheet.get("sound_notes"):
+            department_notes["sound"] = call_sheet.get("sound_notes")
+        if call_sheet.get("grip_electric_notes"):
+            department_notes["grip_electric"] = call_sheet.get("grip_electric_notes")
+        if call_sheet.get("art_notes"):
+            department_notes["art"] = call_sheet.get("art_notes")
+        if call_sheet.get("wardrobe_notes"):
+            department_notes["wardrobe"] = call_sheet.get("wardrobe_notes")
+        if call_sheet.get("makeup_hair_notes"):
+            department_notes["makeup"] = call_sheet.get("makeup_hair_notes")
+        if call_sheet.get("stunts_notes"):
+            department_notes["stunts"] = call_sheet.get("stunts_notes")
+        if call_sheet.get("vfx_notes"):
+            department_notes["vfx"] = call_sheet.get("vfx_notes")
+        if call_sheet.get("transport_notes"):
+            department_notes["transportation"] = call_sheet.get("transport_notes")
+        if call_sheet.get("catering_notes"):
+            department_notes["catering"] = call_sheet.get("catering_notes")
+
+    # Get weather info - check both fields
+    weather_info = call_sheet.get("weather_forecast") or call_sheet.get("weather_info") or ""
+
+    # Get hospital name - check both fields
+    hospital_name = call_sheet.get("nearest_hospital") or call_sheet.get("hospital_name") or ""
 
     # Generate HTML - convert all time fields to strings
     html_content = generate_call_sheet_pdf_html(
@@ -814,27 +1046,43 @@ async def generate_call_sheet_pdf(
         call_sheet_number=call_sheet.get("call_sheet_number"),
         template_type=str(call_sheet.get("template_type", "feature")),
         call_date=call_date_formatted,
-        shoot_day=call_sheet.get("shoot_day"),
+        shoot_day=call_sheet.get("shoot_day_number") or call_sheet.get("shoot_day"),
+        total_shoot_days=call_sheet.get("total_shoot_days"),
         general_call_time=_to_string(call_sheet.get("general_call_time")),
         crew_call_time=_to_string(call_sheet.get("crew_call_time")),
         first_shot_time=_to_string(call_sheet.get("first_shot_time")),
         wrap_time=_to_string(call_sheet.get("estimated_wrap_time")),
+        breakfast_time=_to_string(call_sheet.get("breakfast_time")),
+        lunch_time=_to_string(call_sheet.get("lunch_time")),
+        dinner_time=_to_string(call_sheet.get("dinner_time")),
         locations=locations,
         scenes=scenes,
         cast=cast,
         crew=crew,
         schedule_blocks=call_sheet.get("schedule_blocks", []),
-        weather_info=_to_string(call_sheet.get("weather_info")),
+        weather_info=_to_string(weather_info),
         sunrise_time=_to_string(call_sheet.get("sunrise_time")),
         sunset_time=_to_string(call_sheet.get("sunset_time")),
         special_instructions=_to_string(call_sheet.get("special_instructions")),
         safety_notes=_to_string(call_sheet.get("safety_notes")),
-        hospital_name=_to_string(call_sheet.get("hospital_name")),
+        hospital_name=_to_string(hospital_name),
         hospital_address=_to_string(call_sheet.get("hospital_address")),
         hospital_phone=_to_string(call_sheet.get("hospital_phone")),
-        key_contacts=call_sheet.get("key_contacts"),
+        set_medic=_to_string(call_sheet.get("set_medic")),
+        fire_safety_officer=_to_string(call_sheet.get("fire_safety_officer")),
+        key_contacts=key_contacts,
         custom_contacts=call_sheet.get("custom_contacts", []),
-        department_notes=call_sheet.get("department_notes"),
+        department_notes=department_notes,
+        general_notes=_to_string(call_sheet.get("general_notes")),
+        advance_schedule=_to_string(call_sheet.get("advance_schedule")),
+        production_company=_to_string(call_sheet.get("production_company")),
+        production_title=_to_string(call_sheet.get("production_title")),
+        production_office_phone=_to_string(call_sheet.get("production_office_phone")),
+        production_email=_to_string(call_sheet.get("production_email")),
+        fallback_location_name=_to_string(call_sheet.get("location_name")),
+        fallback_location_address=_to_string(call_sheet.get("location_address")),
+        fallback_parking_notes=_to_string(call_sheet.get("parking_notes") or call_sheet.get("parking_instructions")),
+        fallback_basecamp=_to_string(call_sheet.get("basecamp_location")),
         logo_url=logo_url,
         logo_base64=logo_base64,
     )

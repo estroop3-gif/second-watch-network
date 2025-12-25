@@ -205,8 +205,11 @@ export function useUpsertTimecardEntry(projectId: string | null, timecardId: str
       );
     },
     onSuccess: () => {
+      // Invalidate all related queries for live updates
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, timecardId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'me'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'today-status'] });
     },
   });
 }
@@ -456,3 +459,228 @@ export const RATE_TYPES = [
   { value: 'weekly', label: 'Weekly' },
   { value: 'flat', label: 'Flat Rate' },
 ] as const;
+
+// Live Clock Tracking Types
+
+export interface OvertimeBreakdown {
+  regular_hours: number;
+  overtime_hours: number;
+  double_time_hours: number;
+  total_hours: number;
+}
+
+export interface PayBreakdown {
+  regular_pay: number;
+  overtime_pay: number;
+  double_time_pay: number;
+  total_pay: number;
+  rate_type: string;
+  rate_amount: number;
+  currency: string;
+}
+
+export interface ClockStatus {
+  is_clocked_in: boolean;
+  clock_in_time: string | null;
+  clock_out_time: string | null;
+  is_on_lunch: boolean;
+  lunch_start_time: string | null;
+  running_hours: number;
+  running_minutes: number;
+  timecard_id: string | null;
+  timecard_status: string | null; // 'draft' | 'submitted' | 'approved' | 'rejected'
+  entry_id: string | null;
+  today_entry: TimecardEntry | null;
+  overtime_breakdown: OvertimeBreakdown | null;
+  pay_breakdown: PayBreakdown | null;
+}
+
+export interface ClockActionResponse {
+  success: boolean;
+  timecard_id: string;
+  entry_id: string;
+  entry: TimecardEntry;
+  clock_in_time?: string;
+  clock_out_time?: string;
+  lunch_start_time?: string;
+  lunch_end_time?: string;
+  hours_worked?: number;
+  meal_break_minutes?: number;
+  overtime_breakdown?: OvertimeBreakdown;
+  pay_breakdown?: PayBreakdown;
+}
+
+// Live Clock Tracking Hooks
+
+/**
+ * Get today's clock status for the current user
+ */
+export function useTodayClockStatus(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'timecards', projectId, 'today-status'],
+    queryFn: async () => {
+      if (!projectId) return null;
+      return apiClient.get<ClockStatus>(`/api/v1/backlot/projects/${projectId}/timecards/today-status`);
+    },
+    enabled: !!projectId,
+    refetchInterval: 60000, // Refresh every minute to update running hours
+  });
+}
+
+/**
+ * Clock in - Start the day
+ */
+export function useClockIn(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (weekStartDate?: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<ClockActionResponse>(
+        `/api/v1/backlot/projects/${projectId}/timecards/clock-in`,
+        weekStartDate ? { week_start_date: weekStartDate } : {}
+      );
+    },
+    onSuccess: () => {
+      // Invalidate all timecard-related queries so entry times show up
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * Clock out - End the day
+ */
+export function useClockOut(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<ClockActionResponse>(
+        `/api/v1/backlot/projects/${projectId}/timecards/clock-out`,
+        { entry_id: entryId }
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'today-status'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'me'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * Reset clock - Clear today's clock entry entirely
+ */
+export function useResetClock(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<{ success: boolean; message: string }>(
+        `/api/v1/backlot/projects/${projectId}/timecards/reset-clock`,
+        {}
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'today-status'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'me'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * Unwrap - Undo clock out and go back to clocked in state
+ */
+export function useUnwrap(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<ClockActionResponse>(
+        `/api/v1/backlot/projects/${projectId}/timecards/unwrap`,
+        {}
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'today-status'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId, 'me'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * Start lunch break
+ */
+export function useLunchStart(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<ClockActionResponse>(
+        `/api/v1/backlot/projects/${projectId}/timecards/lunch-start`,
+        { entry_id: entryId }
+      );
+    },
+    onSuccess: () => {
+      // Invalidate all timecard-related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * End lunch break
+ */
+export function useLunchEnd(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (entryId: string) => {
+      if (!projectId) throw new Error('Project ID required');
+      return apiClient.post<ClockActionResponse>(
+        `/api/v1/backlot/projects/${projectId}/timecards/lunch-end`,
+        { entry_id: entryId }
+      );
+    },
+    onSuccess: () => {
+      // Invalidate all timecard-related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'timecards', projectId] });
+    },
+  });
+}
+
+/**
+ * Format running time as HH:MM:SS
+ */
+export function formatRunningTime(hours: number, minutes: number): string {
+  const totalMinutes = Math.floor(hours * 60 + minutes);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  const s = Math.floor((hours * 3600 + minutes * 60) % 60);
+  return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Calculate real-time running duration from a start time
+ */
+export function calculateRunningDuration(startTime: string | null): { hours: number; minutes: number; seconds: number } {
+  if (!startTime) return { hours: 0, minutes: 0, seconds: 0 };
+
+  const start = new Date(startTime);
+  const now = new Date();
+  const diffMs = now.getTime() - start.getTime();
+
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return { hours, minutes, seconds };
+}

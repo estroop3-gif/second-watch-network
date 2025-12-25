@@ -59,7 +59,17 @@ import {
   MoreHorizontal,
   FileText,
   PieChartIcon,
+  Lightbulb,
+  Clapperboard,
+  ListChecks,
+  Layers,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Collapsible,
   CollapsibleContent,
@@ -74,6 +84,8 @@ import {
   useSceneMutations,
   SceneListItem,
 } from '@/hooks/backlot';
+import { ShotSummary } from '@/hooks/backlot/useSceneHub';
+import { api } from '@/lib/api';
 import {
   BacklotSceneShot,
   BacklotCoverageStatus,
@@ -103,6 +115,8 @@ interface EnhancedSceneData {
   int_ext: string | null;
   day_night: string | null;
   page_length: number | null;
+  page_start: number | null;
+  page_end: number | null;
   is_scheduled: boolean;
   is_shot: boolean;
   needs_pickup: boolean;
@@ -449,6 +463,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
   const [sceneStatusFilter, setSceneStatusFilter] = useState<SceneStatus>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSceneIds, setSelectedSceneIds] = useState<Set<string>>(new Set());
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Fetch data
   const { data: summary, isLoading: summaryLoading } = useCoverageSummary(projectId);
@@ -484,6 +499,8 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
         int_ext: scene.int_ext,
         day_night: scene.day_night,
         page_length: scene.page_length,
+        page_start: scene.page_start,
+        page_end: scene.page_end,
         is_scheduled: scene.is_scheduled,
         is_shot: scene.is_shot,
         needs_pickup: scene.needs_pickup,
@@ -712,7 +729,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
-  // Export PDF report
+  // Export PDF report with shot details as sub-rows under each scene
   const handleExportPDF = async () => {
     setIsExporting(true);
     try {
@@ -745,30 +762,137 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
         doc.text(`Coverage: ${summary.coverage_percentage}%`, 80, 62);
       }
 
-      // Scene table
-      const tableData = enhancedScenes.map((scene) => [
-        scene.scene_number,
-        scene.slugline?.substring(0, 30) || '--',
-        scene.page_length?.toFixed(1) || '--',
-        SCENE_STATUS_STYLES[scene.status].label,
-        scene.total_shots > 0 ? `${scene.shots_completed}/${scene.total_shots}` : '--',
-        scene.total_shots > 0 ? `${scene.coverage_percentage}%` : '--',
-      ]);
+      // Fetch shots for all scenes with shots
+      const scenesWithShots = enhancedScenes.filter(s => s.total_shots > 0);
+      const shotsByScene: Record<string, ShotSummary[]> = {};
+
+      if (projectId) {
+        for (const scene of scenesWithShots) {
+          try {
+            const hubData = await api.get<{ shots: ShotSummary[] }>(
+              `/api/v1/backlot/projects/${projectId}/scenes/${scene.id}/hub`
+            );
+            shotsByScene[scene.id] = hubData.shots || [];
+          } catch (err) {
+            console.error(`Failed to fetch shots for scene ${scene.scene_number}:`, err);
+            shotsByScene[scene.id] = [];
+          }
+        }
+      }
+
+      // Helper to convert decimal page length to fraction string
+      const formatPageLength = (pageLength: number | null | undefined): string => {
+        if (!pageLength) return '--';
+
+        // Common page fractions in screenwriting (1/8ths)
+        const wholePages = Math.floor(pageLength);
+        const fraction = pageLength - wholePages;
+
+        let fractionStr = '';
+        if (fraction > 0) {
+          // Round to nearest 1/8
+          const eighths = Math.round(fraction * 8);
+          if (eighths === 8) {
+            return (wholePages + 1).toString();
+          } else if (eighths === 4) {
+            fractionStr = '1/2';
+          } else if (eighths === 2) {
+            fractionStr = '1/4';
+          } else if (eighths === 6) {
+            fractionStr = '3/4';
+          } else if (eighths === 1) {
+            fractionStr = '1/8';
+          } else if (eighths === 3) {
+            fractionStr = '3/8';
+          } else if (eighths === 5) {
+            fractionStr = '5/8';
+          } else if (eighths === 7) {
+            fractionStr = '7/8';
+          } else if (eighths === 0) {
+            fractionStr = '';
+          } else {
+            fractionStr = `${eighths}/8`;
+          }
+        }
+
+        if (wholePages > 0 && fractionStr) {
+          return `${wholePages} ${fractionStr}`;
+        } else if (wholePages > 0) {
+          return wholePages.toString();
+        } else if (fractionStr) {
+          return fractionStr;
+        }
+        return '--';
+      };
+
+      // Build table data with scenes and shot sub-rows
+      type RowData = {
+        cells: string[];
+        isScene: boolean;
+      };
+      const tableRows: RowData[] = [];
+
+      for (const scene of enhancedScenes) {
+        // Scene row
+        tableRows.push({
+          isScene: true,
+          cells: [
+            scene.scene_number,
+            scene.slugline?.substring(0, 35) || '--',
+            formatPageLength(scene.page_length),
+            SCENE_STATUS_STYLES[scene.status].label,
+            scene.total_shots > 0 ? `${scene.shots_completed}/${scene.total_shots}` : '--',
+            scene.total_shots > 0 ? `${scene.coverage_percentage}%` : '--',
+          ],
+        });
+
+        // Shot sub-rows for this scene
+        const shots = shotsByScene[scene.id] || [];
+        for (const shot of shots) {
+          tableRows.push({
+            isScene: false,
+            cells: [
+              `  ${shot.shot_number}`,
+              `${shot.frame_size || '--'} - ${(shot.description || '').substring(0, 25)}`,
+              '',
+              '',
+              shot.is_covered ? 'Shot' : 'Not Shot',
+              '',
+            ],
+          });
+        }
+      }
 
       autoTable(doc, {
         startY: 82,
-        head: [['Scene #', 'Slugline', 'Pages', 'Status', 'Shots', 'Coverage']],
-        body: tableData,
-        theme: 'striped',
-        headStyles: { fillColor: [51, 51, 51] },
-        styles: { fontSize: 8, cellPadding: 2 },
+        head: [['Scene #', 'Slugline / Shot Info', 'Pages', 'Status', 'Shots', 'Cov %']],
+        body: tableRows.map(row => row.cells),
+        theme: 'plain',
+        headStyles: { fillColor: [51, 51, 51], textColor: 255, fontStyle: 'bold' },
+        styles: { fontSize: 8, cellPadding: 2, textColor: [0, 0, 0] },
         columnStyles: {
-          0: { cellWidth: 18 },
+          0: { cellWidth: 20 },
           1: { cellWidth: 60 },
           2: { cellWidth: 18 },
-          3: { cellWidth: 25 },
-          4: { cellWidth: 20 },
-          5: { cellWidth: 22 },
+          3: { cellWidth: 22 },
+          4: { cellWidth: 22 },
+          5: { cellWidth: 18 },
+        },
+        didParseCell: (data) => {
+          const rowIndex = data.row.index;
+          if (rowIndex >= 0 && rowIndex < tableRows.length) {
+            const rowInfo = tableRows[rowIndex];
+            if (rowInfo.isScene) {
+              // Scene row styling - bold with light gray background
+              data.cell.styles.fillColor = [240, 240, 240];
+              data.cell.styles.fontStyle = 'bold';
+              data.cell.styles.textColor = [0, 0, 0];
+            } else {
+              // Shot sub-row styling - smaller font, black text
+              data.cell.styles.fontSize = 7;
+              data.cell.styles.textColor = [0, 0, 0];
+            }
+          }
         },
       });
 
@@ -811,8 +935,17 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
           </p>
         </div>
 
-        {/* Export buttons */}
+        {/* Tips & Export buttons */}
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-muted-gray/30"
+          >
+            <Lightbulb className="w-4 h-4 mr-2" />
+            Tips
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1144,7 +1277,7 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
                               <span className="text-xs text-muted-gray w-10">{scene.coverage_percentage}%</span>
                             </div>
                           ) : (
-                            <span className="text-xs text-muted-gray">No shots</span>
+                            <span className="text-xs text-bone-white">No shots</span>
                           )}
                         </TableCell>
                         <TableCell className="text-center">
@@ -1200,6 +1333,124 @@ const CoverageView: React.FC<CoverageViewProps> = ({ projectId, canEdit }) => {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Tips & Tricks Panel */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="max-w-2xl bg-charcoal-black border-muted-gray/20 max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <Lightbulb className="w-5 h-5 text-accent-yellow" />
+              Coverage Tracking Tips
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-6">
+            {/* Overview */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <Layers className="w-4 h-4" />
+                Understanding Coverage
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <Target className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">What is Coverage?</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Coverage tracks which planned shots have been filmed. It helps ensure you capture all necessary footage before wrapping a scene or location.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <Camera className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Shots vs Scene Status</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Individual shots come from your Shot Lists. Scene status (Shot, Scheduled, Needs Pickup) reflects the overall production state of that scene.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Board View Tips */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <Kanban className="w-4 h-4" />
+                Board View
+              </h3>
+              <div className="grid gap-2 text-sm">
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <Clapperboard className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Drag & Drop Scenes</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Drag scene cards between columns to quickly update their status. Perfect for on-set use during production.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <CheckCircle2 className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-bone-white font-medium">Shot Counts on Cards</p>
+                    <p className="text-muted-gray text-xs mt-1">
+                      Each scene card shows how many shots are complete vs total. Click a card to see shot details and mark individual shots complete.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Workflow Tips */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <ListChecks className="w-4 h-4" />
+                Recommended Workflow
+              </h3>
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-3 p-2 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <span className="text-accent-yellow font-bold">1</span>
+                  <p className="text-muted-gray">
+                    <span className="text-bone-white">Create Shot Lists</span> — Define all planned shots for each scene in the Shot Lists tab
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 p-2 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <span className="text-accent-yellow font-bold">2</span>
+                  <p className="text-muted-gray">
+                    <span className="text-bone-white">Assign Scenes to Shots</span> — Link each shot to its corresponding scene
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 p-2 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <span className="text-accent-yellow font-bold">3</span>
+                  <p className="text-muted-gray">
+                    <span className="text-bone-white">Track On Set</span> — Mark shots as complete when captured, update scene status as you wrap
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 p-2 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
+                  <span className="text-accent-yellow font-bold">4</span>
+                  <p className="text-muted-gray">
+                    <span className="text-bone-white">Export Reports</span> — Generate PDF/CSV coverage reports for production meetings
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Page Length Tip */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-accent-yellow flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                Page Lengths
+              </h3>
+              <div className="p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10 text-sm">
+                <p className="text-muted-gray">
+                  If page lengths show as "--", you can set them by clicking on a scene and editing the <span className="text-bone-white">Page Length</span> field in the Info tab.
+                  Page lengths are also automatically extracted when importing scripts.
+                </p>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
