@@ -309,7 +309,8 @@ async def get_user_info(user=Depends(get_current_user)):
 async def ensure_profile(user=Depends(get_current_user)):
     """
     Ensure a profile exists for the authenticated user.
-    Creates one if it doesn't exist. Returns profile and newly_created flag.
+    Creates one if it doesn't exist. Also ensures filmmaker_profiles entry exists
+    so user appears in community listing. Returns profile and newly_created flag.
     """
     from app.core.database import execute_single, execute_insert
 
@@ -325,6 +326,8 @@ async def ensure_profile(user=Depends(get_current_user)):
             "email": email
         })
 
+        newly_created = False
+
         if profile:
             # Update cognito_user_id if missing
             if not profile.get("cognito_user_id"):
@@ -335,21 +338,44 @@ async def ensure_profile(user=Depends(get_current_user)):
                     "cognito_user_id": user_id,
                     "id": profile["id"]
                 })
-            return {"profile": profile, "newly_created": False}
+        else:
+            # Create new profile
+            profile = execute_insert("""
+                INSERT INTO profiles (cognito_user_id, email, full_name, display_name)
+                VALUES (:cognito_user_id, :email, :full_name, :display_name)
+                RETURNING *
+            """, {
+                "cognito_user_id": user_id,
+                "email": email,
+                "full_name": user.get("name") or email.split("@")[0] if email else "User",
+                "display_name": user.get("name") or email.split("@")[0] if email else "User",
+            })
+            newly_created = True
 
-        # Create new profile
-        profile = execute_insert("""
-            INSERT INTO profiles (cognito_user_id, email, full_name, display_name)
-            VALUES (:cognito_user_id, :email, :full_name, :display_name)
-            RETURNING *
-        """, {
-            "cognito_user_id": user_id,
-            "email": email,
-            "full_name": user.get("name") or email.split("@")[0] if email else "User",
-            "display_name": user.get("name") or email.split("@")[0] if email else "User",
-        })
+        # Ensure filmmaker_profiles entry exists so user appears in community
+        profile_id = profile.get("id")
+        if profile_id:
+            filmmaker_profile = execute_single("""
+                SELECT user_id FROM filmmaker_profiles WHERE user_id = :user_id
+            """, {"user_id": str(profile_id)})
 
-        return {"profile": profile, "newly_created": True}
+            if not filmmaker_profile:
+                try:
+                    execute_insert("""
+                        INSERT INTO filmmaker_profiles (user_id, bio, skills, accepting_work)
+                        VALUES (:user_id, :bio, :skills, :accepting_work)
+                        RETURNING user_id
+                    """, {
+                        "user_id": str(profile_id),
+                        "bio": "",
+                        "skills": [],
+                        "accepting_work": False,
+                    })
+                except Exception as e:
+                    # Filmmaker profile creation is optional, log but don't fail
+                    print(f"filmmaker_profiles creation error (non-fatal): {e}")
+
+        return {"profile": profile, "newly_created": newly_created}
 
     except Exception as e:
         print(f"ensure_profile error: {e}")

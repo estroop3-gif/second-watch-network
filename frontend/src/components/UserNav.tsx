@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake } from 'lucide-react';
 import { BadgeDisplay } from './UserBadge';
 
 export const UserNav = () => {
@@ -205,6 +205,12 @@ export const UserNav = () => {
           <Link to="/notifications">
             <Bell className="mr-2 h-4 w-4" />
             <span>Notifications</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/connections">
+            <Handshake className="mr-2 h-4 w-4" />
+            <span>Connections</span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
