@@ -25,6 +25,38 @@ interface CollabInput {
   end_date?: string;
   tags?: string[];
   is_order_only?: boolean;
+  // Backlot project link
+  backlot_project_id?: string;
+  // Production info
+  production_type?: string;
+  production_title?: string;
+  production_id?: string;
+  company?: string;
+  company_id?: string;
+  network_id?: string;
+  hide_production_info?: boolean;
+  // Job type
+  job_type?: string;
+  // Freelance compensation
+  day_rate_min?: number;
+  day_rate_max?: number;
+  // Full-time compensation
+  salary_min?: number;
+  salary_max?: number;
+  benefits_info?: string;
+  // Application requirements
+  requires_local_hire?: boolean;
+  requires_order_member?: boolean;
+  requires_resume?: boolean;
+  application_deadline?: string;
+  max_applications?: number;
+  // Union and Order requirements
+  union_requirements?: string[];
+  requires_order_membership?: boolean;
+  // Custom questions
+  custom_questions?: Array<{ question: string; type: string; required: boolean; options?: string[] }>;
+  // Featured post
+  is_featured?: boolean;
 }
 
 export function useCollabs(options: UseCollabsOptions = {}) {
@@ -70,6 +102,38 @@ export function useCollabs(options: UseCollabsOptions = {}) {
         end_date: input.end_date || undefined,
         tags: input.tags || [],
         is_order_only: input.is_order_only || false,
+        // Backlot project link
+        backlot_project_id: input.backlot_project_id || undefined,
+        // Production info
+        production_type: input.production_type || undefined,
+        production_title: input.production_title || undefined,
+        production_id: input.production_id || undefined,
+        company: input.company || undefined,
+        company_id: input.company_id || undefined,
+        network_id: input.network_id || undefined,
+        hide_production_info: input.hide_production_info || false,
+        // Job type
+        job_type: input.job_type || undefined,
+        // Freelance compensation
+        day_rate_min: input.day_rate_min || undefined,
+        day_rate_max: input.day_rate_max || undefined,
+        // Full-time compensation
+        salary_min: input.salary_min || undefined,
+        salary_max: input.salary_max || undefined,
+        benefits_info: input.benefits_info || undefined,
+        // Application requirements
+        requires_local_hire: input.requires_local_hire || false,
+        requires_order_member: input.requires_order_member || false,
+        requires_resume: input.requires_resume || false,
+        application_deadline: input.application_deadline || undefined,
+        max_applications: input.max_applications || undefined,
+        // Union and Order requirements
+        union_requirements: input.union_requirements || undefined,
+        requires_order_membership: input.requires_order_membership || false,
+        // Custom questions
+        custom_questions: input.custom_questions || undefined,
+        // Featured post
+        is_featured: input.is_featured || false,
       });
       return data;
     },
@@ -91,6 +155,38 @@ export function useCollabs(options: UseCollabsOptions = {}) {
         end_date: input.end_date || undefined,
         tags: input.tags || [],
         is_order_only: input.is_order_only || false,
+        // Backlot project link
+        backlot_project_id: input.backlot_project_id || undefined,
+        // Production info
+        production_type: input.production_type || undefined,
+        production_title: input.production_title || undefined,
+        production_id: input.production_id || undefined,
+        company: input.company || undefined,
+        company_id: input.company_id || undefined,
+        network_id: input.network_id || undefined,
+        hide_production_info: input.hide_production_info || false,
+        // Job type
+        job_type: input.job_type || undefined,
+        // Freelance compensation
+        day_rate_min: input.day_rate_min || undefined,
+        day_rate_max: input.day_rate_max || undefined,
+        // Full-time compensation
+        salary_min: input.salary_min || undefined,
+        salary_max: input.salary_max || undefined,
+        benefits_info: input.benefits_info || undefined,
+        // Application requirements
+        requires_local_hire: input.requires_local_hire || false,
+        requires_order_member: input.requires_order_member || false,
+        requires_resume: input.requires_resume || false,
+        application_deadline: input.application_deadline || undefined,
+        max_applications: input.max_applications || undefined,
+        // Union and Order requirements
+        union_requirements: input.union_requirements || undefined,
+        requires_order_membership: input.requires_order_membership || false,
+        // Custom questions
+        custom_questions: input.custom_questions || undefined,
+        // Featured post
+        is_featured: input.is_featured || false,
       });
       return data;
     },

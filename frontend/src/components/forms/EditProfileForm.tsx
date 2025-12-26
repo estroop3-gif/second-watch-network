@@ -28,13 +28,29 @@ import { departments, filmmakerSkills, experienceLevels, availableForOptions, co
 
 const skillOptions = filmmakerSkills.map(skill => ({ value: skill, label: skill }));
 
+// Flexible URL validation - accepts with or without protocol
+const flexibleUrl = z.string().refine(
+  (val) => {
+    if (!val || val === '') return true;
+    // Add https:// if no protocol specified
+    const urlToTest = val.match(/^https?:\/\//) ? val : `https://${val}`;
+    try {
+      new URL(urlToTest);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: "Please enter a valid URL (e.g., example.com or https://example.com)" }
+);
+
 const profileSchema = z.object({
   fullName: z.string().min(2, "Full name is required."),
   displayName: z.string().optional(),
   location: z.string().optional(),
   location_visible: z.boolean().default(true),
-  portfolio_website: z.string().url("Please enter a valid URL.").optional().or(z.literal('')),
-  reel_links: z.array(z.object({ value: z.string().url({ message: "Please enter a valid URL." }).optional().or(z.literal('')) })).optional(),
+  portfolio_website: flexibleUrl.optional().or(z.literal('')),
+  reel_links: z.array(z.object({ value: flexibleUrl.optional().or(z.literal('')) })).optional(),
   bio: z.string().max(500, "Bio cannot exceed 500 characters.").optional(),
   department: z.string().optional(),
   skills: z.array(z.string()).optional(),

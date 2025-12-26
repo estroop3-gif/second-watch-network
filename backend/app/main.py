@@ -18,7 +18,9 @@ from app.api import (
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses, camera_log,
     church_services, church_people, church_content, church_planning,
-    church_resources, church_readiness, cast_crew, hot_set, invoices, coms
+    church_resources, church_readiness, cast_crew, hot_set, invoices, coms,
+    application_templates, cover_letter_templates, resumes, networks, productions,
+    companies, dm_adapter, uploads
 )
 
 # Configure logging
@@ -123,6 +125,12 @@ app.include_router(admin.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=
 app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availability", tags=["Availability"])
 app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", tags=["Credits"])
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])
+app.include_router(application_templates.router, prefix=f"{settings.API_V1_PREFIX}/application-templates", tags=["Application Templates"])
+app.include_router(cover_letter_templates.router, prefix=f"{settings.API_V1_PREFIX}/cover-letter-templates", tags=["Cover Letter Templates"])
+app.include_router(resumes.router, prefix=f"{settings.API_V1_PREFIX}/resumes", tags=["Resumes"])
+app.include_router(networks.router, prefix=f"{settings.API_V1_PREFIX}/networks", tags=["TV Networks"])
+app.include_router(productions.router, prefix=f"{settings.API_V1_PREFIX}/productions", tags=["Productions"])
+app.include_router(companies.router, prefix=f"{settings.API_V1_PREFIX}/companies", tags=["Companies"])
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
 app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
 app.include_router(billing.router, prefix=f"{settings.API_V1_PREFIX}/billing", tags=["Billing"])
@@ -146,6 +154,8 @@ app.include_router(utilities.router, prefix=f"{settings.API_V1_PREFIX}/backlot",
 app.include_router(hot_set.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Hot Set"])
 app.include_router(invoices.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Invoices"])
 app.include_router(coms.router, prefix=f"{settings.API_V1_PREFIX}/coms", tags=["Coms"])
+app.include_router(dm_adapter.router, prefix=f"{settings.API_V1_PREFIX}/dm", tags=["Direct Messages"])
+app.include_router(uploads.router, prefix=f"{settings.API_V1_PREFIX}/uploads", tags=["Uploads"])
 
 # Church Production Tools
 app.include_router(church_services.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Services"])

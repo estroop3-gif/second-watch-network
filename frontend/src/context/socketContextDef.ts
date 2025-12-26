@@ -52,6 +52,36 @@ export interface SocketEvents {
   channel_deleted: (data: { channel_id: string }) => void;
   member_added: (data: { channel_id: string; user_id: string }) => void;
   member_removed: (data: { channel_id: string; user_id: string }) => void;
+
+  // DM (Direct Messages)
+  dm_new_message: (data: {
+    conversation_id: string;
+    message: {
+      id: string;
+      conversation_id: string;
+      sender_id: string;
+      content: string;
+      created_at: string;
+      is_read: boolean;
+      sender?: {
+        id: string;
+        username: string | null;
+        full_name: string | null;
+        avatar_url: string | null;
+      };
+    };
+  }) => void;
+  dm_typing: (data: {
+    conversation_id: string;
+    user_id: string;
+    username: string;
+    is_typing: boolean;
+  }) => void;
+  dm_read: (data: {
+    conversation_id: string;
+    user_id: string;
+    read_at: string;
+  }) => void;
 }
 
 export interface SocketContextValue {

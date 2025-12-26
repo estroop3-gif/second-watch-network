@@ -46,6 +46,9 @@ import {
   Coffee,
   Truck,
   Flag,
+  HelpCircle,
+  Film,
+  Target,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useProductionDays, useCallSheets } from '@/hooks/backlot';
@@ -73,6 +76,11 @@ import {
   HotSetDayType,
   HotSetMarkerType,
 } from '@/types/backlot';
+import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { ListTodo } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface HotSetViewProps {
   projectId: string;
@@ -213,6 +221,15 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const [newSessionCallSheetId, setNewSessionCallSheetId] = useState<string>('');
   const [newSessionDayType, setNewSessionDayType] = useState<HotSetDayType>('10hr');
 
+  // Task creation state
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDescription, setTaskDescription] = useState('');
+  const [selectedTaskListId, setSelectedTaskListId] = useState<string>('');
+
+  // Tips panel state
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
+
   // Queries
   const { days: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
   const { data: callSheets } = useCallSheets(projectId);
@@ -229,6 +246,10 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const completeScene = useCompleteScene();
   const skipScene = useSkipScene();
   const addMarker = useAddMarker();
+
+  // Task hooks
+  const { taskLists } = useTaskLists({ projectId });
+  const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
 
   // Auto-select ONLY if there's an active (in_progress) session - otherwise show all days
   useEffect(() => {
@@ -317,6 +338,37 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
     setShowMarkerModal(false);
   };
 
+  // Task creation handlers
+  const handleOpenTaskModal = () => {
+    const dayNumber = session?.production_day?.day_number || dashboard?.production_day?.day_number || 'Unknown';
+    setTaskTitle(`Hot Set task: Day ${dayNumber}`);
+    setTaskDescription(`Production Day: ${dayNumber}\nSession Status: ${session?.status || 'N/A'}`);
+    setSelectedTaskListId(taskLists[0]?.id || '');
+    setShowTaskModal(true);
+  };
+
+  const handleCreateTask = async () => {
+    if (!selectedSessionId || !selectedTaskListId) {
+      toast.error('Please select a task list');
+      return;
+    }
+
+    try {
+      await createTaskFromSource.mutateAsync({
+        title: taskTitle,
+        sourceType: 'hot_set',
+        sourceId: selectedSessionId,
+        description: taskDescription,
+      });
+      toast.success('Task created successfully');
+      setShowTaskModal(false);
+      setTaskTitle('');
+      setTaskDescription('');
+    } catch (error) {
+      toast.error('Failed to create task');
+    }
+  };
+
   // Loading state
   if (daysLoading || sessionsLoading) {
     return (
@@ -346,6 +398,15 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
         </div>
 
         <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
           {/* View All Days Button - Always visible when a session is selected */}
           {selectedSessionId && (
             <Button
@@ -739,6 +800,14 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                   </Button>
                   <Button
                     variant="outline"
+                    onClick={handleOpenTaskModal}
+                    className="flex-1"
+                  >
+                    <ListTodo className="w-4 h-4 mr-2" />
+                    Create Task
+                  </Button>
+                  <Button
+                    variant="outline"
                     onClick={handleWrapSession}
                     disabled={wrapSession.isPending}
                     className="border-red-500/30 text-red-400 hover:bg-red-500/10"
@@ -945,6 +1014,157 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               Custom Marker
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Task Dialog */}
+      <Dialog open={showTaskModal} onOpenChange={setShowTaskModal}>
+        <DialogContent className="bg-soft-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ListTodo className="w-5 h-5 text-primary" />
+              Create Task from Hot Set
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Task List *</Label>
+              <Select value={selectedTaskListId} onValueChange={setSelectedTaskListId}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                  <SelectValue placeholder="Select a task list" />
+                </SelectTrigger>
+                <SelectContent>
+                  {taskLists.map((list) => (
+                    <SelectItem key={list.id} value={list.id}>
+                      {list.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Task Title *</Label>
+              <Input
+                value={taskTitle}
+                onChange={(e) => setTaskTitle(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task title"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={taskDescription}
+                onChange={(e) => setTaskDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task description"
+                rows={3}
+              />
+            </div>
+            {session && (
+              <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                <p className="text-xs text-muted-gray mb-1">Linked to session:</p>
+                <p className="text-sm text-bone-white font-medium">
+                  Day {session.production_day?.day_number || 'N/A'} - {session.status}
+                </p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTaskModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTask}
+              disabled={!taskTitle || !selectedTaskListId || createTaskFromSource.isPending}
+              className="bg-primary text-white hover:bg-primary/90"
+            >
+              {createTaskFromSource.isPending ? 'Creating...' : 'Create Task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Production Day Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <Play className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Starting the Day</h4>
+                <p className="text-sm text-muted-gray">
+                  Click a production day to create a session, then "Start Day" to begin
+                  real-time tracking. The timer starts from first shot.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <Film className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Scene Progression</h4>
+                <p className="text-sm text-muted-gray">
+                  Start scenes when camera rolls, complete when you move on. Skip scenes
+                  you won't shoot. The timeline updates in real-time.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Coffee className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Time Markers</h4>
+                <p className="text-sm text-muted-gray">
+                  Mark meals, company moves, and custom events. These help track breaks
+                  and calculate actual shooting time for wrap reports.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-orange-500/10 rounded-lg">
+                <AlertTriangle className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">OT Countdown</h4>
+                <p className="text-sm text-muted-gray">
+                  Watch the overtime countdown. The indicator turns orange then red as
+                  you approach and exceed the day's threshold.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Target className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Schedule Status</h4>
+                <p className="text-sm text-muted-gray">
+                  Green means ahead, yellow on track, red behind. Compare pages shot
+                  vs. pages planned to adjust your day.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

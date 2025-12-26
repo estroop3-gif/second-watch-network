@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown } from 'lucide-react';
 import { BadgeDisplay } from './UserBadge';
 
 export const UserNav = () => {
@@ -78,7 +78,7 @@ export const UserNav = () => {
           </div>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-56 bg-charcoal-black border-muted-gray text-bone-white" align="end" forceMount>
+      <DropdownMenuContent className="w-56 max-h-[80vh] overflow-y-auto bg-charcoal-black border-muted-gray text-bone-white" align="end" forceMount>
         <DropdownMenuLabel className="font-normal">
           <div className="flex flex-col space-y-1">
             <p className="text-sm font-medium leading-none">{displayName}</p>
@@ -157,6 +157,18 @@ export const UserNav = () => {
             <span>The Backlot</span>
           </Link>
         </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/greenroom">
+            <Clapperboard className="mr-2 h-4 w-4" />
+            <span>Green Room</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/order">
+            <Crown className="mr-2 h-4 w-4" />
+            <span>The Order</span>
+          </Link>
+        </DropdownMenuItem>
         {canSubmitAndManageSubmissions && (
           <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
             <Link to="/submit-project">
@@ -193,6 +205,18 @@ export const UserNav = () => {
           <Link to="/notifications">
             <Bell className="mr-2 h-4 w-4" />
             <span>Notifications</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/my-applications">
+            <Send className="mr-2 h-4 w-4" />
+            <span>My Applications</span>
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
+          <Link to="/applications-received">
+            <Inbox className="mr-2 h-4 w-4" />
+            <span>Applications Received</span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">

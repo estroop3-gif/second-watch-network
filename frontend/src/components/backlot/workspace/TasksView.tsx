@@ -43,7 +43,18 @@ import {
   Calendar as CalendarIcon,
   Loader2,
   Settings2,
+  HelpCircle,
+  UserPlus,
+  GripVertical,
+  Tag,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -375,6 +386,7 @@ const TasksView: React.FC<TasksViewProps> = ({
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   const { taskLists, isLoading, createTaskList, archiveTaskList } = useTaskLists({
     projectId,
@@ -449,6 +461,15 @@ const TasksView: React.FC<TasksViewProps> = ({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -538,6 +559,89 @@ const TasksView: React.FC<TasksViewProps> = ({
         onCreate={handleCreateTaskList}
         isLoading={createTaskList.isPending}
       />
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Task List Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <ListTodo className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Task Lists</h4>
+                <p className="text-sm text-muted-gray">
+                  Create task lists to organize work by department, phase, or any grouping
+                  that makes sense for your production.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <LayoutGrid className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">View Types</h4>
+                <p className="text-sm text-muted-gray">
+                  Choose between Board (kanban), List, or Calendar views.
+                  Drag and drop tasks between status columns in board view.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <UserPlus className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Assignments</h4>
+                <p className="text-sm text-muted-gray">
+                  Assign team members to tasks and set due dates for accountability.
+                  Use selective sharing to limit access to specific lists.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <Tag className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Labels & Priority</h4>
+                <p className="text-sm text-muted-gray">
+                  Add labels to categorize tasks and set priority levels to keep
+                  the most important work visible.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-orange-500/10 rounded-lg">
+                <Archive className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Archiving</h4>
+                <p className="text-sm text-muted-gray">
+                  Archive completed task lists to keep your workspace clean.
+                  Toggle "Show Archived" to view or restore them anytime.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

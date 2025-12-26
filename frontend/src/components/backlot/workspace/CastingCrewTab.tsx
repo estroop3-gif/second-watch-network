@@ -48,6 +48,7 @@ import {
   useBookedPeople,
   useDealMemos,
   useDealMemoMutations,
+  useProject,
 } from '@/hooks/backlot';
 import {
   BacklotProjectRole,
@@ -58,7 +59,7 @@ import {
   PROJECT_ROLE_STATUS_COLORS,
   DealMemo,
 } from '@/types/backlot';
-import { RolePostingForm } from './RolePostingForm';
+import CollabForm from '@/components/community/CollabForm';
 import { ApplicationsBoard } from './ApplicationsBoard';
 import { AvailabilityCalendar } from './AvailabilityCalendar';
 import { CrewRatesTab } from './CrewRatesTab';
@@ -110,10 +111,12 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
   // Dialog states
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [editingRole, setEditingRole] = useState<BacklotProjectRole | null>(null);
   const [viewingApplications, setViewingApplications] = useState<BacklotProjectRole | null>(null);
   const [showSendDocumentDialog, setShowSendDocumentDialog] = useState(false);
   const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
+
+  // Get project data for CollabForm
+  const { data: project } = useProject(projectId);
 
   // Queries
   const { data: roles, isLoading } = useProjectRoles(projectId, {
@@ -175,13 +178,13 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
   const getStatusColor = (status: BacklotProjectRoleStatus) => {
     const colors: Record<string, string> = {
-      draft: 'bg-gray-100 text-gray-800',
-      open: 'bg-green-100 text-green-800',
-      closed: 'bg-yellow-100 text-yellow-800',
-      booked: 'bg-blue-100 text-blue-800',
-      cancelled: 'bg-red-100 text-red-800',
+      draft: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+      open: 'bg-green-500/20 text-green-400 border-green-500/30',
+      closed: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      booked: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      cancelled: 'bg-red-500/20 text-red-400 border-red-500/30',
     };
-    return colors[status] || 'bg-gray-100 text-gray-800';
+    return colors[status] || 'bg-muted-gray/20 text-muted-gray border-muted-gray/30';
   };
 
   return (
@@ -202,57 +205,57 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <Users className="w-5 h-5 text-muted-foreground" />
+              <Users className="w-5 h-5 text-muted-gray" />
               <div>
-                <p className="text-2xl font-bold">{stats.total}</p>
-                <p className="text-xs text-muted-foreground">Total Roles</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.total}</p>
+                <p className="text-xs text-muted-gray">Total Roles</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <CheckCircle className="w-5 h-5 text-green-500" />
+              <CheckCircle className="w-5 h-5 text-green-400" />
               <div>
-                <p className="text-2xl font-bold">{stats.open}</p>
-                <p className="text-xs text-muted-foreground">Open</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.open}</p>
+                <p className="text-xs text-muted-gray">Open</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <UserCheck className="w-5 h-5 text-blue-500" />
+              <UserCheck className="w-5 h-5 text-blue-400" />
               <div>
-                <p className="text-2xl font-bold">{stats.booked}</p>
-                <p className="text-xs text-muted-foreground">Booked</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.booked}</p>
+                <p className="text-xs text-muted-gray">Booked</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <Video className="w-5 h-5 text-red-500" />
+              <Video className="w-5 h-5 text-red-400" />
               <div>
-                <p className="text-2xl font-bold">{stats.cast}</p>
-                <p className="text-xs text-muted-foreground">Cast Roles</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.cast}</p>
+                <p className="text-xs text-muted-gray">Cast Roles</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
-              <Users className="w-5 h-5 text-purple-500" />
+              <Users className="w-5 h-5 text-purple-400" />
               <div>
-                <p className="text-2xl font-bold">{stats.crew}</p>
-                <p className="text-xs text-muted-foreground">Crew Roles</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.crew}</p>
+                <p className="text-xs text-muted-gray">Crew Roles</p>
               </div>
             </div>
           </CardContent>
@@ -323,11 +326,11 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
               <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
             </div>
           ) : filteredRoles.length === 0 ? (
-            <Card>
+            <Card className="bg-charcoal-black border-muted-gray/30">
               <CardContent className="py-12 text-center">
-                <Users className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-                <h3 className="text-lg font-semibold mb-2">No roles yet</h3>
-                <p className="text-muted-foreground mb-4">
+                <Users className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+                <h3 className="text-lg font-semibold mb-2 text-bone-white">No roles yet</h3>
+                <p className="text-muted-gray mb-4">
                   Post your first role to start building your cast and crew.
                 </p>
                 <Button onClick={() => setShowCreateDialog(true)}>
@@ -342,7 +345,6 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
                 <RoleCard
                   key={role.id}
                   role={role}
-                  onEdit={() => setEditingRole(role)}
                   onDelete={() => handleDeleteRole(role.id)}
                   onViewApplications={() => setViewingApplications(role)}
                 />
@@ -356,7 +358,7 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
           {bookedPeople && bookedPeople.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {bookedPeople.map((person) => (
-                <Card key={person.role_id}>
+                <Card key={person.role_id} className="bg-charcoal-black border-muted-gray/30">
                   <CardContent className="pt-4">
                     <div className="flex items-start gap-3">
                       <Avatar className="h-10 w-10">
@@ -366,27 +368,27 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
                         </AvatarFallback>
                       </Avatar>
                       <div className="flex-1">
-                        <p className="font-medium">{person.name}</p>
-                        <p className="text-sm text-muted-foreground">
+                        <p className="font-medium text-bone-white">{person.name}</p>
+                        <p className="text-sm text-muted-gray">
                           {person.role_title}
                         </p>
                         <div className="flex items-center gap-2 mt-1">
-                          <Badge variant="outline" className="text-xs">
+                          <Badge variant="outline" className="text-xs border-muted-gray/50 text-muted-gray">
                             {PROJECT_ROLE_TYPE_LABELS[person.role_type]}
                           </Badge>
                           {person.department && (
-                            <Badge variant="secondary" className="text-xs">
+                            <Badge variant="secondary" className="text-xs bg-muted-gray/20 text-muted-gray">
                               {person.department}
                             </Badge>
                           )}
                         </div>
                         {person.character_name && (
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <p className="text-xs text-muted-gray mt-1">
                             as "{person.character_name}"
                           </p>
                         )}
                         {person.start_date && (
-                          <p className="text-xs text-muted-foreground mt-1">
+                          <p className="text-xs text-muted-gray mt-1">
                             <Calendar className="w-3 h-3 inline mr-1" />
                             {format(new Date(person.start_date), 'MMM d')}
                             {person.end_date && ` - ${format(new Date(person.end_date), 'MMM d')}`}
@@ -399,11 +401,11 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
               ))}
             </div>
           ) : (
-            <Card>
+            <Card className="bg-charcoal-black border-muted-gray/30">
               <CardContent className="py-12 text-center">
-                <UserCheck className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-                <h3 className="text-lg font-semibold mb-2">No booked crew yet</h3>
-                <p className="text-muted-foreground">
+                <UserCheck className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+                <h3 className="text-lg font-semibold mb-2 text-bone-white">No booked crew yet</h3>
+                <p className="text-muted-gray">
                   Book applicants from your role postings to see them here.
                 </p>
               </CardContent>
@@ -432,41 +434,30 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
         </TabsContent>
       </Tabs>
 
-      {/* Create/Edit Role Dialog */}
-      <Dialog
-        open={showCreateDialog || !!editingRole}
-        onOpenChange={(open) => {
-          if (!open) {
+      {/* Create/Edit Role Dialog - Uses CollabForm to post to Collab Board */}
+      {showCreateDialog && (
+        <CollabForm
+          onClose={() => setShowCreateDialog(false)}
+          onSuccess={() => {
             setShowCreateDialog(false);
-            setEditingRole(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>
-              {editingRole ? 'Edit Role' : 'Post New Role'}
-            </DialogTitle>
-            <DialogDescription>
-              {editingRole
-                ? 'Update the role details below.'
-                : 'Create a new role posting for cast or crew.'}
-            </DialogDescription>
-          </DialogHeader>
-          <RolePostingForm
-            projectId={projectId}
-            role={editingRole || undefined}
-            onSuccess={() => {
-              setShowCreateDialog(false);
-              setEditingRole(null);
-            }}
-            onCancel={() => {
-              setShowCreateDialog(false);
-              setEditingRole(null);
-            }}
-          />
-        </DialogContent>
-      </Dialog>
+            queryClient.invalidateQueries({ queryKey: ['project-roles', projectId] });
+            toast({
+              title: 'Role posted',
+              description: 'Your role is now live on the Collab Board.',
+            });
+          }}
+          backlotProjectId={projectId}
+          backlotProjectData={project ? {
+            id: project.id,
+            title: project.title,
+            production_type: project.production_type,
+            company: project.company,
+            company_id: project.company_id,
+            network_id: project.network_id,
+            location: project.location,
+          } : undefined}
+        />
+      )}
 
       {/* Applications Board Dialog */}
       <Dialog
@@ -503,31 +494,30 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
 interface RoleCardProps {
   role: BacklotProjectRole;
-  onEdit: () => void;
   onDelete: () => void;
   onViewApplications: () => void;
 }
 
-function RoleCard({ role, onEdit, onDelete, onViewApplications }: RoleCardProps) {
+function RoleCard({ role, onDelete, onViewApplications }: RoleCardProps) {
   const getRoleStatusColor = (status: BacklotProjectRoleStatus) => {
     const colors: Record<string, string> = {
-      draft: 'bg-gray-100 text-gray-800',
-      open: 'bg-green-100 text-green-800',
-      closed: 'bg-yellow-100 text-yellow-800',
-      booked: 'bg-blue-100 text-blue-800',
-      cancelled: 'bg-red-100 text-red-800',
+      draft: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+      open: 'bg-green-500/20 text-green-400 border-green-500/30',
+      closed: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      booked: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      cancelled: 'bg-red-500/20 text-red-400 border-red-500/30',
     };
-    return colors[status] || 'bg-gray-100 text-gray-800';
+    return colors[status] || 'bg-muted-gray/20 text-muted-gray border-muted-gray/30';
   };
 
   return (
-    <Card>
+    <Card className="bg-charcoal-black border-muted-gray/30">
       <CardContent className="pt-4">
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              <h3 className="font-semibold text-lg">{role.title}</h3>
-              <Badge variant="outline">
+              <h3 className="font-semibold text-lg text-bone-white">{role.title}</h3>
+              <Badge variant="outline" className="border-muted-gray/50 text-muted-gray">
                 {PROJECT_ROLE_TYPE_LABELS[role.type]}
               </Badge>
               <Badge className={getRoleStatusColor(role.status)}>
@@ -632,10 +622,6 @@ function RoleCard({ role, onEdit, onDelete, onViewApplications }: RoleCardProps)
               <DropdownMenuItem onClick={onViewApplications}>
                 <Eye className="w-4 h-4 mr-2" />
                 View Applications
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={onEdit}>
-                <Edit className="w-4 h-4 mr-2" />
-                Edit
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onDelete} className="text-red-600">
@@ -772,13 +758,13 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
 
   const getStatusBadge = (status: string) => {
     const colors: Record<string, string> = {
-      pending: 'bg-yellow-100 text-yellow-800',
-      viewed: 'bg-blue-100 text-blue-800',
-      signed: 'bg-green-100 text-green-800',
-      declined: 'bg-red-100 text-red-800',
-      expired: 'bg-gray-100 text-gray-800',
+      pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      viewed: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      signed: 'bg-green-500/20 text-green-400 border-green-500/30',
+      declined: 'bg-red-500/20 text-red-400 border-red-500/30',
+      expired: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
     };
-    return colors[status] || 'bg-gray-100 text-gray-800';
+    return colors[status] || 'bg-muted-gray/20 text-muted-gray border-muted-gray/30';
   };
 
   return (
@@ -808,14 +794,14 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
         </div>
         {dealMemosLoading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin" />
+            <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
           </div>
         ) : dealMemos.length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/30">
             <CardContent className="py-8 text-center">
-              <FileSignature className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-              <p className="text-muted-foreground">No deal memos yet</p>
-              <p className="text-sm text-muted-foreground mt-1">
+              <FileSignature className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+              <p className="text-muted-gray">No deal memos yet</p>
+              <p className="text-sm text-muted-gray mt-1">
                 Create deal memos when offering roles to capture rates and terms
               </p>
             </CardContent>
@@ -904,25 +890,25 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
         <h4 className="text-sm font-medium mb-3">Pending Signatures</h4>
         {requestsLoading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin" />
+            <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
           </div>
         ) : signatureRequests?.filter((r: any) => r.status !== 'signed').length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/30">
             <CardContent className="py-8 text-center">
-              <FileSignature className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-              <p className="text-muted-foreground">No pending signature requests</p>
+              <FileSignature className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+              <p className="text-muted-gray">No pending signature requests</p>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-2">
             {signatureRequests?.filter((r: any) => r.status !== 'signed').map((request: any) => (
-              <Card key={request.id}>
+              <Card key={request.id} className="bg-charcoal-black border-muted-gray/30">
                 <CardContent className="p-4 flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <FileText className="w-5 h-5 text-muted-foreground" />
+                    <FileText className="w-5 h-5 text-muted-gray" />
                     <div>
-                      <p className="font-medium">{request.document_title}</p>
-                      <p className="text-sm text-muted-foreground">
+                      <p className="font-medium text-bone-white">{request.document_title}</p>
+                      <p className="text-sm text-muted-gray">
                         To: {request.recipient_name || request.recipient_email}
                       </p>
                     </div>
@@ -932,7 +918,7 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
                       {request.status}
                     </Badge>
                     {request.due_date && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-xs text-muted-gray">
                         Due: {format(new Date(request.due_date), 'MMM d')}
                       </span>
                     )}
@@ -946,29 +932,29 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
 
       {/* Signed Documents */}
       <div>
-        <h4 className="text-sm font-medium mb-3">Completed Documents</h4>
+        <h4 className="text-sm font-medium mb-3 text-bone-white">Completed Documents</h4>
         {signatureRequests?.filter((r: any) => r.status === 'signed').length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/30">
             <CardContent className="py-8 text-center">
-              <CheckCircle className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-              <p className="text-muted-foreground">No completed documents yet</p>
+              <CheckCircle className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+              <p className="text-muted-gray">No completed documents yet</p>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-2">
             {signatureRequests?.filter((r: any) => r.status === 'signed').slice(0, 5).map((request: any) => (
-              <Card key={request.id}>
+              <Card key={request.id} className="bg-charcoal-black border-muted-gray/30">
                 <CardContent className="p-4 flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <CheckCircle className="w-5 h-5 text-green-500" />
+                    <CheckCircle className="w-5 h-5 text-green-400" />
                     <div>
-                      <p className="font-medium">{request.document_title}</p>
-                      <p className="text-sm text-muted-foreground">
+                      <p className="font-medium text-bone-white">{request.document_title}</p>
+                      <p className="text-sm text-muted-gray">
                         Signed by: {request.recipient_name}
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs text-muted-foreground">
+                  <span className="text-xs text-muted-gray">
                     {request.signed_at && format(new Date(request.signed_at), 'MMM d, yyyy')}
                   </span>
                 </CardContent>
@@ -1004,10 +990,10 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Recipients</label>
-              <div className="border rounded-md p-2 max-h-40 overflow-y-auto space-y-1">
+              <label className="text-sm font-medium text-bone-white">Recipients</label>
+              <div className="border border-muted-gray/30 rounded-md p-2 max-h-40 overflow-y-auto space-y-1 bg-charcoal-black">
                 {teamMembers?.map((member: any) => (
-                  <label key={member.id} className="flex items-center gap-2 p-1 hover:bg-muted rounded cursor-pointer">
+                  <label key={member.id} className="flex items-center gap-2 p-2 hover:bg-muted-gray/20 rounded cursor-pointer">
                     <input
                       type="checkbox"
                       checked={selectedRecipients.includes(member.user_id)}
@@ -1018,12 +1004,12 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
                           setSelectedRecipients(selectedRecipients.filter((id) => id !== member.user_id));
                         }
                       }}
-                      className="rounded"
+                      className="h-4 w-4 rounded border-2 border-muted-gray/60 bg-transparent checked:bg-accent-yellow checked:border-accent-yellow accent-accent-yellow"
                     />
                     <Avatar className="h-6 w-6">
                       <AvatarFallback>{member.full_name?.charAt(0) || '?'}</AvatarFallback>
                     </Avatar>
-                    <span className="text-sm">{member.full_name || member.email}</span>
+                    <span className="text-sm text-bone-white">{member.full_name || member.email}</span>
                   </label>
                 ))}
               </div>
@@ -1312,12 +1298,12 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
 
   const getPriorityColor = (priority: string) => {
     const colors: Record<string, string> = {
-      low: 'bg-gray-100 text-gray-800',
-      normal: 'bg-blue-100 text-blue-800',
-      high: 'bg-orange-100 text-orange-800',
-      urgent: 'bg-red-100 text-red-800',
+      low: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
+      normal: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+      high: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+      urgent: 'bg-red-500/20 text-red-400 border-red-500/30',
     };
-    return colors[priority] || 'bg-gray-100 text-gray-800';
+    return colors[priority] || 'bg-muted-gray/20 text-muted-gray border-muted-gray/30';
   };
 
   return (
@@ -1344,37 +1330,37 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
         </h4>
         {announcementsLoading ? (
           <div className="flex items-center justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin" />
+            <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
           </div>
         ) : announcements?.length === 0 ? (
-          <Card>
+          <Card className="bg-charcoal-black border-muted-gray/30">
             <CardContent className="py-8 text-center">
-              <Megaphone className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-              <p className="text-muted-foreground">No announcements yet</p>
+              <Megaphone className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+              <p className="text-muted-gray">No announcements yet</p>
             </CardContent>
           </Card>
         ) : (
           <div className="space-y-2">
             {announcements?.slice(0, 3).map((announcement: any) => (
-              <Card key={announcement.id} className={announcement.priority === 'urgent' ? 'border-red-500' : ''}>
+              <Card key={announcement.id} className={`bg-charcoal-black ${announcement.priority === 'urgent' ? 'border-red-500/50' : 'border-muted-gray/30'}`}>
                 <CardContent className="p-4">
                   <div className="flex items-start justify-between">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
-                        <h5 className="font-medium">{announcement.title}</h5>
+                        <h5 className="font-medium text-bone-white">{announcement.title}</h5>
                         <Badge className={getPriorityColor(announcement.priority)}>
                           {announcement.priority}
                         </Badge>
                       </div>
-                      <p className="text-sm text-muted-foreground line-clamp-2">
+                      <p className="text-sm text-muted-gray line-clamp-2">
                         {announcement.content}
                       </p>
-                      <p className="text-xs text-muted-foreground mt-2">
+                      <p className="text-xs text-muted-gray mt-2">
                         By {announcement.sender_name} &bull; {format(new Date(announcement.published_at), 'MMM d, h:mm a')}
                       </p>
                     </div>
                     {announcement.requires_acknowledgment && (
-                      <Badge variant={announcement.is_acknowledged ? 'secondary' : 'outline'}>
+                      <Badge variant={announcement.is_acknowledged ? 'secondary' : 'outline'} className="border-muted-gray/50">
                         {announcement.is_acknowledged ? 'Acknowledged' : 'Pending'}
                       </Badge>
                     )}
@@ -1389,9 +1375,9 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
       {/* Channels and Messages */}
       <div className="grid md:grid-cols-3 gap-4">
         {/* Channel List */}
-        <Card className="md:col-span-1">
+        <Card className="md:col-span-1 bg-charcoal-black border-muted-gray/30">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center justify-between text-bone-white">
               <span>Channels</span>
               <Button
                 size="sm"
@@ -1410,10 +1396,10 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
           <CardContent className="p-2">
             {channelsLoading ? (
               <div className="flex items-center justify-center py-4">
-                <Loader2 className="w-5 h-5 animate-spin" />
+                <Loader2 className="w-5 h-5 animate-spin text-muted-gray" />
               </div>
             ) : channels?.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
+              <p className="text-sm text-muted-gray text-center py-4">
                 No channels yet. Create one to get started!
               </p>
             ) : (
@@ -1422,10 +1408,10 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
                   <button
                     key={channel.id}
                     onClick={() => setActiveChannel(channel.id)}
-                    className={`w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 ${
+                    className={`w-full text-left px-3 py-2 rounded-md text-sm flex items-center gap-2 transition-colors ${
                       activeChannel === channel.id
-                        ? 'bg-primary text-primary-foreground'
-                        : 'hover:bg-muted'
+                        ? 'bg-accent-yellow text-charcoal-black'
+                        : 'text-bone-white hover:bg-muted-gray/20'
                     }`}
                   >
                     <Hash className="w-4 h-4" />
@@ -1438,9 +1424,9 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
         </Card>
 
         {/* Messages */}
-        <Card className="md:col-span-2">
+        <Card className="md:col-span-2 bg-charcoal-black border-muted-gray/30">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm">
+            <CardTitle className="text-sm text-bone-white">
               {activeChannel
                 ? `#${channels?.find((c: any) => c.id === activeChannel)?.name || 'channel'}`
                 : 'Select a channel'}
@@ -1448,7 +1434,7 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
           </CardHeader>
           <CardContent className="p-2">
             {!activeChannel ? (
-              <div className="flex items-center justify-center py-12 text-muted-foreground">
+              <div className="flex items-center justify-center py-12 text-muted-gray">
                 <MessageSquare className="w-8 h-8 mr-2" />
                 Select a channel to view messages
               </div>
@@ -1457,10 +1443,10 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
                 <ScrollArea className="h-64 p-2">
                   {messagesLoading ? (
                     <div className="flex items-center justify-center py-8">
-                      <Loader2 className="w-5 h-5 animate-spin" />
+                      <Loader2 className="w-5 h-5 animate-spin text-muted-gray" />
                     </div>
                   ) : messages?.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-8">
+                    <p className="text-sm text-muted-gray text-center py-8">
                       No messages yet. Start the conversation!
                     </p>
                   ) : (
@@ -1475,21 +1461,21 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
                           </Avatar>
                           <div className="flex-1">
                             <div className="flex items-baseline gap-2">
-                              <span className="font-medium text-sm">
+                              <span className="font-medium text-sm text-bone-white">
                                 {message.sender_name}
                               </span>
-                              <span className="text-xs text-muted-foreground">
+                              <span className="text-xs text-muted-gray">
                                 {format(new Date(message.created_at), 'h:mm a')}
                               </span>
                             </div>
-                            <p className="text-sm">{message.content}</p>
+                            <p className="text-sm text-bone-white">{message.content}</p>
                           </div>
                         </div>
                       ))}
                     </div>
                   )}
                 </ScrollArea>
-                <div className="flex gap-2 mt-2 pt-2 border-t">
+                <div className="flex gap-2 mt-2 pt-2 border-t border-muted-gray/30">
                   <Input
                     placeholder="Type a message..."
                     value={messageContent}
@@ -1500,6 +1486,7 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
                         sendMessageMutation.mutate(messageContent);
                       }
                     }}
+                    className="bg-charcoal-black border-muted-gray/30"
                   />
                   <Button
                     size="icon"

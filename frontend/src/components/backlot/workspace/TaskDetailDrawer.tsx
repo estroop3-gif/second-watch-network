@@ -563,6 +563,33 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
               </>
             )}
 
+            {/* Source Entity (for tasks created from other tabs) */}
+            {task.source_type && task.source_type !== 'manual' && (
+              <>
+                <Separator />
+                <div className="space-y-2">
+                  <Label className="text-muted-gray flex items-center gap-2">
+                    <Link2 className="w-4 h-4" />
+                    Created From
+                  </Label>
+                  <div className="flex items-center gap-2 text-sm bg-primary/10 border border-primary/20 rounded px-3 py-2">
+                    <Badge variant="outline" className="text-xs capitalize">
+                      {task.source_type.replace('_', ' ')}
+                    </Badge>
+                    <span className="text-bone-white">
+                      {task.source_camera_media?.card_label ||
+                       task.source_continuity_note?.department ||
+                       task.source_location?.name ||
+                       task.source_hot_set_session?.date ||
+                       task.source_gear?.name ||
+                       task.source_costume?.character_name ||
+                       'View Source'}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
+
             <Separator />
 
             {/* Comments */}

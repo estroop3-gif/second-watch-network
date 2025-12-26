@@ -35,7 +35,17 @@ import {
   ArrowRight,
   X,
   Download,
+  HelpCircle,
+  Clapperboard,
+  Save,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import {
   useCameraLogs,
@@ -148,6 +158,9 @@ export default function CameraLogView({ projectId, canEdit }: CameraLogViewProps
 
   // PDF generation state
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+
+  // Tips panel state
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Get all scenes from the project's scene tab
   const allScenes = useMemo(() => {
@@ -434,6 +447,15 @@ export default function CameraLogView({ projectId, canEdit }: CameraLogViewProps
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1056,6 +1078,89 @@ export default function CameraLogView({ projectId, canEdit }: CameraLogViewProps
           </div>
         </CollapsibleContent>
       </Collapsible>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Camera Log Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-film-red/20 rounded-lg">
+                <Clapperboard className="w-5 h-5 text-film-red" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Quick Take Logging</h4>
+                <p className="text-sm text-muted-gray">
+                  Select scene, shot type, and tap LOG TAKE to record. The take
+                  number auto-increments. Use CIRCLE for print takes.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-yellow-500/10 rounded-lg">
+                <Star className="w-5 h-5 text-yellow-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Circle Takes</h4>
+                <p className="text-sm text-muted-gray">
+                  Mark your best takes with a circle for easy identification in post.
+                  You can toggle circle status on any take after logging.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <HardDrive className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Media Cards</h4>
+                <p className="text-sm text-muted-gray">
+                  Track media cards through their lifecycle: In Camera → With DIT →
+                  Backed Up → Ready to Format. Tap the arrow to advance status.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <StickyNote className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Continuity Notes</h4>
+                <p className="text-sm text-muted-gray">
+                  Add notes by department (Wardrobe, Makeup, Props, etc.) to maintain
+                  continuity across scenes and days.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Save className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Presets & Memory</h4>
+                <p className="text-sm text-muted-gray">
+                  Lens, iris, and filter settings are saved between sessions.
+                  Use preset buttons for quick selection or type custom values.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

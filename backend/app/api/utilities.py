@@ -228,10 +228,17 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         cognito_id = user.get("id")
         email = user.get("email")
 
-        # Convert Cognito ID to profile ID
-        profile = execute_single("""
-            SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1
-        """, {"cuid": cognito_id, "uid": cognito_id})
+        # Convert Cognito ID to profile ID - prefer cognito_user_id match
+        profile = execute_single(
+            "SELECT id FROM profiles WHERE cognito_user_id = :cuid LIMIT 1",
+            {"cuid": cognito_id}
+        )
+        if not profile:
+            # Fallback: check if it's already a profile ID
+            profile = execute_single(
+                "SELECT id FROM profiles WHERE id::text = :uid LIMIT 1",
+                {"uid": cognito_id}
+            )
 
         if not profile:
             raise HTTPException(status_code=401, detail="User profile not found")

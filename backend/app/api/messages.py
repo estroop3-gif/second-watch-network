@@ -1,11 +1,15 @@
 """
-Messages & Conversations API Routes - Enhanced
+Messages & Conversations API Routes - Enhanced with WebSocket support
 """
 from fastapi import APIRouter, HTTPException
 from typing import List, Optional
+from datetime import datetime, timezone
+import logging
 from app.core.database import get_client
+from app.core.websocket_client import broadcast_to_dm, send_to_user
 from app.schemas.messages import Message, MessageCreate, Conversation
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -38,13 +42,13 @@ async def list_conversation_messages(conversation_id: str, skip: int = 0, limit:
 
 @router.post("/", response_model=Message)
 async def send_message(message: MessageCreate, sender_id: str):
-    """Send a new message"""
+    """Send a new message with real-time WebSocket broadcast"""
     try:
         client = get_client()
-        
+
         data = message.model_dump(exclude_unset=True)
         data["sender_id"] = sender_id
-        
+
         # If no conversation_id, create or find conversation
         if not data.get("conversation_id") and data.get("recipient_id"):
             # Find existing conversation or create new one
@@ -52,12 +56,40 @@ async def send_message(message: MessageCreate, sender_id: str):
                 "user1_id": sender_id,
                 "user2_id": data["recipient_id"]
             }).execute()
-            
+
             if conv_response.data:
                 data["conversation_id"] = conv_response.data[0]["id"]
-        
+
         response = client.table("messages").insert(data).execute()
-        return response.data[0]
+        new_message = response.data[0]
+
+        # Get sender profile for the broadcast
+        sender_profile = None
+        try:
+            profile_resp = client.table("profiles").select(
+                "id, username, full_name, avatar_url"
+            ).eq("id", sender_id).single().execute()
+            sender_profile = profile_resp.data
+        except Exception as e:
+            logger.warning(f"Could not fetch sender profile: {e}")
+
+        # Broadcast new message via WebSocket
+        conversation_id = new_message.get("conversation_id")
+        if conversation_id:
+            broadcast_to_dm(
+                conversation_id=conversation_id,
+                message={
+                    "event": "dm_new_message",
+                    "conversation_id": conversation_id,
+                    "message": {
+                        **new_message,
+                        "sender": sender_profile
+                    }
+                },
+                exclude_user_id=sender_id  # Don't send back to sender
+            )
+
+        return new_message
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -137,6 +169,18 @@ async def mark_conversation_read(conversation_id: str, user_id: str):
         client.table("messages").update({"is_read": True}).eq(
             "conversation_id", conversation_id
         ).neq("sender_id", user_id).eq("is_read", False).execute()
+
+        # Broadcast read receipt via WebSocket
+        broadcast_to_dm(
+            conversation_id=conversation_id,
+            message={
+                "event": "dm_read",
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "read_at": datetime.now(timezone.utc).isoformat()
+            },
+            exclude_user_id=user_id
+        )
 
         return {"message": "Messages marked as read"}
     except Exception as e:

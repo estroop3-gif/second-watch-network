@@ -16,7 +16,11 @@ from connection_manager import (
     join_voice,
     leave_voice,
     get_voice_participants,
-    set_ptt_state
+    set_ptt_state,
+    # DM operations
+    subscribe_to_dm,
+    unsubscribe_from_dm,
+    broadcast_to_dm,
 )
 
 
@@ -63,6 +67,11 @@ def handler(event: dict, context, connection_id: str, callback_url: str) -> dict
             'voice_ice_candidate': handle_voice_ice_candidate,
             'ptt_start': handle_ptt_start,
             'ptt_stop': handle_ptt_stop,
+            # DM handlers
+            'join_dm': handle_join_dm,
+            'leave_dm': handle_leave_dm,
+            'dm_typing_start': handle_dm_typing_start,
+            'dm_typing_stop': handle_dm_typing_stop,
         }
 
         handler_func = handlers.get(action)
@@ -205,6 +214,78 @@ def handle_typing_stop(message: Dict, connection_id: str, user_id: str, username
             'event': 'user_stopped_typing',
             'channel_id': channel_id,
             'user_id': user_id
+        },
+        exclude_connection=connection_id
+    )
+
+    return {'statusCode': 200, 'body': 'OK'}
+
+
+# =============================================================================
+# DM (DIRECT MESSAGE) HANDLERS
+# =============================================================================
+
+def handle_join_dm(message: Dict, connection_id: str, user_id: str, username: str, callback_url: str) -> dict:
+    """Subscribe to a DM conversation for real-time updates"""
+    conversation_id = message.get('conversation_id')
+    if not conversation_id:
+        return {'statusCode': 400, 'body': 'Missing conversation_id'}
+
+    subscribe_to_dm(connection_id, conversation_id, user_id)
+    print(f"[DM] User {user_id} joined DM conversation {conversation_id}")
+
+    return {'statusCode': 200, 'body': 'Joined DM conversation'}
+
+
+def handle_leave_dm(message: Dict, connection_id: str, user_id: str, username: str, callback_url: str) -> dict:
+    """Unsubscribe from a DM conversation"""
+    conversation_id = message.get('conversation_id')
+    if not conversation_id:
+        return {'statusCode': 400, 'body': 'Missing conversation_id'}
+
+    unsubscribe_from_dm(connection_id, conversation_id)
+    print(f"[DM] User {user_id} left DM conversation {conversation_id}")
+
+    return {'statusCode': 200, 'body': 'Left DM conversation'}
+
+
+def handle_dm_typing_start(message: Dict, connection_id: str, user_id: str, username: str, callback_url: str) -> dict:
+    """Broadcast typing indicator in DM"""
+    conversation_id = message.get('conversation_id')
+    if not conversation_id:
+        return {'statusCode': 400, 'body': 'Missing conversation_id'}
+
+    broadcast_to_dm(
+        callback_url=callback_url,
+        conversation_id=conversation_id,
+        message={
+            'event': 'dm_typing',
+            'conversation_id': conversation_id,
+            'user_id': user_id,
+            'username': username or 'Unknown',
+            'is_typing': True
+        },
+        exclude_connection=connection_id
+    )
+
+    return {'statusCode': 200, 'body': 'OK'}
+
+
+def handle_dm_typing_stop(message: Dict, connection_id: str, user_id: str, username: str, callback_url: str) -> dict:
+    """Broadcast stopped typing in DM"""
+    conversation_id = message.get('conversation_id')
+    if not conversation_id:
+        return {'statusCode': 400, 'body': 'Missing conversation_id'}
+
+    broadcast_to_dm(
+        callback_url=callback_url,
+        conversation_id=conversation_id,
+        message={
+            'event': 'dm_typing',
+            'conversation_id': conversation_id,
+            'user_id': user_id,
+            'username': username or 'Unknown',
+            'is_typing': False
         },
         exclude_connection=connection_id
     )

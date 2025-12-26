@@ -197,21 +197,48 @@ async def get_all_users_with_profiles(skip: int = 0, limit: int = 100):
     try:
         client = get_client()
 
-        # Get profiles with user info
+        # Get profiles with all role flags
         response = client.table("profiles").select(
-            "id, email, created_at, username, role, avatar_url, is_banned, roles:role"
+            "id, email, created_at, username, role, avatar_url, is_banned, "
+            "is_superadmin, is_admin, is_moderator, is_lodge_officer, "
+            "is_order_member, is_partner, is_filmmaker, is_premium"
         ).range(skip, skip + limit - 1).order("created_at", desc=True).execute()
 
         # Format response to match expected structure
         users = []
         for profile in response.data:
+            # Build roles array from boolean flags
+            roles = []
+            if profile.get("is_superadmin"):
+                roles.append("superadmin")
+            if profile.get("is_admin"):
+                roles.append("admin")
+            if profile.get("is_moderator"):
+                roles.append("moderator")
+            if profile.get("is_lodge_officer"):
+                roles.append("lodge_officer")
+            if profile.get("is_order_member"):
+                roles.append("order_member")
+            if profile.get("is_partner"):
+                roles.append("partner")
+            if profile.get("is_filmmaker"):
+                roles.append("filmmaker")
+            if profile.get("is_premium"):
+                roles.append("premium")
+
+            # Fallback to legacy role if no flags set
+            if not roles and profile.get("role"):
+                roles.append(profile.get("role"))
+            if not roles:
+                roles.append("free")
+
             users.append({
                 "id": profile.get("id"),
                 "email": profile.get("email"),
                 "created_at": profile.get("created_at"),
                 "profile": {
                     "username": profile.get("username"),
-                    "roles": [profile.get("role")] if profile.get("role") else ["user"],
+                    "roles": roles,
                     "avatar_url": profile.get("avatar_url"),
                     "is_banned": profile.get("is_banned", False)
                 }
@@ -235,7 +262,7 @@ async def list_submissions_admin(
 
         query = client.table("submissions").select(
             "id, created_at, project_title, status, youtube_link, description, logline, project_type, admin_notes, has_unread_admin_messages, email, "
-            "profiles(id, username, full_name, avatar_url)",
+            "profile:profiles!user_id(id, username, full_name, avatar_url)",
             count="exact"
         )
 
@@ -302,19 +329,39 @@ class UserRolesUpdate(BaseModel):
     roles: List[str]
 
 
+# Map role names to database column names
+ROLE_TO_COLUMN = {
+    "superadmin": "is_superadmin",
+    "admin": "is_admin",
+    "moderator": "is_moderator",
+    "lodge_officer": "is_lodge_officer",
+    "order_member": "is_order_member",
+    "partner": "is_partner",
+    "filmmaker": "is_filmmaker",
+    "premium": "is_premium",
+}
+
+
 @router.post("/users/roles")
 async def update_user_roles(update: UserRolesUpdate):
-    """Update user roles (sets the primary role)"""
+    """Update user roles (sets boolean flags for each role)"""
     try:
         client = get_client()
 
-        # For now, we store the first role as the primary role
-        # A more complex roles system would use a junction table
-        primary_role = update.roles[0] if update.roles else "user"
+        # Build update dict with all role flags set appropriately
+        update_data = {}
 
-        client.table("profiles").update({"role": primary_role}).eq("id", update.user_id).execute()
+        # Set all role flags based on the roles array
+        for role_name, column_name in ROLE_TO_COLUMN.items():
+            update_data[column_name] = role_name in update.roles
 
-        return {"message": "Roles updated successfully"}
+        # Also set the legacy "role" field to the primary (first) role
+        primary_role = update.roles[0] if update.roles else "free"
+        update_data["role"] = primary_role
+
+        client.table("profiles").update(update_data).eq("id", update.user_id).execute()
+
+        return {"message": "Roles updated successfully", "roles": update.roles}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -327,7 +374,7 @@ async def get_admin_feed(limit: int = 15):
 
         # Get recent submissions
         submissions = client.table("submissions").select(
-            "id, project_title, created_at, profiles(username, full_name)"
+            "id, project_title, created_at, profile:profiles!user_id(username, full_name)"
         ).order("created_at", desc=True).limit(10).execute()
 
         # Get recent users

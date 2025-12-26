@@ -178,13 +178,21 @@ def get_profile_id_from_cognito_id(cognito_user_id: str) -> str:
     """
     # Convert to string to ensure proper comparison
     uid_str = str(cognito_user_id)
+    # First try to find by cognito_user_id (preferred)
     profile_row = execute_single(
-        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
-        {"cuid": uid_str, "uid": uid_str}
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid LIMIT 1",
+        {"cuid": uid_str}
+    )
+    if profile_row:
+        return str(profile_row["id"])
+    # Fallback: check if it's already a profile ID
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE id::text = :uid LIMIT 1",
+        {"uid": uid_str}
     )
     if not profile_row:
         return None
-    return profile_row["id"]
+    return str(profile_row["id"])
 
 
 def serialize_project(project: dict) -> dict:
@@ -298,6 +306,153 @@ async def list_my_projects(
 
     except Exception as e:
         print(f"Error listing projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COLLAB FORM SEARCH ENDPOINTS (must come before /projects/{project_id})
+# =====================================================
+
+@router.get("/projects/search/for-collab")
+async def search_projects_for_collab(
+    q: Optional[str] = Query(None, description="Search query"),
+    limit: int = Query(20, ge=1, le=50),
+    authorization: str = Header(None)
+):
+    """
+    Search backlot projects for collab form production selector.
+
+    - No query: Returns only PUBLIC projects (alphabetically)
+    - With query: Returns user's OWN projects (any visibility) + PUBLIC projects matching query
+    """
+    client = get_client()
+
+    try:
+        # Get user profile if authenticated
+        profile_id = None
+        if authorization and authorization.startswith("Bearer "):
+            try:
+                user = await get_current_user_from_token(authorization)
+                cognito_user_id = user["id"]
+                profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+            except:
+                pass  # Continue without auth for public-only results
+
+        if not q or not q.strip():
+            # No query: Return only PUBLIC projects, alphabetically
+            result = client.table("backlot_projects").select(
+                "id, title, project_type, visibility, thumbnail_url, owner_id"
+            ).eq("visibility", "public").order("title").limit(limit).execute()
+
+            projects = result.data or []
+        else:
+            # With query: User's own projects + public projects matching
+            search_term = f"%{q.strip()}%"
+
+            if profile_id:
+                # Authenticated: Get user's projects (any visibility) + public matching
+                projects = execute_query(
+                    """
+                    SELECT DISTINCT id, title, project_type, visibility, thumbnail_url, owner_id
+                    FROM backlot_projects
+                    WHERE (owner_id = :profile_id OR visibility = 'public')
+                      AND title ILIKE :search
+                    ORDER BY
+                        CASE WHEN owner_id = :profile_id THEN 0 ELSE 1 END,
+                        title
+                    LIMIT :limit
+                    """,
+                    {"profile_id": profile_id, "search": search_term, "limit": limit}
+                )
+            else:
+                # Not authenticated: Only public projects
+                result = client.table("backlot_projects").select(
+                    "id, title, project_type, visibility, thumbnail_url, owner_id"
+                ).eq("visibility", "public").ilike("title", search_term).order("title").limit(limit).execute()
+
+                projects = result.data or []
+
+        # Map title -> name for SearchableCombobox compatibility
+        return [
+            {
+                "id": str(p["id"]),
+                "name": p["title"],
+                "project_type": p.get("project_type"),
+                "visibility": p.get("visibility"),
+                "thumbnail_url": p.get("thumbnail_url"),
+            }
+            for p in projects
+        ]
+
+    except Exception as e:
+        print(f"Error searching projects for collab: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class QuickCreateInput(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+
+
+@router.post("/projects/quick-create")
+async def quick_create_project(
+    input: QuickCreateInput,
+    authorization: str = Header(...)
+):
+    """
+    Quickly create an unlisted backlot project.
+    Used when adding new production from collab form.
+    Creates with visibility='unlisted' and status='pre_production'.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user["id"]
+    client = get_client()
+
+    try:
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
+        # Generate slug from title
+        slug_base = re.sub(r'[^a-z0-9]+', '-', input.title.lower()).strip('-')
+        slug = f"{slug_base}-{str(uuid.uuid4())[:8]}"
+
+        # Create minimal project with unlisted visibility
+        project_data = {
+            "owner_id": profile_id,
+            "title": input.title.strip(),
+            "slug": slug,
+            "status": "pre_production",
+            "visibility": "unlisted",
+        }
+
+        result = client.table("backlot_projects").insert(project_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create project")
+
+        project = result.data[0]
+
+        # Also add owner as admin member
+        client.table("backlot_project_members").insert({
+            "project_id": project["id"],
+            "user_id": profile_id,
+            "role": "admin",
+        }).execute()
+
+        # Return in SearchableCombobox format
+        return {
+            "id": str(project["id"]),
+            "name": project["title"],
+            "project_type": project.get("project_type"),
+            "visibility": project.get("visibility"),
+            "thumbnail_url": project.get("thumbnail_url"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error quick creating project: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -13944,12 +14099,19 @@ class ProjectRoleInput(BaseModel):
 
 class RoleApplicationInput(BaseModel):
     """Input for creating a role application"""
+    elevator_pitch: Optional[str] = Field(None, max_length=100)
     cover_note: Optional[str] = None
     availability_notes: Optional[str] = None
     rate_expectation: Optional[str] = None
     reel_url: Optional[str] = None
     headshot_url: Optional[str] = None
     resume_url: Optional[str] = None
+    selected_credit_ids: Optional[List[str]] = None
+    template_id: Optional[str] = None
+    local_hire_confirmed: Optional[bool] = None
+    is_promoted: bool = False
+    save_as_template: bool = False
+    template_name: Optional[str] = None
 
 
 class ApplicationStatusUpdate(BaseModel):
@@ -14608,16 +14770,17 @@ async def post_role_to_community(
     client = get_client()
 
     try:
-        # Get role and verify admin access
-        role_result = client.table("backlot_project_roles").select(
-            "*, backlot_projects(id, title, owner_id)"
-        ).eq("id", role_id).single().execute()
+        # Get role
+        role_result = client.table("backlot_project_roles").select("*").eq("id", role_id).single().execute()
         if not role_result.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         role = role_result.data
-        project = role.get("backlot_projects", {})
-        project_id = project.get("id")
+        project_id = role.get("project_id")
+
+        # Get project details
+        project_result = client.table("backlot_projects").select("id, title, owner_id").eq("id", project_id).single().execute()
+        project = project_result.data if project_result.data else {}
 
         # Check admin access
         is_owner = str(project.get("owner_id")) == str(user_id)
@@ -14630,30 +14793,28 @@ async def post_role_to_community(
         if role.get("community_job_id"):
             raise HTTPException(status_code=400, detail="Role is already posted to community")
 
-        # Create community job
-        job_data = {
+        # Create community collab
+        collab_data = {
+            "user_id": user_id,
             "title": f"{role.get('title')} - {project.get('title', 'Project')}",
+            "type": role.get("type", "crew"),  # cast or crew
             "description": role.get("description") or f"We're looking for a {role.get('title')} for our production.",
             "location": role.get("location"),
-            "job_type": role.get("type", "crew"),  # cast or crew
-            "roles_needed": role.get("title"),
-            "pay_info": role.get("rate_description"),
-            "is_paid": role.get("paid", False),
-            "visibility": "order_only" if role.get("is_order_only") else "public",
-            "created_by_id": user_id,
-            "starts_at": role.get("start_date"),
-            "ends_at": role.get("end_date"),
-            "application_deadline": role.get("application_deadline"),
+            "budget_range": role.get("rate_description"),
+            "compensation_type": "paid" if role.get("paid") else "unpaid",
             "is_active": True,
+            "is_order_only": role.get("is_order_only", False),
+            "start_date": role.get("start_date"),
+            "end_date": role.get("end_date"),
             "source_role_id": role_id,
             "source_project_id": project_id,
         }
 
-        job_result = client.table("order_jobs").insert(job_data).execute()
-        if not job_result.data:
-            raise HTTPException(status_code=500, detail="Failed to create community job")
+        collab_result = client.table("community_collabs").insert(collab_data).execute()
+        if not collab_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create community collab")
 
-        community_job_id = job_result.data[0]["id"]
+        community_job_id = collab_result.data[0]["id"]
 
         # Update role with community job reference
         client.table("backlot_project_roles").update({
@@ -14686,16 +14847,17 @@ async def remove_role_from_community(
     client = get_client()
 
     try:
-        # Get role and verify admin access
-        role_result = client.table("backlot_project_roles").select(
-            "community_job_id, backlot_projects(id, owner_id)"
-        ).eq("id", role_id).single().execute()
+        # Get role
+        role_result = client.table("backlot_project_roles").select("community_job_id, project_id").eq("id", role_id).single().execute()
         if not role_result.data:
             raise HTTPException(status_code=404, detail="Role not found")
 
         role = role_result.data
-        project = role.get("backlot_projects", {})
-        project_id = project.get("id")
+        project_id = role.get("project_id")
+
+        # Get project details for owner check
+        project_result = client.table("backlot_projects").select("id, owner_id").eq("id", project_id).single().execute()
+        project = project_result.data if project_result.data else {}
 
         # Check admin access
         is_owner = str(project.get("owner_id")) == str(user_id)
@@ -14708,8 +14870,8 @@ async def remove_role_from_community(
         if not community_job_id:
             raise HTTPException(status_code=400, detail="Role is not posted to community")
 
-        # Deactivate community job (don't delete, preserve history)
-        client.table("order_jobs").update({
+        # Deactivate community collab (don't delete, preserve history)
+        client.table("community_collabs").update({
             "is_active": False,
             "updated_at": datetime.utcnow().isoformat(),
         }).eq("id", community_job_id).execute()
@@ -14847,6 +15009,19 @@ async def apply_to_role(
         if existing.data:
             raise HTTPException(status_code=400, detail="You have already applied to this role")
 
+        # Check role requirements
+        if role.get("requires_local_hire") and application.local_hire_confirmed is None:
+            raise HTTPException(status_code=400, detail="Please confirm if you can work as a local hire")
+
+        if role.get("requires_reel") and not application.reel_url:
+            raise HTTPException(status_code=400, detail="A reel URL is required for this role")
+
+        if role.get("requires_headshot") and not application.headshot_url:
+            raise HTTPException(status_code=400, detail="A headshot is required for this role")
+
+        if role.get("requires_resume") and not application.resume_url:
+            raise HTTPException(status_code=400, detail="A resume is required for this role")
+
         # Get profile snapshot
         profile_snapshot = await get_user_profile_snapshot(client, user_id)
 
@@ -14854,12 +15029,17 @@ async def apply_to_role(
             "role_id": role_id,
             "applicant_user_id": user_id,
             "applicant_profile_snapshot": profile_snapshot,
+            "elevator_pitch": application.elevator_pitch,
             "cover_note": application.cover_note,
             "availability_notes": application.availability_notes,
             "rate_expectation": application.rate_expectation,
             "reel_url": application.reel_url,
             "headshot_url": application.headshot_url,
             "resume_url": application.resume_url,
+            "selected_credit_ids": application.selected_credit_ids or [],
+            "template_id": application.template_id,
+            "local_hire_confirmed": application.local_hire_confirmed,
+            "is_promoted": application.is_promoted,
             "status": "applied",
         }
 
@@ -14868,7 +15048,36 @@ async def apply_to_role(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit application")
 
-        application = result.data[0]
+        app_result = result.data[0]
+
+        # If save_as_template is True, create a template
+        if application.save_as_template and application.template_name:
+            template_data = {
+                "user_id": user_id,
+                "name": application.template_name,
+                "cover_letter": application.cover_note,
+                "elevator_pitch": application.elevator_pitch,
+                "rate_expectation": application.rate_expectation,
+                "availability_notes": application.availability_notes,
+                "default_reel_url": application.reel_url,
+                "default_headshot_url": application.headshot_url,
+                "default_resume_url": application.resume_url,
+                "default_credit_ids": application.selected_credit_ids or [],
+            }
+            client.table("application_templates").insert(template_data).execute()
+
+        # If template_id was provided, record usage
+        if application.template_id:
+            existing_template = client.table("application_templates").select("use_count").eq(
+                "id", application.template_id
+            ).eq("user_id", user_id).single().execute()
+
+            if existing_template.data:
+                new_count = (existing_template.data.get("use_count") or 0) + 1
+                client.table("application_templates").update({
+                    "use_count": new_count,
+                    "last_used_at": datetime.utcnow().isoformat()
+                }).eq("id", application.template_id).execute()
 
         # --- Send notifications to project owner and casting team ---
         try:
@@ -14907,7 +15116,7 @@ async def apply_to_role(
                 "title": f"New application for {role_title}",
                 "message": f"{applicant_name} has applied for {role_title} on {project_title}",
                 "data": {
-                    "application_id": application["id"],
+                    "application_id": app_result["id"],
                     "role_id": role_id,
                     "project_id": project_id,
                     "applicant_user_id": user_id,
@@ -14928,7 +15137,7 @@ async def apply_to_role(
             # Don't fail the application if notification fails
             print(f"Warning: Failed to send application notification: {notify_err}")
 
-        return {"success": True, "application": application, "message": "Application submitted successfully"}
+        return {"success": True, "application": app_result, "message": "Application submitted successfully"}
 
     except HTTPException:
         raise
@@ -15073,6 +15282,58 @@ async def update_application_status(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/applications/{application_id}/promote")
+async def promote_role_application(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Promote a role application (boost visibility)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify ownership
+        app_result = client.table("backlot_project_role_applications").select("*").eq(
+            "id", application_id
+        ).eq("applicant_user_id", user_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        if app_result.data.get("is_promoted"):
+            raise HTTPException(status_code=400, detail="Application is already promoted")
+
+        # Check if user is Order member (free promotion)
+        profile = client.table("profiles").select("is_order_member").eq(
+            "id", user_id
+        ).single().execute()
+
+        is_order_member = profile.data.get("is_order_member", False) if profile.data else False
+
+        # TODO: If not order member, process payment here
+        # For now, we'll allow the promotion
+
+        result = client.table("backlot_project_role_applications").update({
+            "is_promoted": True,
+            "promoted_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", application_id).execute()
+
+        return {
+            "success": True,
+            "is_free": is_order_member,
+            "message": "Application promoted successfully" + (" (free for Order members)" if is_order_member else ""),
+            "application": result.data[0] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error promoting application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/my-applications")
 async def get_my_applications(
     status: Optional[str] = None,
@@ -15098,6 +15359,89 @@ async def get_my_applications(
 
     except Exception as e:
         print(f"Error fetching my applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/applications-received")
+async def get_applications_received(
+    status: Optional[str] = None,
+    project_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get all applications received for roles on projects where user is owner/admin"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get all projects where user is owner
+        owned_projects = client.table("backlot_projects").select("id, title").eq("owner_id", user_id).execute()
+        owned_project_ids = [p["id"] for p in (owned_projects.data or [])]
+
+        # Get all projects where user is admin/editor
+        member_projects = client.table("backlot_project_members").select(
+            "project_id, backlot_projects(id, title)"
+        ).eq("user_id", user_id).in_("role", ["owner", "admin", "editor"]).execute()
+        member_project_ids = [m["project_id"] for m in (member_projects.data or [])]
+
+        # Combine and dedupe project IDs
+        all_project_ids = list(set(owned_project_ids + member_project_ids))
+
+        if not all_project_ids:
+            return {"success": True, "applications": [], "count": 0}
+
+        # Filter by specific project if requested
+        if project_id and project_id in all_project_ids:
+            all_project_ids = [project_id]
+        elif project_id:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+
+        # Get all roles for these projects
+        roles_result = client.table("backlot_project_roles").select(
+            "id, title, type, project_id"
+        ).in_("project_id", all_project_ids).execute()
+        roles = roles_result.data or []
+        role_ids = [r["id"] for r in roles]
+
+        if not role_ids:
+            return {"success": True, "applications": [], "count": 0}
+
+        # Get all applications for these roles with applicant info
+        query = client.table("backlot_project_role_applications").select(
+            "*, backlot_project_roles(id, title, type, project_id, backlot_projects(id, title, slug, cover_image_url))"
+        ).in_("role_id", role_ids).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        # Group by project for easier frontend display
+        by_project = {}
+        for app in applications:
+            role_data = app.get("backlot_project_roles", {})
+            proj_data = role_data.get("backlot_projects", {})
+            proj_id = proj_data.get("id") if proj_data else None
+            if proj_id:
+                if proj_id not in by_project:
+                    by_project[proj_id] = {
+                        "project": proj_data,
+                        "applications": []
+                    }
+                by_project[proj_id]["applications"].append(app)
+
+        return {
+            "success": True,
+            "applications": applications,
+            "by_project": by_project,
+            "count": len(applications)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching applications received: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -19371,6 +19715,15 @@ class TaskCreate(BaseModel):
     estimate_hours: Optional[float] = None
     assignee_ids: Optional[List[str]] = None
     label_ids: Optional[List[str]] = None
+    # Extended source tracking
+    source_camera_media_id: Optional[str] = None
+    source_continuity_note_id: Optional[str] = None
+    source_location_id: Optional[str] = None
+    source_hot_set_session_id: Optional[str] = None
+    source_gear_id: Optional[str] = None
+    source_costume_id: Optional[str] = None
+    scene_id: Optional[str] = None
+    production_day_id: Optional[str] = None
 
 
 class TaskUpdate(BaseModel):
@@ -19388,6 +19741,15 @@ class TaskUpdate(BaseModel):
     actual_hours: Optional[float] = None
     is_completed: Optional[bool] = None
     sort_index: Optional[float] = None
+    # Extended source tracking
+    source_camera_media_id: Optional[str] = None
+    source_continuity_note_id: Optional[str] = None
+    source_location_id: Optional[str] = None
+    source_hot_set_session_id: Optional[str] = None
+    source_gear_id: Optional[str] = None
+    source_costume_id: Optional[str] = None
+    scene_id: Optional[str] = None
+    production_day_id: Optional[str] = None
 
 
 class TaskLabelCreate(BaseModel):
@@ -20022,6 +20384,15 @@ async def create_task(
             "sort_index": next_sort_index,
             "created_by_user_id": user["id"],
             "is_completed": request.status == "done",
+            # Extended source tracking
+            "source_camera_media_id": request.source_camera_media_id,
+            "source_continuity_note_id": request.source_continuity_note_id,
+            "source_location_id": request.source_location_id,
+            "source_hot_set_session_id": request.source_hot_set_session_id,
+            "source_gear_id": request.source_gear_id,
+            "source_costume_id": request.source_costume_id,
+            "scene_id": request.scene_id,
+            "production_day_id": request.production_day_id,
         }
 
         result = client.table("backlot_tasks").insert(task_data).execute()
@@ -20172,6 +20543,23 @@ async def update_task(
                 update_data["status"] = "done"
         if request.sort_index is not None:
             update_data["sort_index"] = request.sort_index
+        # Extended source tracking
+        if request.source_camera_media_id is not None:
+            update_data["source_camera_media_id"] = request.source_camera_media_id if request.source_camera_media_id else None
+        if request.source_continuity_note_id is not None:
+            update_data["source_continuity_note_id"] = request.source_continuity_note_id if request.source_continuity_note_id else None
+        if request.source_location_id is not None:
+            update_data["source_location_id"] = request.source_location_id if request.source_location_id else None
+        if request.source_hot_set_session_id is not None:
+            update_data["source_hot_set_session_id"] = request.source_hot_set_session_id if request.source_hot_set_session_id else None
+        if request.source_gear_id is not None:
+            update_data["source_gear_id"] = request.source_gear_id if request.source_gear_id else None
+        if request.source_costume_id is not None:
+            update_data["source_costume_id"] = request.source_costume_id if request.source_costume_id else None
+        if request.scene_id is not None:
+            update_data["scene_id"] = request.scene_id if request.scene_id else None
+        if request.production_day_id is not None:
+            update_data["production_day_id"] = request.production_day_id if request.production_day_id else None
 
         result = client.table("backlot_tasks").update(update_data).eq("id", task_id).execute()
 
@@ -20819,6 +21207,122 @@ async def delete_task_view(
         raise
     except Exception as e:
         print(f"Error deleting task view: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# TASK AGGREGATION ENDPOINTS
+# =====================================================
+
+@router.get("/projects/{project_id}/tasks/by-scene/{scene_id}")
+async def get_tasks_by_scene(
+    project_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Get all tasks linked to a specific scene"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get tasks where scene_id matches
+        result = client.table("backlot_tasks").select("*").eq("project_id", project_id).eq("scene_id", scene_id).order("created_at", desc=True).execute()
+        tasks = result.data or []
+
+        # Get assignees for each task
+        for task in tasks:
+            assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
+            task["assignees"] = assignees_result.data or []
+
+        return {"success": True, "tasks": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting tasks by scene: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/tasks/by-day/{production_day_id}")
+async def get_tasks_by_day(
+    project_id: str,
+    production_day_id: str,
+    authorization: str = Header(None)
+):
+    """Get all tasks linked to a specific production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get tasks where production_day_id matches or due_date falls on that day
+        result = client.table("backlot_tasks").select("*").eq("project_id", project_id).eq("production_day_id", production_day_id).order("created_at", desc=True).execute()
+        tasks = result.data or []
+
+        # Get assignees for each task
+        for task in tasks:
+            assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
+            task["assignees"] = assignees_result.data or []
+
+        return {"success": True, "tasks": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting tasks by day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/tasks/by-source/{source_type}/{source_id}")
+async def get_tasks_by_source(
+    project_id: str,
+    source_type: str,
+    source_id: str,
+    authorization: str = Header(None)
+):
+    """Get all tasks linked to a specific source entity"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Build query based on source type
+        query = client.table("backlot_tasks").select("*").eq("project_id", project_id)
+
+        if source_type == "camera_media":
+            query = query.eq("source_camera_media_id", source_id)
+        elif source_type == "continuity":
+            query = query.eq("source_continuity_note_id", source_id)
+        elif source_type == "location":
+            query = query.eq("source_location_id", source_id)
+        elif source_type == "hot_set":
+            query = query.eq("source_hot_set_session_id", source_id)
+        elif source_type == "gear":
+            query = query.eq("source_gear_id", source_id)
+        elif source_type == "costume":
+            query = query.eq("source_costume_id", source_id)
+        else:
+            # Fall back to generic source_type/source_id
+            query = query.eq("source_type", source_type).eq("source_id", source_id)
+
+        result = query.order("created_at", desc=True).execute()
+        tasks = result.data or []
+
+        # Get assignees for each task
+        for task in tasks:
+            assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task["id"]).execute()
+            task["assignees"] = assignees_result.data or []
+
+        return {"success": True, "tasks": tasks}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting tasks by source: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

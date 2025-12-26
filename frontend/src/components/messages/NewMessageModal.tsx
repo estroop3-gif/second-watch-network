@@ -115,7 +115,9 @@ export const NewMessageModal = ({ isOpen, onClose, onConversationCreated }: NewM
                   );
                 })}
                 {recipients && recipients.length === 0 && (
-                  <p className="text-center text-muted-foreground py-6">No matching users.</p>
+                  <p className="text-center text-muted-foreground py-6">
+                    {searchTerm.trim() ? 'No matching users found.' : 'No users available.'}
+                  </p>
                 )}
               </div>
             )}

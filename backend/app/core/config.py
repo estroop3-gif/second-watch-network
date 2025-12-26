@@ -97,5 +97,9 @@ class Settings(BaseSettings):
     STRIPE_PREMIUM_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_PRICE_ID", "")
     STRIPE_PREMIUM_YEARLY_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_YEARLY_PRICE_ID", "")
 
+    # WebSocket Configuration (AWS API Gateway WebSocket)
+    WEBSOCKET_API_ENDPOINT: str = os.getenv("WEBSOCKET_API_ENDPOINT", "")
+    WEBSOCKET_CONNECTIONS_TABLE: str = os.getenv("WEBSOCKET_CONNECTIONS_TABLE", "second-watch-websocket-connections")
+
 
 settings = Settings()

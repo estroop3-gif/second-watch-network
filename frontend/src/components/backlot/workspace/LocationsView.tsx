@@ -48,7 +48,10 @@ import {
   EyeOff,
   Camera,
   ImageIcon,
+  HelpCircle,
+  FileSpreadsheet,
 } from 'lucide-react';
+import { DialogFooter } from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,6 +67,7 @@ import {
   useClearances,
   locationHasSignedRelease,
 } from '@/hooks/backlot';
+import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
 import {
   BacklotLocation,
   BacklotLocationInput,
@@ -71,6 +75,7 @@ import {
   CLEARANCE_STATUS_LABELS,
 } from '@/types/backlot';
 import { LocationDetailModal } from './LocationDetailModal';
+import { toast } from 'sonner';
 
 interface LocationsViewProps {
   projectId: string;
@@ -83,9 +88,10 @@ const LocationCard: React.FC<{
   onEdit: (location: BacklotLocation) => void;
   onDetach: (id: string) => void;
   onView: (location: BacklotLocation) => void;
+  onCreateTask?: (location: BacklotLocation) => void;
   isAttached?: boolean;
   releaseStatus?: BacklotClearanceStatus | 'missing' | null;
-}> = ({ location, canEdit, onEdit, onDetach, onView, isAttached = true, releaseStatus }) => {
+}> = ({ location, canEdit, onEdit, onDetach, onView, onCreateTask, isAttached = true, releaseStatus }) => {
   const fullAddress = [location.address, location.city, location.state, location.zip]
     .filter(Boolean)
     .join(', ');
@@ -150,6 +156,12 @@ const LocationCard: React.FC<{
                   <Edit className="w-4 h-4 mr-2" />
                   Edit Details
                 </DropdownMenuItem>
+                {onCreateTask && (
+                  <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onCreateTask(location); }}>
+                    <FileCheck className="w-4 h-4 mr-2" />
+                    Create Task
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-red-400" onClick={() => onDetach(location.id)}>
                   <Unlink className="w-4 h-4 mr-2" />
@@ -953,6 +965,18 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [editingLocation, setEditingLocation] = useState<BacklotLocation | null>(null);
   const [viewingLocation, setViewingLocation] = useState<BacklotLocation | null>(null);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
+
+  // Task creation state
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [taskLocation, setTaskLocation] = useState<BacklotLocation | null>(null);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDescription, setTaskDescription] = useState('');
+  const [selectedTaskListId, setSelectedTaskListId] = useState<string>('');
+
+  // Task hooks
+  const { taskLists } = useTaskLists({ projectId });
+  const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
 
   // Get set of attached location IDs for quick lookup
   const attachedLocationIds = new Set(locations.map((l) => l.id));
@@ -989,6 +1013,38 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
     setShowCreateModal(true);
   };
 
+  // Task creation handlers
+  const handleOpenTaskModal = (location: BacklotLocation) => {
+    setTaskLocation(location);
+    setTaskTitle(`Location task: ${location.name}`);
+    setTaskDescription(`Location: ${location.name}\nAddress: ${location.address || 'N/A'}`);
+    setSelectedTaskListId(taskLists[0]?.id || '');
+    setShowTaskModal(true);
+  };
+
+  const handleCreateTask = async () => {
+    if (!taskLocation || !selectedTaskListId) {
+      toast.error('Please select a task list');
+      return;
+    }
+
+    try {
+      await createTaskFromSource.mutateAsync({
+        title: taskTitle,
+        sourceType: 'location',
+        sourceId: taskLocation.id,
+        description: taskDescription,
+      });
+      toast.success('Task created successfully');
+      setShowTaskModal(false);
+      setTaskLocation(null);
+      setTaskTitle('');
+      setTaskDescription('');
+    } catch (error) {
+      toast.error('Failed to create task');
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -1013,28 +1069,39 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
           <h2 className="text-2xl font-heading text-bone-white">Locations</h2>
           <p className="text-sm text-muted-gray">Manage your shooting locations</p>
         </div>
-        {canEdit && (
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setShowSearchModal(true)}
-              className="border-muted-gray/30"
-            >
-              <Globe className="w-4 h-4 mr-2" />
-              Browse Library
-            </Button>
-            <Button
-              onClick={() => {
-                setEditingLocation(null);
-                setShowCreateModal(true);
-              }}
-              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              New Location
-            </Button>
-          </div>
-        )}
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
+          {canEdit && (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => setShowSearchModal(true)}
+                className="border-muted-gray/30"
+              >
+                <Globe className="w-4 h-4 mr-2" />
+                Browse Library
+              </Button>
+              <Button
+                onClick={() => {
+                  setEditingLocation(null);
+                  setShowCreateModal(true);
+                }}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                New Location
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Locations Grid */}
@@ -1048,6 +1115,7 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
               onEdit={handleEdit}
               onDetach={handleDetach}
               onView={handleView}
+              onCreateTask={handleOpenTaskModal}
               releaseStatus={locationReleaseStatusMap.get(location.id)}
             />
           ))}
@@ -1109,6 +1177,155 @@ const LocationsView: React.FC<LocationsViewProps> = ({ projectId, canEdit }) => 
         canEdit={canEdit}
         onEdit={handleEditFromDetail}
       />
+
+      {/* Create Task Dialog */}
+      <Dialog open={showTaskModal} onOpenChange={setShowTaskModal}>
+        <DialogContent className="bg-soft-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileCheck className="w-5 h-5 text-primary" />
+              Create Task from Location
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Task List *</Label>
+              <Select value={selectedTaskListId} onValueChange={setSelectedTaskListId}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                  <SelectValue placeholder="Select a task list" />
+                </SelectTrigger>
+                <SelectContent>
+                  {taskLists.map((list) => (
+                    <SelectItem key={list.id} value={list.id}>
+                      {list.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Task Title *</Label>
+              <Input
+                value={taskTitle}
+                onChange={(e) => setTaskTitle(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task title"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={taskDescription}
+                onChange={(e) => setTaskDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task description"
+                rows={3}
+              />
+            </div>
+            {taskLocation && (
+              <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                <p className="text-xs text-muted-gray mb-1">Linked to location:</p>
+                <p className="text-sm text-bone-white font-medium">{taskLocation.name}</p>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="outline" onClick={() => setShowTaskModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTask}
+              disabled={!taskTitle || !selectedTaskListId || createTaskFromSource.isPending}
+              className="bg-primary text-white hover:bg-primary/90"
+            >
+              {createTaskFromSource.isPending ? 'Creating...' : 'Create Task'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Locations Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Globe className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Global Library</h4>
+                <p className="text-sm text-muted-gray">
+                  Browse and attach locations from the shared library, or create new
+                  locations that can be reused across projects.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <FileCheck className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Location Releases</h4>
+                <p className="text-sm text-muted-gray">
+                  Track location release status. The badge shows whether the release
+                  is signed, requested, or still needed.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <FileSpreadsheet className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Permits & Fees</h4>
+                <p className="text-sm text-muted-gray">
+                  Mark whether permits are required and track their status. Location
+                  fees are automatically synced to your budget.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Camera className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Scout Photos</h4>
+                <p className="text-sm text-muted-gray">
+                  View scout photos and location details by clicking on a location
+                  card. Photos help with planning and continuity.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-orange-500/10 rounded-lg">
+                <MapPin className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Visibility Settings</h4>
+                <p className="text-sm text-muted-gray">
+                  Set locations as Public (in global library), Unlisted (link only),
+                  or Private (only visible to you).
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

@@ -30,7 +30,17 @@ import {
   Phone,
   Mail,
   Briefcase,
+  HelpCircle,
+  Clock,
+  UserCog,
 } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { usePeopleList, PersonListItem, getRoleLabel, BACKLOT_ROLE_LABELS } from '@/hooks/backlot';
 import { useUnifiedPeople, UnifiedPerson } from '@/hooks/backlot/useProjectAccess';
 import { cn } from '@/lib/utils';
@@ -61,6 +71,7 @@ export default function PeopleView({ projectId, canEdit, onSelectPerson }: Peopl
   const [roleFilter, setRoleFilter] = useState<string>('');
   const [deptFilter, setDeptFilter] = useState<string>('');
   const [viewMode, setViewMode] = useState<ViewMode>('all');
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Fetch team members (existing hook)
   const { data: people, isLoading: isLoadingPeople } = usePeopleList(projectId, {
@@ -147,23 +158,34 @@ export default function PeopleView({ projectId, canEdit, onSelectPerson }: Peopl
           </p>
         </div>
 
-        {/* View Mode Tabs */}
-        <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
-          <TabsList className="bg-charcoal-black/50">
-            <TabsTrigger value="all" className="data-[state=active]:bg-accent-yellow/20">
-              <Users className="w-4 h-4 mr-2" />
-              All ({totalAll})
-            </TabsTrigger>
-            <TabsTrigger value="team" className="data-[state=active]:bg-green-500/20">
-              <UserCheck className="w-4 h-4 mr-2" />
-              Team ({totalTeam})
-            </TabsTrigger>
-            <TabsTrigger value="contacts" className="data-[state=active]:bg-blue-500/20">
-              <Briefcase className="w-4 h-4 mr-2" />
-              Contacts ({totalContacts})
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
+          {/* View Mode Tabs */}
+          <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as ViewMode)}>
+            <TabsList className="bg-charcoal-black/50">
+              <TabsTrigger value="all" className="data-[state=active]:bg-accent-yellow/20">
+                <Users className="w-4 h-4 mr-2" />
+                All ({totalAll})
+              </TabsTrigger>
+              <TabsTrigger value="team" className="data-[state=active]:bg-green-500/20">
+                <UserCheck className="w-4 h-4 mr-2" />
+                Team ({totalTeam})
+              </TabsTrigger>
+              <TabsTrigger value="contacts" className="data-[state=active]:bg-blue-500/20">
+                <Briefcase className="w-4 h-4 mr-2" />
+                Contacts ({totalContacts})
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
       </div>
 
       {/* Filters */}
@@ -239,6 +261,89 @@ export default function PeopleView({ projectId, canEdit, onSelectPerson }: Peopl
           </Card>
         )}
       </div>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              People Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <UserCheck className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Team Members</h4>
+                <p className="text-sm text-muted-gray">
+                  Team members have accounts and can access the project. They can
+                  be assigned roles, scheduled, and submit timecards.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Briefcase className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Contacts</h4>
+                <p className="text-sm text-muted-gray">
+                  Contacts are external people (vendors, agents, etc.) tracked
+                  for communication. They can be converted to team members.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <UserCog className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Roles & Permissions</h4>
+                <p className="text-sm text-muted-gray">
+                  Assign roles like Producer, Director, or Crew to control what
+                  each team member can view and edit in the project.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Clock className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Timecards</h4>
+                <p className="text-sm text-muted-gray">
+                  Team members with pending timecards are flagged. Click their
+                  card to view and approve submitted hours.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-orange-500/10 rounded-lg">
+                <Search className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Filtering</h4>
+                <p className="text-sm text-muted-gray">
+                  Use tabs to switch between All, Team, and Contacts views.
+                  Filter by role or department, or search by name.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

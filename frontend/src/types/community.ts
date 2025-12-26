@@ -1,10 +1,22 @@
 /**
  * Community Hub Type Definitions
  */
+import type { ProductionType, UnionType, TvNetwork, CustomQuestion } from './productions';
 
 // Collab types
 export type CollabType = 'looking_for_crew' | 'available_for_hire' | 'partner_opportunity';
 export type CompensationType = 'paid' | 'unpaid' | 'deferred' | 'negotiable';
+export type JobType = 'freelance' | 'full_time';
+
+// Company type
+export interface Company {
+  id: string;
+  name: string;
+  slug?: string | null;
+  logo_url?: string | null;
+  website?: string | null;
+  is_verified?: boolean;
+}
 
 export interface CommunityCollab {
   id: string;
@@ -20,8 +32,45 @@ export interface CommunityCollab {
   tags: string[];
   is_active: boolean;
   is_order_only: boolean;
+  // Job type (freelance vs full-time)
+  job_type?: JobType;
+  // Backlot project link (when posted from Backlot)
+  backlot_project_id?: string | null;
+  // Production info
+  production_id?: string | null;
+  production_title?: string | null;
+  production_type?: ProductionType | null;
+  company?: string | null;
+  company_id?: string | null;
+  network_id?: string | null;
+  hide_production_info?: boolean;
+  // Freelance compensation
+  day_rate_min?: number | null;
+  day_rate_max?: number | null;
+  // Full-time compensation
+  salary_min?: number | null;
+  salary_max?: number | null;
+  benefits_info?: string | null;
+  // Application requirements
+  requires_local_hire?: boolean;
+  requires_order_member?: boolean;
+  requires_resume?: boolean;
+  application_deadline?: string | null;
+  max_applications?: number | null;
+  // Union and Order requirements
+  union_requirements?: UnionType[];
+  requires_order_membership?: boolean;
+  // Custom questions
+  custom_questions?: CustomQuestion[];
+  // Featured post
+  is_featured?: boolean;
+  featured_until?: string | null;
+  stripe_payment_id?: string | null;
   created_at: string;
   updated_at: string;
+  // Joined data
+  network?: TvNetwork;
+  company_data?: Company;
   // Joined profile data
   profile?: {
     username: string | null;

@@ -15,9 +15,11 @@ from contextlib import contextmanager
 from app.core.config import settings
 
 
-# Database URL from settings
-DATABASE_URL = getattr(settings, 'DATABASE_URL', None) or os.getenv(
-    'DATABASE_URL',
+# Database URL from settings - check both DATABASE_URL and DatabaseUrl (Lambda naming convention)
+DATABASE_URL = (
+    getattr(settings, 'DATABASE_URL', None) or
+    os.getenv('DATABASE_URL') or
+    os.getenv('DatabaseUrl') or
     f"postgresql://{os.getenv('DB_USER', 'swn_admin')}:{os.getenv('DB_PASSWORD', '')}@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'secondwatchnetwork')}"
 )
 
@@ -166,6 +168,7 @@ class DatabaseTable:
         self.table_name = table_name
         self._select_cols = "*"
         self._filters = []
+        self._or_conditions = None  # Supabase-style OR conditions string
         self._order_by = None
         self._order_desc = False
         self._limit = None
@@ -252,6 +255,17 @@ class DatabaseTable:
         self._filters.append((column, "IN", values))
         return self
 
+    def or_(self, conditions: str):
+        """
+        Supabase-style OR filter.
+        Format: "column1.op.value1,column2.op.value2"
+        Example: "full_name.ilike.%john%,username.ilike.%john%"
+
+        Note: This implementation parses the Supabase PostgREST syntax.
+        """
+        self._or_conditions = conditions
+        return self
+
     def order(self, column: str, desc: bool = False):
         self._order_by = column
         self._order_desc = desc
@@ -265,23 +279,86 @@ class DatabaseTable:
         self._offset = count
         return self
 
+    def _parse_or_conditions(self, or_string: str, params: dict, start_idx: int) -> tuple:
+        """
+        Parse Supabase PostgREST-style OR conditions.
+        Format: "column.op.value,column.op.value"
+        Returns: (sql_conditions_list, updated_params, next_idx)
+        """
+        import re
+        conditions = []
+        idx = start_idx
+
+        # Split by comma but respect the format
+        parts = or_string.split(",")
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # Handle nested reference (profile.full_name.ilike.%q%)
+            # Split into components
+            segments = part.split(".")
+
+            if len(segments) >= 3:
+                # Last segment is the value, second to last is the operator
+                value = segments[-1]
+                op = segments[-2].lower()
+                column = ".".join(segments[:-2])
+
+                # For related table columns, just use the last column name
+                # (This is a simplification - full PostgREST support would be more complex)
+                if "." in column:
+                    column = column.split(".")[-1]
+
+                param_name = f"or_p{idx}"
+                idx += 1
+
+                if op == "ilike":
+                    params[param_name] = value
+                    conditions.append(f"{column} ILIKE :{param_name}")
+                elif op == "like":
+                    params[param_name] = value
+                    conditions.append(f"{column} LIKE :{param_name}")
+                elif op == "eq":
+                    params[param_name] = value
+                    conditions.append(f"{column} = :{param_name}")
+                elif op == "neq":
+                    params[param_name] = value
+                    conditions.append(f"{column} != :{param_name}")
+                else:
+                    # Unsupported operator, skip
+                    continue
+
+        return conditions, params, idx
+
     def _build_query(self) -> tuple:
         query = f"SELECT {self._select_cols} FROM {self.table_name}"
         params = {}
+        all_conditions = []
 
         if self._filters:
-            conditions = []
             for i, (col, op, val) in enumerate(self._filters):
                 param_name = f"p{i}"
                 if op == "IS" and val is None:
-                    conditions.append(f"{col} IS NULL")
+                    all_conditions.append(f"{col} IS NULL")
                 elif op == "IN":
                     params[param_name] = tuple(val)
-                    conditions.append(f"{col} IN :{param_name}")
+                    all_conditions.append(f"{col} IN :{param_name}")
                 else:
                     params[param_name] = val
-                    conditions.append(f"{col} {op} :{param_name}")
-            query += " WHERE " + " AND ".join(conditions)
+                    all_conditions.append(f"{col} {op} :{param_name}")
+
+        # Handle OR conditions
+        if self._or_conditions:
+            or_conditions, params, _ = self._parse_or_conditions(
+                self._or_conditions, params, len(self._filters)
+            )
+            if or_conditions:
+                all_conditions.append(f"({' OR '.join(or_conditions)})")
+
+        if all_conditions:
+            query += " WHERE " + " AND ".join(all_conditions)
 
         if self._order_by:
             direction = "DESC" if self._order_desc else "ASC"
@@ -442,9 +519,31 @@ class DatabaseInsertBuilder:
         self._returning = "*"
 
     def _serialize_value(self, value):
-        """Convert dict/list to JSON string for PostgreSQL."""
-        if isinstance(value, (dict, list)):
+        """Convert dict/list to appropriate PostgreSQL format."""
+        if isinstance(value, dict):
+            # Dicts become JSON
             return json.dumps(value)
+        elif isinstance(value, list):
+            # Check if it's a list of simple values (for native arrays) or complex (for JSONB)
+            if not value:
+                # Empty list - use PostgreSQL array format
+                return '{}'
+            elif all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+                # Simple values - use PostgreSQL array format
+                def format_item(item):
+                    if item is None:
+                        return 'NULL'
+                    elif isinstance(item, str):
+                        escaped = item.replace('\\', '\\\\').replace('"', '\\"')
+                        return f'"{escaped}"'
+                    elif isinstance(item, bool):
+                        return 't' if item else 'f'
+                    else:
+                        return str(item)
+                return '{' + ','.join(format_item(item) for item in value) + '}'
+            else:
+                # Complex objects - use JSON
+                return json.dumps(value)
         return value
 
     def execute(self):
@@ -471,9 +570,31 @@ class DatabaseUpdateBuilder:
         self._returning = "*"
 
     def _serialize_value(self, value):
-        """Convert dict/list to JSON string for PostgreSQL."""
-        if isinstance(value, (dict, list)):
+        """Convert dict/list to appropriate PostgreSQL format."""
+        if isinstance(value, dict):
+            # Dicts become JSON
             return json.dumps(value)
+        elif isinstance(value, list):
+            # Check if it's a list of simple values (for native arrays) or complex (for JSONB)
+            if not value:
+                # Empty list - use PostgreSQL array format
+                return '{}'
+            elif all(isinstance(item, (str, int, float, bool, type(None))) for item in value):
+                # Simple values - use PostgreSQL array format
+                def format_item(item):
+                    if item is None:
+                        return 'NULL'
+                    elif isinstance(item, str):
+                        escaped = item.replace('\\', '\\\\').replace('"', '\\"')
+                        return f'"{escaped}"'
+                    elif isinstance(item, bool):
+                        return 't' if item else 'f'
+                    else:
+                        return str(item)
+                return '{' + ','.join(format_item(item) for item in value) + '}'
+            else:
+                # Complex objects - use JSON
+                return json.dumps(value)
         return value
 
     def eq(self, column: str, value):
@@ -607,10 +728,23 @@ class DatabaseClient:
     def rpc(self, function_name: str, params: dict = None):
         """
         Call a PostgreSQL function.
+        Returns an RpcCall object that supports .execute() for Supabase API compatibility.
         """
-        param_list = ", ".join([f":{k}" for k in (params or {}).keys()])
-        query = f"SELECT * FROM {function_name}({param_list})"
-        results = execute_query(query, params or {})
+        return RpcCall(function_name, params)
+
+
+class RpcCall:
+    """Represents a pending RPC call that can be executed."""
+
+    def __init__(self, function_name: str, params: dict = None):
+        self._function_name = function_name
+        self._params = params or {}
+
+    def execute(self):
+        """Execute the RPC call and return a Response object."""
+        param_list = ", ".join([f":{k}" for k in self._params.keys()])
+        query = f"SELECT * FROM {self._function_name}({param_list})"
+        results = execute_query(query, self._params)
         return type('Response', (), {'data': results, 'error': None})()
 
 

@@ -40,6 +40,8 @@ import FilmmakerProfile from "./pages/FilmmakerProfile";
 import MyProfile from "./pages/MyProfile";
 import MySubmissions from "./pages/MySubmissions";
 import Notifications from "./pages/Notifications";
+import MyApplications from "./pages/MyApplications";
+import ApplicationsReceived from "./pages/ApplicationsReceived";
 import OnboardingGate from "./components/OnboardingGate";
 import FilmmakerOnboarding from "./pages/FilmmakerOnboarding";
 import FilmmakerOnboardingSuccess from "./pages/FilmmakerOnboardingSuccess";
@@ -163,6 +165,8 @@ const App = () => (
                     {/* keep legacy path working */}
                     <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
                     <Route path="/notifications" element={<Notifications />} />
+                    <Route path="/my-applications" element={<MyApplications />} />
+                    <Route path="/applications-received" element={<ApplicationsReceived />} />
                     <Route path="/messages" element={<Messages />} />
                     <Route path="/my-profile" element={<MyProfile />} />
                     <Route path="/filmmakers" element={<Filmmakers />} />

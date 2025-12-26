@@ -3167,8 +3167,6 @@ export interface BacklotProjectRole {
   booked_user_id: string | null;
   booked_at: string | null;
   // Application settings
-  requires_reel: boolean;
-  requires_headshot: boolean;
   application_deadline: string | null;
   max_applications: number | null;
   // Audit
@@ -3283,8 +3281,6 @@ export interface ProjectRoleInput {
   is_order_only?: boolean;
   is_featured?: boolean;
   status?: BacklotProjectRoleStatus;
-  requires_reel?: boolean;
-  requires_headshot?: boolean;
   application_deadline?: string | null;
   max_applications?: number | null;
 }
@@ -3292,9 +3288,6 @@ export interface ProjectRoleInput {
 export interface RoleApplicationInput {
   cover_note?: string | null;
   availability_notes?: string | null;
-  rate_expectation?: string | null;
-  reel_url?: string | null;
-  headshot_url?: string | null;
   resume_url?: string | null;
 }
 
@@ -4752,6 +4745,16 @@ export interface BacklotTask {
   linked_call_sheet_id: string | null;
   linked_shot_list_id: string | null;
   linked_production_day_id: string | null;
+  // Extended source tracking
+  source_type: 'manual' | 'call_sheet' | 'import' | 'camera_media' | 'continuity' | 'location' | 'hot_set' | 'gear' | 'costume' | null;
+  source_camera_media_id: string | null;
+  source_continuity_note_id: string | null;
+  source_location_id: string | null;
+  source_hot_set_session_id: string | null;
+  source_gear_id: string | null;
+  source_costume_id: string | null;
+  scene_id: string | null;
+  production_day_id: string | null;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -4768,6 +4771,13 @@ export interface BacklotTask {
   linked_call_sheet?: { id: string; title: string };
   linked_shot_list?: { id: string; title: string };
   linked_production_day?: { id: string; day_number: number; date: string };
+  // Extended source entity data (for display)
+  source_camera_media?: { id: string; card_label: string; camera_id?: string };
+  source_continuity_note?: { id: string; department: string; character_name?: string };
+  source_location?: { id: string; name: string };
+  source_hot_set_session?: { id: string; day_number: number; date: string };
+  source_gear?: { id: string; name: string; category?: string };
+  source_costume?: { id: string; character_name: string };
 }
 
 // =====================================================
@@ -4824,6 +4834,16 @@ export interface TaskInput {
   linked_call_sheet_id?: string;
   linked_shot_list_id?: string;
   linked_production_day_id?: string;
+  // Extended source tracking
+  source_type?: string;
+  source_camera_media_id?: string;
+  source_continuity_note_id?: string;
+  source_location_id?: string;
+  source_hot_set_session_id?: string;
+  source_gear_id?: string;
+  source_costume_id?: string;
+  scene_id?: string;
+  production_day_id?: string;
 }
 
 // Task Update Input
@@ -4845,6 +4865,16 @@ export interface TaskUpdateInput {
   linked_call_sheet_id?: string | null;
   linked_shot_list_id?: string | null;
   linked_production_day_id?: string | null;
+  // Extended source tracking
+  source_type?: string | null;
+  source_camera_media_id?: string | null;
+  source_continuity_note_id?: string | null;
+  source_location_id?: string | null;
+  source_hot_set_session_id?: string | null;
+  source_gear_id?: string | null;
+  source_costume_id?: string | null;
+  scene_id?: string | null;
+  production_day_id?: string | null;
 }
 
 // Task Comment Input

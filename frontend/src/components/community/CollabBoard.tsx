@@ -2,10 +2,11 @@
  * CollabBoard - Collaboration posts board with filtering
  */
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useCollabs } from '@/hooks/useCollabs';
+import { useAuth } from '@/context/AuthContext';
 import CollabCard from './CollabCard';
+import { ApplicationModal, CollabApplicationsView } from '@/components/applications';
 import { CollabType, CompensationType, CommunityCollab } from '@/types/community';
 import {
   Plus,
@@ -42,22 +43,42 @@ const compensationTypes = [
 ];
 
 const CollabBoard: React.FC<CollabBoardProps> = ({ onCreateCollab, onViewCollab }) => {
-  const navigate = useNavigate();
+  const { user } = useAuth();
   const [typeFilter, setTypeFilter] = useState<CollabType | 'all'>('all');
   const [remoteFilter, setRemoteFilter] = useState<boolean | null>(null);
   const [compensationFilter, setCompensationFilter] = useState<CompensationType | 'all'>('all');
   const [orderOnly, setOrderOnly] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
-  const { collabs, isLoading, error } = useCollabs({
+  // Application modal state
+  const [applicationModalOpen, setApplicationModalOpen] = useState(false);
+  const [selectedCollab, setSelectedCollab] = useState<CommunityCollab | null>(null);
+
+  // Applications view state (for owners viewing their collab's applications)
+  const [viewingApplicationsCollab, setViewingApplicationsCollab] = useState<CommunityCollab | null>(null);
+
+  const { collabs, isLoading, error, refetch } = useCollabs({
     type: typeFilter,
     isRemote: remoteFilter,
     compensationType: compensationFilter,
     orderOnly,
   });
 
-  const handleMessage = (userId: string) => {
-    navigate('/messages', { state: { recipientId: userId } });
+  const handleApply = (collab: CommunityCollab) => {
+    setSelectedCollab(collab);
+    setApplicationModalOpen(true);
+  };
+
+  const handleApplicationSuccess = () => {
+    refetch();
+  };
+
+  const handleViewApplications = (collab: CommunityCollab) => {
+    setViewingApplicationsCollab(collab);
+  };
+
+  const handleBackFromApplications = () => {
+    setViewingApplicationsCollab(null);
   };
 
   const handleViewDetails = (collab: CommunityCollab) => {
@@ -74,6 +95,16 @@ const CollabBoard: React.FC<CollabBoardProps> = ({ onCreateCollab, onViewCollab 
   };
 
   const hasActiveFilters = typeFilter !== 'all' || remoteFilter !== null || compensationFilter !== 'all' || orderOnly;
+
+  // If viewing applications for a specific collab, show that view
+  if (viewingApplicationsCollab) {
+    return (
+      <CollabApplicationsView
+        collab={viewingApplicationsCollab}
+        onBack={handleBackFromApplications}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -249,7 +280,9 @@ const CollabBoard: React.FC<CollabBoardProps> = ({ onCreateCollab, onViewCollab 
               key={collab.id}
               collab={collab}
               onViewDetails={handleViewDetails}
-              onMessage={handleMessage}
+              onApply={handleApply}
+              onViewApplications={handleViewApplications}
+              isOwnCollab={collab.user_id === user?.id}
             />
           ))}
         </div>
@@ -287,6 +320,17 @@ const CollabBoard: React.FC<CollabBoardProps> = ({ onCreateCollab, onViewCollab 
           )}
         </div>
       )}
+
+      {/* Application Modal */}
+      <ApplicationModal
+        isOpen={applicationModalOpen}
+        onClose={() => {
+          setApplicationModalOpen(false);
+          setSelectedCollab(null);
+        }}
+        collab={selectedCollab}
+        onSuccess={handleApplicationSuccess}
+      />
     </div>
   );
 };

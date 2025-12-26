@@ -3,9 +3,37 @@ Community/Search API Routes
 """
 from fastapi import APIRouter, HTTPException, Header, Body, Query
 from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field
 from app.core.database import get_client
 from datetime import datetime
 import os
+
+
+# =====================================================
+# SCHEMAS
+# =====================================================
+
+class CollabApplicationInput(BaseModel):
+    elevator_pitch: Optional[str] = Field(None, max_length=100)
+    cover_note: Optional[str] = None
+    availability_notes: Optional[str] = None
+    rate_expectation: Optional[str] = None
+    reel_url: Optional[str] = None
+    headshot_url: Optional[str] = None
+    resume_url: Optional[str] = None
+    selected_credit_ids: Optional[List[str]] = None
+    template_id: Optional[str] = None
+    local_hire_confirmed: Optional[bool] = None
+    is_promoted: bool = False
+    save_as_template: bool = False
+    template_name: Optional[str] = None
+    custom_question_responses: Optional[Dict[str, str]] = None
+
+
+class ApplicationStatusUpdate(BaseModel):
+    status: str  # applied, viewed, shortlisted, interview, offered, booked, rejected
+    internal_notes: Optional[str] = None
+    rating: Optional[int] = Field(None, ge=1, le=5)
 
 router = APIRouter()
 
@@ -568,6 +596,39 @@ async def create_collab(
             "end_date": collab.get("end_date"),
             "tags": collab.get("tags", []),
             "is_order_only": collab.get("is_order_only", False),
+            # Job type (freelance/full_time)
+            "job_type": collab.get("job_type", "freelance"),
+            # Production info
+            "production_id": collab.get("production_id"),
+            "production_title": collab.get("production_title"),
+            "production_type": collab.get("production_type"),
+            "company": collab.get("company"),
+            "company_id": collab.get("company_id"),
+            "network_id": collab.get("network_id"),
+            "hide_production_info": collab.get("hide_production_info", False),
+            # Freelance compensation
+            "day_rate_min": collab.get("day_rate_min"),
+            "day_rate_max": collab.get("day_rate_max"),
+            # Full-time compensation
+            "salary_min": collab.get("salary_min"),
+            "salary_max": collab.get("salary_max"),
+            "benefits_info": collab.get("benefits_info"),
+            # Application requirements
+            "requires_local_hire": collab.get("requires_local_hire", False),
+            "requires_order_member": collab.get("requires_order_member", False),
+            "requires_reel": collab.get("requires_reel", False),
+            "requires_headshot": collab.get("requires_headshot", False),
+            "requires_resume": collab.get("requires_resume", False),
+            "application_deadline": collab.get("application_deadline"),
+            "max_applications": collab.get("max_applications"),
+            # Union and Order requirements
+            "union_requirements": collab.get("union_requirements", []),
+            "requires_order_membership": collab.get("requires_order_membership", False),
+            # Custom questions
+            "custom_questions": collab.get("custom_questions", []),
+            # Featured post
+            "is_featured": collab.get("is_featured", False),
+            "featured_until": collab.get("featured_until"),
         }
 
         result = client.table("community_collabs").insert(collab_data).execute()
@@ -590,8 +651,18 @@ async def update_collab(
 
     try:
         update_data = {}
-        for field in ["title", "type", "description", "location", "is_remote",
-                      "compensation_type", "start_date", "end_date", "tags", "is_order_only"]:
+        allowed_fields = [
+            "title", "type", "description", "location", "is_remote",
+            "compensation_type", "start_date", "end_date", "tags", "is_order_only",
+            "requires_local_hire", "requires_order_member", "requires_reel",
+            "requires_headshot", "requires_resume", "application_deadline", "max_applications",
+            "production_id", "production_title", "production_type", "company", "company_id", "network_id",
+            "hide_production_info", "job_type",
+            "day_rate_min", "day_rate_max", "salary_min", "salary_max", "benefits_info",
+            "union_requirements", "requires_order_membership", "custom_questions",
+            "is_featured", "featured_until"
+        ]
+        for field in allowed_fields:
             if field in collab:
                 update_data[field] = collab[field]
 
@@ -710,4 +781,497 @@ async def get_community_activity(limit: int = 20):
 
     except Exception as e:
         print(f"Error getting community activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COLLAB APPLICATIONS
+# =====================================================
+
+@router.post("/collabs/{collab_id}/apply")
+async def apply_to_collab(
+    collab_id: str,
+    application: CollabApplicationInput,
+    authorization: str = Header(None)
+):
+    """Apply to a community collab"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Check if collab exists and is active
+        collab_result = client.table("community_collabs").select("*").eq(
+            "id", collab_id
+        ).eq("is_active", True).single().execute()
+
+        if not collab_result.data:
+            raise HTTPException(status_code=404, detail="Collab not found or is closed")
+
+        collab = collab_result.data
+
+        # Check if user already applied
+        existing = client.table("community_collab_applications").select("id").eq(
+            "collab_id", collab_id
+        ).eq("applicant_user_id", user_id).execute()
+
+        if existing.data:
+            raise HTTPException(status_code=400, detail="You have already applied to this collab")
+
+        # Check requirements
+        if collab.get("requires_order_member"):
+            profile = client.table("profiles").select("is_order_member").eq(
+                "id", user_id
+            ).single().execute()
+            if not profile.data or not profile.data.get("is_order_member"):
+                raise HTTPException(status_code=403, detail="This opportunity is only for Order members")
+
+        if collab.get("requires_local_hire") and application.local_hire_confirmed is None:
+            raise HTTPException(status_code=400, detail="Please confirm if you can work as a local hire")
+
+        if collab.get("requires_reel") and not application.reel_url:
+            raise HTTPException(status_code=400, detail="A reel URL is required for this opportunity")
+
+        if collab.get("requires_headshot") and not application.headshot_url:
+            raise HTTPException(status_code=400, detail="A headshot is required for this opportunity")
+
+        if collab.get("requires_resume") and not application.resume_url:
+            raise HTTPException(status_code=400, detail="A resume is required for this opportunity")
+
+        # Get applicant profile snapshot
+        profile_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).eq("id", user_id).single().execute()
+        profile_snapshot = profile_result.data if profile_result.data else {}
+
+        # Create application
+        application_data = {
+            "collab_id": collab_id,
+            "applicant_user_id": user_id,
+            "applicant_profile_snapshot": profile_snapshot,
+            "elevator_pitch": application.elevator_pitch,
+            "cover_note": application.cover_note,
+            "availability_notes": application.availability_notes,
+            "rate_expectation": application.rate_expectation,
+            "reel_url": application.reel_url,
+            "headshot_url": application.headshot_url,
+            "resume_url": application.resume_url,
+            "selected_credit_ids": application.selected_credit_ids or [],
+            "template_id": application.template_id,
+            "local_hire_confirmed": application.local_hire_confirmed,
+            "is_promoted": application.is_promoted,
+            "custom_question_responses": application.custom_question_responses or {},
+            "status": "applied",
+        }
+
+        result = client.table("community_collab_applications").insert(application_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to submit application")
+
+        # If save_as_template is True, create a template
+        if application.save_as_template and application.template_name:
+            template_data = {
+                "user_id": user_id,
+                "name": application.template_name,
+                "cover_letter": application.cover_note,
+                "elevator_pitch": application.elevator_pitch,
+                "rate_expectation": application.rate_expectation,
+                "availability_notes": application.availability_notes,
+                "default_reel_url": application.reel_url,
+                "default_headshot_url": application.headshot_url,
+                "default_resume_url": application.resume_url,
+                "default_credit_ids": application.selected_credit_ids or [],
+            }
+            client.table("application_templates").insert(template_data).execute()
+
+        # If template_id was provided, record usage
+        if application.template_id:
+            existing_template = client.table("application_templates").select("use_count").eq(
+                "id", application.template_id
+            ).eq("user_id", user_id).single().execute()
+
+            if existing_template.data:
+                new_count = (existing_template.data.get("use_count") or 0) + 1
+                client.table("application_templates").update({
+                    "use_count": new_count,
+                    "last_used_at": datetime.utcnow().isoformat()
+                }).eq("id", application.template_id).execute()
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error applying to collab: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collabs/{collab_id}/applications")
+async def list_collab_applications(
+    collab_id: str,
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """List applications for a collab (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify user owns this collab
+        collab = client.table("community_collabs").select("id, user_id").eq(
+            "id", collab_id
+        ).single().execute()
+
+        if not collab.data:
+            raise HTTPException(status_code=404, detail="Collab not found")
+
+        if collab.data.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="You can only view applications for your own collabs")
+
+        # Get applications
+        query = client.table("community_collab_applications").select("*").eq(
+            "collab_id", collab_id
+        ).order("is_promoted", desc=True).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        # Fetch current profile info for each applicant
+        if applications:
+            applicant_ids = list(set(app["applicant_user_id"] for app in applications if app.get("applicant_user_id")))
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", applicant_ids).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+            for app in applications:
+                app["current_profile"] = profile_map.get(app.get("applicant_user_id"))
+
+                # Fetch selected credits if any
+                if app.get("selected_credit_ids"):
+                    credits_result = client.table("credits").select(
+                        "id, project_title, role, year"
+                    ).in_("id", app["selected_credit_ids"]).execute()
+                    app["selected_credits"] = credits_result.data or []
+
+        return applications
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing collab applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-collab-applications")
+async def list_my_collab_applications(
+    status: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """List current user's collab applications"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        query = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, title, type, location, is_remote, user_id)"
+        ).eq("applicant_user_id", user_id).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        # Fetch collab owner profiles
+        if applications:
+            owner_ids = list(set(
+                app.get("collab", {}).get("user_id")
+                for app in applications
+                if app.get("collab") and app["collab"].get("user_id")
+            ))
+            if owner_ids:
+                profiles_result = client.table("profiles").select(
+                    "id, username, full_name, display_name, avatar_url"
+                ).in_("id", owner_ids).execute()
+                profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+                for app in applications:
+                    if app.get("collab") and app["collab"].get("user_id"):
+                        app["collab"]["owner_profile"] = profile_map.get(app["collab"]["user_id"])
+
+        return applications
+
+    except Exception as e:
+        print(f"Error listing my collab applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collab-applications-received")
+async def list_collab_applications_received(
+    status: Optional[str] = None,
+    collab_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """List all applications received for collabs posted by the current user"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get all collabs posted by this user
+        collabs_query = client.table("community_collabs").select("id, title, type").eq("user_id", user_id)
+
+        if collab_id:
+            collabs_query = collabs_query.eq("id", collab_id)
+
+        collabs_result = collabs_query.execute()
+        user_collabs = collabs_result.data or []
+        collab_ids = [c["id"] for c in user_collabs]
+
+        if not collab_ids:
+            return {"applications": [], "by_collab": {}, "count": 0}
+
+        # Get all applications for these collabs
+        query = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, title, type, location, is_remote)"
+        ).in_("collab_id", collab_ids).order("created_at", desc=True)
+
+        if status:
+            query = query.eq("status", status)
+
+        result = query.execute()
+        applications = result.data or []
+
+        # Fetch applicant profiles
+        if applications:
+            applicant_ids = list(set(
+                app.get("applicant_user_id")
+                for app in applications
+                if app.get("applicant_user_id")
+            ))
+            if applicant_ids:
+                profiles_result = client.table("profiles").select(
+                    "id, username, full_name, display_name, avatar_url"
+                ).in_("id", applicant_ids).execute()
+                profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+                for app in applications:
+                    if app.get("applicant_user_id"):
+                        app["applicant_profile"] = profile_map.get(app["applicant_user_id"])
+
+        # Group by collab for easier frontend display
+        by_collab = {}
+        for app in applications:
+            cid = app.get("collab_id")
+            if cid:
+                if cid not in by_collab:
+                    collab_info = next((c for c in user_collabs if c["id"] == cid), {})
+                    by_collab[cid] = {
+                        "collab": collab_info,
+                        "applications": []
+                    }
+                by_collab[cid]["applications"].append(app)
+
+        return {
+            "applications": applications,
+            "by_collab": by_collab,
+            "count": len(applications)
+        }
+
+    except Exception as e:
+        print(f"Error listing collab applications received: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/collab-applications/{application_id}/status")
+async def update_application_status(
+    application_id: str,
+    update: ApplicationStatusUpdate,
+    authorization: str = Header(None)
+):
+    """Update application status (collab owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify ownership of the collab
+        app_result = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        collab = app_result.data.get("collab")
+        if not collab or collab.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="You can only update applications for your own collabs")
+
+        # Valid status transitions
+        valid_statuses = ["applied", "viewed", "shortlisted", "interview", "offered", "booked", "rejected"]
+        if update.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(valid_statuses)}")
+
+        update_data = {
+            "status": update.status,
+            "status_changed_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        if update.internal_notes is not None:
+            update_data["internal_notes"] = update.internal_notes
+
+        if update.rating is not None:
+            update_data["rating"] = update.rating
+
+        result = client.table("community_collab_applications").update(update_data).eq(
+            "id", application_id
+        ).execute()
+
+        return result.data[0] if result.data else {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating application status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/collab-applications/{application_id}/promote")
+async def promote_application(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Promote an application (boost visibility)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify ownership
+        app_result = client.table("community_collab_applications").select("*").eq(
+            "id", application_id
+        ).eq("applicant_user_id", user_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        if app_result.data.get("is_promoted"):
+            raise HTTPException(status_code=400, detail="Application is already promoted")
+
+        # Check if user is Order member (free promotion)
+        profile = client.table("profiles").select("is_order_member").eq(
+            "id", user_id
+        ).single().execute()
+
+        is_order_member = profile.data.get("is_order_member", False) if profile.data else False
+
+        # TODO: If not order member, process payment here
+        # For now, we'll allow the promotion
+
+        result = client.table("community_collab_applications").update({
+            "is_promoted": True,
+            "promoted_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", application_id).execute()
+
+        return {
+            "success": True,
+            "is_free": is_order_member,
+            "message": "Application promoted successfully" + (" (free for Order members)" if is_order_member else ""),
+            "application": result.data[0] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error promoting application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collab-applications/{application_id}")
+async def get_collab_application(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single collab application"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        result = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, title, type, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        application = result.data
+        collab = application.get("collab")
+
+        # User can view if they're the applicant or the collab owner
+        is_applicant = application.get("applicant_user_id") == user_id
+        is_owner = collab and collab.get("user_id") == user_id
+
+        if not is_applicant and not is_owner:
+            raise HTTPException(status_code=403, detail="You don't have access to this application")
+
+        # Fetch selected credits if any
+        if application.get("selected_credit_ids"):
+            credits_result = client.table("credits").select(
+                "id, project_title, role, role_type, year, department"
+            ).in_("id", application["selected_credit_ids"]).execute()
+            application["selected_credits"] = credits_result.data or []
+
+        # Fetch current profile
+        if application.get("applicant_user_id"):
+            profile_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).eq("id", application["applicant_user_id"]).single().execute()
+            application["current_profile"] = profile_result.data
+
+        return application
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting collab application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/collab-applications/{application_id}")
+async def withdraw_application(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Withdraw/delete a collab application (applicant only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("community_collab_applications").select("id").eq(
+            "id", application_id
+        ).eq("applicant_user_id", user_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        client.table("community_collab_applications").delete().eq("id", application_id).execute()
+
+        return {"success": True, "message": "Application withdrawn"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error withdrawing application: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -27,6 +27,8 @@ import {
   GENDER_OPTIONS,
 } from '@/types/backlot';
 import { Loader2, Users } from 'lucide-react';
+import { toast } from 'sonner';
+import FeaturePostToggle from '@/components/shared/FeaturePostToggle';
 
 interface RolePostingFormProps {
   projectId: string;
@@ -71,8 +73,6 @@ export function RolePostingForm({
     is_order_only: false,
     is_featured: false,
     status: 'open',
-    requires_reel: false,
-    requires_headshot: false,
     application_deadline: '',
     max_applications: null,
   });
@@ -100,8 +100,6 @@ export function RolePostingForm({
         is_order_only: role.is_order_only,
         is_featured: role.is_featured,
         status: role.status,
-        requires_reel: role.requires_reel,
-        requires_headshot: role.requires_headshot,
         application_deadline: role.application_deadline || '',
         max_applications: role.max_applications,
       });
@@ -149,8 +147,9 @@ export function RolePostingForm({
           description: 'The role has been updated successfully.',
         });
       } else {
-        const newRole = await createRole.mutateAsync(cleanedData);
-        savedRoleId = newRole.id;
+        const response = await createRole.mutateAsync(cleanedData);
+        // Backend returns {success: true, role: {...}}
+        savedRoleId = response.role?.id || response.id;
         toast({
           title: 'Role created',
           description: 'Your role posting is now live.',
@@ -163,12 +162,13 @@ export function RolePostingForm({
       if (postToCommunity && !wasPostedToCommunity) {
         // Post to community
         try {
-          await postToCommunityMutation.mutateAsync({ roleId: savedRoleId, projectId });
+          await postToCommunityMutation.mutateAsync(savedRoleId);
           toast({
             title: 'Posted to Community',
             description: 'This role is now visible on the Collab Board.',
           });
         } catch (err: any) {
+          console.error('Failed to post to community:', err);
           toast({
             title: 'Warning',
             description: `Role saved but failed to post to community: ${err.message}`,
@@ -178,12 +178,13 @@ export function RolePostingForm({
       } else if (!postToCommunity && wasPostedToCommunity) {
         // Remove from community
         try {
-          await removeFromCommunityMutation.mutateAsync({ roleId: savedRoleId, projectId });
+          await removeFromCommunityMutation.mutateAsync(savedRoleId);
           toast({
             title: 'Removed from Community',
             description: 'This role is no longer visible on the Collab Board.',
           });
         } catch (err: any) {
+          console.error('Failed to remove from community:', err);
           toast({
             title: 'Warning',
             description: `Role saved but failed to remove from community: ${err.message}`,
@@ -471,30 +472,6 @@ export function RolePostingForm({
             />
           </div>
         </div>
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-4">
-            <Switch
-              id="requires_reel"
-              checked={formData.requires_reel}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, requires_reel: checked })
-              }
-            />
-            <Label htmlFor="requires_reel">Require demo reel/portfolio</Label>
-          </div>
-          {formData.type === 'cast' && (
-            <div className="flex items-center gap-4">
-              <Switch
-                id="requires_headshot"
-                checked={formData.requires_headshot}
-                onCheckedChange={(checked) =>
-                  setFormData({ ...formData, requires_headshot: checked })
-                }
-              />
-              <Label htmlFor="requires_headshot">Require headshot</Label>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Visibility */}
@@ -539,21 +516,17 @@ export function RolePostingForm({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <Switch
-              id="is_featured"
-              checked={formData.is_featured}
-              onCheckedChange={(checked) =>
-                setFormData({ ...formData, is_featured: checked })
-              }
-            />
-            <div>
-              <Label htmlFor="is_featured">Featured Role</Label>
-              <p className="text-xs text-muted-foreground">
-                Show this role prominently in listings
-              </p>
-            </div>
-          </div>
+          {/* Feature Post Toggle */}
+          <FeaturePostToggle
+            value={formData.is_featured}
+            onChange={(featured) => setFormData({ ...formData, is_featured: featured })}
+            onFeatureRequest={async () => {
+              // TODO: Implement Stripe checkout flow
+              // For now, just toggle the value
+              setFormData({ ...formData, is_featured: true });
+              toast.info('Featured posts coming soon! Your post will be highlighted.');
+            }}
+          />
         </div>
       </div>
 

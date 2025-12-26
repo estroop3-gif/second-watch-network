@@ -221,11 +221,26 @@ async def update_profile(user_id: str, profile: ProfileUpdate):
     """Update user profile"""
     try:
         client = get_client()
+
+        # Check if profile exists first
+        existing = client.table("profiles").select("id").eq("id", user_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Profile not found")
+
         response = client.table("profiles").update(
             profile.model_dump(exclude_unset=True)
         ).eq("id", user_id).execute()
-        
+
+        if not response.data:
+            # Re-fetch if update didn't return data
+            response = client.table("profiles").select("*").eq("id", user_id).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Profile not found after update")
+
         return response.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -281,10 +296,26 @@ async def update_filmmaker_profile(user_id: str, profile: FilmmakerProfileUpdate
     """Update filmmaker profile"""
     try:
         client = get_client()
-        response = client.table("filmmaker_profiles").update(
-            profile.model_dump(exclude_unset=True)
-        ).eq("user_id", user_id).execute()
+
+        # Check if filmmaker profile exists
+        existing = client.table("filmmaker_profiles").select("id").eq("user_id", user_id).execute()
+
+        if not existing.data:
+            # Create a new filmmaker profile if it doesn't exist
+            create_data = {"user_id": user_id, **profile.model_dump(exclude_unset=True)}
+            response = client.table("filmmaker_profiles").insert(create_data).execute()
+        else:
+            # Update existing profile
+            response = client.table("filmmaker_profiles").update(
+                profile.model_dump(exclude_unset=True)
+            ).eq("user_id", user_id).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Failed to update filmmaker profile")
+
         return response.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -509,19 +540,27 @@ async def get_combined_profile(user_id: str):
 # =====================================================
 
 @router.get("/search/users")
-async def search_users(query: str, limit: int = 10):
-    """Search users by username, full_name, or display_name"""
+async def search_users(query: str = "", limit: int = 10):
+    """Search users by username, full_name, or display_name.
+    If query is empty, returns recent users up to limit.
+    """
     try:
         client = get_client()
 
-        if not query or len(query) < 2:
-            return []
-
-        response = client.table("profiles").select(
+        base_query = client.table("profiles").select(
             "id, username, full_name, display_name, avatar_url"
-        ).or_(
-            f"username.ilike.%{query}%,full_name.ilike.%{query}%,display_name.ilike.%{query}%"
-        ).limit(limit).execute()
+        )
+
+        if query and len(query) >= 1:
+            # Search by name/username
+            response = base_query.or_(
+                f"username.ilike.%{query}%,full_name.ilike.%{query}%,display_name.ilike.%{query}%"
+            ).limit(limit).execute()
+        else:
+            # No query - return users ordered by most recently updated
+            response = base_query.order(
+                "updated_at", desc=True
+            ).limit(limit).execute()
 
         return response.data or []
 

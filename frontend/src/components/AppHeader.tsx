@@ -38,8 +38,6 @@ const AppHeader = () => {
       <div className="hidden md:flex items-center gap-6">
         <nav className="flex items-center gap-6 font-heading text-sm">
           <SearchBar className="w-64 lg:w-80" />
-          <Link to="/greenroom" className="text-bone-white hover:text-accent-yellow">Green Room</Link>
-          <Link to="/order" className="text-bone-white hover:text-accent-yellow">The Order</Link>
           <Link to="/shop" className="text-bone-white hover:text-accent-yellow">Shop</Link>
         </nav>
         <div className="flex items-center gap-2">

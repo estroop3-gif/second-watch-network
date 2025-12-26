@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useMessagesSocket } from '@/hooks/useMessagesSocket';
 import { Conversation } from '@/pages/Messages';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,8 @@ import { Send, User, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { format } from 'date-fns';
 import { Skeleton } from '../ui/skeleton';
+import { AttachmentUploader, AttachmentFile } from './AttachmentUploader';
+import { MessageAttachments, MessageAttachmentData } from './MessageAttachment';
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -24,15 +27,23 @@ type Message = {
   created_at: string;
   sender_id: string;
   is_read: boolean;
+  attachments?: MessageAttachmentData[];
 };
 
 export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps) => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [newMessage, setNewMessage] = useState('');
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([]);
   const scrollViewportRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const markReadDebounceRef = useRef<number | null>(null);
+
+  // Real-time WebSocket subscription for messages
+  const { typingUsers, startTyping, stopTyping } = useMessagesSocket({
+    conversationId: conversation.id,
+    enabled: true,
+  });
 
   const { data: messages, isLoading } = useQuery<Message[]>({
     queryKey: ['messages', conversation.id],
@@ -42,29 +53,39 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
     },
   });
 
-  // Polling for new messages (replaces realtime subscription)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
-    }, 3000); // Poll every 3 seconds for messages
-
-    return () => clearInterval(interval);
-  }, [conversation.id, queryClient]);
+  // Handle input changes with typing indicator
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setNewMessage(e.target.value);
+    if (e.target.value.trim()) {
+      startTyping();
+    }
+  }, [startTyping]);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, [conversation.id]);
 
   const sendMessageMutation = useMutation({
-    mutationFn: async (content: string) => {
+    mutationFn: async ({ content, messageAttachments }: { content: string; messageAttachments: AttachmentFile[] }) => {
       if (!user) throw new Error('User not authenticated');
       await api.sendMessage(user.id, {
         conversation_id: conversation.id,
         content,
+        attachments: messageAttachments.length > 0 ? messageAttachments.map(a => ({
+          id: a.id,
+          filename: a.filename,
+          original_filename: a.original_filename,
+          url: a.url,
+          content_type: a.content_type,
+          size: a.size,
+          type: a.type,
+        })) : undefined,
       });
     },
     onSuccess: () => {
       setNewMessage('');
+      setAttachments([]); // Clear attachments after sending
+      stopTyping(); // Stop typing indicator when message is sent
       queryClient.invalidateQueries({ queryKey: ['messages', conversation.id] });
       queryClient.invalidateQueries({ queryKey: ['conversations'] });
     },
@@ -72,8 +93,11 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (newMessage.trim()) {
-      sendMessageMutation.mutate(newMessage.trim());
+    if (newMessage.trim() || attachments.length > 0) {
+      sendMessageMutation.mutate({
+        content: newMessage.trim(),
+        messageAttachments: attachments,
+      });
     }
   };
 
@@ -176,7 +200,12 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
                     : 'bg-muted-gray'
                 )}
               >
-                <p className="text-sm">{message.content}</p>
+                {message.content && <p className="text-sm">{message.content}</p>}
+                {message.attachments && message.attachments.length > 0 && (
+                  <div className={cn(message.content && 'mt-2')}>
+                    <MessageAttachments attachments={message.attachments} />
+                  </div>
+                )}
                 <p className="text-xs text-right mt-1 opacity-70">
                   {format(new Date(message.created_at), 'p')}
                 </p>
@@ -187,14 +216,33 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
           {lastOutgoing && lastOutgoing.is_read && (
             <div className="text-[11px] text-muted-foreground text-right pr-2">Seen</div>
           )}
+          {/* Typing indicator */}
+          {typingUsers.size > 0 && (
+            <div className="flex items-center gap-2 px-2 py-1">
+              <div className="flex gap-1">
+                <span className="w-2 h-2 bg-muted-gray rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-2 h-2 bg-muted-gray rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-2 h-2 bg-muted-gray rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="text-xs text-muted-gray">
+                {Array.from(typingUsers.values()).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
+              </span>
+            </div>
+          )}
         </div>
       </ScrollArea>
-      <div className="p-3 border-t border-muted-gray">
-        <form onSubmit={handleSubmit} className="flex items-center gap-2">
+      <div className="border-t border-muted-gray">
+        <AttachmentUploader
+          conversationId={conversation.id}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          disabled={sendMessageMutation.isPending}
+        />
+        <form onSubmit={handleSubmit} className="flex items-center gap-2 p-3">
           <Input
             ref={inputRef}
             value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
+            onChange={handleInputChange}
             placeholder="Type a message…"
             autoComplete="off"
             className="bg-muted-gray border-muted-gray focus:ring-accent-yellow"
@@ -205,7 +253,12 @@ export const MessageView = ({ conversation, onBack, isMobile }: MessageViewProps
               }
             }}
           />
-          <Button type="submit" size="icon" disabled={sendMessageMutation.isPending} className="bg-accent-yellow hover:bg-accent-yellow/90">
+          <Button
+            type="submit"
+            size="icon"
+            disabled={sendMessageMutation.isPending || (!newMessage.trim() && attachments.length === 0)}
+            className="bg-accent-yellow hover:bg-accent-yellow/90"
+          >
             <Send className="h-4 w-4 text-charcoal-black" />
           </Button>
         </form>

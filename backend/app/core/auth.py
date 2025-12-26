@@ -141,3 +141,16 @@ def get_user_email(user: Dict[str, Any]) -> str:
     if isinstance(user, dict):
         return user.get("email")
     return getattr(user, "email", None)
+
+
+def verify_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify a JWT token and return the payload.
+    Used by endpoints that manually handle auth.
+    """
+    try:
+        from app.core.cognito import CognitoAuth
+        return CognitoAuth.verify_token(token)
+    except Exception as e:
+        print(f"Token verification failed: {e}")
+        return None

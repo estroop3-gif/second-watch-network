@@ -111,7 +111,9 @@ const SocketIOProvider: React.FC<{ children: React.ReactNode }> = ({ children })
       'user_typing', 'user_stopped_typing',
       'voice_user_joined', 'voice_user_left',
       'voice_offer', 'voice_answer', 'voice_ice_candidate',
-      'ptt_active', 'user_presence_changed'
+      'ptt_active', 'user_presence_changed',
+      // DM events
+      'dm_new_message', 'dm_typing', 'dm_read'
     ];
     events.forEach((event) => {
       sio.on(event, (data) => {

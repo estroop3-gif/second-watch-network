@@ -595,3 +595,150 @@ export function useTaskViews(options: UseTaskViewsOptions) {
     deleteView,
   };
 }
+
+// =====================================================
+// TASK AGGREGATION HOOKS
+// =====================================================
+
+/**
+ * Get all tasks linked to a specific scene
+ */
+export function useSceneTasks(projectId: string | null, sceneId: string | null) {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['backlot-scene-tasks', { projectId, sceneId }],
+    queryFn: async () => {
+      if (!projectId || !sceneId) return [];
+      const result = await api.get<{ success: boolean; tasks: BacklotTask[] }>(
+        `/api/v1/backlot/projects/${projectId}/tasks/by-scene/${sceneId}`
+      );
+      return result.tasks || [];
+    },
+    enabled: !!projectId && !!sceneId,
+  });
+
+  return {
+    tasks: data || [],
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+/**
+ * Get all tasks linked to a specific production day
+ */
+export function useDayTasks(projectId: string | null, productionDayId: string | null) {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['backlot-day-tasks', { projectId, productionDayId }],
+    queryFn: async () => {
+      if (!projectId || !productionDayId) return [];
+      const result = await api.get<{ success: boolean; tasks: BacklotTask[] }>(
+        `/api/v1/backlot/projects/${projectId}/tasks/by-day/${productionDayId}`
+      );
+      return result.tasks || [];
+    },
+    enabled: !!projectId && !!productionDayId,
+  });
+
+  return {
+    tasks: data || [],
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+/**
+ * Get all tasks linked to a specific source entity
+ */
+export function useSourceTasks(
+  projectId: string | null,
+  sourceType: string | null,
+  sourceId: string | null
+) {
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['backlot-source-tasks', { projectId, sourceType, sourceId }],
+    queryFn: async () => {
+      if (!projectId || !sourceType || !sourceId) return [];
+      const result = await api.get<{ success: boolean; tasks: BacklotTask[] }>(
+        `/api/v1/backlot/projects/${projectId}/tasks/by-source/${sourceType}/${sourceId}`
+      );
+      return result.tasks || [];
+    },
+    enabled: !!projectId && !!sourceType && !!sourceId,
+  });
+
+  return {
+    tasks: data || [],
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+export type SourceType = 'camera_media' | 'continuity' | 'location' | 'hot_set' | 'gear' | 'costume';
+
+/**
+ * Utility hook for creating tasks from various source entities
+ */
+export function useCreateTaskFromSource(projectId: string | null, taskListId: string | null) {
+  const queryClient = useQueryClient();
+
+  const createTaskFromSource = useMutation({
+    mutationFn: async ({
+      title,
+      sourceType,
+      sourceId,
+      description,
+      priority,
+      dueDate,
+      assigneeIds,
+      sceneId,
+      productionDayId,
+    }: {
+      title: string;
+      sourceType: SourceType;
+      sourceId: string;
+      description?: string;
+      priority?: string;
+      dueDate?: string;
+      assigneeIds?: string[];
+      sceneId?: string;
+      productionDayId?: string;
+    }) => {
+      if (!projectId || !taskListId) throw new Error('Project ID and Task List ID required');
+
+      // Map source type to the correct field
+      const sourceField = `source_${sourceType}_id`;
+
+      const taskInput: TaskInput = {
+        title,
+        description,
+        priority: priority as any,
+        due_date: dueDate,
+        assignee_ids: assigneeIds,
+        source_type: sourceType,
+        scene_id: sceneId,
+        production_day_id: productionDayId,
+        [sourceField]: sourceId,
+      };
+
+      const result = await api.post<{ success: boolean; task: BacklotTask }>(
+        `/api/v1/backlot/task-lists/${taskListId}/tasks`,
+        taskInput
+      );
+      return result.task;
+    },
+    onSuccess: () => {
+      // Invalidate relevant queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scene-tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-day-tasks'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-source-tasks'] });
+    },
+  });
+
+  return {
+    createTaskFromSource,
+  };
+}

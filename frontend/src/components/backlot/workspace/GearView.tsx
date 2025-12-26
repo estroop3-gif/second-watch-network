@@ -34,6 +34,9 @@ import {
   Tag,
   Link2,
   RefreshCw,
+  HelpCircle,
+  Truck,
+  ClipboardList,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -42,10 +45,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useGear, useGearCosts, useSyncGearToBudget, useBudget, useBudgetLineItems, GEAR_CATEGORIES } from '@/hooks/backlot';
+import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
 import { BacklotGearItem, GearItemInput, BacklotGearStatus } from '@/types/backlot';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+import { toast as sonnerToast } from 'sonner';
+import { ListTodo } from 'lucide-react';
+import { DialogFooter } from '@/components/ui/dialog';
 
 interface GearViewProps {
   projectId: string;
@@ -72,7 +79,8 @@ const GearCard: React.FC<{
   canEdit: boolean;
   onEdit: (item: BacklotGearItem) => void;
   onDelete: (id: string) => void;
-}> = ({ item, costInfo, canEdit, onEdit, onDelete }) => {
+  onCreateTask?: (item: BacklotGearItem) => void;
+}> = ({ item, costInfo, canEdit, onEdit, onDelete, onCreateTask }) => {
   const statusConfig = STATUS_CONFIG[item.status];
   const totalCost = costInfo?.calculated_rental_cost || (item as any).purchase_cost || 0;
 
@@ -168,6 +176,12 @@ const GearCard: React.FC<{
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
               </DropdownMenuItem>
+              {onCreateTask && (
+                <DropdownMenuItem onClick={() => onCreateTask(item)}>
+                  <ListTodo className="w-4 h-4 mr-2" />
+                  Create Task
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem className="text-red-400" onClick={() => onDelete(item.id)}>
                 <Trash2 className="w-4 h-4 mr-2" />
                 Delete
@@ -216,6 +230,20 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   const [editingItem, setEditingItem] = useState<BacklotGearItem | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Task creation state
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [taskGearItem, setTaskGearItem] = useState<BacklotGearItem | null>(null);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDescription, setTaskDescription] = useState('');
+  const [selectedTaskListId, setSelectedTaskListId] = useState<string>('');
+
+  // Task hooks
+  const { taskLists } = useTaskLists({ projectId });
+  const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
+
+  // Tips panel state
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Form state with extended fields
   const [formData, setFormData] = useState<ExtendedFormData>({
@@ -327,6 +355,38 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  // Task creation handlers
+  const handleOpenTaskModal = (item: BacklotGearItem) => {
+    setTaskGearItem(item);
+    setTaskTitle(`Gear task: ${item.name}`);
+    setTaskDescription(`Category: ${item.category}\nStatus: ${item.status}\n${item.is_owned ? 'Owned' : `Rental: ${item.rental_house || 'N/A'}`}`);
+    setSelectedTaskListId(taskLists[0]?.id || '');
+    setShowTaskModal(true);
+  };
+
+  const handleCreateTask = async () => {
+    if (!taskGearItem || !selectedTaskListId) {
+      sonnerToast.error('Please select a task list');
+      return;
+    }
+
+    try {
+      await createTaskFromSource.mutateAsync({
+        title: taskTitle,
+        sourceType: 'gear',
+        sourceId: taskGearItem.id,
+        description: taskDescription,
+      });
+      sonnerToast.success('Task created successfully');
+      setShowTaskModal(false);
+      setTaskGearItem(null);
+      setTaskTitle('');
+      setTaskDescription('');
+    } catch (error) {
+      sonnerToast.error('Failed to create task');
+    }
+  };
+
   // Group gear by category for display
   const gearByCategory = gear.reduce((acc, item) => {
     const cat = item.category || 'Other';
@@ -360,6 +420,15 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
           <p className="text-sm text-muted-gray">Track your production equipment</p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
           <Select value={categoryFilter} onValueChange={setCategoryFilter}>
             <SelectTrigger className="w-40 bg-charcoal-black/50 border-muted-gray/30">
               <SelectValue placeholder="All Categories" />
@@ -452,6 +521,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                       canEdit={canEdit}
                       onEdit={handleOpenForm}
                       onDelete={handleDelete}
+                      onCreateTask={handleOpenTaskModal}
                     />
                   ))}
                 </div>
@@ -469,6 +539,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                 canEdit={canEdit}
                 onEdit={handleOpenForm}
                 onDelete={handleDelete}
+                onCreateTask={handleOpenTaskModal}
               />
             ))}
           </div>
@@ -720,6 +791,155 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Task Dialog */}
+      <Dialog open={showTaskModal} onOpenChange={setShowTaskModal}>
+        <DialogContent className="bg-soft-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ListTodo className="w-5 h-5 text-primary" />
+              Create Task from Gear
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Task List *</Label>
+              <Select value={selectedTaskListId} onValueChange={setSelectedTaskListId}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                  <SelectValue placeholder="Select a task list" />
+                </SelectTrigger>
+                <SelectContent>
+                  {taskLists.map((list) => (
+                    <SelectItem key={list.id} value={list.id}>
+                      {list.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Task Title *</Label>
+              <Input
+                value={taskTitle}
+                onChange={(e) => setTaskTitle(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task title"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={taskDescription}
+                onChange={(e) => setTaskDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task description"
+                rows={3}
+              />
+            </div>
+            {taskGearItem && (
+              <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                <p className="text-xs text-muted-gray mb-1">Linked to gear:</p>
+                <p className="text-sm text-bone-white font-medium">{taskGearItem.name}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTaskModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTask}
+              disabled={!taskTitle || !selectedTaskListId || createTaskFromSource.isPending}
+              className="bg-primary text-white hover:bg-primary/90"
+            >
+              {createTaskFromSource.isPending ? 'Creating...' : 'Create Task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Gear Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <Package className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Track Equipment</h4>
+                <p className="text-sm text-muted-gray">
+                  Add all production gear including cameras, lenses, lighting, grip,
+                  and sound equipment. Mark items as owned or rental.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <Truck className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Rental Management</h4>
+                <p className="text-sm text-muted-gray">
+                  Set pickup and return dates for rentals. The system calculates
+                  rental days and total costs automatically.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <DollarSign className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Budget Sync</h4>
+                <p className="text-sm text-muted-gray">
+                  Use "Sync to Budget" to create or update budget line items based
+                  on your gear list. Rental costs flow to your budget automatically.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <ClipboardList className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Status Tracking</h4>
+                <p className="text-sm text-muted-gray">
+                  Update gear status: Available, In Use, Reserved, Maintenance, or
+                  Retired. Filter by category to find items quickly.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-orange-500/10 rounded-lg">
+                <Tag className="w-5 h-5 text-orange-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Serial Numbers</h4>
+                <p className="text-sm text-muted-gray">
+                  Add serial numbers and rental house info for insurance and
+                  tracking purposes. Essential for production reports.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

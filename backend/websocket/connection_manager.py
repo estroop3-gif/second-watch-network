@@ -171,6 +171,85 @@ def get_channel_connections(channel_id: str) -> List[Dict]:
 
 
 # =============================================================================
+# DM (DIRECT MESSAGE) SUBSCRIPTION OPERATIONS
+# =============================================================================
+
+def subscribe_to_dm(connection_id: str, conversation_id: str, user_id: str):
+    """Subscribe connection to a DM conversation"""
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        table.put_item(Item={
+            'PK': f'DM#{conversation_id}',
+            'SK': f'CONNECTION#{connection_id}',
+            'GSI1PK': f'CONNECTION#{connection_id}',
+            'GSI1SK': f'DM#{conversation_id}',
+            'GSI2PK': f'USER#{user_id}',
+            'GSI2SK': f'DM#{conversation_id}',
+            'conversationId': conversation_id,
+            'connectionId': connection_id,
+            'userId': user_id,
+            'subscribedAt': now,
+            'ttl': get_ttl(24),
+        })
+        logger.info(f"Subscribed connection {connection_id} to DM {conversation_id}")
+    except Exception as e:
+        logger.error(f"Failed to subscribe to DM: {e}")
+        raise
+
+
+def unsubscribe_from_dm(connection_id: str, conversation_id: str):
+    """Unsubscribe connection from a DM conversation"""
+    try:
+        table.delete_item(Key={
+            'PK': f'DM#{conversation_id}',
+            'SK': f'CONNECTION#{connection_id}'
+        })
+        logger.info(f"Unsubscribed connection {connection_id} from DM {conversation_id}")
+    except Exception as e:
+        logger.error(f"Failed to unsubscribe from DM: {e}")
+
+
+def get_dm_connections(conversation_id: str) -> List[Dict]:
+    """Get all connections subscribed to a DM conversation"""
+    try:
+        result = table.query(
+            KeyConditionExpression='PK = :pk',
+            ExpressionAttributeValues={':pk': f'DM#{conversation_id}'}
+        )
+        return result.get('Items', [])
+    except Exception as e:
+        logger.error(f"Failed to get DM connections: {e}")
+        return []
+
+
+def broadcast_to_dm(callback_url: str, conversation_id: str, message: dict, exclude_connection: str = None):
+    """Send message to all connections in a DM conversation"""
+    client = get_apigw_client(callback_url)
+    connections = get_dm_connections(conversation_id)
+
+    message_data = json.dumps(message).encode('utf-8')
+    stale_connections = []
+
+    for conn in connections:
+        conn_id = conn.get('connectionId')
+        if conn_id == exclude_connection:
+            continue
+        try:
+            client.post_to_connection(
+                ConnectionId=conn_id,
+                Data=message_data
+            )
+        except client.exceptions.GoneException:
+            stale_connections.append(conn_id)
+        except Exception as e:
+            logger.error(f"Failed to send to {conn_id}: {e}")
+
+    # Cleanup stale connections
+    for conn_id in stale_connections:
+        remove_connection(conn_id)
+
+
+# =============================================================================
 # VOICE OPERATIONS
 # =============================================================================
 

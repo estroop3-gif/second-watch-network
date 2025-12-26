@@ -9,12 +9,16 @@ import CommunityHome from '@/components/community/CommunityHome';
 import PeopleDirectory from '@/components/community/PeopleDirectory';
 import CollabBoard from '@/components/community/CollabBoard';
 import CollabForm from '@/components/community/CollabForm';
+import CollabDetailModal from '@/components/community/CollabDetailModal';
+import { ApplicationModal } from '@/components/applications';
 import TopicsBoard from '@/components/community/TopicsBoard';
 import ThreadForm from '@/components/community/ThreadForm';
 import ThreadView from '@/components/community/ThreadView';
 import { CommunityCollab, CommunityThread } from '@/types/community';
+import { useAuth } from '@/context/AuthContext';
 
 const Filmmakers = () => {
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as CommunityTabType) || 'home';
   const initialFilter = searchParams.get('filter') || undefined;
@@ -24,6 +28,7 @@ const Filmmakers = () => {
   const [showCollabForm, setShowCollabForm] = useState(false);
   const [editingCollab, setEditingCollab] = useState<CommunityCollab | undefined>();
   const [viewingCollab, setViewingCollab] = useState<CommunityCollab | undefined>();
+  const [applyingToCollab, setApplyingToCollab] = useState<CommunityCollab | undefined>();
   const [showThreadForm, setShowThreadForm] = useState(false);
   const [threadFormTopicId, setThreadFormTopicId] = useState<string | undefined>();
   const [viewingThread, setViewingThread] = useState<CommunityThread | undefined>();
@@ -64,6 +69,19 @@ const Filmmakers = () => {
 
   const handleViewCollab = (collab: CommunityCollab) => {
     setViewingCollab(collab);
+  };
+
+  const handleCloseCollabDetail = () => {
+    setViewingCollab(undefined);
+  };
+
+  const handleApplyFromDetail = (collab: CommunityCollab) => {
+    setViewingCollab(undefined);
+    setApplyingToCollab(collab);
+  };
+
+  const handleCloseApplication = () => {
+    setApplyingToCollab(undefined);
   };
 
   const handleCloseCollabForm = () => {
@@ -139,6 +157,23 @@ const Filmmakers = () => {
           initialTopicId={threadFormTopicId}
         />
       )}
+
+      {/* Collab Detail Modal */}
+      <CollabDetailModal
+        collab={viewingCollab || null}
+        isOpen={!!viewingCollab}
+        onClose={handleCloseCollabDetail}
+        onApply={handleApplyFromDetail}
+        isOwnCollab={viewingCollab?.user_id === user?.id}
+      />
+
+      {/* Application Modal */}
+      <ApplicationModal
+        isOpen={!!applyingToCollab}
+        onClose={handleCloseApplication}
+        collab={applyingToCollab || null}
+        onSuccess={handleCloseApplication}
+      />
     </div>
   );
 };

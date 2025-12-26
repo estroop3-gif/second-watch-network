@@ -38,13 +38,21 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
     """Look up the profile ID from a Cognito user ID."""
     uid_str = str(cognito_user_id)
+    # First try cognito_user_id (preferred, exact match)
     profile_row = execute_single(
-        "SELECT id FROM profiles WHERE cognito_user_id = :cuid OR id::text = :uid LIMIT 1",
-        {"cuid": uid_str, "uid": uid_str}
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid LIMIT 1",
+        {"cuid": uid_str}
+    )
+    if profile_row:
+        return str(profile_row["id"])
+    # Fallback: check if it's already a profile ID
+    profile_row = execute_single(
+        "SELECT id FROM profiles WHERE id::text = :uid LIMIT 1",
+        {"uid": uid_str}
     )
     if not profile_row:
         return None
-    return profile_row["id"]
+    return str(profile_row["id"])
 
 
 # =============================================================================

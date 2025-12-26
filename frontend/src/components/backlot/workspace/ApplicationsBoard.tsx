@@ -581,22 +581,6 @@ function ApplicationDetails({
             </a>
           </Button>
         )}
-        {application.reel_url && (
-          <Button variant="outline" size="sm" asChild>
-            <a href={application.reel_url} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="w-4 h-4 mr-1" />
-              Submitted Reel
-            </a>
-          </Button>
-        )}
-        {application.headshot_url && (
-          <Button variant="outline" size="sm" asChild>
-            <a href={application.headshot_url} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="w-4 h-4 mr-1" />
-              Headshot
-            </a>
-          </Button>
-        )}
         {application.resume_url && (
           <Button variant="outline" size="sm" asChild>
             <a href={application.resume_url} target="_blank" rel="noopener noreferrer">
@@ -629,16 +613,6 @@ function ApplicationDetails({
           </h4>
           <p className="text-sm text-muted-foreground">
             {application.availability_notes}
-          </p>
-        </div>
-      )}
-
-      {/* Rate Expectation */}
-      {application.rate_expectation && (
-        <div className="space-y-1">
-          <h4 className="font-medium text-sm">Rate Expectation</h4>
-          <p className="text-sm text-muted-foreground">
-            {application.rate_expectation}
           </p>
         </div>
       )}

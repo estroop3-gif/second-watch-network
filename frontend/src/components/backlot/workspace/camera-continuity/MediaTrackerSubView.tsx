@@ -46,6 +46,7 @@ import {
   AlertTriangle,
   Upload,
   Archive,
+  ListTodo,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -57,6 +58,8 @@ import {
   MEDIA_STATUSES,
   CameraMediaItem,
 } from '@/hooks/backlot';
+import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
+import { toast } from 'sonner';
 
 interface MediaTrackerSubViewProps {
   projectId: string;
@@ -93,13 +96,22 @@ const MediaTrackerSubView: React.FC<MediaTrackerSubViewProps> = ({
   const [editingMedia, setEditingMedia] = useState<CameraMediaItem | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
+  // Task creation state
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [taskMediaItem, setTaskMediaItem] = useState<CameraMediaItem | null>(null);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDescription, setTaskDescription] = useState('');
+  const [selectedTaskListId, setSelectedTaskListId] = useState<string>('');
+
   // Queries
   const { data: mediaItems, isLoading } = useCameraMedia(projectId, productionDayId || undefined);
+  const { taskLists } = useTaskLists({ projectId });
 
   // Mutations
   const createMedia = useCreateCameraMedia(projectId);
   const updateMedia = useUpdateCameraMedia(projectId);
   const deleteMedia = useDeleteCameraMedia(projectId);
+  const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -181,6 +193,39 @@ const MediaTrackerSubView: React.FC<MediaTrackerSubViewProps> = ({
       id: media.id,
       data: { status: newStatus },
     });
+  };
+
+  // Task creation handlers
+  const handleOpenTaskModal = (media: CameraMediaItem) => {
+    setTaskMediaItem(media);
+    setTaskTitle(`Review media: ${media.card_label}`);
+    setTaskDescription(`Camera: ${media.camera_id || 'N/A'}\nStatus: ${media.status}\nType: ${media.media_type}`);
+    setSelectedTaskListId(taskLists[0]?.id || '');
+    setShowTaskModal(true);
+  };
+
+  const handleCreateTask = async () => {
+    if (!taskMediaItem || !selectedTaskListId) {
+      toast.error('Please select a task list');
+      return;
+    }
+
+    try {
+      await createTaskFromSource.mutateAsync({
+        title: taskTitle,
+        sourceType: 'camera_media',
+        sourceId: taskMediaItem.id,
+        description: taskDescription,
+        productionDayId: productionDayId || undefined,
+      });
+      toast.success('Task created successfully');
+      setShowTaskModal(false);
+      setTaskMediaItem(null);
+      setTaskTitle('');
+      setTaskDescription('');
+    } catch (error) {
+      toast.error('Failed to create task');
+    }
   };
 
   // Filter media
@@ -401,6 +446,15 @@ const MediaTrackerSubView: React.FC<MediaTrackerSubViewProps> = ({
                           <Button
                             variant="ghost"
                             size="icon"
+                            className="h-7 w-7 text-primary hover:text-primary/80"
+                            onClick={() => handleOpenTaskModal(media)}
+                            title="Create Task"
+                          >
+                            <ListTodo className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             className="h-7 w-7"
                             onClick={() => handleOpenEdit(media)}
                           >
@@ -567,6 +621,72 @@ const MediaTrackerSubView: React.FC<MediaTrackerSubViewProps> = ({
               disabled={deleteMedia.isPending}
             >
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Task Dialog */}
+      <Dialog open={showTaskModal} onOpenChange={setShowTaskModal}>
+        <DialogContent className="bg-soft-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ListTodo className="w-5 h-5 text-primary" />
+              Create Task from Media
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Task List *</Label>
+              <Select value={selectedTaskListId} onValueChange={setSelectedTaskListId}>
+                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
+                  <SelectValue placeholder="Select a task list" />
+                </SelectTrigger>
+                <SelectContent>
+                  {taskLists.map((list) => (
+                    <SelectItem key={list.id} value={list.id}>
+                      {list.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Task Title *</Label>
+              <Input
+                value={taskTitle}
+                onChange={(e) => setTaskTitle(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task title"
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={taskDescription}
+                onChange={(e) => setTaskDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Enter task description"
+                rows={3}
+              />
+            </div>
+            {taskMediaItem && (
+              <div className="p-3 bg-primary/10 border border-primary/20 rounded-lg">
+                <p className="text-xs text-muted-gray mb-1">Linked to media:</p>
+                <p className="text-sm text-bone-white font-medium">{taskMediaItem.card_label}</p>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTaskModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTask}
+              disabled={!taskTitle || !selectedTaskListId || createTaskFromSource.isPending}
+              className="bg-primary text-white hover:bg-primary/90"
+            >
+              {createTaskFromSource.isPending ? 'Creating...' : 'Create Task'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -60,7 +60,10 @@ import {
   AlertCircle,
   CheckCircle2,
   Package,
+  HelpCircle,
+  BarChart3,
 } from 'lucide-react';
+import { DialogFooter } from '@/components/ui/dialog';
 import {
   useBudget,
   useBudgetSummary,
@@ -612,6 +615,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showTipsPanel, setShowTipsPanel] = useState(false);
 
   // Form states
   const [budgetForm, setBudgetForm] = useState<BudgetInput>({
@@ -1186,6 +1190,15 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowTipsPanel(true)}
+            className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+          >
+            <HelpCircle className="w-4 h-4 mr-1" />
+            Tips
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -1912,6 +1925,89 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
         onConfirmDelete={handleDeleteBudget}
         isDeleting={isDeleting}
       />
+
+      {/* Tips Panel Dialog */}
+      <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <HelpCircle className="w-5 h-5 text-amber-400" />
+              Budget Tips
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-accent-yellow/10 rounded-lg">
+                <Layers className="w-5 h-5 text-accent-yellow" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Top Sheet vs Detail</h4>
+                <p className="text-sm text-muted-gray">
+                  Use "Top Sheet" for executive summary by department. Use "Detail"
+                  for full line-item breakdown with actuals tracking.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-green-500/10 rounded-lg">
+                <FolderOpen className="w-5 h-5 text-green-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Categories</h4>
+                <p className="text-sm text-muted-gray">
+                  Organize budget into categories by department. Each category tracks
+                  estimated vs. actual spending with variance.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-blue-500/10 rounded-lg">
+                <CalendarDays className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Daily Sync</h4>
+                <p className="text-sm text-muted-gray">
+                  Sync budget to daily views to automatically distribute costs
+                  across production days based on phase.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-purple-500/10 rounded-lg">
+                <Package className="w-5 h-5 text-purple-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Gear Integration</h4>
+                <p className="text-sm text-muted-gray">
+                  Sync gear rental costs to budget automatically. Equipment tab
+                  entries flow into the appropriate budget category.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-red-500/10 rounded-lg">
+                <BarChart3 className="w-5 h-5 text-red-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Variance Tracking</h4>
+                <p className="text-sm text-muted-gray">
+                  Red indicates over budget, green under. Lock the budget when
+                  approved to prevent further changes.
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
