@@ -404,4 +404,48 @@ QToolTip {{
     padding: 8px;
     border-radius: 4px;
 }}
+
+/* Message Box / Dialogs */
+QMessageBox {{
+    background-color: {COLORS['charcoal-black']};
+}}
+
+QMessageBox QLabel {{
+    color: {COLORS['bone-white']};
+    font-size: 13px;
+    line-height: 1.6;
+}}
+
+QMessageBox QPushButton {{
+    min-width: 80px;
+    padding: 8px 16px;
+}}
+
+QDialog {{
+    background-color: {COLORS['charcoal-black']};
+}}
+
+/* Text Browser for rich text dialogs */
+QTextBrowser {{
+    background-color: {COLORS['charcoal-light']};
+    color: {COLORS['bone-white']};
+    border: 1px solid {COLORS['border-gray']};
+    border-radius: 6px;
+    padding: 16px;
+    font-size: 13px;
+}}
+
+QTextBrowser a {{
+    color: {COLORS['accent-yellow']};
+}}
+
+/* Scroll Area */
+QScrollArea {{
+    background-color: transparent;
+    border: none;
+}}
+
+QScrollArea > QWidget > QWidget {{
+    background-color: transparent;
+}}
 """

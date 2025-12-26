@@ -377,7 +377,44 @@ class OffloadPage(QWidget):
 
     def _show_how_to(self):
         """Show instructions for using the offload tab."""
-        instructions = """
+        from PyQt6.QtWidgets import QDialog, QTextBrowser
+
+        instructions = f"""
+<style>
+    body {{
+        color: {COLORS['bone-white']};
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 13px;
+        line-height: 1.6;
+    }}
+    h2 {{
+        color: {COLORS['accent-yellow']};
+        font-size: 18px;
+        margin-bottom: 16px;
+        border-bottom: 1px solid {COLORS['border-gray']};
+        padding-bottom: 8px;
+    }}
+    h3 {{
+        color: {COLORS['bone-white']};
+        font-size: 14px;
+        margin-top: 20px;
+        margin-bottom: 8px;
+    }}
+    p, li {{
+        color: {COLORS['bone-white']};
+        margin-bottom: 6px;
+    }}
+    b {{
+        color: {COLORS['accent-yellow']};
+    }}
+    code {{
+        background-color: {COLORS['charcoal-light']};
+        padding: 2px 6px;
+        border-radius: 4px;
+        color: {COLORS['accent-yellow']};
+    }}
+</style>
+
 <h2>How to Use the Offload Tab</h2>
 
 <h3>Basic Offload (Single Card)</h3>
@@ -416,17 +453,44 @@ class OffloadPage(QWidget):
 
 <h3>Tips</h3>
 <ul>
-<li>The folder template uses variables: {camera}, {roll}, {date}, {project}, {day}</li>
+<li>The folder template uses variables: <code>{{camera}}</code>, <code>{{roll}}</code>, <code>{{date}}</code>, <code>{{project}}</code>, <code>{{day}}</code></li>
 <li>Sessions persist if the app closes - you can resume where you left off.</li>
 <li>Click "Cancel Session" if you need to start over.</li>
 </ul>
 """
-        msg = QMessageBox(self)
-        msg.setWindowTitle("How to Use Offload")
-        msg.setTextFormat(Qt.TextFormat.RichText)
-        msg.setText(instructions)
-        msg.setIcon(QMessageBox.Icon.Information)
-        msg.exec()
+        # Create custom dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("How to Use Offload")
+        dialog.setMinimumSize(550, 500)
+        dialog.setStyleSheet(f"background-color: {COLORS['charcoal-black']};")
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        # Text browser for scrollable rich text
+        text_browser = QTextBrowser()
+        text_browser.setHtml(instructions)
+        text_browser.setOpenExternalLinks(True)
+        text_browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: {COLORS['charcoal-light']};
+                color: {COLORS['bone-white']};
+                border: 1px solid {COLORS['border-gray']};
+                border-radius: 8px;
+                padding: 16px;
+            }}
+        """)
+        layout.addWidget(text_browser)
+
+        # Close button
+        close_btn = QPushButton("Got it!")
+        close_btn.setObjectName("primary-button")
+        close_btn.clicked.connect(dialog.accept)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(close_btn)
+
+        dialog.exec()
 
     def _show_warning(self, message: str):
         """Show a warning in the progress label."""
