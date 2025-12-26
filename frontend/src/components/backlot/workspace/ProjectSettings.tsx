@@ -2,7 +2,7 @@
  * ProjectSettings - Project configuration, visibility, and danger zone
  */
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -36,6 +36,9 @@ import {
   ExternalLink,
   Copy,
   Check,
+  HardDrive,
+  Key,
+  ArrowRight,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/backlot';
 import {
@@ -407,6 +410,41 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
         </Button>
         {hasChanges && <span className="text-sm text-muted-gray">You have unsaved changes</span>}
       </div>
+
+      {/* Desktop Helper */}
+      <section className="space-y-4 border-t border-muted-gray/30 pt-8 mt-8">
+        <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+          <HardDrive className="w-5 h-5 text-accent-yellow" />
+          Desktop Helper
+        </h3>
+        <p className="text-sm text-muted-gray">
+          Connect the SWN Dailies Helper to upload footage directly from set.
+        </p>
+
+        <div className="bg-muted-gray/10 rounded-lg p-4 space-y-4">
+          <div className="flex items-start gap-3">
+            <div className="bg-accent-yellow/20 p-2 rounded-lg">
+              <Key className="w-5 h-5 text-accent-yellow" />
+            </div>
+            <div className="flex-1">
+              <h4 className="font-medium text-bone-white">Connect Your Desktop</h4>
+              <ol className="text-sm text-muted-gray mt-2 space-y-1 list-decimal list-inside">
+                <li>Download SWN Dailies Helper from our website</li>
+                <li>Create an API key in your account settings</li>
+                <li>Enter the key in the helper's setup wizard</li>
+              </ol>
+            </div>
+          </div>
+
+          <Button asChild variant="outline" className="w-full">
+            <Link to="/account?tab=api-keys" className="flex items-center justify-center gap-2">
+              <Key className="w-4 h-4" />
+              Manage API Keys
+              <ArrowRight className="w-4 h-4 ml-auto" />
+            </Link>
+          </Button>
+        </div>
+      </section>
 
       {/* Danger Zone */}
       {permission?.isOwner && (

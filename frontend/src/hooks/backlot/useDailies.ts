@@ -899,3 +899,375 @@ export function useDailiesCircleTakes(projectId: string | null, dayId?: string |
     enabled: !!projectId,
   });
 }
+
+// =============================================================================
+// PRODUCTION DAY SYNC
+// =============================================================================
+
+interface UnlinkedProductionDay {
+  id: string;
+  day_number: number;
+  date: string;
+  title: string | null;
+  location_name: string | null;
+  is_completed: boolean;
+  scene_count: number;
+}
+
+interface ImportProductionDaysResult {
+  imported: BacklotDailiesDay[];
+  assets_created: { id: string; title: string }[];
+  skipped: number;
+  message: string;
+}
+
+// Get production days that aren't linked to dailies yet
+export function useUnlinkedProductionDays(projectId: string | null) {
+  return useQuery({
+    queryKey: ['unlinked-production-days', projectId],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/production-days/unlinked-to-dailies`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch production days' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.production_days || []) as UnlinkedProductionDay[];
+    },
+    enabled: !!projectId,
+  });
+}
+
+// Import production days as dailies days
+export function useImportProductionDays() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      productionDayIds,
+      createFootageAssets = false,
+    }: {
+      projectId: string;
+      productionDayIds: string[];
+      createFootageAssets?: boolean;
+    }): Promise<ImportProductionDaysResult> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/import-from-schedule`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            production_day_ids: productionDayIds,
+            create_footage_assets: createFootageAssets,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to import days' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailies-days'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['unlinked-production-days'] });
+      queryClient.invalidateQueries({ queryKey: ['assets'] });
+    },
+  });
+}
+
+// Get the production day linked to a dailies day
+export function useLinkedProductionDay(dayId: string | null) {
+  return useQuery({
+    queryKey: ['linked-production-day', dayId],
+    queryFn: async () => {
+      if (!dayId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/dailies/days/${dayId}/production-day`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch production day' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result as {
+        production_day: import('@/types/backlot').BacklotProductionDay | null;
+        scenes: { id: string; scene_number: string; slugline: string; page_length: number }[];
+      };
+    },
+    enabled: !!dayId,
+  });
+}
+
+// =============================================================================
+// MEDIA LIBRARY - All clips with filtering, pagination, and sorting
+// =============================================================================
+
+export type MediaLibrarySortBy = 'created_at' | 'shoot_date' | 'scene_number' | 'take_number' | 'rating' | 'duration_seconds' | 'file_name';
+export type MediaLibrarySortOrder = 'asc' | 'desc';
+
+export interface MediaLibraryFilters {
+  dayId?: string | null;
+  camera?: string | null;
+  sceneNumber?: string | null;
+  takeNumber?: number | null;
+  isCircleTake?: boolean | null;
+  ratingMin?: number | null;
+  storageMode?: DailiesStorageMode | null;
+  hasNotes?: boolean | null;
+  textSearch?: string | null;
+  sortBy?: MediaLibrarySortBy;
+  sortOrder?: MediaLibrarySortOrder;
+}
+
+export interface MediaLibraryClipWithContext extends BacklotDailiesClip {
+  day?: {
+    id: string;
+    shoot_date: string;
+    label: string;
+    unit?: string | null;
+    production_day_id?: string | null;
+  };
+}
+
+export interface MediaLibraryResult {
+  clips: MediaLibraryClipWithContext[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface UseMediaLibraryOptions {
+  projectId: string | null;
+  filters?: MediaLibraryFilters;
+  offset?: number;
+  limit?: number;
+  enabled?: boolean;
+}
+
+export function useMediaLibrary(options: UseMediaLibraryOptions) {
+  const { projectId, filters = {}, offset = 0, limit = 50, enabled = true } = options;
+  const queryClient = useQueryClient();
+
+  const queryKey = ['media-library', { projectId, filters, offset, limit }];
+
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey,
+    queryFn: async (): Promise<MediaLibraryResult> => {
+      if (!projectId) return { clips: [], total: 0, offset: 0, limit };
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      // Build query params
+      const params = new URLSearchParams();
+      if (filters.dayId) params.append('day_id', filters.dayId);
+      if (filters.camera) params.append('camera', filters.camera);
+      if (filters.sceneNumber) params.append('scene_number', filters.sceneNumber);
+      if (filters.takeNumber !== null && filters.takeNumber !== undefined) {
+        params.append('take_number', filters.takeNumber.toString());
+      }
+      if (filters.isCircleTake !== null && filters.isCircleTake !== undefined) {
+        params.append('is_circle_take', filters.isCircleTake.toString());
+      }
+      if (filters.ratingMin !== null && filters.ratingMin !== undefined) {
+        params.append('rating_min', filters.ratingMin.toString());
+      }
+      if (filters.storageMode) params.append('storage_mode', filters.storageMode);
+      if (filters.hasNotes !== null && filters.hasNotes !== undefined) {
+        params.append('has_notes', filters.hasNotes.toString());
+      }
+      if (filters.textSearch) params.append('text_search', filters.textSearch);
+      if (filters.sortBy) params.append('sort_by', filters.sortBy);
+      if (filters.sortOrder) params.append('sort_order', filters.sortOrder);
+      params.append('offset', offset.toString());
+      params.append('limit', limit.toString());
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/clips?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clips' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return {
+        clips: (result.clips || []) as MediaLibraryClipWithContext[],
+        total: result.total || 0,
+        offset: result.offset || 0,
+        limit: result.limit || limit,
+      };
+    },
+    enabled: !!projectId && enabled,
+  });
+
+  // Toggle circle take with optimistic update
+  const toggleCircleTake = useMutation({
+    mutationFn: async ({ id, isCircle }: { id: string; isCircle: boolean }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/dailies/clips/${id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ is_circle_take: isCircle }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to update clip');
+      }
+
+      return response.json();
+    },
+    onMutate: async ({ id, isCircle }) => {
+      await queryClient.cancelQueries({ queryKey: ['media-library'] });
+
+      const previousData = queryClient.getQueryData<MediaLibraryResult>(queryKey);
+
+      if (previousData) {
+        queryClient.setQueryData<MediaLibraryResult>(queryKey, {
+          ...previousData,
+          clips: previousData.clips.map((clip) =>
+            clip.id === id ? { ...clip, is_circle_take: isCircle } : clip
+          ),
+        });
+      }
+
+      return { previousData };
+    },
+    onError: (err, variables, context) => {
+      if (context?.previousData) {
+        queryClient.setQueryData(queryKey, context.previousData);
+      }
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
+    },
+  });
+
+  return {
+    clips: data?.clips || [],
+    total: data?.total || 0,
+    offset: data?.offset || 0,
+    limit: data?.limit || limit,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    toggleCircleTake,
+  };
+}
+
+// Get unique cameras for a project (for filtering)
+export function useProjectCameras(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project-cameras', projectId],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      // Get all cards to extract unique camera labels
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/cards?limit=500`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const result = await response.json();
+      const cards = result.cards || [];
+      const cameras = [...new Set(cards.map((c: BacklotDailiesCard) => c.camera_label))].sort();
+      return cameras as string[];
+    },
+    enabled: !!projectId,
+  });
+}
+
+// Get unique scenes for a project (for filtering)
+export function useProjectScenes(projectId: string | null) {
+  return useQuery({
+    queryKey: ['project-scenes-for-filter', projectId],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      // Get all clips to extract unique scene numbers
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/dailies/clips?limit=1000`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        return [];
+      }
+
+      const result = await response.json();
+      const clips = result.clips || [];
+      const scenes = [...new Set(clips.map((c: BacklotDailiesClip) => c.scene_number).filter(Boolean))].sort();
+      return scenes as string[];
+    },
+    enabled: !!projectId,
+  });
+}

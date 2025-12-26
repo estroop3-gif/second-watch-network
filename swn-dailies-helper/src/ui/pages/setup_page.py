@@ -1,7 +1,7 @@
 """
 Setup page - Enter API key and connect to project.
 """
-from typing import Optional, Callable
+from typing import Optional, Callable, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -12,10 +12,12 @@ from PyQt6.QtWidgets import (
     QFrame,
 )
 from PyQt6.QtCore import Qt
-import httpx
 
 from src.services.config import ConfigManager
 from src.ui.styles import COLORS
+
+if TYPE_CHECKING:
+    from src.services.connection_manager import ConnectionManager
 
 
 class SetupPage(QWidget):
@@ -24,12 +26,17 @@ class SetupPage(QWidget):
     def __init__(
         self,
         config: ConfigManager,
+        connection_manager: "ConnectionManager",
         on_connected: Optional[Callable[[], None]] = None,
     ):
         super().__init__()
         self.config = config
+        self.connection_manager = connection_manager
         self.on_connected = on_connected
         self.setup_ui()
+
+        # Connect to connection manager signals
+        self.connection_manager.status_changed.connect(self._on_status_changed)
 
     def setup_ui(self):
         """Initialize the UI."""
@@ -139,39 +146,38 @@ class SetupPage(QWidget):
         self.status_label.setText("Verifying...")
         self.status_label.setStyleSheet(f"color: {COLORS['muted-gray']};")
 
-        try:
-            # Verify the API key with the backend
-            response = httpx.post(
-                "https://vnvvoelid6.execute-api.us-east-1.amazonaws.com/api/v1/backlot/desktop-keys/verify",
-                headers={"X-API-Key": api_key},
-                timeout=10,
-            )
+        # Use connection manager to set and verify the key
+        self.connection_manager.set_api_key(api_key)
 
-            if response.status_code == 200:
-                data = response.json()
-                self.config.set_api_key(api_key)
-                self.config.set_project_id(data.get("project_id"))
+    def _on_status_changed(self, state: str, details: dict):
+        """Handle connection status changes."""
+        from src.services.connection_manager import ConnectionManager
 
-                project_title = data.get("project_title", "Unknown Project")
-                self.show_success(f"Connected to: {project_title}")
+        if state == ConnectionManager.STATE_CONNECTED:
+            user = details.get("user", {})
+            projects = details.get("projects", [])
+            display_name = user.get("display_name") or user.get("email") or "User"
+            project_count = len(projects)
+            self.show_success(f"Connected as {display_name} ({project_count} project{'s' if project_count != 1 else ''})")
+            self.connect_btn.setEnabled(True)
+            self.connect_btn.setText("Connect")
+            self.key_input.clear()
 
-                # Call the callback
-                if self.on_connected:
-                    self.on_connected()
-            else:
-                try:
-                    error = response.json().get("detail", "Invalid API key")
-                except Exception:
-                    error = f"Server error ({response.status_code})"
-                self.show_error(f"Error: {error}")
+            # Call the callback
+            if self.on_connected:
+                self.on_connected()
 
-        except httpx.TimeoutException:
-            self.show_error("Connection timed out. Please try again.")
-        except httpx.ConnectError:
-            self.show_error("Could not connect to server. Check your internet connection.")
-        except Exception as e:
-            self.show_error(f"Connection failed: {str(e)}")
-        finally:
+        elif state == ConnectionManager.STATE_CHECKING:
+            self.status_label.setText("Verifying...")
+            self.status_label.setStyleSheet(f"color: {COLORS['muted-gray']};")
+
+        elif state == ConnectionManager.STATE_ERROR:
+            self.show_error("Connection failed - check the connection details for more info")
+            self.connect_btn.setEnabled(True)
+            self.connect_btn.setText("Connect")
+
+        elif state == ConnectionManager.STATE_DISCONNECTED:
+            self.status_label.setText("")
             self.connect_btn.setEnabled(True)
             self.connect_btn.setText("Connect")
 

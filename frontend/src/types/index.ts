@@ -126,3 +126,35 @@ export type CommunityProfile = {
   created_at: string;
   updated_at: string;
 };
+
+// Desktop API Keys for SWN Dailies Helper
+export type DesktopKey = {
+  id: string;
+  key_prefix: string;
+  name: string;
+  last_used_at: string | null;
+  created_at: string;
+  is_active: boolean;
+};
+
+export type DesktopKeyCreateResponse = {
+  id: string;
+  key: string;  // Only returned at creation time
+  key_prefix: string;
+  name: string;
+  created_at: string;
+};
+
+export type DesktopKeyVerifyResponse = {
+  valid: boolean;
+  user?: {
+    id: string;
+    email: string;
+    display_name: string;
+  };
+  projects?: Array<{
+    id: string;
+    name: string;
+    role: string;
+  }>;
+};

@@ -35,6 +35,16 @@ export interface LocalFile {
   modifiedAt?: string;
   isVideo?: boolean;
   isImage?: boolean;
+  relativePath?: string;
+}
+
+export interface LinkedDrive {
+  name: string;
+  path: string;
+  available: boolean;
+  freeBytes?: number;
+  totalBytes?: number;
+  usedBytes?: number;
 }
 
 /**
@@ -147,6 +157,47 @@ export function useDesktopHelper() {
     return null;
   }, [status.connected]);
 
+  // List linked drives
+  const listLinkedDrives = useCallback(async (): Promise<LinkedDrive[]> => {
+    if (!status.connected) return [];
+
+    try {
+      const response = await fetch(`${HELPER_URL}/linked-drives`);
+      if (response.ok) {
+        const data = await response.json();
+        return data.drives || [];
+      }
+    } catch (error) {
+      console.error('Failed to list linked drives:', error);
+    }
+    return [];
+  }, [status.connected]);
+
+  // Browse a linked drive
+  const browseLinkedDrive = useCallback(async (driveName: string, path: string = ''): Promise<LocalFile[]> => {
+    if (!status.connected) return [];
+
+    try {
+      const url = path
+        ? `${HELPER_URL}/linked-drives/${encodeURIComponent(driveName)}/browse?path=${encodeURIComponent(path)}`
+        : `${HELPER_URL}/linked-drives/${encodeURIComponent(driveName)}/browse`;
+
+      const response = await fetch(url);
+      if (response.ok) {
+        const data = await response.json();
+        return data.files || [];
+      }
+    } catch (error) {
+      console.error('Failed to browse linked drive:', error);
+    }
+    return [];
+  }, [status.connected]);
+
+  // Get streaming URL for a file on a linked drive
+  const getLinkedDriveStreamUrl = useCallback((driveName: string, relativePath: string): string => {
+    return `${HELPER_URL}/linked-drives/${encodeURIComponent(driveName)}/file?path=${encodeURIComponent(relativePath)}`;
+  }, []);
+
   return {
     status,
     isChecking,
@@ -157,6 +208,10 @@ export function useDesktopHelper() {
     getStreamUrl,
     getThumbnailUrl,
     calculateChecksum,
+    // Linked drives
+    listLinkedDrives,
+    browseLinkedDrive,
+    getLinkedDriveStreamUrl,
   };
 }
 

@@ -1565,6 +1565,24 @@ class APIClient {
     if (cycleId) params.append('cycle_id', cycleId.toString())
     return this.request<any>(`/api/v1/greenroom/admin/export/${dataType}?${params}`)
   }
+
+  // DESKTOP API KEYS
+  async listDesktopKeys() {
+    return this.request<any[]>('/api/v1/backlot/desktop-keys')
+  }
+
+  async createDesktopKey(name: string) {
+    return this.request<any>('/api/v1/backlot/desktop-keys', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+  }
+
+  async revokeDesktopKey(keyId: string) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/backlot/desktop-keys/${keyId}`, {
+      method: 'DELETE',
+    })
+  }
 }
 
 // Export singleton instance

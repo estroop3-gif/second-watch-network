@@ -483,6 +483,19 @@ export {
   // Helpers
   useDailiesClipsByScene,
   useDailiesCircleTakes,
+  // Production Day Sync
+  useUnlinkedProductionDays,
+  useImportProductionDays,
+  useLinkedProductionDay,
+  // Media Library
+  useMediaLibrary,
+  useProjectCameras,
+  useProjectScenes,
+  // Types
+  type MediaLibraryFilters,
+  type MediaLibrarySortBy,
+  type MediaLibrarySortOrder,
+  type MediaLibraryClipWithContext,
 } from './useDailies';
 
 // Backlot Project Roles & View Config
@@ -950,6 +963,7 @@ export type {
   HelperStatus,
   LocalDrive,
   LocalFile,
+  LinkedDrive,
   DesktopApiKey,
   CreateApiKeyResponse,
 } from './useDesktopHelper';

@@ -1,7 +1,7 @@
 """
 Settings page - Configure proxy settings, paths, etc.
 """
-from typing import Optional, Callable
+from typing import Optional, Callable, TYPE_CHECKING
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -22,6 +22,9 @@ from PyQt6.QtCore import Qt
 from src.services.config import ConfigManager
 from src.ui.styles import COLORS
 
+if TYPE_CHECKING:
+    from src.services.connection_manager import ConnectionManager
+
 
 class SettingsPage(QWidget):
     """Settings page for configuration."""
@@ -29,12 +32,17 @@ class SettingsPage(QWidget):
     def __init__(
         self,
         config: ConfigManager,
+        connection_manager: "ConnectionManager",
         on_disconnect: Optional[Callable[[], None]] = None,
     ):
         super().__init__()
         self.config = config
+        self.connection_manager = connection_manager
         self.on_disconnect = on_disconnect
         self.setup_ui()
+
+        # Connect to connection manager signals
+        self.connection_manager.status_changed.connect(self._on_status_changed)
 
     def setup_ui(self):
         """Initialize the UI."""
@@ -222,39 +230,63 @@ class SettingsPage(QWidget):
         title.setObjectName("card-title")
         layout.addWidget(title)
 
-        # Project info
-        project_id = self.config.get_project_id()
-        if project_id:
-            status_text = f"Connected to project: {project_id[:8]}..."
-            status_color = COLORS["green"]
-        else:
-            status_text = "Not connected to any project"
-            status_color = COLORS["muted-gray"]
-
-        self.project_label = QLabel(status_text)
-        self.project_label.setStyleSheet(f"color: {status_color};")
+        # Connection status label
+        self.project_label = QLabel("Not connected")
         layout.addWidget(self.project_label)
 
         # API Key info
-        api_key = self.config.get_api_key()
-        if api_key:
-            key_preview = f"Key: {api_key[:12]}..."
-        else:
-            key_preview = "No API key configured"
-
-        self.key_label = QLabel(key_preview)
+        self.key_label = QLabel("No API key configured")
         self.key_label.setObjectName("label-small")
         layout.addWidget(self.key_label)
 
         # Disconnect button
-        if project_id:
-            disconnect_btn = QPushButton("Disconnect from Project")
-            disconnect_btn.setObjectName("danger-button")
-            disconnect_btn.clicked.connect(self.disconnect)
-            disconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            layout.addWidget(disconnect_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+        self.disconnect_btn = QPushButton("Disconnect")
+        self.disconnect_btn.setObjectName("danger-button")
+        self.disconnect_btn.clicked.connect(self.disconnect)
+        self.disconnect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(self.disconnect_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # Update display based on current state
+        self._update_connection_display()
 
         return card
+
+    def _update_connection_display(self):
+        """Update connection display based on connection manager state."""
+        from src.services.connection_manager import ConnectionManager
+
+        state = self.connection_manager.state
+        details = self.connection_manager.details
+
+        if state == ConnectionManager.STATE_CONNECTED:
+            user = details.get("user", {})
+            projects = details.get("projects", [])
+            display_name = user.get("display_name") or user.get("email") or "User"
+            self.project_label.setText(f"Connected as {display_name} ({len(projects)} projects)")
+            self.project_label.setStyleSheet(f"color: {COLORS['green']};")
+            self.disconnect_btn.setEnabled(True)
+
+            api_key = self.config.get_api_key()
+            if api_key:
+                self.key_label.setText(f"Key: {api_key[:12]}...")
+            else:
+                self.key_label.setText("Key stored securely")
+
+        elif state == ConnectionManager.STATE_ERROR:
+            self.project_label.setText("Connection error")
+            self.project_label.setStyleSheet(f"color: {COLORS['red']};")
+            self.disconnect_btn.setEnabled(True)
+            self.key_label.setText("Check connection details")
+
+        else:
+            self.project_label.setText("Not connected")
+            self.project_label.setStyleSheet(f"color: {COLORS['muted-gray']};")
+            self.disconnect_btn.setEnabled(False)
+            self.key_label.setText("No API key configured")
+
+    def _on_status_changed(self, state: str, details: dict):
+        """Handle connection status changes."""
+        self._update_connection_display()
 
     def _on_lut_toggle(self):
         """Enable/disable LUT path selection based on checkbox."""
@@ -313,20 +345,15 @@ class SettingsPage(QWidget):
         reply = QMessageBox.question(
             self,
             "Disconnect",
-            "Are you sure you want to disconnect from this project?\n\n"
+            "Are you sure you want to disconnect?\n\n"
             "You will need to enter a new API key to reconnect.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.config.clear_api_key()
-            self.config.set("project_id", None)
-
-            # Update UI
-            self.project_label.setText("Not connected to any project")
-            self.project_label.setStyleSheet(f"color: {COLORS['muted-gray']};")
-            self.key_label.setText("No API key configured")
+            # Use connection manager to disconnect
+            self.connection_manager.disconnect()
 
             # Call the callback
             if self.on_disconnect:
@@ -335,11 +362,5 @@ class SettingsPage(QWidget):
     def showEvent(self, event):
         """Refresh settings when page is shown."""
         super().showEvent(event)
-        # Refresh connection status
-        project_id = self.config.get_project_id()
-        if project_id:
-            self.project_label.setText(f"Connected to project: {project_id[:8]}...")
-            self.project_label.setStyleSheet(f"color: {COLORS['green']};")
-        else:
-            self.project_label.setText("Not connected to any project")
-            self.project_label.setStyleSheet(f"color: {COLORS['muted-gray']};")
+        # Refresh connection display
+        self._update_connection_display()

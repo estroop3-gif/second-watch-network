@@ -6,8 +6,9 @@ import sys
 import threading
 from pathlib import Path
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPalette, QColor
 
 from src.services.local_server import start_local_server, stop_local_server
 from src.ui.main_window import MainWindow
@@ -24,6 +25,9 @@ def main():
     app.setApplicationName("SWN Dailies Helper")
     app.setOrganizationName("Second Watch Network")
     app.setOrganizationDomain("secondwatchnetwork.com")
+
+    # Use Fusion style for consistent cross-platform look and proper palette support
+    app.setStyle(QStyleFactory.create("Fusion"))
 
     # Start the local HTTP server in a background thread
     server_thread = threading.Thread(target=start_local_server, daemon=True)

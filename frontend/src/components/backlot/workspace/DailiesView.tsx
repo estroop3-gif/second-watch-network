@@ -31,6 +31,7 @@ import {
   Film,
   Plus,
   Calendar,
+  CalendarPlus,
   HardDrive,
   Cloud,
   Circle,
@@ -49,11 +50,17 @@ import {
   Monitor,
   Wifi,
   WifiOff,
-  Link,
+  Link as LinkIcon,
   FolderOpen,
   Download,
   ExternalLink,
+  MapPin,
+  Check,
+  LayoutGrid,
+  List,
+  Key,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -66,6 +73,8 @@ import {
   useDailiesClips,
   useDailiesSummary,
   useDesktopHelper,
+  useUnlinkedProductionDays,
+  useImportProductionDays,
 } from '@/hooks/backlot';
 import {
   BacklotDailiesDay,
@@ -80,6 +89,10 @@ import {
 import { format, parseISO } from 'date-fns';
 import { cn } from '@/lib/utils';
 import ClipDetailView from './ClipDetailView';
+import LocalBrowser from './LocalBrowser';
+import MediaLibrary from './MediaLibrary';
+
+type DailiesViewMode = 'day' | 'all';
 
 interface DailiesViewProps {
   projectId: string;
@@ -479,6 +492,7 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   const { isConnected: helperConnected, status: helperStatus } = useDesktopHelper();
 
   // State
+  const [viewMode, setViewMode] = useState<DailiesViewMode>('day');
   const [selectedClip, setSelectedClip] = useState<BacklotDailiesClip | null>(null);
   const [showDayForm, setShowDayForm] = useState(false);
   const [editingDay, setEditingDay] = useState<BacklotDailiesDay | null>(null);
@@ -488,6 +502,13 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showLocalBrowser, setShowLocalBrowser] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [selectedProductionDays, setSelectedProductionDays] = useState<string[]>([]);
+  const [createFootageAssets, setCreateFootageAssets] = useState(false);
+
+  // Production day import hooks
+  const { data: unlinkedDays = [], isLoading: loadingUnlinkedDays } = useUnlinkedProductionDays(projectId);
+  const importDays = useImportProductionDays();
 
   // Day form state
   const [dayForm, setDayForm] = useState<DailiesDayInput>({
@@ -605,6 +626,39 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  const handleImportProductionDays = async () => {
+    if (selectedProductionDays.length === 0) return;
+    setIsSubmitting(true);
+    try {
+      await importDays.mutateAsync({
+        projectId,
+        productionDayIds: selectedProductionDays,
+        createFootageAssets,
+      });
+      setShowImportDialog(false);
+      setSelectedProductionDays([]);
+      setCreateFootageAssets(false);
+    } catch (err) {
+      console.error('Failed to import days:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const toggleProductionDaySelection = (dayId: string) => {
+    setSelectedProductionDays((prev) =>
+      prev.includes(dayId) ? prev.filter((id) => id !== dayId) : [...prev, dayId]
+    );
+  };
+
+  const selectAllProductionDays = () => {
+    if (selectedProductionDays.length === unlinkedDays.length) {
+      setSelectedProductionDays([]);
+    } else {
+      setSelectedProductionDays(unlinkedDays.map((d) => d.id));
+    }
+  };
+
   // Loading state
   if (isLoading) {
     return (
@@ -654,6 +708,17 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
             version={helperStatus.version}
             onBrowseLocal={helperConnected ? () => setShowLocalBrowser(true) : undefined}
           />
+          {/* API Key Button */}
+          <Link to="/account?tab=api-keys">
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-muted-gray/30 text-muted-gray hover:text-bone-white hover:border-accent-yellow/50"
+            >
+              <Key className="w-4 h-4 mr-2" />
+              API Key
+            </Button>
+          </Link>
           {/* Download Helper Button */}
           <Button
             variant="outline"
@@ -664,6 +729,20 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
             <Download className="w-4 h-4 mr-2" />
             Get Desktop Helper
           </Button>
+          {canEdit && unlinkedDays.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowImportDialog(true)}
+              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 hover:border-accent-yellow/50"
+            >
+              <CalendarPlus className="w-4 h-4 mr-2" />
+              Import from Schedule
+              <Badge variant="secondary" className="ml-2 bg-accent-yellow/20 text-accent-yellow text-xs">
+                {unlinkedDays.length}
+              </Badge>
+            </Button>
+          )}
           {canEdit && (
             <Button
               onClick={() => handleOpenDayForm()}
@@ -701,8 +780,49 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
         </div>
       )}
 
-      {/* Days List */}
-      {days.length > 0 ? (
+      {/* View Toggle */}
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-gray">View:</span>
+        <div className="flex bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setViewMode('day')}
+            className={cn(
+              'h-8 px-3 gap-2',
+              viewMode === 'day'
+                ? 'bg-accent-yellow/20 text-accent-yellow'
+                : 'text-muted-gray hover:text-bone-white'
+            )}
+          >
+            <Calendar className="w-4 h-4" />
+            By Day
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setViewMode('all')}
+            className={cn(
+              'h-8 px-3 gap-2',
+              viewMode === 'all'
+                ? 'bg-accent-yellow/20 text-accent-yellow'
+                : 'text-muted-gray hover:text-bone-white'
+            )}
+          >
+            <LayoutGrid className="w-4 h-4" />
+            All Clips
+          </Button>
+        </div>
+      </div>
+
+      {/* Content based on view mode */}
+      {viewMode === 'all' ? (
+        <MediaLibrary
+          projectId={projectId}
+          canEdit={canEdit}
+          onSelectClip={setSelectedClip}
+        />
+      ) : days.length > 0 ? (
         <Accordion type="multiple" defaultValue={days.slice(0, 2).map((d) => d.id)}>
           {days.map((day) => (
             <DaySection
@@ -906,30 +1026,26 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
 
       {/* Local File Browser Dialog */}
       <Dialog open={showLocalBrowser} onOpenChange={setShowLocalBrowser}>
-        <DialogContent className="sm:max-w-2xl max-h-[80vh]">
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-hidden">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <FolderOpen className="w-5 h-5 text-accent-yellow" />
               Browse Local Drives
             </DialogTitle>
           </DialogHeader>
-          <div className="py-4">
+          <div className="py-4 overflow-y-auto max-h-[calc(85vh-120px)]">
             {helperConnected ? (
-              <div className="space-y-4">
-                <p className="text-sm text-muted-gray">
-                  Browse files on your local drives through the SWN Desktop Helper.
-                  Select clips to add them to your dailies.
-                </p>
-                <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-8 text-center">
-                  <Monitor className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
-                  <p className="text-sm text-muted-gray mb-2">
-                    Local file browser coming soon
-                  </p>
-                  <p className="text-xs text-muted-gray/70">
-                    Use the Desktop Helper app to offload and ingest footage directly.
-                  </p>
-                </div>
-              </div>
+              <LocalBrowser
+                projectId={projectId}
+                onSelectClip={(file, driveName) => {
+                  console.log('Selected clip:', file, 'from drive:', driveName);
+                  // TODO: Add clip to dailies
+                }}
+                onPlayFile={(streamUrl, fileName) => {
+                  // Open video in new tab for playback
+                  window.open(streamUrl, '_blank');
+                }}
+              />
             ) : (
               <div className="text-center py-8">
                 <WifiOff className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
@@ -937,6 +1053,18 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
                 <p className="text-sm text-muted-gray/70">
                   Install and run the SWN Desktop Helper to browse local drives.
                 </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setShowLocalBrowser(false);
+                    setShowDownloadModal(true);
+                  }}
+                  className="mt-4 border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/20"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Get Desktop Helper
+                </Button>
               </div>
             )}
           </div>
@@ -994,7 +1122,7 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
               </div>
             </div>
 
-            <div className="pt-4 text-center">
+            <div className="pt-4 flex flex-col items-center gap-3">
               <a
                 href="https://github.com/estroop3-gif/swn-dailies-helper/releases"
                 target="_blank"
@@ -1004,6 +1132,163 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
                 <ExternalLink className="w-4 h-4" />
                 View on GitHub
               </a>
+              <Link
+                to="/account?tab=api-keys"
+                className="inline-flex items-center gap-2 px-4 py-2 border border-accent-yellow/50 text-accent-yellow rounded-lg hover:bg-accent-yellow/10 transition-colors font-medium text-sm"
+              >
+                <Key className="w-4 h-4" />
+                Create API Key
+              </Link>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import from Schedule Dialog */}
+      <Dialog open={showImportDialog} onOpenChange={setShowImportDialog}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarPlus className="w-5 h-5 text-accent-yellow" />
+              Import Production Days
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <p className="text-sm text-muted-gray">
+              Select production days from your schedule to import as dailies days.
+            </p>
+
+            {loadingUnlinkedDays ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 text-accent-yellow animate-spin" />
+              </div>
+            ) : unlinkedDays.length === 0 ? (
+              <div className="text-center py-8">
+                <Calendar className="w-12 h-12 text-muted-gray/30 mx-auto mb-3" />
+                <p className="text-muted-gray">All production days have been imported</p>
+              </div>
+            ) : (
+              <>
+                {/* Select All */}
+                <div className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/20">
+                  <div className="flex items-center gap-3">
+                    <Checkbox
+                      id="select-all"
+                      checked={selectedProductionDays.length === unlinkedDays.length}
+                      onCheckedChange={() => selectAllProductionDays()}
+                    />
+                    <Label htmlFor="select-all" className="text-sm text-bone-white cursor-pointer">
+                      Select all ({unlinkedDays.length} days)
+                    </Label>
+                  </div>
+                  {selectedProductionDays.length > 0 && (
+                    <Badge className="bg-accent-yellow/20 text-accent-yellow">
+                      {selectedProductionDays.length} selected
+                    </Badge>
+                  )}
+                </div>
+
+                {/* Day List */}
+                <div className="max-h-64 overflow-y-auto space-y-2">
+                  {unlinkedDays.map((day) => (
+                    <div
+                      key={day.id}
+                      className={cn(
+                        'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                        selectedProductionDays.includes(day.id)
+                          ? 'bg-accent-yellow/10 border-accent-yellow/30'
+                          : 'bg-charcoal-black/30 border-muted-gray/20 hover:border-muted-gray/40'
+                      )}
+                      onClick={() => toggleProductionDaySelection(day.id)}
+                    >
+                      <Checkbox
+                        checked={selectedProductionDays.includes(day.id)}
+                        onCheckedChange={() => toggleProductionDaySelection(day.id)}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-bone-white">
+                            Day {day.day_number}
+                          </span>
+                          <span className="text-sm text-muted-gray">
+                            {format(parseISO(day.date), 'MMM d, yyyy')}
+                          </span>
+                          {day.is_completed && (
+                            <Badge className="bg-green-500/20 text-green-400 text-xs">
+                              <Check className="w-3 h-3 mr-1" />
+                              Shot
+                            </Badge>
+                          )}
+                        </div>
+                        {(day.title || day.location_name) && (
+                          <div className="flex items-center gap-2 mt-1 text-sm text-muted-gray">
+                            {day.title && <span>{day.title}</span>}
+                            {day.location_name && (
+                              <span className="flex items-center gap-1">
+                                <MapPin className="w-3 h-3" />
+                                {day.location_name}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {day.scene_count > 0 && (
+                          <span className="text-xs text-muted-gray mt-1 block">
+                            {day.scene_count} scene{day.scene_count !== 1 ? 's' : ''} scheduled
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Create Footage Assets Checkbox */}
+                <div className="flex items-center gap-3 p-3 bg-charcoal-black/30 rounded-lg border border-muted-gray/20">
+                  <Checkbox
+                    id="create-footage"
+                    checked={createFootageAssets}
+                    onCheckedChange={(checked) => setCreateFootageAssets(checked === true)}
+                  />
+                  <div>
+                    <Label htmlFor="create-footage" className="text-sm text-bone-white cursor-pointer">
+                      Create footage assets for each day
+                    </Label>
+                    <p className="text-xs text-muted-gray mt-0.5">
+                      Adds a "Raw Footage" asset in the Assets tab for each imported day
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Actions */}
+            <div className="flex justify-end gap-3 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowImportDialog(false);
+                  setSelectedProductionDays([]);
+                }}
+                className="border-muted-gray/30"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleImportProductionDays}
+                disabled={selectedProductionDays.length === 0 || isSubmitting}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  <>
+                    <CalendarPlus className="w-4 h-4 mr-2" />
+                    Import {selectedProductionDays.length} Day{selectedProductionDays.length !== 1 ? 's' : ''}
+                  </>
+                )}
+              </Button>
             </div>
           </div>
         </DialogContent>

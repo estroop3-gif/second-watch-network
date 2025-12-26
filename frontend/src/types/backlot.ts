@@ -3946,7 +3946,7 @@ export const SHOT_TYPE_GROUP_LABELS: Record<keyof typeof SHOT_TYPE_GROUPS, strin
 // =====================================================
 
 // Asset Types
-export type BacklotAssetType = 'episode' | 'feature' | 'trailer' | 'teaser' | 'social' | 'bts' | 'other';
+export type BacklotAssetType = 'episode' | 'feature' | 'trailer' | 'teaser' | 'social' | 'bts' | 'footage' | 'other';
 
 // Asset/Deliverable Status
 export type BacklotDeliverableStatus = 'not_started' | 'in_progress' | 'in_review' | 'approved' | 'delivered';
@@ -4109,6 +4109,7 @@ export const ASSET_TYPE_LABELS: Record<BacklotAssetType, string> = {
   teaser: 'Teaser',
   social: 'Social',
   bts: 'Behind the Scenes',
+  footage: 'Raw Footage',
   other: 'Other',
 };
 
@@ -4135,6 +4136,7 @@ export const ASSET_TYPE_COLORS: Record<BacklotAssetType, string> = {
   teaser: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
   social: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
   bts: 'bg-green-500/20 text-green-400 border-green-500/30',
+  footage: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
   other: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
 };
 
@@ -5324,11 +5326,11 @@ export type DailiesClipNoteCategory =
 export interface BacklotDailiesDay {
   id: string;
   project_id: string;
+  production_day_id?: string | null;
   shoot_date: string;
   label: string;
   unit?: string | null;
   notes?: string | null;
-  created_by_user_id: string;
   created_at: string;
   updated_at: string;
   // Computed fields from summary
@@ -5336,6 +5338,8 @@ export interface BacklotDailiesDay {
   clip_count?: number;
   circle_take_count?: number;
   total_duration_seconds?: number;
+  // Joined data
+  production_day?: BacklotProductionDay;
 }
 
 export interface BacklotDailiesCard {
@@ -5405,6 +5409,7 @@ export interface DailiesDayInput {
   shoot_date: string;
   label: string;
   unit?: string | null;
+  production_day_id?: string | null;
   notes?: string | null;
 }
 
@@ -5509,6 +5514,85 @@ export interface DailiesClipFilters {
   rating_min?: number;
   storage_mode?: DailiesStorageMode;
   text_search?: string;
+}
+
+// =====================================================
+// OFFLOAD MANIFEST TYPES (Desktop Helper Integration)
+// =====================================================
+
+export type OffloadStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
+export type OffloadUploadStatus = 'pending' | 'uploading' | 'completed' | 'skipped' | 'failed';
+
+export interface BacklotOffloadManifest {
+  id: string;
+  project_id: string;
+  production_day_id?: string | null;
+  dailies_day_id?: string | null;
+  manifest_name: string;
+  source_device?: string | null;
+  camera_label?: string | null;
+  roll_name?: string | null;
+  total_files: number;
+  total_bytes: number;
+  offload_status: OffloadStatus;
+  upload_status: OffloadUploadStatus;
+  create_footage_asset: boolean;
+  created_footage_asset_id?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_by_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  production_day?: BacklotProductionDay;
+  dailies_day?: BacklotDailiesDay;
+  files?: BacklotOffloadManifestFile[];
+}
+
+export interface BacklotOffloadManifestFile {
+  id: string;
+  manifest_id: string;
+  file_name: string;
+  relative_path?: string | null;
+  file_size_bytes: number;
+  content_type?: string | null;
+  offload_status: OffloadStatus | 'skipped';
+  upload_status: OffloadUploadStatus;
+  source_checksum?: string | null;
+  dest_checksum?: string | null;
+  checksum_verified: boolean;
+  dailies_clip_id?: string | null;
+  error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OffloadManifestInput {
+  project_id: string;
+  production_day_id?: string | null;
+  manifest_name: string;
+  source_device?: string | null;
+  camera_label?: string | null;
+  roll_name?: string | null;
+  create_footage_asset?: boolean;
+}
+
+export interface OffloadManifestFileInput {
+  file_name: string;
+  relative_path?: string | null;
+  file_size_bytes: number;
+  content_type?: string | null;
+}
+
+export interface OffloadManifestSummary {
+  total_files: number;
+  total_bytes: number;
+  pending_files: number;
+  completed_files: number;
+  failed_files: number;
+  verified_files: number;
+  uploaded_files: number;
+  clips_created: number;
 }
 
 // Labels and constants

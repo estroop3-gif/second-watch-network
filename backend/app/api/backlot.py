@@ -23610,24 +23610,52 @@ async def get_dailies_clips_by_card(
 @router.get("/projects/{project_id}/dailies/clips")
 async def get_dailies_clips_by_project(
     project_id: str,
+    day_id: Optional[str] = None,
+    camera: Optional[str] = None,
     scene_number: Optional[str] = None,
     take_number: Optional[int] = None,
     is_circle_take: Optional[bool] = None,
     rating_min: Optional[int] = None,
     storage_mode: Optional[str] = None,
+    has_notes: Optional[bool] = None,
     text_search: Optional[str] = None,
-    limit: int = Query(200, ge=1, le=1000),
+    sort_by: str = Query("created_at", regex="^(created_at|shoot_date|scene_number|take_number|rating|duration_seconds|file_name)$"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     authorization: str = Header(None)
 ):
-    """Get clips for a project with optional filters"""
+    """Get clips for a project with optional filters, pagination, and sorting for Media Library view"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
     try:
         await verify_project_access(client, project_id, user["id"])
 
-        query = client.table("backlot_dailies_clips").select("*").eq(
+        # Build the query - we need to join with cards to filter by day and camera
+        # First get all cards for this project, optionally filtered by day
+        cards_query = client.table("backlot_dailies_cards").select("id, dailies_day_id, camera_label, roll_name").eq(
             "project_id", project_id
+        )
+
+        if day_id:
+            cards_query = cards_query.eq("dailies_day_id", day_id)
+        if camera:
+            cards_query = cards_query.eq("camera_label", camera)
+
+        cards_result = cards_query.execute()
+        cards = cards_result.data or []
+        card_ids = [c["id"] for c in cards]
+
+        if not card_ids:
+            return {"clips": [], "total": 0, "offset": offset, "limit": limit}
+
+        # Build card map for later use
+        card_map = {c["id"]: c for c in cards}
+
+        # Get clips for these cards
+        query = client.table("backlot_dailies_clips").select("*", count="exact").in_(
+            "dailies_card_id", card_ids
         )
 
         # Apply filters
@@ -23644,20 +23672,38 @@ async def get_dailies_clips_by_project(
         if text_search:
             query = query.or_(f"file_name.ilike.%{text_search}%,notes.ilike.%{text_search}%")
 
-        clips_result = query.order("created_at").limit(limit).execute()
+        # Apply sorting
+        if sort_order == "desc":
+            query = query.order(sort_by, desc=True)
+        else:
+            query = query.order(sort_by, desc=False)
+
+        # Apply pagination
+        query = query.range(offset, offset + limit - 1)
+
+        clips_result = query.execute()
         clips = clips_result.data or []
+        total = clips_result.count if clips_result.count is not None else len(clips)
 
-        # Get card info for clips
+        # Get card and day info for clips
         if clips:
-            card_ids = list(set(c["dailies_card_id"] for c in clips if c.get("dailies_card_id")))
-            if card_ids:
-                cards_result = client.table("backlot_dailies_cards").select("*").in_(
-                    "id", card_ids
-                ).execute()
-                card_map = {c["id"]: c for c in (cards_result.data or [])}
+            # Get day IDs from cards
+            day_ids = list(set(card_map[c["dailies_card_id"]]["dailies_day_id"] for c in clips if c.get("dailies_card_id") and c["dailies_card_id"] in card_map))
 
-                for clip in clips:
-                    clip["card"] = card_map.get(clip.get("dailies_card_id"))
+            # Get day info
+            day_map = {}
+            if day_ids:
+                days_result = client.table("backlot_dailies_days").select("id, shoot_date, label, unit, production_day_id").in_(
+                    "id", day_ids
+                ).execute()
+                day_map = {d["id"]: d for d in (days_result.data or [])}
+
+            # Attach card and day info
+            for clip in clips:
+                card = card_map.get(clip.get("dailies_card_id"))
+                clip["card"] = card
+                if card:
+                    clip["day"] = day_map.get(card.get("dailies_day_id"))
 
             # Get note counts
             clip_ids = [c["id"] for c in clips]
@@ -23673,7 +23719,14 @@ async def get_dailies_clips_by_project(
             for clip in clips:
                 clip["note_count"] = note_count_map.get(clip["id"], 0)
 
-        return {"clips": clips}
+        # Filter by has_notes (post-query since we need note counts)
+        if has_notes is not None:
+            if has_notes:
+                clips = [c for c in clips if c.get("note_count", 0) > 0]
+            else:
+                clips = [c for c in clips if c.get("note_count", 0) == 0]
+
+        return {"clips": clips, "total": total, "offset": offset, "limit": limit}
 
     except HTTPException:
         raise
@@ -24465,6 +24518,433 @@ async def get_dailies_summary(
         raise
     except Exception as e:
         print(f"Error getting dailies summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Production Day to Dailies Sync Endpoints
+# =====================================================
+
+class ImportProductionDaysInput(BaseModel):
+    """Input for importing production days into dailies"""
+    production_day_ids: List[str]
+    create_footage_assets: bool = False
+
+
+@router.get("/projects/{project_id}/production-days/unlinked-to-dailies")
+async def get_unlinked_production_days(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get production days that don't have a linked dailies day.
+
+    These are days from the Schedule that haven't been imported into the Dailies system yet.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all production days for the project
+        prod_days_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title, location_name, is_completed"
+        ).eq("project_id", project_id).order("day_number").execute()
+
+        prod_days = prod_days_result.data or []
+        if not prod_days:
+            return {"production_days": []}
+
+        prod_day_ids = [d["id"] for d in prod_days]
+
+        # Get dailies days that are already linked
+        dailies_result = client.table("backlot_dailies_days").select(
+            "production_day_id"
+        ).eq("project_id", project_id).in_(
+            "production_day_id", prod_day_ids
+        ).execute()
+
+        linked_ids = set(
+            d["production_day_id"] for d in (dailies_result.data or [])
+            if d.get("production_day_id")
+        )
+
+        # Filter to unlinked production days
+        unlinked = [d for d in prod_days if d["id"] not in linked_ids]
+
+        # Get scene counts for each production day
+        for day in unlinked:
+            scenes_result = client.table("backlot_scenes").select(
+                "id", count="exact"
+            ).eq("scheduled_day_id", day["id"]).execute()
+            day["scene_count"] = scenes_result.count or 0
+
+        return {"production_days": unlinked}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting unlinked production days: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/dailies/import-from-schedule")
+async def import_production_days_to_dailies(
+    project_id: str,
+    input: ImportProductionDaysInput,
+    authorization: str = Header(None)
+):
+    """
+    Import production days from the Schedule as Dailies days.
+
+    Creates a dailies day for each selected production day, linking them together.
+    Optionally creates a 'footage' asset for each day.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        if not input.production_day_ids:
+            raise HTTPException(status_code=400, detail="No production days specified")
+
+        # Get the production days to import
+        prod_days_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title"
+        ).eq("project_id", project_id).in_(
+            "id", input.production_day_ids
+        ).execute()
+
+        prod_days = prod_days_result.data or []
+        if not prod_days:
+            raise HTTPException(status_code=404, detail="Production days not found")
+
+        # Check which are already linked
+        existing_result = client.table("backlot_dailies_days").select(
+            "production_day_id"
+        ).eq("project_id", project_id).in_(
+            "production_day_id", input.production_day_ids
+        ).execute()
+
+        already_linked = set(
+            d["production_day_id"] for d in (existing_result.data or [])
+            if d.get("production_day_id")
+        )
+
+        # Filter to days not yet linked
+        days_to_import = [d for d in prod_days if d["id"] not in already_linked]
+
+        if not days_to_import:
+            return {
+                "imported": [],
+                "skipped": len(prod_days),
+                "message": "All selected days are already imported"
+            }
+
+        created_days = []
+        created_assets = []
+
+        for prod_day in days_to_import:
+            # Create the dailies day
+            dailies_day_data = {
+                "project_id": project_id,
+                "production_day_id": prod_day["id"],
+                "shoot_date": prod_day["date"],
+                "status": "pending",
+                "notes": None
+            }
+
+            day_result = client.table("backlot_dailies_days").insert(
+                dailies_day_data
+            ).execute()
+
+            if day_result.data:
+                created_day = day_result.data[0]
+                created_days.append(created_day)
+
+                # Optionally create a footage asset
+                if input.create_footage_assets:
+                    day_label = prod_day.get("title") or f"Day {prod_day.get('day_number', '')}"
+                    asset_data = {
+                        "project_id": project_id,
+                        "asset_type": "footage",
+                        "title": f"{day_label} - Raw Footage",
+                        "description": f"Raw footage from {prod_day['date']}",
+                        "status": "not_started",
+                        "created_by_user_id": user["id"]
+                    }
+
+                    asset_result = client.table("backlot_assets").insert(
+                        asset_data
+                    ).execute()
+
+                    if asset_result.data:
+                        created_assets.append(asset_result.data[0])
+
+        return {
+            "imported": created_days,
+            "assets_created": created_assets,
+            "skipped": len(already_linked),
+            "message": f"Imported {len(created_days)} production days"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error importing production days: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/days/{day_id}/production-day")
+async def get_linked_production_day(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get the production day linked to a dailies day.
+
+    Returns the production day info including scenes scheduled for that day.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the dailies day
+        day_result = client.table("backlot_dailies_days").select(
+            "id, project_id, production_day_id"
+        ).eq("id", day_id).single().execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Dailies day not found")
+
+        await verify_project_access(client, day_result.data["project_id"], user["id"])
+
+        prod_day_id = day_result.data.get("production_day_id")
+        if not prod_day_id:
+            return {"production_day": None, "scenes": []}
+
+        # Get the production day
+        prod_day_result = client.table("backlot_production_days").select(
+            "*"
+        ).eq("id", prod_day_id).single().execute()
+
+        if not prod_day_result.data:
+            return {"production_day": None, "scenes": []}
+
+        # Get scenes scheduled for this day
+        scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, slugline, page_length"
+        ).eq("scheduled_day_id", prod_day_id).order("sequence").execute()
+
+        return {
+            "production_day": prod_day_result.data,
+            "scenes": scenes_result.data or []
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting linked production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Offload Manifest API Endpoints (Desktop Helper)
+# =====================================================
+
+class OffloadManifestFileInput(BaseModel):
+    file_name: str
+    relative_path: Optional[str] = None
+    file_size_bytes: int = 0
+    content_type: Optional[str] = None
+    source_checksum: Optional[str] = None
+    dest_checksum: Optional[str] = None
+    checksum_verified: bool = False
+
+
+class CreateOffloadManifestInput(BaseModel):
+    production_day_id: Optional[str] = None
+    manifest_name: str
+    source_device: Optional[str] = None
+    camera_label: Optional[str] = None
+    roll_name: Optional[str] = None
+    total_files: int = 0
+    total_bytes: int = 0
+    create_footage_asset: bool = False
+    files: List[OffloadManifestFileInput] = []
+
+
+@router.post("/projects/{project_id}/dailies/offload-manifest")
+async def create_offload_manifest(
+    project_id: str,
+    input: CreateOffloadManifestInput,
+    authorization: str = Header(None)
+):
+    """
+    Create an offload manifest to track footage copied from a camera card.
+    Called by the Desktop Helper during offload.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Find or create the dailies day for this production day
+        dailies_day_id = None
+        if input.production_day_id:
+            day_result = client.table("backlot_dailies_days").select("id").eq(
+                "production_day_id", input.production_day_id
+            ).maybe_single().execute()
+
+            if day_result.data:
+                dailies_day_id = day_result.data["id"]
+
+        # Create the manifest
+        manifest_data = {
+            "project_id": project_id,
+            "production_day_id": input.production_day_id,
+            "dailies_day_id": dailies_day_id,
+            "manifest_name": input.manifest_name,
+            "source_device": input.source_device,
+            "camera_label": input.camera_label,
+            "roll_name": input.roll_name,
+            "total_files": input.total_files,
+            "total_bytes": input.total_bytes,
+            "offload_status": "pending",
+            "upload_status": "pending",
+            "create_footage_asset": input.create_footage_asset,
+            "created_by_user_id": user["id"]
+        }
+
+        manifest_result = client.table("backlot_offload_manifests").insert(
+            manifest_data
+        ).execute()
+
+        if not manifest_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create manifest")
+
+        manifest = manifest_result.data[0]
+
+        # Create manifest file records
+        if input.files:
+            file_records = [
+                {
+                    "manifest_id": manifest["id"],
+                    "file_name": f.file_name,
+                    "relative_path": f.relative_path,
+                    "file_size_bytes": f.file_size_bytes,
+                    "content_type": f.content_type,
+                    "source_checksum": f.source_checksum,
+                    "dest_checksum": f.dest_checksum,
+                    "checksum_verified": f.checksum_verified,
+                    "offload_status": "pending",
+                    "upload_status": "pending"
+                }
+                for f in input.files
+            ]
+
+            client.table("backlot_offload_manifest_files").insert(file_records).execute()
+
+        return {"manifest": manifest}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating offload manifest: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UpdateOffloadManifestInput(BaseModel):
+    offload_status: Optional[str] = None
+    upload_status: Optional[str] = None
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    dailies_day_id: Optional[str] = None
+
+
+@router.patch("/dailies/offload-manifest/{manifest_id}")
+async def update_offload_manifest(
+    manifest_id: str,
+    input: UpdateOffloadManifestInput,
+    authorization: str = Header(None)
+):
+    """Update an offload manifest status."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get manifest and verify access
+        manifest_result = client.table("backlot_offload_manifests").select(
+            "id, project_id"
+        ).eq("id", manifest_id).single().execute()
+
+        if not manifest_result.data:
+            raise HTTPException(status_code=404, detail="Manifest not found")
+
+        await verify_project_access(client, manifest_result.data["project_id"], user["id"])
+
+        # Build update data
+        update_data = {}
+        if input.offload_status:
+            update_data["offload_status"] = input.offload_status
+        if input.upload_status:
+            update_data["upload_status"] = input.upload_status
+        if input.started_at:
+            update_data["started_at"] = input.started_at
+        if input.completed_at:
+            update_data["completed_at"] = input.completed_at
+        if input.dailies_day_id:
+            update_data["dailies_day_id"] = input.dailies_day_id
+
+        if update_data:
+            client.table("backlot_offload_manifests").update(
+                update_data
+            ).eq("id", manifest_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating offload manifest: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/offload-manifests")
+async def list_offload_manifests(
+    project_id: str,
+    production_day_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    authorization: str = Header(None)
+):
+    """List offload manifests for a project."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        query = client.table("backlot_offload_manifests").select("*").eq(
+            "project_id", project_id
+        )
+
+        if production_day_id:
+            query = query.eq("production_day_id", production_day_id)
+        if status:
+            query = query.eq("offload_status", status)
+
+        result = query.order("created_at", desc=True).limit(limit).execute()
+
+        return {"manifests": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing offload manifests: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -29828,234 +30308,6 @@ class ConfirmUploadRequest(BaseModel):
 
 
 # =====================================================
-# Desktop API Key Management Endpoints
-# =====================================================
-
-@router.post("/projects/{project_id}/desktop-keys")
-async def create_desktop_api_key(
-    project_id: str,
-    input: DesktopApiKeyCreate,
-    authorization: str = Header(None)
-):
-    """
-    Create a new desktop API key for a project.
-    The full key is only returned once - store it securely!
-    """
-    user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
-    client = get_client()
-
-    try:
-        # Verify project access (must be admin or owner)
-        await verify_project_access(client, project_id, user_id)
-
-        # Generate a secure API key: swn_dk_<32 random chars>
-        raw_key = f"swn_dk_{secrets.token_urlsafe(32)}"
-        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-        key_prefix = raw_key[:12]
-
-        # Calculate expiration
-        expires_at = None
-        if input.expires_in_days:
-            from datetime import datetime, timedelta
-            expires_at = (datetime.utcnow() + timedelta(days=input.expires_in_days)).isoformat()
-
-        key_data = {
-            "project_id": project_id,
-            "user_id": user_id,
-            "key_hash": key_hash,
-            "key_prefix": key_prefix,
-            "name": input.name,
-            "scopes": input.scopes,
-            "expires_at": expires_at,
-        }
-
-        result = client.table("backlot_desktop_api_keys").insert(key_data).execute()
-
-        if not result.data:
-            raise HTTPException(status_code=500, detail="Failed to create API key")
-
-        created_key = result.data[0]
-
-        # Return the full key (only time it's shown)
-        return {
-            "success": True,
-            "api_key": raw_key,  # Full key - only returned on creation!
-            "key_id": str(created_key["id"]),
-            "key_prefix": key_prefix,
-            "name": input.name,
-            "scopes": input.scopes,
-            "expires_at": expires_at,
-            "message": "Store this API key securely - it won't be shown again!"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error creating desktop API key: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/projects/{project_id}/desktop-keys")
-async def list_desktop_api_keys(
-    project_id: str,
-    authorization: str = Header(None)
-):
-    """List all desktop API keys for a project (prefix only, not full key)"""
-    user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
-    client = get_client()
-
-    try:
-        await verify_project_access(client, project_id, user_id)
-
-        result = client.table("backlot_desktop_api_keys").select("*").eq(
-            "project_id", project_id
-        ).eq("is_revoked", False).order("created_at", desc=True).execute()
-
-        keys = []
-        for key in (result.data or []):
-            keys.append({
-                "id": str(key["id"]),
-                "project_id": str(key["project_id"]),
-                "user_id": str(key["user_id"]),
-                "key_prefix": key["key_prefix"],
-                "name": key["name"],
-                "scopes": key["scopes"],
-                "last_used_at": key["last_used_at"],
-                "expires_at": key["expires_at"],
-                "is_revoked": key["is_revoked"],
-                "created_at": key["created_at"],
-            })
-
-        return {"keys": keys}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error listing desktop API keys: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/desktop-keys/{key_id}")
-async def revoke_desktop_api_key(
-    key_id: str,
-    authorization: str = Header(None)
-):
-    """Revoke a desktop API key"""
-    user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
-    client = get_client()
-
-    try:
-        # Get the key to verify ownership
-        key_result = client.table("backlot_desktop_api_keys").select("*").eq(
-            "id", key_id
-        ).execute()
-
-        if not key_result.data:
-            raise HTTPException(status_code=404, detail="API key not found")
-
-        key = key_result.data[0]
-
-        # Verify the user owns this key or is project admin
-        if str(key["user_id"]) != str(user_id):
-            await verify_project_access(client, str(key["project_id"]), user_id)
-
-        # Revoke the key
-        client.table("backlot_desktop_api_keys").update({
-            "is_revoked": True
-        }).eq("id", key_id).execute()
-
-        return {"success": True, "message": "API key revoked"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error revoking desktop API key: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/desktop-keys/verify")
-async def verify_desktop_api_key(
-    api_key: str = Header(None, alias="X-API-Key")
-):
-    """
-    Verify an API key and return project/user info.
-    Used by the desktop app on startup.
-    """
-    if not api_key:
-        raise HTTPException(status_code=401, detail="API key required")
-
-    client = get_client()
-
-    try:
-        # Hash the key to look it up
-        key_hash = hashlib.sha256(api_key.encode()).hexdigest()
-
-        result = client.table("backlot_desktop_api_keys").select("*").eq(
-            "key_hash", key_hash
-        ).execute()
-
-        if not result.data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-
-        key = result.data[0]
-
-        # Check if revoked
-        if key["is_revoked"]:
-            raise HTTPException(status_code=401, detail="API key has been revoked")
-
-        # Check expiration
-        if key["expires_at"]:
-            from datetime import datetime
-            expires = datetime.fromisoformat(key["expires_at"].replace("Z", "+00:00"))
-            if expires < datetime.now(expires.tzinfo):
-                raise HTTPException(status_code=401, detail="API key has expired")
-
-        # Update last used
-        client.table("backlot_desktop_api_keys").update({
-            "last_used_at": datetime.utcnow().isoformat()
-        }).eq("id", str(key["id"])).execute()
-
-        # Get project info
-        project_result = client.table("backlot_projects").select(
-            "id, title, status"
-        ).eq("id", str(key["project_id"])).execute()
-
-        project = project_result.data[0] if project_result.data else None
-
-        # Get user info
-        user_result = client.table("profiles").select(
-            "id, username, full_name, display_name"
-        ).eq("id", str(key["user_id"])).execute()
-
-        user_info = user_result.data[0] if user_result.data else None
-
-        return {
-            "valid": True,
-            "key_id": str(key["id"]),
-            "scopes": key["scopes"],
-            "project": {
-                "id": str(project["id"]) if project else None,
-                "title": project["title"] if project else None,
-                "status": project["status"] if project else None,
-            } if project else None,
-            "user": {
-                "id": str(user_info["id"]) if user_info else None,
-                "username": user_info.get("username") if user_info else None,
-                "display_name": user_info.get("display_name") or user_info.get("full_name") if user_info else None,
-            } if user_info else None,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error verifying desktop API key: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# =====================================================
 # Presigned Upload URL Endpoints
 # =====================================================
 
@@ -32853,4 +33105,335 @@ async def delete_shot_template(
         raise
     except Exception as e:
         print(f"Error deleting shot template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Desktop API Keys
+# =====================================================
+
+class DesktopKeyCreateInput(BaseModel):
+    """Input for creating a new desktop API key"""
+    name: str = Field(..., min_length=1, max_length=100, description="Name for the key (e.g., 'Work Laptop')")
+
+
+class DesktopKeyResponse(BaseModel):
+    """Response for a desktop API key (without the actual key)"""
+    id: str
+    key_prefix: str
+    name: str
+    last_used_at: Optional[str] = None
+    created_at: str
+    is_active: bool
+
+
+class DesktopKeyCreateResponse(BaseModel):
+    """Response when creating a new key (includes full key, shown only once)"""
+    id: str
+    key: str  # Only returned at creation time
+    key_prefix: str
+    name: str
+    created_at: str
+
+
+class DesktopKeyVerifyResponse(BaseModel):
+    """Response for key verification"""
+    valid: bool
+    user: Optional[Dict[str, Any]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
+
+
+@router.get("/desktop-keys")
+async def list_desktop_keys(
+    authorization: str = Header(None)
+) -> List[DesktopKeyResponse]:
+    """List all desktop API keys for the current user"""
+    user = await get_current_user_from_token(authorization)
+    profile_id = user["id"]
+
+    def format_datetime(dt) -> str:
+        """Safely format datetime - handles both datetime objects and strings."""
+        if dt is None:
+            return None
+        if hasattr(dt, 'isoformat'):
+            return dt.isoformat()
+        return str(dt)
+
+    try:
+        keys = execute_query(
+            """
+            SELECT id, key_prefix, name, last_used_at, created_at, is_active
+            FROM backlot_desktop_keys
+            WHERE user_id = :user_id AND is_active = true
+            ORDER BY created_at DESC
+            """,
+            {"user_id": profile_id}
+        )
+
+        return [
+            DesktopKeyResponse(
+                id=str(k["id"]),
+                key_prefix=k["key_prefix"],
+                name=k["name"],
+                last_used_at=format_datetime(k["last_used_at"]),
+                created_at=format_datetime(k["created_at"]) or "",
+                is_active=k["is_active"]
+            )
+            for k in keys
+        ]
+
+    except Exception as e:
+        print(f"Error listing desktop keys: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys")
+async def create_desktop_key(
+    input_data: DesktopKeyCreateInput,
+    authorization: str = Header(None)
+) -> DesktopKeyCreateResponse:
+    """Create a new desktop API key. The full key is only returned once at creation."""
+    user = await get_current_user_from_token(authorization)
+    profile_id = user["id"]
+
+    try:
+        # Generate a secure random key
+        random_bytes = secrets.token_hex(16)  # 32 hex chars
+        full_key = f"swn_dk_{random_bytes}"
+        key_prefix = full_key[:10]  # "swn_dk_" + first 3 hex chars
+
+        # Hash the key for storage
+        key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+
+        # Insert into database
+        result = execute_single(
+            """
+            INSERT INTO backlot_desktop_keys (user_id, key_hash, key_prefix, name)
+            VALUES (:user_id, :key_hash, :key_prefix, :name)
+            RETURNING id, created_at
+            """,
+            {
+                "user_id": profile_id,
+                "key_hash": key_hash,
+                "key_prefix": key_prefix,
+                "name": input_data.name
+            }
+        )
+
+        # Handle created_at - may be datetime or string depending on driver
+        created_at = result["created_at"]
+        if created_at and hasattr(created_at, 'isoformat'):
+            created_at = created_at.isoformat()
+        elif created_at is None:
+            created_at = ""
+
+        return DesktopKeyCreateResponse(
+            id=str(result["id"]),
+            key=full_key,  # Only shown this once
+            key_prefix=key_prefix,
+            name=input_data.name,
+            created_at=str(created_at)
+        )
+
+    except Exception as e:
+        print(f"Error creating desktop key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/desktop-keys/{key_id}")
+async def revoke_desktop_key(
+    key_id: str,
+    authorization: str = Header(None)
+):
+    """Revoke (deactivate) a desktop API key"""
+    user = await get_current_user_from_token(authorization)
+    profile_id = user["id"]
+
+    try:
+        # Verify the key belongs to this user
+        existing = execute_single(
+            """
+            SELECT id, user_id FROM backlot_desktop_keys
+            WHERE id::text = :key_id AND is_active = true
+            """,
+            {"key_id": key_id}
+        )
+
+        if not existing:
+            raise HTTPException(status_code=404, detail="Key not found")
+
+        if str(existing["user_id"]) != str(profile_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Revoke the key
+        execute_single(
+            """
+            UPDATE backlot_desktop_keys
+            SET is_active = false, revoked_at = NOW()
+            WHERE id::text = :key_id
+            RETURNING id
+            """,
+            {"key_id": key_id}
+        )
+
+        return {"success": True, "message": "Key revoked"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error revoking desktop key: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/verify")
+async def verify_desktop_key(
+    x_api_key: str = Header(None, alias="X-API-Key")
+) -> DesktopKeyVerifyResponse:
+    """
+    Verify a desktop API key and return user info + projects.
+    Called by the SWN Dailies Helper desktop application.
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        return DesktopKeyVerifyResponse(valid=False)
+
+    try:
+        # Hash the provided key
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        # Look up the key
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id, dk.name, p.email, p.display_name
+            FROM backlot_desktop_keys dk
+            JOIN profiles p ON p.id = dk.user_id
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            return DesktopKeyVerifyResponse(valid=False)
+
+        # Update last_used_at
+        execute_single(
+            """
+            UPDATE backlot_desktop_keys
+            SET last_used_at = NOW()
+            WHERE id = :key_id
+            RETURNING id
+            """,
+            {"key_id": str(key_record["id"])}
+        )
+
+        user_id = str(key_record["user_id"])
+
+        # Get user's projects
+        projects = execute_query(
+            """
+            SELECT DISTINCT
+                p.id,
+                p.title as name,
+                CASE
+                    WHEN p.owner_id = :user_id THEN 'owner'
+                    ELSE COALESCE(pm.role, 'member')
+                END as role
+            FROM backlot_projects p
+            LEFT JOIN backlot_project_members pm ON pm.project_id = p.id AND pm.user_id = :user_id
+            WHERE p.owner_id = :user_id OR pm.user_id = :user_id
+            ORDER BY p.title
+            """,
+            {"user_id": user_id}
+        )
+
+        return DesktopKeyVerifyResponse(
+            valid=True,
+            user={
+                "id": user_id,
+                "email": key_record["email"],
+                "display_name": key_record["display_name"]
+            },
+            projects=[
+                {"id": str(p["id"]), "name": p["name"], "role": p["role"]}
+                for p in projects
+            ]
+        )
+
+    except Exception as e:
+        print(f"Error verifying desktop key: {e}")
+        return DesktopKeyVerifyResponse(valid=False)
+
+
+@router.get("/desktop-keys/projects/{project_id}/production-days")
+async def get_production_days_for_desktop(
+    project_id: str,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Get production days for a project using desktop API key authentication.
+    Called by the SWN Dailies Helper desktop application.
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    try:
+        # Hash the provided key
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        # Verify the key and get user
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        user_id = str(key_record["user_id"])
+
+        # Verify user has access to the project
+        access_check = execute_single(
+            """
+            SELECT 1 FROM backlot_projects p
+            LEFT JOIN backlot_project_members pm ON pm.project_id = p.id AND pm.user_id = :user_id
+            WHERE p.id = :project_id AND (p.owner_id = :user_id OR pm.user_id = :user_id)
+            """,
+            {"project_id": project_id, "user_id": user_id}
+        )
+
+        if not access_check:
+            raise HTTPException(status_code=403, detail="Access denied to this project")
+
+        # Get production days
+        production_days = execute_query(
+            """
+            SELECT id, day_number, date, title, location_name, is_completed
+            FROM backlot_production_days
+            WHERE project_id = :project_id
+            ORDER BY day_number
+            """,
+            {"project_id": project_id}
+        )
+
+        return {
+            "production_days": [
+                {
+                    "id": str(day["id"]),
+                    "day_number": day["day_number"],
+                    "date": str(day["date"]) if day["date"] else None,
+                    "title": day["title"],
+                    "location_name": day["location_name"],
+                    "is_completed": day["is_completed"]
+                }
+                for day in production_days
+            ]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production days for desktop: {e}")
         raise HTTPException(status_code=500, detail=str(e))

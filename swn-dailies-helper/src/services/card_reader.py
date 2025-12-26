@@ -103,26 +103,56 @@ class CardReader:
         return drives
 
     def _list_linux_drives(self) -> List[Dict[str, Any]]:
-        """List drives on Linux."""
+        """List drives on Linux (including WSL)."""
         drives = []
-        media_paths = [Path("/media"), Path("/mnt"), Path("/run/media")]
+        seen_paths = set()
+
+        # Standard Linux mount points
+        media_paths = [Path("/media"), Path("/run/media")]
 
         for media_path in media_paths:
             if media_path.exists():
                 for item in media_path.iterdir():
                     if item.is_dir():
-                        # Check subdirectories for user-mounted drives
-                        # Use environment variable as fallback for headless/WSL environments
                         try:
                             current_user = os.getlogin()
                         except OSError:
                             current_user = os.environ.get('USER', '')
                         if item.name == current_user:
                             for subitem in item.iterdir():
-                                if subitem.is_dir():
+                                if subitem.is_dir() and str(subitem) not in seen_paths:
+                                    seen_paths.add(str(subitem))
                                     drives.append(self._create_linux_drive_entry(subitem))
-                        else:
+                        elif str(item) not in seen_paths:
+                            seen_paths.add(str(item))
                             drives.append(self._create_linux_drive_entry(item))
+
+        # WSL: Check /mnt for Windows drives (c, d, e, etc.)
+        mnt_path = Path("/mnt")
+        if mnt_path.exists():
+            for item in mnt_path.iterdir():
+                # Single letter = Windows drive in WSL
+                if item.is_dir() and len(item.name) == 1 and item.name.isalpha():
+                    if str(item) not in seen_paths:
+                        seen_paths.add(str(item))
+                        entry = self._create_linux_drive_entry(item)
+                        entry["name"] = f"{item.name.upper()}: (Windows)"
+                        entry["type"] = "fixed"
+                        drives.append(entry)
+                # Also check for other mounts in /mnt
+                elif item.is_dir() and len(item.name) > 1:
+                    if str(item) not in seen_paths:
+                        seen_paths.add(str(item))
+                        drives.append(self._create_linux_drive_entry(item))
+
+        # Also add home directory as an option for testing/local files
+        home = Path.home()
+        if str(home) not in seen_paths:
+            seen_paths.add(str(home))
+            entry = self._create_linux_drive_entry(home)
+            entry["name"] = f"Home ({home.name})"
+            entry["type"] = "fixed"
+            drives.append(entry)
 
         return drives
 

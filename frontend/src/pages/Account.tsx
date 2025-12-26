@@ -1,18 +1,24 @@
 import React from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAccountProfile } from '@/hooks/useAccountProfile';
 import { Loader2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import EditProfileForm from '@/components/forms/EditProfileForm';
 import ManageAvailability from '@/components/profile/ManageAvailability';
 import ProfileStatusUpdates from '@/components/profile/ProfileStatusUpdates';
+import { ApiKeysSection } from '@/components/account/ApiKeysSection';
 import { useAuth } from '@/context/AuthContext';
 import { FilmmakerProfileData } from '@/types';
 import { usePermissions } from '@/hooks/usePermissions';
 
 const Account = () => {
+  const [searchParams] = useSearchParams();
   const { user } = useAuth();
   const { profile, isLoading, isError, refetch } = useAccountProfile();
   const { hasAnyRole } = usePermissions();
+
+  // Support deep-linking to specific tabs via URL params (e.g., /account?tab=api-keys)
+  const defaultTab = searchParams.get('tab') || 'profile';
 
   if (isLoading) {
     return <div className="flex justify-center items-center min-h-[60vh]"><Loader2 className="h-12 w-12 animate-spin text-accent-yellow" /></div>;
@@ -37,8 +43,8 @@ const Account = () => {
       <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-12 -rotate-1">
         My <span className="font-spray text-accent-yellow">Account</span>
       </h1>
-      <Tabs defaultValue="profile" className="w-full">
-        <TabsList className={`grid w-full ${isFilmmakerOrAdmin ? 'grid-cols-1 md:grid-cols-3' : 'grid-cols-1'}`}>
+      <Tabs defaultValue={defaultTab} className="w-full">
+        <TabsList className={`grid w-full ${isFilmmakerOrAdmin ? 'grid-cols-1 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-2'}`}>
           <TabsTrigger value="profile">Profile & Skills</TabsTrigger>
           {isFilmmakerOrAdmin && (
             <>
@@ -46,6 +52,7 @@ const Account = () => {
               <TabsTrigger value="updates">Post an Update</TabsTrigger>
             </>
           )}
+          <TabsTrigger value="api-keys">API Keys</TabsTrigger>
         </TabsList>
         <TabsContent value="profile" className="mt-6">
           {/* Pass combined profile with filmmaker data, plus isFilmmaker flag */}
@@ -65,6 +72,9 @@ const Account = () => {
             </TabsContent>
           </>
         )}
+        <TabsContent value="api-keys" className="mt-6">
+          <ApiKeysSection />
+        </TabsContent>
       </Tabs>
     </div>
   );

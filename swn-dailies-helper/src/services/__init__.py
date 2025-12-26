@@ -7,6 +7,7 @@ from src.services.card_fingerprint import CardFingerprintService, CardFingerprin
 from src.services.metadata_extractor import MetadataExtractor, ClipMetadata
 from src.services.qc_checker import QCChecker, QCResult, QCSummary, QCFlag
 from src.services.report_generator import ReportGenerator, OffloadReportData
+from src.services.offload_manifest import OffloadManifestService, OffloadManifest, OffloadedFile
 from src.services.checksum import (
     calculate_xxh64,
     verify_checksum,
@@ -35,6 +36,9 @@ __all__ = [
     "QCFlag",
     "ReportGenerator",
     "OffloadReportData",
+    "OffloadManifestService",
+    "OffloadManifest",
+    "OffloadedFile",
     "calculate_xxh64",
     "verify_checksum",
     "compute_checksum_safe",

@@ -81,6 +81,7 @@ import {
   Star,
   ChevronDown,
   Play,
+  HardDrive,
 } from 'lucide-react';
 import {
   useAssets,
@@ -113,7 +114,7 @@ interface AssetsViewProps {
   canEdit: boolean;
 }
 
-const ASSET_TYPES: BacklotAssetType[] = ['episode', 'feature', 'trailer', 'teaser', 'social', 'bts', 'other'];
+const ASSET_TYPES: BacklotAssetType[] = ['episode', 'feature', 'trailer', 'teaser', 'social', 'bts', 'footage', 'other'];
 const DELIVERABLE_STATUSES: BacklotDeliverableStatus[] = ['not_started', 'in_progress', 'in_review', 'approved', 'delivered'];
 
 const AssetTypeIcon: React.FC<{ type: BacklotAssetType; className?: string }> = ({ type, className }) => {
@@ -131,6 +132,8 @@ const AssetTypeIcon: React.FC<{ type: BacklotAssetType; className?: string }> = 
       return <Share2 className={iconClass} />;
     case 'bts':
       return <Camera className={iconClass} />;
+    case 'footage':
+      return <HardDrive className={iconClass} />;
     default:
       return <FileVideo className={iconClass} />;
   }

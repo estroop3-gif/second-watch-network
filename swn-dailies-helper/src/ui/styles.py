@@ -187,11 +187,29 @@ QComboBox::down-arrow {{
 }}
 
 QComboBox QAbstractItemView {{
-    background-color: {COLORS['charcoal-light']};
+    background-color: {COLORS['charcoal-black']};
     border: 1px solid {COLORS['border-gray']};
+    color: {COLORS['bone-white']};
     selection-background-color: {COLORS['accent-yellow']};
     selection-color: {COLORS['charcoal-black']};
     outline: none;
+}}
+
+QComboBox QAbstractItemView::item {{
+    padding: 8px 12px;
+    min-height: 24px;
+    color: {COLORS['bone-white']};
+    background-color: {COLORS['charcoal-black']};
+}}
+
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {COLORS['accent-yellow']};
+    color: {COLORS['charcoal-black']};
+}}
+
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {COLORS['accent-yellow']};
+    color: {COLORS['charcoal-black']};
 }}
 
 /* Buttons */
