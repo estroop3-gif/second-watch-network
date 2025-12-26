@@ -83,6 +83,12 @@ class OffloadPage(QWidget):
 
         header.addStretch()
 
+        # How to button
+        how_to_btn = QPushButton("? How to Use")
+        how_to_btn.clicked.connect(self._show_how_to)
+        how_to_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        header.addWidget(how_to_btn)
+
         # Refresh button in header
         refresh_btn = QPushButton("↻ Refresh")
         refresh_btn.clicked.connect(self.refresh_drives)
@@ -368,6 +374,59 @@ class OffloadPage(QWidget):
     def _show_error(self, title: str, message: str):
         """Show an error dialog."""
         QMessageBox.critical(self, title, message)
+
+    def _show_how_to(self):
+        """Show instructions for using the offload tab."""
+        instructions = """
+<h2>How to Use the Offload Tab</h2>
+
+<h3>Basic Offload (Single Card)</h3>
+<ol>
+<li><b>Select Source:</b> Click "Browse for Card/Folder" and select your camera card or footage folder.</li>
+<li><b>Set Camera/Roll:</b> Enter the camera letter (A, B, C) and roll number (A001, A002).</li>
+<li><b>Choose Destination:</b> Select primary drive. Optionally select a backup drive.</li>
+<li><b>Link to Backlot:</b> Select a project and production day to organize your footage.</li>
+<li><b>Start Offload:</b> Click "Start Offload" to copy files with checksum verification.</li>
+</ol>
+
+<h3>Overnight Upload Session (Multiple Cards)</h3>
+<p>For end-of-day batch uploads when you want to offload the last card and go to bed:</p>
+<ol>
+<li><b>Start Session:</b> At the beginning of your shoot day, click "Start New Session".</li>
+<li><b>Offload Cards:</b> Offload each card normally throughout the day. Each is added to the session.</li>
+<li><b>Last Card:</b> On your final card, check "End Session + Upload When Complete".</li>
+<li><b>Optional LUT:</b> Check "Apply LUT to session proxies" if you want color correction applied.</li>
+<li><b>Start Offload:</b> Click "Start Offload". When it finishes, the overnight upload begins automatically.</li>
+</ol>
+
+<h3>What Happens Overnight</h3>
+<ul>
+<li><b>Speed Test:</b> Tests your internet speed to determine proxy quality.</li>
+<li><b>Proxy Generation:</b> Creates 1080p or 720p proxies (based on speed) for ALL session cards.</li>
+<li><b>Upload:</b> Uploads all proxies to Backlot for review.</li>
+</ul>
+
+<h3>Options</h3>
+<ul>
+<li><b>Verify checksums:</b> Ensures files copied correctly (recommended).</li>
+<li><b>Generate proxies:</b> Create smaller preview files.</li>
+<li><b>Upload to cloud:</b> Queue files for upload to Backlot.</li>
+<li><b>Create footage asset:</b> Register clips in Backlot's asset library.</li>
+</ul>
+
+<h3>Tips</h3>
+<ul>
+<li>The folder template uses variables: {camera}, {roll}, {date}, {project}, {day}</li>
+<li>Sessions persist if the app closes - you can resume where you left off.</li>
+<li>Click "Cancel Session" if you need to start over.</li>
+</ul>
+"""
+        msg = QMessageBox(self)
+        msg.setWindowTitle("How to Use Offload")
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(instructions)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.exec()
 
     def _show_warning(self, message: str):
         """Show a warning in the progress label."""
