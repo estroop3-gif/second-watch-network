@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QLineEdit,
     QFileDialog,
+    QDialog,
 )
 from PyQt6.QtCore import Qt
 
@@ -68,6 +69,10 @@ class SettingsPage(QWidget):
         # Connection Card
         conn_card = self.create_connection_settings()
         layout.addWidget(conn_card)
+
+        # About Card
+        about_card = self.create_about_settings()
+        layout.addWidget(about_card)
 
         layout.addStretch()
 
@@ -250,6 +255,64 @@ class SettingsPage(QWidget):
         self._update_connection_display()
 
         return card
+
+    def create_about_settings(self) -> QFrame:
+        """Create about/licenses settings card."""
+        card = QFrame()
+        card.setObjectName("card")
+
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+
+        title = QLabel("About")
+        title.setObjectName("card-title")
+        layout.addWidget(title)
+
+        # Version info
+        version_label = QLabel("SWN Dailies Helper v1.0.0")
+        layout.addWidget(version_label)
+
+        # Description
+        desc_label = QLabel(
+            "Desktop helper for Second Watch Network - offload footage, "
+            "generate proxies, and upload to Backlot."
+        )
+        desc_label.setObjectName("label-small")
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        layout.addSpacing(10)
+
+        # Open Source Licenses button
+        licenses_btn = QPushButton("Open Source Licenses")
+        licenses_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        licenses_btn.clicked.connect(self._show_licenses)
+        layout.addWidget(licenses_btn, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        # License hint
+        license_hint = QLabel(
+            "View licenses and attributions for open source components "
+            "including FFmpeg, MediaInfo, ExifTool, and more."
+        )
+        license_hint.setObjectName("label-small")
+        license_hint.setWordWrap(True)
+        layout.addWidget(license_hint)
+
+        return card
+
+    def _show_licenses(self):
+        """Show the open source licenses dialog."""
+        from src.ui.pages.licenses_page import LicensesPage
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Open Source Licenses")
+        dialog.setMinimumSize(900, 700)
+
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(LicensesPage())
+
+        dialog.exec()
 
     def _update_connection_display(self):
         """Update connection display based on connection manager state."""

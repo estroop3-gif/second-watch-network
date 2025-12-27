@@ -1,7 +1,9 @@
 /**
  * ReviewsView - List and manage review assets (Frame.io-style)
+ * With folder organization, multiple view types, and status management
  */
 import React, { useState, useRef, useCallback } from 'react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -44,10 +46,41 @@ import {
   X,
   CheckCircle2,
   AlertCircle,
+  LayoutGrid,
+  List,
+  Columns,
+  Calendar,
+  PanelLeftClose,
+  PanelLeft,
+  FolderPlus,
+  Share2,
 } from 'lucide-react';
-import { useReviewAssets } from '@/hooks/backlot/useReview';
-import { ReviewAsset, ReviewAssetInput, formatTimecode } from '@/types/backlot';
+import { useReviewAssets, useReviewFolders, useReviewFolder } from '@/hooks/backlot/useReview';
+import {
+  ReviewAsset,
+  ReviewAssetInput,
+  ReviewAssetEnhanced,
+  ReviewFolder,
+  ReviewFolderInput,
+  ReviewAssetStatus,
+  formatTimecode,
+} from '@/types/backlot';
 import { formatDistanceToNow } from 'date-fns';
+import { FolderTree, FolderBreadcrumbs, CreateFolderModal } from './folders';
+import { ReviewKanbanView, ReviewTimelineView } from './views';
+import { ExternalLinkModal } from './external';
+
+// View types
+type ViewType = 'grid' | 'list' | 'kanban' | 'timeline';
+
+// Status display config
+const STATUS_CONFIG: Record<ReviewAssetStatus, { label: string; color: string; bgColor: string }> = {
+  draft: { label: 'Draft', color: 'text-muted-gray', bgColor: 'bg-muted-gray/20' },
+  in_review: { label: 'In Review', color: 'text-blue-400', bgColor: 'bg-blue-500/20' },
+  changes_requested: { label: 'Changes', color: 'text-orange-400', bgColor: 'bg-orange-500/20' },
+  approved: { label: 'Approved', color: 'text-green-400', bgColor: 'bg-green-500/20' },
+  final: { label: 'Final', color: 'text-accent-yellow', bgColor: 'bg-accent-yellow/20' },
+};
 
 interface ReviewsViewProps {
   projectId: string;
@@ -55,23 +88,34 @@ interface ReviewsViewProps {
   onSelectAsset?: (asset: ReviewAsset) => void;
 }
 
-// Asset card component
+// Asset card component - updated with status
 const ReviewAssetCard: React.FC<{
-  asset: ReviewAsset;
+  asset: ReviewAsset | ReviewAssetEnhanced;
   canEdit: boolean;
   onView: (asset: ReviewAsset) => void;
   onEdit: (asset: ReviewAsset) => void;
   onDelete: (id: string) => void;
-}> = ({ asset, canEdit, onView, onEdit, onDelete }) => {
+  onStatusChange?: (assetId: string, status: ReviewAssetStatus) => void;
+  compact?: boolean;
+}> = ({ asset, canEdit, onView, onEdit, onDelete, onStatusChange, compact }) => {
   const duration = asset.active_version?.duration_seconds;
+  const enhancedAsset = asset as ReviewAssetEnhanced;
+  const status = enhancedAsset.status || 'draft';
+  const statusConfig = STATUS_CONFIG[status];
 
   return (
     <div
-      className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg overflow-hidden hover:border-muted-gray/40 transition-colors cursor-pointer group"
+      className={cn(
+        "bg-charcoal-black/50 border border-muted-gray/20 rounded-lg overflow-hidden hover:border-muted-gray/40 transition-colors cursor-pointer group",
+        compact && "flex"
+      )}
       onClick={() => onView(asset)}
     >
       {/* Thumbnail */}
-      <div className="aspect-video bg-charcoal-black relative">
+      <div className={cn(
+        "bg-charcoal-black relative",
+        compact ? "w-32 h-20 flex-shrink-0" : "aspect-video"
+      )}>
         {asset.thumbnail_url ? (
           <img
             src={asset.thumbnail_url}
@@ -80,26 +124,29 @@ const ReviewAssetCard: React.FC<{
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
-            <Film className="w-12 h-12 text-muted-gray/50" />
+            <Film className={cn("text-muted-gray/50", compact ? "w-8 h-8" : "w-12 h-12")} />
           </div>
         )}
 
         {/* Play overlay */}
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-          <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur flex items-center justify-center">
-            <Play className="w-7 h-7 text-white fill-white ml-1" />
+          <div className={cn(
+            "rounded-full bg-white/20 backdrop-blur flex items-center justify-center",
+            compact ? "w-8 h-8" : "w-14 h-14"
+          )}>
+            <Play className={cn("text-white fill-white ml-0.5", compact ? "w-4 h-4" : "w-7 h-7")} />
           </div>
         </div>
 
         {/* Duration badge */}
         {duration !== null && duration !== undefined && (
-          <div className="absolute bottom-2 right-2 px-2 py-0.5 bg-black/70 rounded text-xs text-white font-mono">
+          <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 rounded text-xs text-white font-mono">
             {formatTimecode(duration)}
           </div>
         )}
 
         {/* Version badge */}
-        {asset.version_count !== undefined && asset.version_count > 1 && (
+        {!compact && asset.version_count !== undefined && asset.version_count > 1 && (
           <div className="absolute top-2 left-2 flex items-center gap-1 px-2 py-0.5 bg-black/70 rounded text-xs text-white">
             <Layers className="w-3 h-3" />
             {asset.version_count} versions
@@ -108,11 +155,14 @@ const ReviewAssetCard: React.FC<{
       </div>
 
       {/* Info */}
-      <div className="p-3">
+      <div className={cn("p-3", compact && "flex-1 min-w-0 flex flex-col justify-center")}>
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <h4 className="font-medium text-bone-white truncate">{asset.name}</h4>
-            {asset.active_version?.name && (
+            <h4 className={cn(
+              "font-medium text-bone-white truncate",
+              compact && "text-sm"
+            )}>{asset.name}</h4>
+            {!compact && asset.active_version?.name && (
               <p className="text-xs text-muted-gray">
                 Active: {asset.active_version.name}
               </p>
@@ -135,6 +185,24 @@ const ReviewAssetCard: React.FC<{
                   <Edit className="w-4 h-4 mr-2" />
                   Edit
                 </DropdownMenuItem>
+                {onStatusChange && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {(Object.keys(STATUS_CONFIG) as ReviewAssetStatus[]).map((s) => (
+                      <DropdownMenuItem
+                        key={s}
+                        onClick={(e) => { e.stopPropagation(); onStatusChange(asset.id, s); }}
+                        className={cn(status === s && 'bg-white/5')}
+                      >
+                        <span className={cn(
+                          'w-2 h-2 rounded-full mr-2',
+                          STATUS_CONFIG[s].bgColor
+                        )} />
+                        {STATUS_CONFIG[s].label}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={(e) => { e.stopPropagation(); onDelete(asset.id); }}
@@ -148,18 +216,32 @@ const ReviewAssetCard: React.FC<{
           )}
         </div>
 
-        {/* Stats */}
-        <div className="flex items-center gap-3 mt-2 text-xs text-muted-gray">
+        {/* Status + Stats */}
+        <div className={cn(
+          "flex items-center gap-2 mt-2 text-xs",
+          compact && "flex-wrap"
+        )}>
+          {/* Status badge */}
+          <span className={cn(
+            'px-1.5 py-0.5 rounded text-xs font-medium',
+            statusConfig.bgColor,
+            statusConfig.color
+          )}>
+            {statusConfig.label}
+          </span>
+
           {asset.note_count !== undefined && asset.note_count > 0 && (
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 text-muted-gray">
               <MessageSquare className="w-3 h-3" />
-              {asset.note_count} notes
+              {asset.note_count}
             </div>
           )}
-          <div className="flex items-center gap-1">
-            <Clock className="w-3 h-3" />
-            {formatDistanceToNow(new Date(asset.updated_at), { addSuffix: true })}
-          </div>
+          {!compact && (
+            <div className="flex items-center gap-1 text-muted-gray">
+              <Clock className="w-3 h-3" />
+              {formatDistanceToNow(new Date(asset.updated_at), { addSuffix: true })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -726,24 +808,96 @@ const EditAssetModal: React.FC<{
   );
 };
 
+// View type switcher component
+const ViewTypeSwitcher: React.FC<{
+  viewType: ViewType;
+  onViewTypeChange: (type: ViewType) => void;
+}> = ({ viewType, onViewTypeChange }) => {
+  const views: { type: ViewType; icon: React.ReactNode; label: string }[] = [
+    { type: 'grid', icon: <LayoutGrid className="w-4 h-4" />, label: 'Grid' },
+    { type: 'list', icon: <List className="w-4 h-4" />, label: 'List' },
+    { type: 'kanban', icon: <Columns className="w-4 h-4" />, label: 'Kanban' },
+    { type: 'timeline', icon: <Calendar className="w-4 h-4" />, label: 'Timeline' },
+  ];
+
+  return (
+    <div className="flex items-center gap-1 bg-charcoal-dark/50 rounded-lg p-1">
+      {views.map((v) => (
+        <button
+          key={v.type}
+          onClick={() => onViewTypeChange(v.type)}
+          className={cn(
+            'p-2 rounded transition-colors',
+            viewType === v.type
+              ? 'bg-accent-yellow/20 text-accent-yellow'
+              : 'text-muted-gray hover:text-bone-white hover:bg-white/5'
+          )}
+          title={v.label}
+        >
+          {v.icon}
+        </button>
+      ))}
+    </div>
+  );
+};
+
 export const ReviewsView: React.FC<ReviewsViewProps> = ({
   projectId,
   canEdit,
   onSelectAsset,
 }) => {
+  // UI state
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [viewType, setViewType] = useState<ViewType>('grid');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingAsset, setEditingAsset] = useState<ReviewAsset | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  // Folder modal state
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<ReviewFolder | null>(null);
+  const [parentFolderIdForCreate, setParentFolderIdForCreate] = useState<string | null>(null);
+
+  // Share link modal state
+  const [showShareModal, setShowShareModal] = useState(false);
+
+  // Data hooks
   const {
     assets,
-    isLoading,
-    error,
+    isLoading: assetsLoading,
+    error: assetsError,
     createAsset,
     updateAsset,
     deleteAsset,
   } = useReviewAssets({ projectId });
 
+  const {
+    folders,
+    rootAssets,
+    isLoading: foldersLoading,
+    createFolder,
+    updateFolder,
+    deleteFolder,
+    updateAssetStatus,
+  } = useReviewFolders({ projectId });
+
+  const {
+    folder: currentFolder,
+    subfolders,
+    assets: folderAssets,
+    breadcrumbs,
+    isLoading: folderLoading,
+  } = useReviewFolder({ folderId: selectedFolderId });
+
+  const isLoading = assetsLoading || foldersLoading;
+
+  // Get current assets based on folder selection
+  const displayAssets: (ReviewAsset | ReviewAssetEnhanced)[] = selectedFolderId
+    ? folderAssets
+    : rootAssets.length > 0 ? rootAssets : assets;
+
+  // Handlers
   const handleCreateAsset = async (data: ReviewAssetInput) => {
     await createAsset.mutateAsync(data);
     setShowCreateModal(false);
@@ -769,7 +923,40 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
     onSelectAsset?.(asset);
   };
 
-  if (error) {
+  const handleStatusChange = async (assetId: string, status: ReviewAssetStatus) => {
+    await updateAssetStatus.mutateAsync({ assetId, status });
+  };
+
+  // Folder handlers
+  const handleCreateFolder = (parentId: string | null) => {
+    setParentFolderIdForCreate(parentId);
+    setEditingFolder(null);
+    setShowFolderModal(true);
+  };
+
+  const handleEditFolder = (folder: ReviewFolder) => {
+    setEditingFolder(folder);
+    setParentFolderIdForCreate(null);
+    setShowFolderModal(true);
+  };
+
+  const handleDeleteFolder = async (folder: ReviewFolder) => {
+    if (!confirm(`Delete folder "${folder.name}"? Contents will be moved to the parent folder.`)) return;
+    await deleteFolder.mutateAsync(folder.id);
+    if (selectedFolderId === folder.id) {
+      setSelectedFolderId(folder.parent_folder_id);
+    }
+  };
+
+  const handleFolderSubmit = async (data: ReviewFolderInput) => {
+    if (editingFolder) {
+      await updateFolder.mutateAsync({ id: editingFolder.id, ...data });
+    } else {
+      await createFolder.mutateAsync(data);
+    }
+  };
+
+  if (assetsError) {
     return (
       <div className="p-6">
         <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 text-red-400">
@@ -780,74 +967,207 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
   }
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-bone-white flex items-center gap-2">
-            <Film className="w-5 h-5 text-accent-yellow" />
-            Review
-          </h2>
-          <p className="text-sm text-muted-gray mt-1">
-            Review cuts and clips with time-coded notes
-          </p>
+    <div className="flex h-full">
+      {/* Folder Sidebar */}
+      {showSidebar && (
+        <div className="w-64 border-r border-white/10 flex-shrink-0">
+          <FolderTree
+            folders={folders}
+            rootAssets={rootAssets}
+            selectedFolderId={selectedFolderId}
+            onSelectFolder={setSelectedFolderId}
+            onCreateFolder={handleCreateFolder}
+            onEditFolder={handleEditFolder}
+            onDeleteFolder={handleDeleteFolder}
+            isLoading={foldersLoading}
+          />
         </div>
+      )}
 
-        {canEdit && (
-          <Button onClick={() => setShowCreateModal(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            Add Asset
-          </Button>
-        )}
-      </div>
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            {/* Toggle sidebar */}
+            <button
+              onClick={() => setShowSidebar(!showSidebar)}
+              className="p-2 rounded hover:bg-white/5 text-muted-gray hover:text-bone-white transition-colors"
+              title={showSidebar ? 'Hide sidebar' : 'Show sidebar'}
+            >
+              {showSidebar ? (
+                <PanelLeftClose className="w-5 h-5" />
+              ) : (
+                <PanelLeft className="w-5 h-5" />
+              )}
+            </button>
 
-      {/* Loading state */}
-      {isLoading && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg overflow-hidden">
-              <Skeleton className="aspect-video" />
-              <div className="p-3 space-y-2">
-                <Skeleton className="h-4 w-3/4" />
-                <Skeleton className="h-3 w-1/2" />
+            {/* Breadcrumbs or Title */}
+            {selectedFolderId && breadcrumbs.length > 0 ? (
+              <FolderBreadcrumbs
+                breadcrumbs={breadcrumbs}
+                onNavigate={setSelectedFolderId}
+              />
+            ) : (
+              <div>
+                <h2 className="text-lg font-semibold text-bone-white flex items-center gap-2">
+                  <Film className="w-5 h-5 text-accent-yellow" />
+                  Review
+                </h2>
               </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* View Type Switcher */}
+            <ViewTypeSwitcher
+              viewType={viewType}
+              onViewTypeChange={setViewType}
+            />
+
+            {/* Actions */}
+            <div className="flex items-center gap-2">
+              {/* Share button - available to all users with edit access */}
+              {canEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowShareModal(true)}
+                >
+                  <Share2 className="w-4 h-4 mr-2" />
+                  Share
+                </Button>
+              )}
+
+              {canEdit && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCreateFolder(selectedFolderId)}
+                  >
+                    <FolderPlus className="w-4 h-4 mr-2" />
+                    New Folder
+                  </Button>
+                  <Button size="sm" onClick={() => setShowCreateModal(true)}>
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Asset
+                  </Button>
+                </>
+              )}
             </div>
-          ))}
+          </div>
         </div>
-      )}
 
-      {/* Empty state */}
-      {!isLoading && assets.length === 0 && (
-        <div className="text-center py-12">
-          <Film className="w-12 h-12 text-muted-gray/50 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-bone-white mb-2">No review assets yet</h3>
-          <p className="text-sm text-muted-gray mb-4">
-            Add video cuts and clips to gather feedback with time-coded notes
-          </p>
-          {canEdit && (
-            <Button onClick={() => setShowCreateModal(true)}>
-              <Upload className="w-4 h-4 mr-2" />
-              Add First Asset
-            </Button>
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {/* Loading state */}
+          {(isLoading || folderLoading) && (
+            <div className={cn(
+              "gap-4",
+              viewType === 'grid'
+                ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                : viewType === 'list'
+                ? "flex flex-col"
+                : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
+            )}>
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg overflow-hidden">
+                  <Skeleton className="aspect-video" />
+                  <div className="p-3 space-y-2">
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-3 w-1/2" />
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
-        </div>
-      )}
 
-      {/* Asset grid */}
-      {!isLoading && assets.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {assets.map((asset) => (
-            <ReviewAssetCard
-              key={asset.id}
-              asset={asset}
+          {/* Empty state */}
+          {!isLoading && !folderLoading && displayAssets.length === 0 && (
+            <div className="text-center py-12">
+              <Film className="w-12 h-12 text-muted-gray/50 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-bone-white mb-2">
+                {selectedFolderId ? 'This folder is empty' : 'No review assets yet'}
+              </h3>
+              <p className="text-sm text-muted-gray mb-4">
+                {selectedFolderId
+                  ? 'Add assets to this folder or create subfolders'
+                  : 'Add video cuts and clips to gather feedback with time-coded notes'}
+              </p>
+              {canEdit && (
+                <div className="flex items-center justify-center gap-3">
+                  <Button variant="outline" onClick={() => handleCreateFolder(selectedFolderId)}>
+                    <FolderPlus className="w-4 h-4 mr-2" />
+                    New Folder
+                  </Button>
+                  <Button onClick={() => setShowCreateModal(true)}>
+                    <Upload className="w-4 h-4 mr-2" />
+                    Add Asset
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Grid View */}
+          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'grid' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {displayAssets.map((asset) => (
+                <ReviewAssetCard
+                  key={asset.id}
+                  asset={asset}
+                  canEdit={canEdit}
+                  onView={handleViewAsset}
+                  onEdit={setEditingAsset}
+                  onDelete={handleDeleteAsset}
+                  onStatusChange={handleStatusChange}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* List View */}
+          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'list' && (
+            <div className="flex flex-col gap-2">
+              {displayAssets.map((asset) => (
+                <ReviewAssetCard
+                  key={asset.id}
+                  asset={asset}
+                  canEdit={canEdit}
+                  onView={handleViewAsset}
+                  onEdit={setEditingAsset}
+                  onDelete={handleDeleteAsset}
+                  onStatusChange={handleStatusChange}
+                  compact
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Kanban View */}
+          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'kanban' && (
+            <ReviewKanbanView
+              assets={displayAssets}
               canEdit={canEdit}
               onView={handleViewAsset}
               onEdit={setEditingAsset}
               onDelete={handleDeleteAsset}
+              onStatusChange={handleStatusChange}
             />
-          ))}
+          )}
+
+          {/* Timeline View */}
+          {!isLoading && !folderLoading && displayAssets.length > 0 && viewType === 'timeline' && (
+            <ReviewTimelineView
+              assets={displayAssets}
+              canEdit={canEdit}
+              onView={handleViewAsset}
+              onStatusChange={handleStatusChange}
+            />
+          )}
         </div>
-      )}
+      </div>
 
       {/* Modals */}
       <CreateAssetModal
@@ -862,6 +1182,26 @@ export const ReviewsView: React.FC<ReviewsViewProps> = ({
         onClose={() => setEditingAsset(null)}
         onSubmit={handleUpdateAsset}
         isLoading={updateAsset.isPending}
+      />
+
+      <CreateFolderModal
+        isOpen={showFolderModal}
+        onClose={() => {
+          setShowFolderModal(false);
+          setEditingFolder(null);
+          setParentFolderIdForCreate(null);
+        }}
+        onSubmit={handleFolderSubmit}
+        folder={editingFolder}
+        parentFolderId={parentFolderIdForCreate}
+        isLoading={createFolder.isPending || updateFolder.isPending}
+      />
+
+      <ExternalLinkModal
+        projectId={projectId}
+        folder={currentFolder}
+        isOpen={showShareModal}
+        onClose={() => setShowShareModal(false)}
       />
     </div>
   );

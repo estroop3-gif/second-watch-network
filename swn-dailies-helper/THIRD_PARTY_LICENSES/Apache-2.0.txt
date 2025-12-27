@@ -1,0 +1,23 @@
+Apache License
+Version 2.0, January 2004
+
+SPDX Identifier: Apache-2.0
+
+The full text of this license can be found at:
+https://www.apache.org/licenses/LICENSE-2.0.txt
+
+TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+1. Definitions.
+   "License" shall mean the terms and conditions for use, reproduction,
+   and distribution as defined by Sections 1 through 9 of this document.
+
+   [Full license text available at the URL above]
+
+---
+
+Components using the Apache 2.0 License:
+- OpenTimelineIO (Copyright Contributors to the OpenTimelineIO project)
+
+This is a summary reference. For the complete license text, please visit:
+https://www.apache.org/licenses/LICENSE-2.0.txt

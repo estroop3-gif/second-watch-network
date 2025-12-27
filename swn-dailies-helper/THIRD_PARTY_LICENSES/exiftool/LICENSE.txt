@@ -1,0 +1,27 @@
+ExifTool License
+
+ExifTool is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself:
+
+1. GNU General Public License (GPL) version 1 or later
+   https://www.gnu.org/licenses/gpl-1.0.html
+
+   OR
+
+2. Artistic License
+   https://opensource.org/licenses/Artistic-1.0
+
+You may choose either license for redistribution.
+
+---
+
+GNU GENERAL PUBLIC LICENSE
+Version 1, February 1989
+
+The full text of the GPL-1.0 license can be found at:
+https://www.gnu.org/licenses/gpl-1.0.txt
+
+---
+
+For the Artistic License text, see:
+https://opensource.org/licenses/Artistic-1.0

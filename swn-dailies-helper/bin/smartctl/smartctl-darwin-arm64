@@ -1,0 +1,17 @@
+#!/bin/sh
+# smartctl wrapper for SWN Dailies Helper
+# smartmontools v7.4 - GPL-2.0 Licensed
+
+# Check for Homebrew installation
+if [ -x "/opt/homebrew/bin/smartctl" ]; then
+    exec "/opt/homebrew/bin/smartctl" "$@"
+fi
+
+# Check for Intel Mac Homebrew
+if [ -x "/usr/local/bin/smartctl" ]; then
+    exec "/usr/local/bin/smartctl" "$@"
+fi
+
+# Not found
+echo "smartctl not installed. Install with: brew install smartmontools" >&2
+exit 1

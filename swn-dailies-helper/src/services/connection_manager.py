@@ -6,9 +6,56 @@ from datetime import datetime
 from typing import Optional
 import httpx
 
-from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, QThread, pyqtSignal
 
 from src.services.config import ConfigManager
+
+
+class VerifyWorker(QThread):
+    """Background worker for API key verification."""
+    finished = pyqtSignal(bool, dict, str)  # success, details, error_message
+
+    def __init__(self, api_url: str, api_key: str):
+        super().__init__()
+        self.api_url = api_url
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            print(f"[DEBUG] Verifying API key at {self.api_url}", flush=True)
+            response = httpx.post(
+                f"{self.api_url}/api/v1/backlot/desktop-keys/verify",
+                headers={"X-API-Key": self.api_key},
+                timeout=10.0
+            )
+            print(f"[DEBUG] Response status: {response.status_code}", flush=True)
+
+            if response.status_code == 200:
+                data = response.json()
+                print(f"[DEBUG] Response data valid: {data.get('valid')}", flush=True)
+                if data.get("valid"):
+                    details = {
+                        "user": data.get("user", {}),
+                        "projects": data.get("projects", [])
+                    }
+                    self.finished.emit(True, details, "")
+                    return
+                else:
+                    self.finished.emit(False, {}, "Invalid API key")
+            elif response.status_code == 401:
+                self.finished.emit(False, {}, "API key rejected (unauthorized)")
+            else:
+                self.finished.emit(False, {}, f"Server error: {response.status_code}")
+
+        except httpx.TimeoutException:
+            print("[DEBUG] Timeout", flush=True)
+            self.finished.emit(False, {}, "Connection timeout")
+        except httpx.ConnectError:
+            print("[DEBUG] Connect error", flush=True)
+            self.finished.emit(False, {}, "Cannot reach server")
+        except Exception as e:
+            print(f"[DEBUG] Exception: {e}", flush=True)
+            self.finished.emit(False, {}, f"Error: {str(e)}")
 
 
 class ConnectionManager(QObject):
@@ -34,6 +81,7 @@ class ConnectionManager(QObject):
         self._details = {}
         self._activity_log = deque(maxlen=50)
         self._consecutive_failures = 0
+        self._verify_worker: Optional[VerifyWorker] = None
 
         # Timer for periodic checks
         self._check_timer = QTimer(self)
@@ -87,8 +135,10 @@ class ConnectionManager(QObject):
         self._log("Connection manager stopped")
 
     def verify_connection(self):
-        """Verify the API key with the server."""
+        """Verify the API key with the server (async, non-blocking)."""
+        print("[DEBUG] verify_connection called", flush=True)
         api_key = self.config.get_api_key()
+        print(f"[DEBUG] API key present: {bool(api_key)}", flush=True)
 
         if not api_key:
             self._set_state(self.STATE_DISCONNECTED, {})
@@ -96,48 +146,35 @@ class ConnectionManager(QObject):
             self._consecutive_failures = 0
             return
 
+        # Don't start another verification if one is running
+        if self._verify_worker and self._verify_worker.isRunning():
+            return
+
         self._set_state(self.STATE_CHECKING)
         self._log("Verifying connection...")
 
-        try:
-            api_url = self._get_api_url()
-            response = httpx.post(
-                f"{api_url}/api/v1/backlot/desktop-keys/verify",
-                headers={"X-API-Key": api_key},
-                timeout=10.0
-            )
+        # Run verification in background thread
+        api_url = self._get_api_url()
+        self._verify_worker = VerifyWorker(api_url, api_key)
+        self._verify_worker.finished.connect(self._on_verify_finished)
+        self._verify_worker.start()
 
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("valid"):
-                    self._consecutive_failures = 0
-                    details = {
-                        "user": data.get("user", {}),
-                        "projects": data.get("projects", [])
-                    }
-                    # Store in config for other components
-                    user = details["user"]
-                    self.config.set("user_id", user.get("id"))
-                    self.config.set("user_email", user.get("email"))
-                    self.config.set("user_display_name", user.get("display_name"))
-                    self.config.set("projects", details["projects"])
+    def _on_verify_finished(self, success: bool, details: dict, error_message: str):
+        """Handle verification result from background thread."""
+        print(f"[DEBUG] _on_verify_finished called: success={success}, error={error_message}", flush=True)
+        if success:
+            self._consecutive_failures = 0
+            # Store in config for other components
+            user = details.get("user", {})
+            self.config.set("user_id", user.get("id"))
+            self.config.set("user_email", user.get("email"))
+            self.config.set("user_display_name", user.get("display_name"))
+            self.config.set("projects", details.get("projects", []))
 
-                    self._set_state(self.STATE_CONNECTED, details)
-                    self._log("Connection verified")
-                    return
-                else:
-                    self._handle_failure("Invalid API key")
-            elif response.status_code == 401:
-                self._handle_failure("API key rejected (unauthorized)")
-            else:
-                self._handle_failure(f"Server error: {response.status_code}")
-
-        except httpx.TimeoutException:
-            self._handle_failure("Connection timeout")
-        except httpx.ConnectError:
-            self._handle_failure("Cannot reach server")
-        except Exception as e:
-            self._handle_failure(f"Error: {str(e)}")
+            self._set_state(self.STATE_CONNECTED, details)
+            self._log("Connection verified")
+        else:
+            self._handle_failure(error_message)
 
     def _handle_failure(self, message: str):
         """Handle a connection failure."""

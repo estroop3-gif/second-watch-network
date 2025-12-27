@@ -286,3 +286,302 @@ export function useDeliverableMutations(projectId: string) {
     bulkCreateDeliverables,
   };
 }
+
+// =====================================================
+// UNIFIED ASSETS HOOKS (Assets Tab - combines all sources)
+// =====================================================
+
+import {
+  UnifiedAsset,
+  UnifiedAssetSource,
+  StandaloneAsset,
+  StandaloneAssetInput,
+  AssetFolder,
+  AssetFolderInput,
+} from '@/types/backlot';
+
+interface UseUnifiedAssetsOptions {
+  projectId: string | null;
+  source?: UnifiedAssetSource;
+  assetType?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+  enabled?: boolean;
+}
+
+export function useUnifiedAssets(options: UseUnifiedAssetsOptions) {
+  const { projectId, source, assetType, search, limit = 100, offset = 0, enabled = true } = options;
+
+  const queryKey = ['backlot-unified-assets', { projectId, source, assetType, search, limit, offset }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return { assets: [], total: 0, limit, offset };
+      return api.listUnifiedAssets(projectId, { source, asset_type: assetType, search, limit, offset });
+    },
+    enabled: !!projectId && enabled,
+  });
+
+  return {
+    assets: data?.assets || [],
+    total: data?.total || 0,
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+// Get unified assets summary
+interface UseUnifiedAssetsSummaryOptions {
+  projectId: string | null;
+}
+
+export function useUnifiedAssetsSummary(options: UseUnifiedAssetsSummaryOptions) {
+  const { projectId } = options;
+
+  const queryKey = ['backlot-assets-summary', { projectId }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return { summary: [], total_storage_bytes: 0 };
+      return api.getAssetsSummary(projectId);
+    },
+    enabled: !!projectId,
+  });
+
+  // Calculate totals by source and type
+  const summaryBySource: Record<string, number> = {};
+  const summaryByType: Record<string, number> = {};
+
+  (data?.summary || []).forEach((item) => {
+    summaryBySource[item.source] = (summaryBySource[item.source] || 0) + item.count;
+    summaryByType[item.asset_type] = (summaryByType[item.asset_type] || 0) + item.count;
+  });
+
+  return {
+    summary: data?.summary || [],
+    summaryBySource,
+    summaryByType,
+    totalStorageBytes: data?.total_storage_bytes || 0,
+    totalAssets: Object.values(summaryBySource).reduce((a, b) => a + b, 0),
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+// =====================================================
+// STANDALONE ASSETS HOOKS
+// =====================================================
+
+interface UseStandaloneAssetsOptions {
+  projectId: string | null;
+  folderId?: string | null;
+  assetType?: string;
+  tags?: string[];
+}
+
+export function useStandaloneAssets(options: UseStandaloneAssetsOptions) {
+  const { projectId, folderId, assetType, tags } = options;
+  const queryClient = useQueryClient();
+
+  const queryKey = ['backlot-standalone-assets', { projectId, folderId, assetType, tags }];
+
+  const { data: assets = [], isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return [];
+      const result = await api.listStandaloneAssets(projectId, {
+        folder_id: folderId || undefined,
+        asset_type: assetType,
+        tags: tags?.join(','),
+      });
+      return result.assets;
+    },
+    enabled: !!projectId,
+  });
+
+  // Create standalone asset
+  const createAssetMutation = useMutation({
+    mutationFn: async (input: StandaloneAssetInput) => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.createStandaloneAsset(projectId, input);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-assets-summary'] });
+    },
+  });
+
+  // Update standalone asset
+  const updateAssetMutation = useMutation({
+    mutationFn: async ({ assetId, data }: { assetId: string; data: Partial<{
+      name: string;
+      description: string | null;
+      tags: string[];
+      metadata: Record<string, unknown>;
+      folder_id: string | null;
+    }> }) => {
+      return api.updateStandaloneAsset(assetId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-assets'] });
+    },
+  });
+
+  // Delete standalone asset
+  const deleteAssetMutation = useMutation({
+    mutationFn: async (assetId: string) => {
+      return api.deleteStandaloneAsset(assetId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-standalone-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-unified-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-assets-summary'] });
+    },
+  });
+
+  return {
+    assets,
+    isLoading,
+    error,
+    refetch,
+    createAsset: createAssetMutation,
+    updateAsset: updateAssetMutation,
+    deleteAsset: deleteAssetMutation,
+  };
+}
+
+// =====================================================
+// ASSET FOLDERS HOOKS
+// =====================================================
+
+interface UseAssetFoldersOptions {
+  projectId: string | null;
+}
+
+export function useAssetFolders(options: UseAssetFoldersOptions) {
+  const { projectId } = options;
+  const queryClient = useQueryClient();
+
+  const queryKey = ['backlot-asset-folders', { projectId }];
+
+  const { data: folders = [], isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return [];
+      const result = await api.listAssetFolders(projectId);
+      return result.folders;
+    },
+    enabled: !!projectId,
+  });
+
+  // Create folder
+  const createFolderMutation = useMutation({
+    mutationFn: async (input: AssetFolderInput) => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.createAssetFolder(projectId, input);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  // Update folder
+  const updateFolderMutation = useMutation({
+    mutationFn: async ({ folderId, data }: { folderId: string; data: Partial<{
+      name: string;
+      folder_type: string | null;
+      parent_folder_id: string | null;
+      sort_order: number;
+    }> }) => {
+      return api.updateAssetFolder(folderId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  // Delete folder
+  const deleteFolderMutation = useMutation({
+    mutationFn: async (folderId: string) => {
+      return api.deleteAssetFolder(folderId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  return {
+    folders,
+    isLoading,
+    error,
+    refetch,
+    createFolder: createFolderMutation,
+    updateFolder: updateFolderMutation,
+    deleteFolder: deleteFolderMutation,
+  };
+}
+
+// =====================================================
+// UNIFIED ASSETS HELPER FUNCTIONS
+// =====================================================
+
+export function formatFileSize(bytes: number | null): string {
+  if (bytes === null || bytes === undefined) return '—';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+export function getAssetTypeIcon(assetType: string): string {
+  switch (assetType) {
+    case 'video': return 'Film';
+    case 'audio':
+    case 'music':
+    case 'sfx': return 'Music';
+    case '3d_model': return 'Box';
+    case 'image':
+    case 'graphics': return 'Image';
+    case 'document': return 'FileText';
+    default: return 'File';
+  }
+}
+
+export function getAssetTypeColor(assetType: string): string {
+  switch (assetType) {
+    case 'video': return 'text-accent-yellow';
+    case 'audio':
+    case 'music':
+    case 'sfx': return 'text-purple-400';
+    case '3d_model': return 'text-green-400';
+    case 'image':
+    case 'graphics': return 'text-blue-400';
+    case 'document': return 'text-orange-400';
+    default: return 'text-muted-gray';
+  }
+}
+
+export function getSourceLabel(source: UnifiedAssetSource): string {
+  switch (source) {
+    case 'dailies': return 'Dailies';
+    case 'review': return 'Review';
+    case 'standalone': return 'Assets';
+    default: return source;
+  }
+}
+
+export function getSourceColor(source: UnifiedAssetSource): string {
+  switch (source) {
+    case 'dailies': return 'bg-blue-500/20 text-blue-400';
+    case 'review': return 'bg-accent-yellow/20 text-accent-yellow';
+    case 'standalone': return 'bg-purple-500/20 text-purple-400';
+    default: return 'bg-muted-gray/20 text-muted-gray';
+  }
+}

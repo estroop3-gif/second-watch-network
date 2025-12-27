@@ -186,6 +186,7 @@ export const SHORTCUTS = [
   { key: 'L', action: 'Shuttle forward (2x→4x→8x)' },
   { key: 'F', action: 'Toggle fullscreen' },
   { key: 'M', action: 'Toggle mute' },
+  { key: 'G', action: 'Cycle aspect ratio guides' },
   { key: 'I', action: 'Set in point' },
   { key: 'O', action: 'Set out point' },
   { key: '\\', action: 'Clear in/out points' },

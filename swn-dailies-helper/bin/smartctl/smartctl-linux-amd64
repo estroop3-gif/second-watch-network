@@ -1,0 +1,12 @@
+#!/bin/sh
+# smartctl wrapper for SWN Dailies Helper
+# smartmontools v7.4 - GPL-2.0 Licensed
+
+# Check for system installation
+if command -v smartctl >/dev/null 2>&1; then
+    exec smartctl "$@"
+fi
+
+# Not found
+echo "smartctl not installed. Install with: apt-get install smartmontools" >&2
+exit 1

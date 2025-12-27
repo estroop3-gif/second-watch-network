@@ -1,0 +1,10 @@
+GNU GENERAL PUBLIC LICENSE
+Version 3, 29 June 2007
+
+The full text of this license can be found at:
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+SPDX Identifier: GPL-3.0-only
+
+This file serves as a reference. The complete license text should be
+obtained from the URL above or included in distribution builds.

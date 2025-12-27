@@ -1,0 +1,14 @@
+#!/bin/sh
+# mhl-tool wrapper for SWN Dailies Helper
+#
+# This is a placeholder. To use MHL verification:
+# 1. Download mhl-tool from: https://pomfort.com/mhl-tool/
+# 2. Replace this file with the actual mhl binary
+
+# Check for system installation
+if command -v mhl >/dev/null 2>&1; then
+    exec mhl "$@"
+fi
+
+echo "mhl-tool not installed. Please download from https://pomfort.com/mhl-tool/" >&2
+exit 1

@@ -904,6 +904,76 @@ export function useDailiesCircleTakes(projectId: string | null, dayId?: string |
 }
 
 // =============================================================================
+// PROMOTE CLIP TO REVIEW
+// =============================================================================
+
+export interface PromoteToReviewInput {
+  clipId: string;
+  folderId?: string | null;
+  name?: string | null;
+  description?: string | null;
+  copyNotes?: boolean;
+}
+
+export interface PromoteToReviewResult {
+  success: boolean;
+  asset_id: string;
+  version_id: string;
+  asset_name: string;
+  copied_notes_count: number;
+  message: string;
+}
+
+export function usePromoteToReview() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      clipId,
+      folderId,
+      name,
+      description,
+      copyNotes = true,
+    }: PromoteToReviewInput): Promise<PromoteToReviewResult> => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/dailies/clips/${clipId}/promote-to-review`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            folder_id: folderId,
+            name,
+            description,
+            copy_notes: copyNotes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to promote clip to review' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate both dailies and review queries
+      queryClient.invalidateQueries({ queryKey: ['dailies-clips'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-clip'] });
+      queryClient.invalidateQueries({ queryKey: ['review-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['review-versions'] });
+      queryClient.invalidateQueries({ queryKey: ['clip-asset-links'] });
+    },
+  });
+}
+
+// =============================================================================
 // PRODUCTION DAY SYNC
 // =============================================================================
 

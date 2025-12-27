@@ -5115,6 +5115,131 @@ export interface CreateTaskFromNoteInput {
 }
 
 // =====================================================
+// Review Folder System (Frame.io-style organization)
+// =====================================================
+
+export type ReviewAssetStatus = 'draft' | 'in_review' | 'changes_requested' | 'approved' | 'final';
+export type ReviewAssetPriority = 'low' | 'normal' | 'high' | 'urgent';
+export type ReviewStorageMode = 'external' | 's3';
+export type ReviewTranscodeStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped';
+
+export interface ReviewFolder {
+  id: string;
+  project_id: string;
+  parent_folder_id: string | null;
+  name: string;
+  description: string | null;
+  color: string | null;
+  sort_order: number;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Computed/joined
+  children?: ReviewFolder[];
+  asset_count?: number;
+  subfolder_count?: number;
+}
+
+export interface ReviewFolderInput {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  parent_folder_id?: string | null;
+}
+
+export interface ReviewFolderUpdate {
+  name?: string;
+  description?: string | null;
+  color?: string | null;
+  parent_folder_id?: string | null;
+  sort_order?: number;
+}
+
+// Enhanced ReviewAsset with folder support
+export interface ReviewAssetEnhanced extends ReviewAsset {
+  folder_id: string | null;
+  status: ReviewAssetStatus;
+  sort_order: number;
+  due_date: string | null;
+  priority: ReviewAssetPriority | null;
+}
+
+// Enhanced ReviewVersion with S3 storage
+export interface ReviewVersionEnhanced extends ReviewVersion {
+  storage_mode: ReviewStorageMode;
+  s3_key: string | null;
+  renditions: Record<string, string>; // { "480p": "key", "720p": "key", "1080p": "key" }
+  original_filename: string | null;
+  file_size_bytes: number | null;
+  codec: string | null;
+  resolution: string | null;
+  frame_rate: number | null;
+  transcode_status: ReviewTranscodeStatus;
+  transcode_error: string | null;
+}
+
+// External reviewer access
+export interface ReviewExternalLink {
+  id: string;
+  project_id: string;
+  asset_id: string | null;
+  folder_id: string | null;
+  token: string;
+  name: string;
+  can_comment: boolean;
+  can_download: boolean;
+  can_approve: boolean;
+  expires_at: string | null;
+  max_views: number | null;
+  view_count: number;
+  created_by_user_id: string | null;
+  created_at: string;
+  last_accessed_at: string | null;
+  is_active: boolean;
+}
+
+export interface ReviewExternalLinkInput {
+  name: string;
+  asset_id?: string | null;
+  folder_id?: string | null;
+  password?: string;
+  can_comment?: boolean;
+  can_download?: boolean;
+  can_approve?: boolean;
+  expires_at?: string | null;
+  max_views?: number | null;
+}
+
+export interface ReviewExternalSession {
+  id: string;
+  link_id: string;
+  session_token: string;
+  display_name: string;
+  email: string | null;
+  created_at: string;
+  expires_at: string;
+}
+
+// Folder tree response with nested structure
+export interface ReviewFolderTree {
+  folders: ReviewFolder[];
+  root_assets: ReviewAssetEnhanced[];
+}
+
+// Folder contents response
+export interface ReviewFolderContents {
+  folder: ReviewFolder;
+  subfolders: ReviewFolder[];
+  assets: ReviewAssetEnhanced[];
+  breadcrumbs: ReviewFolderBreadcrumb[];
+}
+
+export interface ReviewFolderBreadcrumb {
+  id: string;
+  name: string;
+}
+
+// =====================================================
 // Review Player Adapter Interface
 // =====================================================
 
@@ -5161,6 +5286,87 @@ export function parseTimecode(timecode: string): number | null {
   const secs = parseInt(parts[1], 10);
   if (isNaN(mins) || isNaN(secs)) return null;
   return mins * 60 + secs;
+}
+
+// =====================================================
+// Unified Assets (Assets Tab)
+// =====================================================
+
+export type UnifiedAssetSource = 'dailies' | 'review' | 'standalone';
+export type StandaloneAssetType = 'audio' | '3d_model' | 'image' | 'document' | 'graphics' | 'music' | 'sfx' | 'other';
+export type AssetFolderType = 'audio' | '3d' | 'graphics' | 'documents' | 'mixed';
+
+export interface UnifiedAsset {
+  id: string;
+  project_id: string;
+  source: UnifiedAssetSource;
+  name: string;
+  asset_type: string;
+  thumbnail_url: string | null;
+  duration_seconds: number | null;
+  file_size_bytes: number | null;
+  created_at: string;
+}
+
+export interface UnifiedAssetsSummary {
+  source: UnifiedAssetSource;
+  asset_type: string;
+  count: number;
+}
+
+export interface StandaloneAsset {
+  id: string;
+  project_id: string;
+  folder_id: string | null;
+  name: string;
+  description: string | null;
+  asset_type: StandaloneAssetType;
+  file_name: string;
+  s3_key: string;
+  file_size_bytes: number | null;
+  mime_type: string | null;
+  duration_seconds: number | null;
+  dimensions: string | null;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  thumbnail_url: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StandaloneAssetInput {
+  name: string;
+  description?: string | null;
+  asset_type: StandaloneAssetType;
+  file_name: string;
+  s3_key: string;
+  file_size_bytes?: number | null;
+  mime_type?: string | null;
+  duration_seconds?: number | null;
+  dimensions?: string | null;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  folder_id?: string | null;
+}
+
+export interface AssetFolder {
+  id: string;
+  project_id: string;
+  parent_folder_id: string | null;
+  name: string;
+  folder_type: AssetFolderType | null;
+  sort_order: number;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  children?: AssetFolder[];
+}
+
+export interface AssetFolderInput {
+  name: string;
+  folder_type?: AssetFolderType | null;
+  parent_folder_id?: string | null;
 }
 
 // =============================================================================

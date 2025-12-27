@@ -1,11 +1,13 @@
 /**
  * VideoPlayer - Main video player wrapper component
+ * Supports all aspect ratios including horizontal (16:9), vertical (9:16), square (1:1), etc.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { VideoPlayerProvider, useVideoPlayer } from './VideoPlayerContext';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import VideoControls from './VideoControls';
 import ShortcutOverlay from './ShortcutOverlay';
+import AspectRatioGuide, { AspectRatioGuideType } from './AspectRatioGuide';
 import { cn } from '@/lib/utils';
 import { Loader2, Play } from 'lucide-react';
 import { BacklotDailiesClip, BacklotDailiesClipNote } from '@/types/backlot';
@@ -25,6 +27,10 @@ interface VideoPlayerProps {
   availableRenditions?: string[];
   canEdit?: boolean;
   className?: string;
+  /** Enable auto-sizing based on video aspect ratio */
+  autoSize?: boolean;
+  /** Maximum height constraint (default: 80vh) */
+  maxHeight?: string;
 }
 
 const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
@@ -40,10 +46,59 @@ const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
   availableRenditions = ['original'],
   canEdit = false,
   className,
+  autoSize = true,
+  maxHeight = '80vh',
 }) => {
   const { state, actions, videoRef, containerRef } = useVideoPlayer();
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [showPlayOverlay, setShowPlayOverlay] = useState(true);
+  const [aspectRatio, setAspectRatio] = useState<number | null>(null);
+  const [videoWidth, setVideoWidth] = useState(0);
+  const [videoHeight, setVideoHeight] = useState(0);
+  const [aspectGuide, setAspectGuide] = useState<AspectRatioGuideType>('none');
+
+  // Derived state
+  const isVertical = aspectRatio !== null && aspectRatio < 1;
+  const isSquare = aspectRatio !== null && Math.abs(aspectRatio - 1) < 0.05;
+
+  // Detect video aspect ratio when metadata loads
+  const handleLoadedMetadata = useCallback(() => {
+    if (videoRef.current) {
+      const video = videoRef.current;
+      const ratio = video.videoWidth / video.videoHeight;
+      setAspectRatio(ratio);
+      setVideoWidth(video.videoWidth);
+      setVideoHeight(video.videoHeight);
+      console.log(`Video loaded: ${video.videoWidth}x${video.videoHeight}, aspect: ${ratio.toFixed(3)}`);
+    }
+  }, [videoRef]);
+
+  // Cycle through aspect ratio guides with 'G' key
+  const aspectGuides: AspectRatioGuideType[] = [
+    'none', '16:9', '2.39:1', '2.35:1', '1.85:1', '4:3', '1:1', '9:16', '4:5', 'title-safe', 'action-safe'
+  ];
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if typing in input
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
+      if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        setAspectGuide(current => {
+          const currentIndex = aspectGuides.indexOf(current);
+          const nextIndex = (currentIndex + 1) % aspectGuides.length;
+          return aspectGuides[nextIndex];
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Enable keyboard shortcuts
   useKeyboardShortcuts({ enabled: true, onAddNote });
@@ -107,14 +162,43 @@ const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
     );
   }
 
+  // Calculate container styles based on aspect ratio
+  const getContainerStyles = (): React.CSSProperties => {
+    if (state.isFullscreen) {
+      return {};
+    }
+
+    if (!autoSize || !aspectRatio) {
+      // Fallback to 16:9 while loading
+      return { aspectRatio: '16/9' };
+    }
+
+    if (isVertical) {
+      // For vertical videos, constrain by height and let width be calculated
+      return {
+        maxHeight,
+        aspectRatio: aspectRatio.toString(),
+        width: 'auto',
+        margin: '0 auto',
+      };
+    }
+
+    // For horizontal/square videos, use aspect ratio
+    return {
+      aspectRatio: aspectRatio.toString(),
+      width: '100%',
+    };
+  };
+
   return (
     <div
       ref={containerRef}
       className={cn(
-        'relative bg-black rounded-lg overflow-hidden group',
+        'relative bg-black rounded-lg overflow-hidden group flex items-center justify-center',
         state.isFullscreen && 'fixed inset-0 z-50 rounded-none',
         className
       )}
+      style={getContainerStyles()}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
       tabIndex={0}
@@ -123,10 +207,14 @@ const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
       <video
         ref={videoRef}
         src={streamUrl}
-        className="w-full h-full object-contain"
+        className={cn(
+          'max-w-full max-h-full',
+          state.isFullscreen ? 'w-full h-full object-contain' : 'w-full h-full object-contain'
+        )}
         crossOrigin="anonymous"
         playsInline
         onClick={actions.togglePlayPause}
+        onLoadedMetadata={handleLoadedMetadata}
       />
 
       {/* Loading Spinner */}
@@ -148,16 +236,39 @@ const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
         </button>
       )}
 
+      {/* Aspect Ratio Guide Overlay */}
+      <AspectRatioGuide
+        guide={aspectGuide}
+        videoWidth={videoWidth}
+        videoHeight={videoHeight}
+      />
+
+      {/* Aspect Guide Label */}
+      {aspectGuide !== 'none' && (
+        <div className="absolute top-4 right-4 bg-black/80 px-3 py-1.5 rounded-lg z-10">
+          <span className="text-accent-yellow font-mono text-sm">
+            {aspectGuide}
+          </span>
+        </div>
+      )}
+
+      {/* Video Info Badge (for debugging/info) */}
+      {aspectRatio && (
+        <div className="absolute top-4 left-4 bg-black/60 px-2 py-1 rounded text-xs text-white/60 font-mono opacity-0 group-hover:opacity-100 transition-opacity">
+          {videoWidth}×{videoHeight} • {aspectRatio.toFixed(2)}:1
+        </div>
+      )}
+
       {/* Shuttle Speed Indicator */}
       {state.shuttleSpeed !== 0 && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-2 rounded-lg">
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/80 px-4 py-2 rounded-lg z-10">
           <span className="text-bone-white font-mono text-lg">
             {state.shuttleSpeed > 0 ? '▶▶' : '◀◀'} {Math.abs(state.shuttleSpeed)}x
           </span>
         </div>
       )}
 
-      {/* Video Controls */}
+      {/* Video Controls - optimized for all aspect ratios */}
       <VideoControls
         visible={state.showControls}
         notes={notes}
@@ -167,6 +278,7 @@ const VideoPlayerInner: React.FC<VideoPlayerProps> = ({
         quality={quality}
         actualQuality={actualQuality}
         availableRenditions={availableRenditions}
+        isVertical={isVertical}
       />
 
       {/* Keyboard Shortcut Overlay */}

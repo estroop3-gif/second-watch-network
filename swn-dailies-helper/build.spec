@@ -26,6 +26,8 @@ a = Analysis(
     binaries=[],
     datas=[
         ('resources', 'resources'),
+        ('bin', 'bin'),  # CLI tool binaries (MediaInfo, ExifTool, smartctl, mhl-tool, rclone)
+        ('THIRD_PARTY_LICENSES', 'THIRD_PARTY_LICENSES'),  # License files for GPL compliance
     ],
     hiddenimports=[
         'PyQt6.QtCore',
@@ -45,6 +47,14 @@ a = Analysis(
         'keyring.backends.SecretService',
         'keyring.backends.Windows',
         'keyring.backends.macOS',
+        # Professional media libraries
+        'opentimelineio',
+        'opentimelineio.adapters',
+        'opentimelineio.core',
+        'opentimelineio.schema',
+        'PyOpenColorIO',
+        'ascmhl',
+        'ascmhl.hasher',
     ],
     hookspath=[],
     hooksconfig={},

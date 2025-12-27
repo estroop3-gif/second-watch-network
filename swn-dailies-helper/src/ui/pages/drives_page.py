@@ -1,6 +1,8 @@
 """
 Linked Drives page - Manage local drives shared with Backlot for remote viewing.
+Includes SMART health monitoring for linked drives.
 """
+import subprocess
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,9 +21,64 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from pathlib import Path
 import shutil
+from typing import Optional, Tuple
 
 from src.services.config import ConfigManager
 from src.ui.styles import COLORS
+
+
+def get_device_for_path(path: Path) -> Optional[str]:
+    """Get the block device for a given path."""
+    try:
+        import re
+        result = subprocess.run(
+            ["df", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            if len(lines) >= 2:
+                device = lines[1].split()[0]
+                if device.startswith('/dev/'):
+                    base_device = re.sub(r'[0-9]+$', '', device)
+                    if 'nvme' in base_device:
+                        base_device = re.sub(r'p[0-9]+$', '', device)
+                    return base_device
+    except Exception:
+        pass
+    return None
+
+
+def get_smart_health(path: Path) -> Optional[Tuple[str, dict]]:
+    """Get SMART health for a drive path. Returns (status, info) or None."""
+    try:
+        from src.services.smart_service import get_smart_service, DriveHealth
+
+        smart_service = get_smart_service()
+        if not smart_service.is_available:
+            return None
+
+        device = get_device_for_path(path)
+        if not device:
+            return None
+
+        health_info = smart_service.get_drive_health(device)
+        if health_info:
+            return (health_info.health.value, {
+                "model": health_info.model,
+                "serial": health_info.serial,
+                "temperature": health_info.temperature,
+                "power_on_hours": health_info.power_on_hours,
+                "warnings": health_info.warnings,
+                "health": health_info.health,
+            })
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    return None
 
 
 class LinkDriveDialog(QDialog):
@@ -299,15 +356,87 @@ class DrivesPage(QWidget):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(4)
 
+        # Name row with health badge
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+
         name_label = QLabel(drive["name"])
         name_label.setStyleSheet(f"font-weight: bold; color: {COLORS['bone-white']};")
-        info_layout.addWidget(name_label)
+        name_row.addWidget(name_label)
+
+        # SMART health badge
+        if is_available:
+            health_data = get_smart_health(path)
+            if health_data:
+                status, info = health_data
+                health_badge = QLabel()
+
+                try:
+                    from src.services.smart_service import DriveHealth
+                    health_status = info.get("health")
+
+                    if health_status == DriveHealth.HEALTHY:
+                        health_badge.setText("Healthy")
+                        health_badge.setStyleSheet(f"""
+                            font-size: 10px;
+                            font-weight: bold;
+                            padding: 2px 6px;
+                            border-radius: 3px;
+                            background-color: rgba(34, 197, 94, 0.2);
+                            color: {COLORS['green']};
+                        """)
+                        temp = info.get("temperature")
+                        hours = info.get("power_on_hours")
+                        tooltip = f"Model: {info.get('model', 'N/A')}\n"
+                        if temp:
+                            tooltip += f"Temperature: {temp}°C\n"
+                        if hours:
+                            tooltip += f"Power-on hours: {hours:,}"
+                        health_badge.setToolTip(tooltip)
+                    elif health_status == DriveHealth.WARNING:
+                        health_badge.setText("Warning")
+                        health_badge.setStyleSheet(f"""
+                            font-size: 10px;
+                            font-weight: bold;
+                            padding: 2px 6px;
+                            border-radius: 3px;
+                            background-color: rgba(249, 115, 22, 0.2);
+                            color: {COLORS['orange']};
+                        """)
+                        warnings = info.get("warnings", [])
+                        tooltip = f"Model: {info.get('model', 'N/A')}\nWarnings:\n"
+                        tooltip += "\n".join(f"  • {w}" for w in warnings[:3])
+                        health_badge.setToolTip(tooltip)
+                    elif health_status == DriveHealth.FAILING:
+                        health_badge.setText("FAILING")
+                        health_badge.setStyleSheet(f"""
+                            font-size: 10px;
+                            font-weight: bold;
+                            padding: 2px 6px;
+                            border-radius: 3px;
+                            background-color: rgba(239, 68, 68, 0.3);
+                            color: {COLORS['red']};
+                        """)
+                        warnings = info.get("warnings", [])
+                        tooltip = f"CRITICAL: Drive failing!\nModel: {info.get('model', 'N/A')}\nIssues:\n"
+                        tooltip += "\n".join(f"  • {w}" for w in warnings[:3])
+                        health_badge.setToolTip(tooltip)
+                    else:
+                        health_badge = None
+
+                    if health_badge:
+                        name_row.addWidget(health_badge)
+                except ImportError:
+                    pass
+
+        name_row.addStretch()
+        info_layout.addLayout(name_row)
 
         path_label = QLabel(drive["path"])
         path_label.setStyleSheet(f"font-size: 12px; color: {COLORS['muted-gray']};")
         info_layout.addWidget(path_label)
 
-        # Size info if available
+        # Size info and SMART details if available
         if is_available:
             try:
                 usage = shutil.disk_usage(drive["path"])
@@ -316,6 +445,17 @@ class DrivesPage(QWidget):
                 size_text = f"{free_gb:.1f} GB free of {total_gb:.1f} GB"
             except OSError:
                 size_text = "Size info unavailable"
+
+            # Add SMART info to size line
+            health_data = get_smart_health(path)
+            if health_data:
+                _, info = health_data
+                temp = info.get("temperature")
+                hours = info.get("power_on_hours")
+                if temp:
+                    size_text += f"  •  {temp}°C"
+                if hours:
+                    size_text += f"  •  {hours:,} hrs"
         else:
             size_text = "Drive not available"
 

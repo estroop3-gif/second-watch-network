@@ -16,6 +16,12 @@ import {
   ReviewNoteUpdateInput,
   CreateTaskFromNoteInput,
   BacklotTask,
+  ReviewFolder,
+  ReviewFolderInput,
+  ReviewFolderUpdate,
+  ReviewAssetEnhanced,
+  ReviewAssetStatus,
+  ReviewFolderBreadcrumb,
 } from '@/types/backlot';
 
 // =====================================================
@@ -456,5 +462,289 @@ export function useReviewPlayer(options: UseReviewPlayerOptions = {}) {
 
     // Computed
     progress: duration > 0 ? (currentTime / duration) * 100 : 0,
+  };
+}
+
+// =====================================================
+// REVIEW FOLDERS HOOKS
+// =====================================================
+
+interface UseReviewFoldersOptions {
+  projectId: string | null;
+}
+
+/**
+ * Get folder tree for a project
+ */
+export function useReviewFolders(options: UseReviewFoldersOptions) {
+  const { projectId } = options;
+  const queryClient = useQueryClient();
+
+  const queryKey = ['backlot-review-folders', { projectId }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return { folders: [], root_assets: [] };
+      const result = await api.listReviewFolders(projectId);
+      return {
+        folders: (result.folders || []) as ReviewFolder[],
+        root_assets: (result.root_assets || []) as ReviewAssetEnhanced[],
+      };
+    },
+    enabled: !!projectId,
+  });
+
+  const createFolder = useMutation({
+    mutationFn: async (input: ReviewFolderInput) => {
+      if (!projectId) throw new Error('No project ID');
+      const result = await api.createReviewFolder(projectId, input);
+      return result.folder as ReviewFolder;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+    },
+  });
+
+  const updateFolder = useMutation({
+    mutationFn: async ({ id, ...input }: ReviewFolderUpdate & { id: string }) => {
+      const result = await api.updateReviewFolder(id, input);
+      return result.folder as ReviewFolder;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+    },
+  });
+
+  const deleteFolder = useMutation({
+    mutationFn: async (id: string) => {
+      const result = await api.deleteReviewFolder(id);
+      return result;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+    },
+  });
+
+  const moveFolder = useMutation({
+    mutationFn: async ({ id, parentFolderId }: { id: string; parentFolderId: string | null }) => {
+      const result = await api.moveReviewFolder(id, parentFolderId);
+      return result.folder as ReviewFolder;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+    },
+  });
+
+  const moveAsset = useMutation({
+    mutationFn: async ({ assetId, folderId }: { assetId: string; folderId: string | null }) => {
+      const result = await api.moveReviewAsset(assetId, folderId);
+      return result.asset as ReviewAssetEnhanced;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-assets'] });
+    },
+  });
+
+  const updateAssetStatus = useMutation({
+    mutationFn: async ({ assetId, status }: { assetId: string; status: ReviewAssetStatus }) => {
+      const result = await api.updateReviewAssetStatus(assetId, status);
+      return result.asset as ReviewAssetEnhanced;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-assets'] });
+    },
+  });
+
+  const bulkMoveAssets = useMutation({
+    mutationFn: async ({ assetIds, folderId }: { assetIds: string[]; folderId: string | null }) => {
+      if (!projectId) throw new Error('No project ID');
+      const result = await api.bulkMoveReviewAssets(projectId, assetIds, folderId);
+      return result;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-folder'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-review-assets'] });
+    },
+  });
+
+  // Helper to flatten folder tree for search
+  const flattenFolders = (folders: ReviewFolder[]): ReviewFolder[] => {
+    const result: ReviewFolder[] = [];
+    const traverse = (folder: ReviewFolder) => {
+      result.push(folder);
+      folder.children?.forEach(traverse);
+    };
+    folders.forEach(traverse);
+    return result;
+  };
+
+  return {
+    folders: data?.folders || [],
+    rootAssets: data?.root_assets || [],
+    allFolders: flattenFolders(data?.folders || []),
+    isLoading,
+    error,
+    refetch,
+    createFolder,
+    updateFolder,
+    deleteFolder,
+    moveFolder,
+    moveAsset,
+    updateAssetStatus,
+    bulkMoveAssets,
+  };
+}
+
+// =====================================================
+// SINGLE REVIEW FOLDER HOOK
+// =====================================================
+
+interface UseReviewFolderOptions {
+  folderId: string | null;
+}
+
+/**
+ * Get a single folder with its contents
+ */
+export function useReviewFolder(options: UseReviewFolderOptions) {
+  const { folderId } = options;
+
+  const queryKey = ['backlot-review-folder', { folderId }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!folderId) return null;
+      const result = await api.getReviewFolder(folderId);
+      return {
+        folder: result.folder as ReviewFolder,
+        subfolders: (result.subfolders || []) as ReviewFolder[],
+        assets: (result.assets || []) as ReviewAssetEnhanced[],
+        breadcrumbs: (result.breadcrumbs || []) as ReviewFolderBreadcrumb[],
+      };
+    },
+    enabled: !!folderId,
+  });
+
+  return {
+    folder: data?.folder || null,
+    subfolders: data?.subfolders || [],
+    assets: data?.assets || [],
+    breadcrumbs: data?.breadcrumbs || [],
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+// =====================================================
+// EXTERNAL REVIEW LINKS HOOK
+// =====================================================
+
+interface UseExternalLinksOptions {
+  projectId: string | null;
+}
+
+/**
+ * Manage external review links for a project
+ */
+export function useExternalLinks(options: UseExternalLinksOptions) {
+  const { projectId } = options;
+  const queryClient = useQueryClient();
+
+  const queryKey = ['backlot-external-links', { projectId }];
+
+  const { data: links = [], isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!projectId) return [];
+      const result = await api.listExternalLinks(projectId);
+      return result.links;
+    },
+    enabled: !!projectId,
+  });
+
+  // Create a new external link
+  const createLinkMutation = useMutation({
+    mutationFn: async (input: {
+      name: string;
+      asset_id?: string | null;
+      folder_id?: string | null;
+      password?: string;
+      can_comment?: boolean;
+      can_download?: boolean;
+      can_approve?: boolean;
+      expires_at?: string | null;
+      max_views?: number | null;
+    }) => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.createExternalLink(projectId, input);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  // Update an external link
+  const updateLinkMutation = useMutation({
+    mutationFn: async ({ linkId, data }: { linkId: string; data: Partial<{
+      name: string;
+      password?: string;
+      can_comment?: boolean;
+      can_download?: boolean;
+      can_approve?: boolean;
+      expires_at?: string | null;
+      max_views?: number | null;
+      is_active?: boolean;
+    }> }) => {
+      return api.updateExternalLink(linkId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  // Delete an external link
+  const deleteLinkMutation = useMutation({
+    mutationFn: async (linkId: string) => {
+      return api.deleteExternalLink(linkId);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+    },
+  });
+
+  const createLink = async (input: Parameters<typeof createLinkMutation.mutateAsync>[0]) => {
+    return createLinkMutation.mutateAsync(input);
+  };
+
+  const updateLink = async (linkId: string, data: Parameters<typeof updateLinkMutation.mutateAsync>[0]['data']) => {
+    return updateLinkMutation.mutateAsync({ linkId, data });
+  };
+
+  const deleteLink = async (linkId: string) => {
+    return deleteLinkMutation.mutateAsync(linkId);
+  };
+
+  return {
+    links,
+    isLoading,
+    error,
+    refetch,
+    createLink,
+    updateLink,
+    deleteLink,
+    isCreating: createLinkMutation.isPending,
+    isUpdating: updateLinkMutation.isPending,
+    isDeleting: deleteLinkMutation.isPending,
   };
 }

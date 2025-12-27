@@ -1,0 +1,19 @@
+smartmontools (smartctl)
+Version: 7.4
+Copyright: (c) 2002-2024 Bruce Allen, Christian Franke, and others
+License: GPL-2.0-only
+Website: https://www.smartmontools.org/
+
+smartmontools contains the smartctl utility, which controls and monitors
+storage devices using the Self-Monitoring, Analysis and Reporting Technology
+(SMART) system built into most modern ATA/SATA, SCSI/SAS and NVMe disks.
+
+This component is included in SWN Dailies Helper for drive health monitoring.
+
+SOURCE CODE AVAILABILITY
+========================
+As required by the GPL-2.0 license, source code for smartmontools is available at:
+https://secondwatchnetwork.com/opensource/
+
+Or directly from the project at:
+https://www.smartmontools.org/browser/tags/RELEASE_7_4

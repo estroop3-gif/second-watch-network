@@ -98,6 +98,12 @@ import PartnerPromotions from "./pages/partner/Promotions";
 
 // Backlot Production Hub Pages
 import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage } from "./pages/backlot";
+import React, { Suspense } from "react";
+
+// Lazy load the external reviewer view since it's a public route
+const ExternalReviewerView = React.lazy(() =>
+  import("./components/backlot/review/external/ExternalReviewerView")
+);
 
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
@@ -146,6 +152,13 @@ const App = () => (
                   <Route path="/signup" element={<Signup />} />
                   <Route path="/reset-password" element={<ResetPassword />} />
                 </Route>
+
+                {/* Public External Review Route (no auth required) */}
+                <Route path="/review/:token" element={
+                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                    <ExternalReviewerView />
+                  </Suspense>
+                } />
 
                 {/* Auth pages without any layout */}
                 <Route path="/confirm-email" element={<ConfirmEmail />} />

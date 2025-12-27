@@ -1367,6 +1367,74 @@ class APIClient {
     })
   }
 
+  // Review Folders
+  async listReviewFolders(projectId: string) {
+    return this.request<{ folders: any[]; root_assets: any[] }>(`/api/v1/backlot/projects/${projectId}/review/folders`)
+  }
+
+  async createReviewFolder(projectId: string, data: {
+    name: string;
+    description?: string | null;
+    color?: string | null;
+    parent_folder_id?: string | null;
+  }) {
+    return this.request<{ folder: any }>(`/api/v1/backlot/projects/${projectId}/review/folders`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getReviewFolder(folderId: string) {
+    return this.request<{ folder: any; subfolders: any[]; assets: any[]; breadcrumbs: any[] }>(`/api/v1/backlot/review/folders/${folderId}`)
+  }
+
+  async updateReviewFolder(folderId: string, data: {
+    name?: string;
+    description?: string | null;
+    color?: string | null;
+    parent_folder_id?: string | null;
+    sort_order?: number;
+  }) {
+    return this.request<{ folder: any }>(`/api/v1/backlot/review/folders/${folderId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteReviewFolder(folderId: string) {
+    return this.request<{ success: boolean; moved_to_parent: boolean }>(`/api/v1/backlot/review/folders/${folderId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async moveReviewFolder(folderId: string, parentFolderId: string | null) {
+    return this.request<{ folder: any }>(`/api/v1/backlot/review/folders/${folderId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ parent_folder_id: parentFolderId }),
+    })
+  }
+
+  async moveReviewAsset(assetId: string, folderId: string | null) {
+    return this.request<{ asset: any }>(`/api/v1/backlot/review/assets/${assetId}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ folder_id: folderId }),
+    })
+  }
+
+  async updateReviewAssetStatus(assetId: string, status: string) {
+    return this.request<{ asset: any }>(`/api/v1/backlot/review/assets/${assetId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    })
+  }
+
+  async bulkMoveReviewAssets(projectId: string, assetIds: string[], folderId: string | null) {
+    return this.request<{ moved_count: number }>(`/api/v1/backlot/projects/${projectId}/review/assets/bulk-move`, {
+      method: 'POST',
+      body: JSON.stringify({ asset_ids: assetIds, folder_id: folderId }),
+    })
+  }
+
   // Review Versions
   async createReviewVersion(assetId: string, data: {
     name?: string | null;
@@ -1391,6 +1459,129 @@ class APIClient {
   async deleteReviewVersion(versionId: string) {
     return this.request<{ success: boolean }>(`/api/v1/backlot/review/versions/${versionId}`, {
       method: 'DELETE',
+    })
+  }
+
+  // Review Version Streaming (S3)
+  async getReviewVersionStreamUrl(versionId: string, quality?: string) {
+    const params = quality ? `?quality=${quality}` : '';
+    return this.request<{ url: string; quality: string; expires_at: string }>(
+      `/api/v1/backlot/review/versions/${versionId}/stream-url${params}`
+    )
+  }
+
+  async getReviewVersionUploadUrl(assetId: string, filename: string, contentType: string) {
+    return this.request<{
+      upload_url: string;
+      s3_key: string;
+      version_id: string;
+    }>(`/api/v1/backlot/review/assets/${assetId}/upload-url`, {
+      method: 'POST',
+      body: JSON.stringify({ filename, content_type: contentType }),
+    })
+  }
+
+  async completeReviewVersionUpload(versionId: string) {
+    return this.request<{ version: any; transcode_started: boolean }>(
+      `/api/v1/backlot/review/versions/${versionId}/complete-upload`,
+      { method: 'POST' }
+    )
+  }
+
+  async getReviewVersionTranscodeStatus(versionId: string) {
+    return this.request<{
+      status: string;
+      progress: number;
+      renditions: Record<string, string>;
+      error?: string;
+    }>(`/api/v1/backlot/review/versions/${versionId}/transcode-status`)
+  }
+
+  // External Review Links
+  async listExternalLinks(projectId: string) {
+    return this.request<{ links: import('@/types/backlot').ReviewExternalLink[] }>(
+      `/api/v1/backlot/projects/${projectId}/review/external-links`
+    )
+  }
+
+  async createExternalLink(projectId: string, data: import('@/types/backlot').ReviewExternalLinkInput) {
+    return this.request<{ link: import('@/types/backlot').ReviewExternalLink; share_url: string }>(
+      `/api/v1/backlot/projects/${projectId}/review/external-links`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async updateExternalLink(linkId: string, data: Partial<import('@/types/backlot').ReviewExternalLinkInput> & { is_active?: boolean }) {
+    return this.request<{ link: import('@/types/backlot').ReviewExternalLink }>(
+      `/api/v1/backlot/review/external-links/${linkId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async deleteExternalLink(linkId: string) {
+    return this.request<{ success: boolean }>(
+      `/api/v1/backlot/review/external-links/${linkId}`,
+      { method: 'DELETE' }
+    )
+  }
+
+  // Public Review (no auth required - uses token)
+  async validateExternalReviewLink(token: string) {
+    return this.request<{
+      valid: boolean;
+      name: string;
+      requires_password: boolean;
+      scope: 'asset' | 'folder' | 'project';
+      asset_name?: string;
+      folder_name?: string;
+      project_name?: string;
+      can_comment: boolean;
+      can_download: boolean;
+      can_approve: boolean;
+      expires_at: string | null;
+    }>(`/api/v1/public/review/${token}`)
+  }
+
+  async startExternalReviewSession(token: string, data: {
+    display_name: string;
+    email?: string;
+    password?: string;
+  }) {
+    return this.request<{
+      session_token: string;
+      expires_at: string;
+    }>(`/api/v1/public/review/${token}/start-session`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getExternalReviewContent(token: string, sessionToken: string) {
+    return this.request<{
+      assets: any[];
+      folders?: any[];
+    }>(`/api/v1/public/review/${token}/content`, {
+      headers: { 'X-Review-Session': sessionToken },
+    })
+  }
+
+  async createExternalReviewNote(token: string, sessionToken: string, data: {
+    version_id: string;
+    timecode_seconds?: number | null;
+    timecode_end_seconds?: number | null;
+    content: string;
+    drawing_data?: Record<string, unknown> | null;
+  }) {
+    return this.request<{ note: any }>(`/api/v1/public/review/${token}/notes`, {
+      method: 'POST',
+      headers: { 'X-Review-Session': sessionToken },
+      body: JSON.stringify(data),
     })
   }
 
@@ -1453,6 +1644,146 @@ class APIClient {
       method: 'POST',
       body: JSON.stringify(data),
     })
+  }
+
+  // ============================================================================
+  // UNIFIED ASSETS (Assets Tab)
+  // ============================================================================
+
+  async listUnifiedAssets(projectId: string, options?: {
+    source?: string;
+    asset_type?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  }) {
+    const params = new URLSearchParams()
+    if (options?.source) params.append('source', options.source)
+    if (options?.asset_type) params.append('asset_type', options.asset_type)
+    if (options?.search) params.append('search', options.search)
+    if (options?.limit) params.append('limit', options.limit.toString())
+    if (options?.offset) params.append('offset', options.offset.toString())
+    return this.request<{
+      assets: import('@/types/backlot').UnifiedAsset[];
+      total: number;
+      limit: number;
+      offset: number;
+    }>(`/api/v1/backlot/projects/${projectId}/assets/unified?${params}`)
+  }
+
+  async getAssetsSummary(projectId: string) {
+    return this.request<{
+      summary: import('@/types/backlot').UnifiedAssetsSummary[];
+      total_storage_bytes: number;
+    }>(`/api/v1/backlot/projects/${projectId}/assets/summary`)
+  }
+
+  // Standalone Assets CRUD
+  async createStandaloneAsset(projectId: string, data: import('@/types/backlot').StandaloneAssetInput) {
+    return this.request<{ asset: import('@/types/backlot').StandaloneAsset }>(
+      `/api/v1/backlot/projects/${projectId}/assets/standalone`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async listStandaloneAssets(projectId: string, options?: {
+    folder_id?: string;
+    asset_type?: string;
+    tags?: string;
+  }) {
+    const params = new URLSearchParams()
+    if (options?.folder_id) params.append('folder_id', options.folder_id)
+    if (options?.asset_type) params.append('asset_type', options.asset_type)
+    if (options?.tags) params.append('tags', options.tags)
+    return this.request<{ assets: import('@/types/backlot').StandaloneAsset[] }>(
+      `/api/v1/backlot/projects/${projectId}/assets/standalone?${params}`
+    )
+  }
+
+  async getStandaloneAsset(assetId: string) {
+    return this.request<{ asset: import('@/types/backlot').StandaloneAsset }>(
+      `/api/v1/backlot/assets/standalone/${assetId}`
+    )
+  }
+
+  async updateStandaloneAsset(assetId: string, data: Partial<{
+    name: string;
+    description: string | null;
+    tags: string[];
+    metadata: Record<string, unknown>;
+    folder_id: string | null;
+  }>) {
+    return this.request<{ asset: import('@/types/backlot').StandaloneAsset }>(
+      `/api/v1/backlot/assets/standalone/${assetId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async deleteStandaloneAsset(assetId: string) {
+    return this.request<{ success: boolean }>(
+      `/api/v1/backlot/assets/standalone/${assetId}`,
+      { method: 'DELETE' }
+    )
+  }
+
+  async getStandaloneAssetUploadUrl(assetId: string, data: {
+    filename: string;
+    content_type?: string;
+    project_id: string;
+  }) {
+    return this.request<{
+      upload_url: string;
+      s3_key: string;
+      expires_in: number;
+    }>(`/api/v1/backlot/assets/standalone/${assetId}/upload-url`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  // Asset Folders CRUD
+  async listAssetFolders(projectId: string) {
+    return this.request<{ folders: import('@/types/backlot').AssetFolder[] }>(
+      `/api/v1/backlot/projects/${projectId}/assets/folders`
+    )
+  }
+
+  async createAssetFolder(projectId: string, data: import('@/types/backlot').AssetFolderInput) {
+    return this.request<{ folder: import('@/types/backlot').AssetFolder }>(
+      `/api/v1/backlot/projects/${projectId}/assets/folders`,
+      {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async updateAssetFolder(folderId: string, data: Partial<{
+    name: string;
+    folder_type: string | null;
+    parent_folder_id: string | null;
+    sort_order: number;
+  }>) {
+    return this.request<{ folder: import('@/types/backlot').AssetFolder }>(
+      `/api/v1/backlot/assets/folders/${folderId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }
+    )
+  }
+
+  async deleteAssetFolder(folderId: string) {
+    return this.request<{ success: boolean }>(
+      `/api/v1/backlot/assets/folders/${folderId}`,
+      { method: 'DELETE' }
+    )
   }
 
   // ============================================================================

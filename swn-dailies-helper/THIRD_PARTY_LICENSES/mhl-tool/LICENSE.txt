@@ -1,0 +1,13 @@
+Pomfort mhl-tool License
+
+mhl-tool is proprietary software provided free of charge by Pomfort GmbH.
+
+The software may be freely used and redistributed for the purpose of
+verifying and creating Media Hash List (MHL) files.
+
+For licensing inquiries and commercial support, contact:
+Pomfort GmbH
+https://pomfort.com/
+
+Terms of use are available at:
+https://pomfort.com/terms/

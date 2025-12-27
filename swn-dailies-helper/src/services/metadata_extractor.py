@@ -48,9 +48,24 @@ class ClipMetadata:
     clip_number: Optional[str]
     color_space: Optional[str]
 
+    # Enhanced camera info (from ExifTool - when available)
+    camera_serial: Optional[str] = None
+    lens_model: Optional[str] = None
+    lens_serial: Optional[str] = None
+    iso: Optional[int] = None
+    shutter_speed: Optional[str] = None
+    aperture: Optional[str] = None
+    focal_length: Optional[str] = None
+    white_balance: Optional[str] = None
+
+    # GPS info (from ExifTool - when available)
+    gps_latitude: Optional[float] = None
+    gps_longitude: Optional[float] = None
+    gps_altitude: Optional[float] = None
+
     # Status
-    is_valid: bool
-    error_message: Optional[str]
+    is_valid: bool = True
+    error_message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -88,15 +103,89 @@ class MetadataExtractor:
         "Blackmagic Film": re.compile(r"[_-]?BMFilm", re.IGNORECASE),
     }
 
-    def __init__(self, ffprobe_path: Optional[str] = None):
+    def __init__(self, ffprobe_path: Optional[str] = None, use_exiftool: bool = True):
         """
         Initialize the extractor.
 
         Args:
             ffprobe_path: Path to ffprobe binary. Auto-detected if None.
+            use_exiftool: Whether to use ExifTool for enhanced metadata.
         """
         self.ffprobe_path = ffprobe_path or self._find_ffprobe()
         self.available = self.ffprobe_path is not None
+        self.use_exiftool = use_exiftool
+        self._exiftool_service = None
+
+    def _get_exiftool_service(self):
+        """Lazy-load ExifTool service."""
+        if self._exiftool_service is None and self.use_exiftool:
+            try:
+                from src.services.exiftool_service import get_exiftool_service
+                self._exiftool_service = get_exiftool_service()
+            except ImportError:
+                self._exiftool_service = None
+        return self._exiftool_service
+
+    def _extract_exiftool_data(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract enhanced metadata from ExifTool.
+
+        Args:
+            file_path: Path to the media file
+
+        Returns:
+            Dictionary with camera/GPS metadata, empty dict if unavailable
+        """
+        exiftool = self._get_exiftool_service()
+        if exiftool is None or not exiftool.is_available:
+            return {}
+
+        try:
+            metadata = exiftool.extract_metadata(file_path)
+            if metadata is None:
+                return {}
+
+            result = {}
+
+            # Camera info
+            if metadata.camera:
+                cam = metadata.camera
+                if cam.make:
+                    result["camera_make"] = cam.make
+                if cam.model:
+                    result["camera_model"] = cam.model
+                if cam.serial_number:
+                    result["camera_serial"] = cam.serial_number
+                if cam.lens_model:
+                    result["lens_model"] = cam.lens_model
+                if cam.lens_serial:
+                    result["lens_serial"] = cam.lens_serial
+                if cam.iso:
+                    result["iso"] = cam.iso
+                if cam.shutter_speed:
+                    result["shutter_speed"] = str(cam.shutter_speed)
+                if cam.aperture:
+                    result["aperture"] = f"f/{cam.aperture}" if not str(cam.aperture).startswith("f/") else str(cam.aperture)
+                if cam.focal_length:
+                    result["focal_length"] = str(cam.focal_length)
+                if cam.white_balance:
+                    result["white_balance"] = cam.white_balance
+
+            # GPS info
+            if metadata.gps:
+                gps = metadata.gps
+                if gps.latitude is not None:
+                    result["gps_latitude"] = gps.latitude
+                if gps.longitude is not None:
+                    result["gps_longitude"] = gps.longitude
+                if gps.altitude is not None:
+                    result["gps_altitude"] = gps.altitude
+
+            return result
+
+        except Exception:
+            # Don't fail extraction if ExifTool has issues
+            return {}
 
     def _find_ffprobe(self) -> Optional[str]:
         """Find FFprobe binary."""
@@ -179,6 +268,13 @@ class MetadataExtractor:
         except (ValueError, TypeError):
             pass
 
+        # Get enhanced camera metadata from ExifTool (if available)
+        exif_data = self._extract_exiftool_data(file_path)
+
+        # Use ExifTool data to fill in gaps from filename parsing
+        final_camera_make = camera_info.get("make") or exif_data.get("camera_make")
+        final_camera_model = camera_info.get("model") or exif_data.get("camera_model")
+
         return ClipMetadata(
             filename=path.name,
             file_path=str(path),
@@ -195,11 +291,24 @@ class MetadataExtractor:
             audio_codec=audio_info.get("codec", "none"),
             audio_sample_rate=audio_info.get("sample_rate", 0),
             timecode_start=timecode,
-            camera_make=camera_info.get("make"),
-            camera_model=camera_info.get("model"),
+            camera_make=final_camera_make,
+            camera_model=final_camera_model,
             reel=camera_info.get("reel"),
             clip_number=camera_info.get("clip_number"),
             color_space=color_space,
+            # Enhanced camera info from ExifTool
+            camera_serial=exif_data.get("camera_serial"),
+            lens_model=exif_data.get("lens_model"),
+            lens_serial=exif_data.get("lens_serial"),
+            iso=exif_data.get("iso"),
+            shutter_speed=exif_data.get("shutter_speed"),
+            aperture=exif_data.get("aperture"),
+            focal_length=exif_data.get("focal_length"),
+            white_balance=exif_data.get("white_balance"),
+            # GPS info from ExifTool
+            gps_latitude=exif_data.get("gps_latitude"),
+            gps_longitude=exif_data.get("gps_longitude"),
+            gps_altitude=exif_data.get("gps_altitude"),
             is_valid=duration > 0,
             error_message=None if duration > 0 else "Zero duration",
         )

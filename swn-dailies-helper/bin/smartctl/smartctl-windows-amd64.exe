@@ -1,0 +1,9 @@
+@echo off
+REM smartctl placeholder for SWN Dailies Helper
+REM
+REM This is a placeholder. To use SMART monitoring:
+REM 1. Download smartmontools from: https://www.smartmontools.org/wiki/Download
+REM 2. Replace this file with the actual smartctl.exe
+REM
+echo smartctl not installed. Please install smartmontools.
+exit /b 1

@@ -12,11 +12,21 @@ MVP QC Checks:
 - VFR detected (Warning)
 - Extremely short clip (Info)
 - Extremely large file (Info)
+
+FFmpeg-based QC Checks:
+- Black frames detection (Critical/Warning)
+- Audio silence detection (Warning)
+- Audio clipping detection (Warning)
+- Audio level analysis (Info)
 """
-from typing import List, Dict, Optional, Any
+import subprocess
+import shutil
+import re
+from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 from datetime import datetime
+from pathlib import Path
 
 from src.services.metadata_extractor import ClipMetadata
 
@@ -40,6 +50,18 @@ class QCCheckType(Enum):
     VFR_DETECTED = "vfr_detected"
     EXTREMELY_SHORT = "extremely_short"
     EXTREMELY_LARGE = "extremely_large"
+    # FFmpeg-based checks
+    BLACK_FRAMES = "black_frames"
+    AUDIO_SILENCE = "audio_silence"
+    AUDIO_CLIPPING = "audio_clipping"
+    FLASH_FRAMES = "flash_frames"
+    # MediaInfo-based checks
+    LOW_BITRATE = "low_bitrate"
+    HIGH_BITRATE = "high_bitrate"
+    HDR_CONTENT = "hdr_content"
+    LOW_BIT_DEPTH = "low_bit_depth"
+    INTERLACED = "interlaced"
+    MIXED_CAMERAS = "mixed_cameras"
 
 
 @dataclass
@@ -406,3 +428,505 @@ class QCChecker:
         lines.append("=" * 60)
 
         return "\n".join(lines)
+
+    # FFmpeg-based detection methods
+
+    def _find_ffmpeg(self) -> Optional[str]:
+        """Find FFmpeg binary."""
+        return shutil.which("ffmpeg")
+
+    def detect_black_frames(
+        self,
+        file_path: str,
+        min_duration: float = 0.1,
+        pixel_threshold: float = 0.10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect black frames in a video file.
+
+        Args:
+            file_path: Path to video file
+            min_duration: Minimum black duration to detect (seconds)
+            pixel_threshold: Pixel value threshold (0-1)
+
+        Returns:
+            List of black frame detections with start, end, and duration
+        """
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            return []
+
+        cmd = [
+            ffmpeg,
+            "-i", file_path,
+            "-vf", f"blackdetect=d={min_duration}:pix_th={pixel_threshold}",
+            "-an",  # No audio
+            "-f", "null",
+            "-"
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout
+            )
+
+            detections = []
+            # Parse stderr for blackdetect output
+            # Format: [blackdetect @ 0x...] black_start:0 black_end:1.5 black_duration:1.5
+            pattern = r"black_start:(\d+\.?\d*)\s+black_end:(\d+\.?\d*)\s+black_duration:(\d+\.?\d*)"
+
+            for match in re.finditer(pattern, result.stderr):
+                detections.append({
+                    "start": float(match.group(1)),
+                    "end": float(match.group(2)),
+                    "duration": float(match.group(3)),
+                })
+
+            return detections
+
+        except subprocess.TimeoutExpired:
+            print(f"Black frame detection timed out for {file_path}")
+            return []
+        except Exception as e:
+            print(f"Black frame detection failed: {e}")
+            return []
+
+    def detect_audio_silence(
+        self,
+        file_path: str,
+        noise_threshold_db: float = -50.0,
+        min_duration: float = 0.5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect audio silence in a media file.
+
+        Args:
+            file_path: Path to media file
+            noise_threshold_db: Threshold below which is silence (dB)
+            min_duration: Minimum silence duration to detect (seconds)
+
+        Returns:
+            List of silence detections with start, end, and duration
+        """
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            return []
+
+        cmd = [
+            ffmpeg,
+            "-i", file_path,
+            "-af", f"silencedetect=n={noise_threshold_db}dB:d={min_duration}",
+            "-vn",  # No video
+            "-f", "null",
+            "-"
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            detections = []
+            # Parse stderr for silencedetect output
+            # Format: [silencedetect @ 0x...] silence_start: 1.234
+            # Format: [silencedetect @ 0x...] silence_end: 2.345 | silence_duration: 1.111
+
+            current_start = None
+            for line in result.stderr.split("\n"):
+                if "silence_start:" in line:
+                    match = re.search(r"silence_start:\s*(\d+\.?\d*)", line)
+                    if match:
+                        current_start = float(match.group(1))
+                elif "silence_end:" in line and current_start is not None:
+                    end_match = re.search(r"silence_end:\s*(\d+\.?\d*)", line)
+                    dur_match = re.search(r"silence_duration:\s*(\d+\.?\d*)", line)
+                    if end_match and dur_match:
+                        detections.append({
+                            "start": current_start,
+                            "end": float(end_match.group(1)),
+                            "duration": float(dur_match.group(1)),
+                        })
+                    current_start = None
+
+            return detections
+
+        except subprocess.TimeoutExpired:
+            print(f"Silence detection timed out for {file_path}")
+            return []
+        except Exception as e:
+            print(f"Silence detection failed: {e}")
+            return []
+
+    def analyze_audio_levels(self, file_path: str) -> Dict[str, Any]:
+        """
+        Analyze audio levels using FFmpeg's volumedetect filter.
+
+        Args:
+            file_path: Path to media file
+
+        Returns:
+            Dictionary with mean_volume, max_volume, histogram data
+        """
+        ffmpeg = self._find_ffmpeg()
+        if not ffmpeg:
+            return {}
+
+        cmd = [
+            ffmpeg,
+            "-i", file_path,
+            "-af", "volumedetect",
+            "-vn",  # No video
+            "-f", "null",
+            "-"
+        ]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            levels = {
+                "mean_volume": None,
+                "max_volume": None,
+                "is_clipping": False,
+            }
+
+            for line in result.stderr.split("\n"):
+                if "mean_volume:" in line:
+                    match = re.search(r"mean_volume:\s*(-?\d+\.?\d*)\s*dB", line)
+                    if match:
+                        levels["mean_volume"] = float(match.group(1))
+                elif "max_volume:" in line:
+                    match = re.search(r"max_volume:\s*(-?\d+\.?\d*)\s*dB", line)
+                    if match:
+                        max_vol = float(match.group(1))
+                        levels["max_volume"] = max_vol
+                        # Clipping detection: max volume >= -0.5 dB
+                        levels["is_clipping"] = max_vol >= -0.5
+
+            return levels
+
+        except subprocess.TimeoutExpired:
+            print(f"Audio level analysis timed out for {file_path}")
+            return {}
+        except Exception as e:
+            print(f"Audio level analysis failed: {e}")
+            return {}
+
+    def run_ffmpeg_qc(
+        self,
+        file_path: str,
+        filename: str,
+        check_black_frames: bool = True,
+        check_silence: bool = True,
+        check_clipping: bool = True,
+        black_frame_threshold: float = 0.1,
+        silence_threshold_db: float = -50.0,
+    ) -> List[QCFlag]:
+        """
+        Run all FFmpeg-based QC checks on a file.
+
+        Args:
+            file_path: Path to media file
+            filename: Filename for flag messages
+            check_black_frames: Whether to check for black frames
+            check_silence: Whether to check for audio silence
+            check_clipping: Whether to check for audio clipping
+            black_frame_threshold: Minimum black frame duration (seconds)
+            silence_threshold_db: Silence threshold in dB
+
+        Returns:
+            List of QCFlag objects for detected issues
+        """
+        flags = []
+
+        # Black frame detection
+        if check_black_frames:
+            black_frames = self.detect_black_frames(
+                file_path, min_duration=black_frame_threshold
+            )
+            for detection in black_frames:
+                # Determine severity based on duration
+                duration = detection["duration"]
+                severity = QCSeverity.CRITICAL if duration > 1.0 else QCSeverity.WARNING
+
+                flags.append(QCFlag(
+                    clip_filename=filename,
+                    clip_path=file_path,
+                    check_type=QCCheckType.BLACK_FRAMES.value,
+                    severity=severity.value,
+                    message=f"Black frames detected at {detection['start']:.2f}s ({duration:.2f}s duration)",
+                    details={
+                        "start": detection["start"],
+                        "end": detection["end"],
+                        "duration": duration,
+                    },
+                ))
+
+        # Audio silence detection
+        if check_silence:
+            silence = self.detect_audio_silence(
+                file_path, noise_threshold_db=silence_threshold_db
+            )
+            for detection in silence:
+                flags.append(QCFlag(
+                    clip_filename=filename,
+                    clip_path=file_path,
+                    check_type=QCCheckType.AUDIO_SILENCE.value,
+                    severity=QCSeverity.WARNING.value,
+                    message=f"Audio silence at {detection['start']:.2f}s ({detection['duration']:.2f}s duration)",
+                    details={
+                        "start": detection["start"],
+                        "end": detection["end"],
+                        "duration": detection["duration"],
+                    },
+                ))
+
+        # Audio clipping detection
+        if check_clipping:
+            levels = self.analyze_audio_levels(file_path)
+            if levels.get("is_clipping"):
+                flags.append(QCFlag(
+                    clip_filename=filename,
+                    clip_path=file_path,
+                    check_type=QCCheckType.AUDIO_CLIPPING.value,
+                    severity=QCSeverity.WARNING.value,
+                    message=f"Audio clipping detected (peak: {levels.get('max_volume', 0):.1f} dB)",
+                    details={
+                        "max_volume": levels.get("max_volume"),
+                        "mean_volume": levels.get("mean_volume"),
+                    },
+                ))
+
+        return flags
+
+    def format_timecode(self, seconds: float, fps: float = 24.0) -> str:
+        """Convert seconds to timecode format HH:MM:SS:FF."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        frames = int((seconds % 1) * fps)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}:{frames:02d}"
+
+    # MediaInfo-based detection methods
+
+    def run_mediainfo_qc(
+        self,
+        file_path: str,
+        filename: str,
+        check_vfr: bool = True,
+        check_bitrate: bool = True,
+        check_hdr: bool = True,
+        check_interlaced: bool = True,
+        min_bitrate_mbps: float = 10.0,
+        max_bitrate_mbps: float = 500.0,
+    ) -> Tuple[List[QCFlag], Optional[Dict[str, Any]]]:
+        """
+        Run MediaInfo-based QC checks on a file.
+
+        Args:
+            file_path: Path to media file
+            filename: Filename for flag messages
+            check_vfr: Whether to check for variable frame rate
+            check_bitrate: Whether to validate bitrate range
+            check_hdr: Whether to detect HDR content
+            check_interlaced: Whether to check for interlaced content
+            min_bitrate_mbps: Minimum expected bitrate (Mbps)
+            max_bitrate_mbps: Maximum expected bitrate (Mbps)
+
+        Returns:
+            Tuple of (List of QCFlag objects, MediaInfo details dict)
+        """
+        flags = []
+        details = None
+
+        try:
+            from src.services.mediainfo_service import get_mediainfo_service
+
+            mediainfo = get_mediainfo_service()
+            if not mediainfo.is_available:
+                return flags, None
+
+            info = mediainfo.get_media_info(file_path)
+            if info is None:
+                return flags, None
+
+            # Build details dict for UI display
+            details = self._build_mediainfo_details(info)
+
+            # Check each video track
+            for i, video in enumerate(info.video_tracks):
+                track_prefix = f"Track {i+1}: " if len(info.video_tracks) > 1 else ""
+
+                # VFR Detection
+                if check_vfr and video.frame_rate_mode.upper() == "VFR":
+                    flags.append(QCFlag(
+                        clip_filename=filename,
+                        clip_path=file_path,
+                        check_type=QCCheckType.VFR_DETECTED.value,
+                        severity=QCSeverity.WARNING.value,
+                        message=f"{track_prefix}Variable frame rate detected - may cause sync issues in editing",
+                        details={
+                            "frame_rate": video.frame_rate,
+                            "frame_rate_mode": video.frame_rate_mode,
+                        },
+                    ))
+
+                # Bitrate Analysis
+                if check_bitrate and video.bit_rate > 0:
+                    bitrate_mbps = video.bit_rate / 1_000_000
+
+                    if bitrate_mbps < min_bitrate_mbps:
+                        flags.append(QCFlag(
+                            clip_filename=filename,
+                            clip_path=file_path,
+                            check_type=QCCheckType.LOW_BITRATE.value,
+                            severity=QCSeverity.WARNING.value,
+                            message=f"{track_prefix}Low video bitrate: {bitrate_mbps:.1f} Mbps (expected >= {min_bitrate_mbps} Mbps)",
+                            details={
+                                "bitrate_mbps": bitrate_mbps,
+                                "threshold": min_bitrate_mbps,
+                            },
+                        ))
+                    elif bitrate_mbps > max_bitrate_mbps:
+                        flags.append(QCFlag(
+                            clip_filename=filename,
+                            clip_path=file_path,
+                            check_type=QCCheckType.HIGH_BITRATE.value,
+                            severity=QCSeverity.INFO.value,
+                            message=f"{track_prefix}Very high video bitrate: {bitrate_mbps:.1f} Mbps",
+                            details={
+                                "bitrate_mbps": bitrate_mbps,
+                            },
+                        ))
+
+                # HDR Detection
+                if check_hdr and video.hdr_format:
+                    flags.append(QCFlag(
+                        clip_filename=filename,
+                        clip_path=file_path,
+                        check_type=QCCheckType.HDR_CONTENT.value,
+                        severity=QCSeverity.INFO.value,
+                        message=f"{track_prefix}HDR content detected: {video.hdr_format}",
+                        details={
+                            "hdr_format": video.hdr_format,
+                            "transfer_characteristics": video.transfer_characteristics,
+                            "color_primaries": video.color_primaries,
+                        },
+                    ))
+
+                # Interlaced Detection
+                if check_interlaced and video.scan_type.lower() == "interlaced":
+                    flags.append(QCFlag(
+                        clip_filename=filename,
+                        clip_path=file_path,
+                        check_type=QCCheckType.INTERLACED.value,
+                        severity=QCSeverity.INFO.value,
+                        message=f"{track_prefix}Interlaced content detected",
+                        details={
+                            "scan_type": video.scan_type,
+                        },
+                    ))
+
+                # Low Bit Depth Warning (for professional footage)
+                if video.bit_depth > 0 and video.bit_depth < 10:
+                    flags.append(QCFlag(
+                        clip_filename=filename,
+                        clip_path=file_path,
+                        check_type=QCCheckType.LOW_BIT_DEPTH.value,
+                        severity=QCSeverity.INFO.value,
+                        message=f"{track_prefix}8-bit video (professional footage typically uses 10-bit or higher)",
+                        details={
+                            "bit_depth": video.bit_depth,
+                        },
+                    ))
+
+        except ImportError:
+            # MediaInfo service not available
+            pass
+        except Exception as e:
+            print(f"MediaInfo QC check failed: {e}")
+
+        return flags, details
+
+    def _build_mediainfo_details(self, info) -> Dict[str, Any]:
+        """Build a details dictionary from MediaInfo for UI display."""
+        details = {
+            "container": {
+                "format": info.container.format,
+                "format_profile": info.container.format_profile,
+                "duration_ms": info.container.duration_ms,
+                "overall_bitrate": info.container.overall_bit_rate,
+                "file_size": info.container.file_size,
+            },
+            "video_tracks": [],
+            "audio_tracks": [],
+        }
+
+        for video in info.video_tracks:
+            details["video_tracks"].append({
+                "codec": video.codec,
+                "codec_id": video.codec_id,
+                "width": video.width,
+                "height": video.height,
+                "frame_rate": video.frame_rate,
+                "frame_rate_mode": video.frame_rate_mode,
+                "bit_depth": video.bit_depth,
+                "bit_rate": video.bit_rate,
+                "color_space": video.color_space,
+                "chroma_subsampling": video.chroma_subsampling,
+                "scan_type": video.scan_type,
+                "hdr_format": video.hdr_format,
+                "transfer_characteristics": video.transfer_characteristics,
+                "color_primaries": video.color_primaries,
+            })
+
+        for audio in info.audio_tracks:
+            details["audio_tracks"].append({
+                "codec": audio.codec,
+                "channels": audio.channels,
+                "channel_layout": audio.channel_layout,
+                "sample_rate": audio.sample_rate,
+                "bit_depth": audio.bit_depth,
+                "bit_rate": audio.bit_rate,
+                "language": audio.language,
+            })
+
+        return details
+
+    def get_mediainfo_details(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """
+        Get MediaInfo details for a file without running QC checks.
+
+        Args:
+            file_path: Path to media file
+
+        Returns:
+            MediaInfo details dictionary, or None if unavailable
+        """
+        try:
+            from src.services.mediainfo_service import get_mediainfo_service
+
+            mediainfo = get_mediainfo_service()
+            if not mediainfo.is_available:
+                return None
+
+            info = mediainfo.get_media_info(file_path)
+            if info is None:
+                return None
+
+            return self._build_mediainfo_details(info)
+
+        except ImportError:
+            return None
+        except Exception:
+            return None

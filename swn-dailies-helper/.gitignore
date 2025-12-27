@@ -50,8 +50,10 @@ Thumbs.db
 config.json
 
 # FFmpeg binaries (downloaded separately)
-resources/ffmpeg/*
-!resources/ffmpeg/.gitkeep
+resources/ffmpeg/*.exe
+resources/ffmpeg/ffmpeg
+resources/ffmpeg/ffprobe
+!resources/ffmpeg/README.md
 
 # Build output
 release/

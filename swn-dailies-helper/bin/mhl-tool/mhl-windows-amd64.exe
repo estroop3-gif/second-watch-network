@@ -1,0 +1,9 @@
+@echo off
+REM mhl-tool placeholder for SWN Dailies Helper
+REM
+REM This is a placeholder. To use MHL verification:
+REM 1. Download mhl-tool from: https://pomfort.com/mhl-tool/
+REM 2. Replace this file with the actual mhl.exe
+REM
+echo mhl-tool not installed. Please download from https://pomfort.com/mhl-tool/
+exit /b 1

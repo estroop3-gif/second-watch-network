@@ -77,6 +77,8 @@ class UploadQueueItem:
     error: Optional[str] = None
     added_at: datetime = field(default_factory=datetime.now)
     started_at: Optional[datetime] = None  # When upload started
+    generate_proxies: bool = False  # Whether to generate proxy versions after upload
+    clip_id: Optional[str] = None  # Set after upload confirms
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -94,6 +96,8 @@ class UploadQueueItem:
             "error": self.error,
             "added_at": self.added_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
+            "generate_proxies": self.generate_proxies,
+            "clip_id": self.clip_id,
         }
 
     @classmethod
@@ -107,6 +111,9 @@ class UploadQueueItem:
             data["started_at"] = datetime.fromisoformat(data["started_at"])
         else:
             data["started_at"] = None
+        # Handle new fields with defaults for backwards compatibility
+        data.setdefault("generate_proxies", False)
+        data.setdefault("clip_id", None)
         return cls(**data)
 
 
@@ -174,7 +181,8 @@ class UploadQueueService(QObject):
     def add_from_manifest(
         self,
         manifest: "OffloadManifest",
-        destination_paths: List[str]
+        destination_paths: List[str],
+        generate_proxies: bool = False,
     ) -> int:
         """
         Add all files from an offload manifest to the queue.
@@ -182,6 +190,7 @@ class UploadQueueService(QObject):
         Args:
             manifest: The completed offload manifest
             destination_paths: Paths where files were copied
+            generate_proxies: Whether to generate proxy versions after upload
 
         Returns:
             Number of files added to queue
@@ -215,6 +224,7 @@ class UploadQueueService(QObject):
                             production_day_id=manifest.production_day_id,
                             camera_label=manifest.camera_label or "A",
                             roll_name=manifest.roll_name or "",
+                            generate_proxies=generate_proxies,
                         )
                         self._queue.append(item)
                         added += 1
@@ -509,6 +519,7 @@ class UploadQueueService(QObject):
         retry_count: int = 0,
         error: Optional[str] = None,
         s3_key: Optional[str] = None,
+        clip_id: Optional[str] = None,
     ):
         """Mark an upload as complete and add to history.
 
@@ -518,6 +529,7 @@ class UploadQueueService(QObject):
             retry_count: Number of retries
             error: Error message if failed
             s3_key: S3 key if succeeded
+            clip_id: Database clip ID if uploaded successfully
         """
         item: Optional[UploadQueueItem] = None
         with self._lock:
@@ -526,6 +538,7 @@ class UploadQueueService(QObject):
                     item = i
                     i.status = QueueItemStatus.COMPLETED if success else QueueItemStatus.FAILED
                     i.error = error
+                    i.clip_id = clip_id
                     self._save_queue()
                     break
 
@@ -542,4 +555,44 @@ class UploadQueueService(QObject):
                 s3_key=s3_key,
             )
 
+            # ALWAYS queue for web player proxy transcoding on successful upload
+            # Web player proxies (480p/720p/1080p) are required for the video player
+            # regardless of the "generate_proxies" toggle (which controls edit proxies)
+            if success and clip_id and item.project_id:
+                self._queue_for_proxy_transcoding(item, clip_id)
+
         self.queue_updated.emit()
+
+    def _queue_for_proxy_transcoding(self, item: UploadQueueItem, clip_id: str):
+        """Queue a completed upload for proxy transcoding.
+
+        Args:
+            item: The completed upload queue item
+            clip_id: The database clip ID
+        """
+        try:
+            from src.services.proxy_transcoder import ProxyTranscoder
+
+            # Use config from service instance
+            if not self.config:
+                print("Warning: ConfigManager not available for proxy transcoding")
+                return
+
+            transcoder = ProxyTranscoder.get_instance(self.config)
+
+            # Queue the clip for transcoding
+            transcoder.queue_clip(
+                clip_id=clip_id,
+                source_path=str(item.file_path),
+                project_id=item.project_id,
+                original_filename=item.file_name,
+            )
+
+            # Start the transcoder if not already running
+            if not transcoder.is_running():
+                transcoder.start()
+
+            print(f"Queued clip {clip_id} for proxy transcoding: {item.file_name}")
+
+        except Exception as e:
+            print(f"Failed to queue for proxy transcoding: {e}")

@@ -1,0 +1,17 @@
+Pomfort mhl-tool
+Copyright: (c) Pomfort GmbH
+License: Proprietary (free redistribution allowed)
+Website: https://pomfort.com/mhl-tool/
+
+mhl-tool is a command-line utility for creating and verifying
+Media Hash List (MHL) files. MHL is an industry-standard format
+for media file verification in professional workflows.
+
+This component is included in SWN Dailies Helper for MHL verification.
+
+INSTALLATION
+============
+- Windows/Linux: Download from https://pomfort.com/mhl-tool/
+- macOS: brew tap pomfort/homebrew-mhl && brew install mhl
+
+For questions or support, contact Pomfort at https://pomfort.com/

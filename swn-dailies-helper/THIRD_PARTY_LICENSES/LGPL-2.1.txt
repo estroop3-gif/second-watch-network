@@ -1,0 +1,16 @@
+GNU LESSER GENERAL PUBLIC LICENSE
+Version 2.1, February 1999
+
+The full text of this license can be found at:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+SPDX Identifier: LGPL-2.1-only
+
+This file serves as a reference. The complete license text should be
+obtained from the URL above or included in distribution builds.
+
+For LGPL-2.1 licensed components in this software:
+- FFmpeg (https://ffmpeg.org/) - some components
+
+Source code for these components is available at:
+https://secondwatchnetwork.com/opensource/

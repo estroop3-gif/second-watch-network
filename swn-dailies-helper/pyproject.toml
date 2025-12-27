@@ -21,6 +21,10 @@ dependencies = [
     "pydantic-settings>=2.1.0",
     "watchdog>=3.0.0",
     "tqdm>=4.66.0",
+    # Professional media tools
+    "opentimelineio>=0.17.0",  # Timeline interchange (Apache-2.0)
+    "opencolorio>=2.3.0",       # Color management (BSD-3-Clause)
+    "ascmhl>=1.0.0",            # ASC-MHL manifest generation (MIT)
 ]
 
 [project.optional-dependencies]

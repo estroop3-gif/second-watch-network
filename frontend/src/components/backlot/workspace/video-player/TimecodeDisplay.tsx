@@ -1,5 +1,6 @@
 /**
  * TimecodeDisplay - Shows current timecode in HH:MM:SS:FF format
+ * Supports compact mode for vertical videos
  */
 import React from 'react';
 import { useVideoPlayer } from './VideoPlayerContext';
@@ -9,12 +10,14 @@ interface TimecodeDisplayProps {
   className?: string;
   showDuration?: boolean;
   quality?: string;
+  compact?: boolean;
 }
 
 const TimecodeDisplay: React.FC<TimecodeDisplayProps> = ({
   className,
   showDuration = true,
   quality = 'auto',
+  compact = false,
 }) => {
   const { state } = useVideoPlayer();
 
@@ -30,7 +33,52 @@ const TimecodeDisplay: React.FC<TimecodeDisplayProps> = ({
     return `${pad(hours)}:${pad(mins)}:${pad(secs)}:${pad(frames)}`;
   };
 
+  // Compact format: MM:SS
+  const formatCompact = (seconds: number): string => {
+    const totalSeconds = Math.floor(seconds);
+    const secs = totalSeconds % 60;
+    const mins = Math.floor(totalSeconds / 60);
+    return `${mins}:${pad(secs)}`;
+  };
+
   const durationTimecode = formatDurationTimecode(state.duration, state.frameRate);
+  const durationCompact = formatCompact(state.duration);
+  const currentCompact = formatCompact(state.currentTime);
+
+  if (compact) {
+    return (
+      <div className={cn('flex items-center gap-1 font-mono text-xs', className)}>
+        {/* Current Time */}
+        <span className="text-bone-white tabular-nums">
+          {currentCompact}
+        </span>
+
+        {/* Duration */}
+        {showDuration && (
+          <>
+            <span className="text-muted-gray">/</span>
+            <span className="text-muted-gray tabular-nums">
+              {durationCompact}
+            </span>
+          </>
+        )}
+
+        {/* Quality Badge - only show if not auto */}
+        {quality !== 'auto' && (
+          <span className="ml-1 px-1 py-0.5 rounded bg-white/10 text-[10px] text-muted-gray uppercase">
+            {quality}
+          </span>
+        )}
+
+        {/* Playback Rate Badge (if not 1x) */}
+        {state.playbackRate !== 1 && (
+          <span className="ml-0.5 px-1 py-0.5 rounded bg-accent-yellow/20 text-[10px] text-accent-yellow">
+            {state.playbackRate}x
+          </span>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={cn('flex items-center gap-1 font-mono text-sm', className)}>

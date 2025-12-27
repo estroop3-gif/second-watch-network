@@ -236,3 +236,40 @@ class ConfigManager:
     def set_upload_settings(self, settings: dict):
         """Set upload configuration settings."""
         self.set("upload_settings", settings)
+
+    # Naming Convention Settings
+    def get_naming_convention(self) -> dict:
+        """Get folder naming convention settings."""
+        return self.get("naming_convention", {
+            "date_format": "MMDDYYYY",
+            "include_date": True,
+            "project_code": "",
+            "include_project": True,
+            "day_prefix": "Day",
+            "include_day": True,
+            "separator": "_",
+            "camera_prefix": "Cam",
+            "audio_folder_name": "Audio",
+        })
+
+    def set_naming_convention(self, settings: dict):
+        """Set folder naming convention settings."""
+        self.set("naming_convention", settings)
+
+    # Backlot Link Settings
+    def get_backlot_link(self) -> dict:
+        """Get Backlot link configuration."""
+        return self.get("backlot_link", {
+            "enabled": False,
+            "project_id": None,
+            "project_name": None,
+            "production_day_id": None,
+            "production_day_number": None,
+            "upload_to_dailies": True,
+            "upload_to_assets": False,
+            "upload_to_review": False,
+        })
+
+    def set_backlot_link(self, settings: dict):
+        """Set Backlot link configuration."""
+        self.set("backlot_link", settings)

@@ -234,9 +234,9 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamUrlLoading, setStreamUrlLoading] = useState(false);
-  const [videoQuality, setVideoQuality] = useState<'auto' | '1080p' | '720p' | '480p' | 'original'>('auto');
-  const [actualQuality, setActualQuality] = useState<string>('original');
-  const [availableRenditions, setAvailableRenditions] = useState<string[]>(['original']);
+  const [videoQuality, setVideoQuality] = useState<'auto' | '4k' | '1080p' | '720p' | '480p'>('auto');
+  const [actualQuality, setActualQuality] = useState<string>('1080p');
+  const [availableRenditions, setAvailableRenditions] = useState<string[]>([]);
   const [isTranscoding, setIsTranscoding] = useState(false);
   const [transcodeStatus, setTranscodeStatus] = useState<string | null>(null);
 
@@ -331,7 +331,9 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
         console.log('[ClipDetail] Got stream URL - requested:', quality, 'actual:', data.quality, 'available:', data.available_renditions, 'transcoding_queued:', data.transcoding_queued);
         setStreamUrl(data.url);
         setActualQuality(data.quality || 'original');
-        setAvailableRenditions(data.available_renditions || ['original']);
+        // Filter out 'original' from renditions - we use named quality levels only
+        const renditions = (data.available_renditions || []).filter((r: string) => r !== 'original');
+        setAvailableRenditions(renditions);
 
         // Show notification if transcoding was auto-queued
         if (data.transcoding_queued) {
@@ -344,8 +346,8 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
       } else {
         console.error('[ClipDetail] Failed to fetch stream URL:', response.status);
         setStreamUrl(null);
-        setActualQuality('original');
-        setAvailableRenditions(['original']);
+        setActualQuality('1080p');
+        setAvailableRenditions([]);
       }
     } catch (error) {
       console.error('[ClipDetail] Error fetching stream URL:', error);
@@ -748,9 +750,10 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
         if (data.job) {
           setTranscodeStatus(data.job.status);
         }
-        // Update available renditions from transcoding status
+        // Update available renditions from transcoding status (filter out 'original')
         if (data.renditions && Object.keys(data.renditions).length > 0) {
-          setAvailableRenditions(['original', ...Object.keys(data.renditions)]);
+          const renditions = Object.keys(data.renditions).filter(r => r !== 'original');
+          setAvailableRenditions(renditions);
         }
       }
     } catch (err) {
@@ -851,7 +854,8 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
                   actualQuality={actualQuality}
                   availableRenditions={availableRenditions}
                   canEdit={canEdit && !currentClip.is_locked}
-                  className="aspect-video"
+                  autoSize={true}
+                  maxHeight="70vh"
                 />
               ) : (
                 <div className="aspect-video bg-charcoal-black rounded-lg flex items-center justify-center">
@@ -969,45 +973,6 @@ const ClipDetailView: React.FC<ClipDetailViewProps> = ({
                 </button>
               )}
 
-              {/* Transcode */}
-              {currentClip.storage_mode === 'cloud' && streamUrl && canEdit && !currentClip.is_locked && (
-                <button
-                  onClick={handleTranscode}
-                  disabled={isTranscoding || transcodeStatus === 'processing' || transcodeStatus === 'pending'}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-2 rounded-lg transition-colors",
-                    transcodeStatus === 'completed'
-                      ? "bg-green-500/20 text-green-400"
-                      : transcodeStatus === 'processing' || transcodeStatus === 'pending'
-                      ? "bg-accent-yellow/20 text-accent-yellow"
-                      : "bg-charcoal-black/50 text-muted-gray hover:text-bone-white"
-                  )}
-                  title={
-                    transcodeStatus === 'completed'
-                      ? "Transcoding complete - lower quality versions available"
-                      : transcodeStatus === 'processing'
-                      ? "Transcoding in progress..."
-                      : transcodeStatus === 'pending'
-                      ? "Transcoding queued..."
-                      : "Create 720p and 480p versions for faster streaming"
-                  }
-                >
-                  {isTranscoding || transcodeStatus === 'processing' ? (
-                    <TranscodeLoader className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <Film className="w-5 h-5" />
-                  )}
-                  <span className="text-sm font-medium">
-                    {transcodeStatus === 'completed'
-                      ? 'Transcoded'
-                      : transcodeStatus === 'processing'
-                      ? 'Transcoding...'
-                      : transcodeStatus === 'pending'
-                      ? 'Queued'
-                      : 'Transcode'}
-                  </span>
-                </button>
-              )}
             </div>
 
             {canEdit && !currentClip.is_locked && (

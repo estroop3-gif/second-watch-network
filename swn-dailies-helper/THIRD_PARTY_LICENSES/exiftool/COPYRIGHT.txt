@@ -1,0 +1,19 @@
+ExifTool
+Version: 12.97
+Copyright: (c) 2003-2024 Phil Harvey
+License: GPL-1.0-or-later OR Artistic-1.0
+Website: https://exiftool.org/
+
+ExifTool is a platform-independent Perl library plus a command-line
+application for reading, writing and editing meta information in a
+wide variety of files.
+
+This component is included in SWN Dailies Helper for metadata extraction.
+
+SOURCE CODE AVAILABILITY
+========================
+As required by the GPL license, source code for ExifTool is available at:
+https://secondwatchnetwork.com/opensource/
+
+Or directly from the author at:
+https://exiftool.org/Image-ExifTool-12.97.tar.gz

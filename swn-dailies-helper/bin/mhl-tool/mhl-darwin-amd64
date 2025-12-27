@@ -1,0 +1,21 @@
+#!/bin/sh
+# mhl-tool wrapper for SWN Dailies Helper (macOS)
+# Uses Homebrew installation: brew tap pomfort/homebrew-mhl && brew install mhl
+
+# Check for Homebrew installation (Apple Silicon)
+if [ -x "/opt/homebrew/bin/mhl" ]; then
+    exec "/opt/homebrew/bin/mhl" "$@"
+fi
+
+# Check for Homebrew installation (Intel)
+if [ -x "/usr/local/bin/mhl" ]; then
+    exec "/usr/local/bin/mhl" "$@"
+fi
+
+# Check PATH
+if command -v mhl >/dev/null 2>&1; then
+    exec mhl "$@"
+fi
+
+echo "mhl-tool not installed. Install with: brew tap pomfort/homebrew-mhl && brew install mhl" >&2
+exit 1

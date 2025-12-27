@@ -1,0 +1,16 @@
+GNU GENERAL PUBLIC LICENSE
+Version 2, June 1991
+
+The full text of this license can be found at:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+SPDX Identifier: GPL-2.0-only
+
+This file serves as a reference. The complete license text should be
+obtained from the URL above or included in distribution builds.
+
+For GPL-2.0 licensed components in this software:
+- smartmontools (https://www.smartmontools.org/)
+
+Source code for these components is available at:
+https://secondwatchnetwork.com/opensource/

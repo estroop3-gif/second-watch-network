@@ -21514,6 +21514,43 @@ class CreateTaskFromNoteRequest(BaseModel):
 
 
 # =====================================================
+# Review Folder Models
+# =====================================================
+
+class ReviewFolderCreate(BaseModel):
+    """Create a new review folder"""
+    name: str
+    description: Optional[str] = None
+    color: Optional[str] = None  # Hex color code
+    parent_folder_id: Optional[str] = None
+
+
+class ReviewFolderUpdate(BaseModel):
+    """Update a review folder"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    parent_folder_id: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class ReviewAssetMoveRequest(BaseModel):
+    """Move a review asset to a folder"""
+    folder_id: Optional[str] = None  # None = move to root
+
+
+class ReviewAssetStatusUpdate(BaseModel):
+    """Update review asset status"""
+    status: str  # draft, in_review, changes_requested, approved, final
+
+
+class ReviewAssetBulkMoveRequest(BaseModel):
+    """Move multiple assets to a folder"""
+    asset_ids: List[str]
+    folder_id: Optional[str] = None
+
+
+# =====================================================
 # Review Helper Functions
 # =====================================================
 
@@ -21596,6 +21633,403 @@ def enrich_user_data(client, user_id: str) -> Optional[Dict[str, Any]]:
     except:
         pass
     return {"id": user_id, "display_name": "Unknown User", "avatar_url": None}
+
+
+# =====================================================
+# Review Folder Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/review/folders")
+async def list_review_folders(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """List all review folders for a project (tree structure)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all folders
+        folders_response = client.table("backlot_review_folders").select(
+            "*, profiles!created_by_user_id(id, display_name, avatar_url)"
+        ).eq("project_id", project_id).order("sort_order").execute()
+
+        folders = folders_response.data or []
+
+        # Get asset counts for each folder
+        for folder in folders:
+            count_resp = client.table("backlot_review_assets").select(
+                "id", count="exact"
+            ).eq("folder_id", folder["id"]).execute()
+            folder["asset_count"] = count_resp.count or 0
+
+            # Get subfolder count
+            subfolder_resp = client.table("backlot_review_folders").select(
+                "id", count="exact"
+            ).eq("parent_folder_id", folder["id"]).execute()
+            folder["subfolder_count"] = subfolder_resp.count or 0
+
+        # Build tree structure
+        def build_tree(parent_id=None):
+            children = []
+            for folder in folders:
+                if folder.get("parent_folder_id") == parent_id:
+                    folder["children"] = build_tree(folder["id"])
+                    children.append(folder)
+            return children
+
+        tree = build_tree(None)
+
+        return {"folders": tree, "all_folders": folders}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing review folders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/review/folders")
+async def create_review_folder(
+    project_id: str,
+    request: ReviewFolderCreate,
+    authorization: str = Header(None)
+):
+    """Create a new review folder"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        folder_id = str(uuid.uuid4())
+
+        # Validate parent folder if specified
+        if request.parent_folder_id:
+            parent_resp = client.table("backlot_review_folders").select("id").eq(
+                "id", request.parent_folder_id
+            ).eq("project_id", project_id).execute()
+            if not parent_resp.data:
+                raise HTTPException(status_code=404, detail="Parent folder not found")
+
+        # Get max sort_order for this level
+        sort_query = client.table("backlot_review_folders").select("sort_order").eq(
+            "project_id", project_id
+        )
+        if request.parent_folder_id:
+            sort_query = sort_query.eq("parent_folder_id", request.parent_folder_id)
+        else:
+            sort_query = sort_query.is_("parent_folder_id", "null")
+        sort_resp = sort_query.order("sort_order", desc=True).limit(1).execute()
+        max_sort = (sort_resp.data[0]["sort_order"] if sort_resp.data else 0) + 1
+
+        folder_data = {
+            "id": folder_id,
+            "project_id": project_id,
+            "name": request.name,
+            "description": request.description,
+            "color": request.color,
+            "parent_folder_id": request.parent_folder_id,
+            "sort_order": max_sort,
+            "created_by_user_id": user["id"]
+        }
+
+        result = client.table("backlot_review_folders").insert(folder_data).execute()
+
+        return {"folder": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating review folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/review/folders/{folder_id}")
+async def get_review_folder(
+    folder_id: str,
+    authorization: str = Header(None)
+):
+    """Get a folder with its contents"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get folder
+        folder_resp = client.table("backlot_review_folders").select("*").eq(
+            "id", folder_id
+        ).execute()
+
+        if not folder_resp.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        folder = folder_resp.data[0]
+        await verify_project_access(client, folder["project_id"], user["id"])
+
+        # Get subfolders
+        subfolders_resp = client.table("backlot_review_folders").select("*").eq(
+            "parent_folder_id", folder_id
+        ).order("sort_order").execute()
+        folder["subfolders"] = subfolders_resp.data or []
+
+        # Get assets in this folder
+        assets_resp = client.table("backlot_review_assets").select("*").eq(
+            "folder_id", folder_id
+        ).order("sort_order").execute()
+        folder["assets"] = assets_resp.data or []
+
+        # Get breadcrumb path
+        path_resp = client.rpc("get_review_folder_path", {"folder_id": folder_id}).execute()
+        folder["path"] = path_resp.data or []
+
+        return {"folder": folder}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting review folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/review/folders/{folder_id}")
+async def update_review_folder(
+    folder_id: str,
+    request: ReviewFolderUpdate,
+    authorization: str = Header(None)
+):
+    """Update a review folder"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get folder
+        folder_resp = client.table("backlot_review_folders").select("*").eq(
+            "id", folder_id
+        ).execute()
+
+        if not folder_resp.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        folder = folder_resp.data[0]
+        await verify_project_access(client, folder["project_id"], user["id"], require_edit=True)
+
+        # Build update data
+        update_data = {}
+        if request.name is not None:
+            update_data["name"] = request.name
+        if request.description is not None:
+            update_data["description"] = request.description
+        if request.color is not None:
+            update_data["color"] = request.color
+        if request.sort_order is not None:
+            update_data["sort_order"] = request.sort_order
+        if request.parent_folder_id is not None:
+            # Validate new parent isn't self or descendant
+            if request.parent_folder_id == folder_id:
+                raise HTTPException(status_code=400, detail="Cannot move folder into itself")
+            update_data["parent_folder_id"] = request.parent_folder_id
+
+        if update_data:
+            result = client.table("backlot_review_folders").update(update_data).eq(
+                "id", folder_id
+            ).execute()
+            return {"folder": result.data[0]}
+
+        return {"folder": folder}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating review folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/folders/{folder_id}")
+async def delete_review_folder(
+    folder_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a review folder (moves contents to parent)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get folder
+        folder_resp = client.table("backlot_review_folders").select("*").eq(
+            "id", folder_id
+        ).execute()
+
+        if not folder_resp.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        folder = folder_resp.data[0]
+        await verify_project_access(client, folder["project_id"], user["id"], require_edit=True)
+
+        parent_id = folder.get("parent_folder_id")
+
+        # Move subfolders to parent
+        client.table("backlot_review_folders").update(
+            {"parent_folder_id": parent_id}
+        ).eq("parent_folder_id", folder_id).execute()
+
+        # Move assets to parent
+        client.table("backlot_review_assets").update(
+            {"folder_id": parent_id}
+        ).eq("folder_id", folder_id).execute()
+
+        # Delete folder
+        client.table("backlot_review_folders").delete().eq("id", folder_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting review folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/review/folders/{folder_id}/move")
+async def move_review_folder(
+    folder_id: str,
+    request: ReviewAssetMoveRequest,
+    authorization: str = Header(None)
+):
+    """Move a folder to a new parent"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get folder
+        folder_resp = client.table("backlot_review_folders").select("*").eq(
+            "id", folder_id
+        ).execute()
+
+        if not folder_resp.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        folder = folder_resp.data[0]
+        await verify_project_access(client, folder["project_id"], user["id"], require_edit=True)
+
+        # Can't move into itself
+        if request.folder_id == folder_id:
+            raise HTTPException(status_code=400, detail="Cannot move folder into itself")
+
+        # Update parent
+        result = client.table("backlot_review_folders").update(
+            {"parent_folder_id": request.folder_id}
+        ).eq("id", folder_id).execute()
+
+        return {"folder": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error moving review folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/review/assets/{asset_id}/move")
+async def move_review_asset(
+    asset_id: str,
+    request: ReviewAssetMoveRequest,
+    authorization: str = Header(None)
+):
+    """Move an asset to a folder"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        asset = await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
+
+        # Validate target folder if specified
+        if request.folder_id:
+            folder_resp = client.table("backlot_review_folders").select("id").eq(
+                "id", request.folder_id
+            ).eq("project_id", asset["project_id"]).execute()
+            if not folder_resp.data:
+                raise HTTPException(status_code=404, detail="Target folder not found")
+
+        # Update asset folder
+        result = client.table("backlot_review_assets").update(
+            {"folder_id": request.folder_id}
+        ).eq("id", asset_id).execute()
+
+        return {"asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error moving review asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/review/assets/{asset_id}/status")
+async def update_review_asset_status(
+    asset_id: str,
+    request: ReviewAssetStatusUpdate,
+    authorization: str = Header(None)
+):
+    """Update asset status (draft, in_review, approved, etc.)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
+
+        valid_statuses = ['draft', 'in_review', 'changes_requested', 'approved', 'final']
+        if request.status not in valid_statuses:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+
+        result = client.table("backlot_review_assets").update(
+            {"status": request.status}
+        ).eq("id", asset_id).execute()
+
+        return {"asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating review asset status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/review/assets/bulk-move")
+async def bulk_move_review_assets(
+    project_id: str,
+    request: ReviewAssetBulkMoveRequest,
+    authorization: str = Header(None)
+):
+    """Move multiple assets to a folder"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        # Validate target folder if specified
+        if request.folder_id:
+            folder_resp = client.table("backlot_review_folders").select("id").eq(
+                "id", request.folder_id
+            ).eq("project_id", project_id).execute()
+            if not folder_resp.data:
+                raise HTTPException(status_code=404, detail="Target folder not found")
+
+        # Update all assets
+        for asset_id in request.asset_ids:
+            client.table("backlot_review_assets").update(
+                {"folder_id": request.folder_id}
+            ).eq("id", asset_id).eq("project_id", project_id).execute()
+
+        return {"success": True, "moved_count": len(request.asset_ids)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk moving review assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =====================================================
@@ -21933,6 +22367,685 @@ async def delete_review_version(
         raise
     except Exception as e:
         print(f"Error deleting review version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Review Version Streaming (S3)
+# =====================================================
+
+@router.get("/review/versions/{version_id}/stream-url")
+async def get_review_version_stream_url(
+    version_id: str,
+    quality: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get presigned streaming URL for a review version"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        version = await verify_review_version_access(client, version_id, user["id"])
+
+        # Check storage mode
+        storage_mode = version.get("storage_mode", "external")
+        if storage_mode == "external":
+            # For external videos, just return the video URL
+            return {
+                "url": version["video_url"],
+                "quality": "external",
+                "expires_at": None
+            }
+
+        # S3 storage - generate presigned URL
+        s3_key = version.get("s3_key")
+        if not s3_key:
+            raise HTTPException(status_code=404, detail="Video file not found")
+
+        # Determine which quality to serve
+        renditions = version.get("renditions") or {}
+        requested_quality = quality or "auto"
+
+        if requested_quality == "auto":
+            # Auto-select best available
+            for q in ["1080p", "720p", "480p", "original"]:
+                if q in renditions or q == "original":
+                    requested_quality = q
+                    break
+
+        # Get the S3 key for the requested quality
+        if requested_quality in renditions:
+            stream_key = renditions[requested_quality]
+        else:
+            stream_key = s3_key  # Fall back to original
+
+        # Generate presigned URL
+        import boto3
+        from datetime import datetime, timedelta
+        from botocore.config import Config
+
+        s3_client = boto3.client(
+            's3',
+            config=Config(signature_version='s3v4')
+        )
+
+        # Use the backlot bucket for review videos
+        bucket_name = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        expires_in = 3600  # 1 hour
+
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': stream_key},
+            ExpiresIn=expires_in
+        )
+
+        expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
+
+        return {
+            "url": presigned_url,
+            "quality": requested_quality,
+            "expires_at": expires_at
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting stream URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ReviewVersionUploadRequest(BaseModel):
+    filename: str
+    content_type: str
+
+
+@router.post("/review/assets/{asset_id}/upload-url")
+async def get_review_version_upload_url(
+    asset_id: str,
+    request: ReviewVersionUploadRequest,
+    authorization: str = Header(None)
+):
+    """Get presigned upload URL for a new review version"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
+
+        import boto3
+        import uuid
+        from datetime import datetime, timedelta
+        from botocore.config import Config
+
+        # Generate unique S3 key
+        version_id = str(uuid.uuid4())
+        file_ext = request.filename.split('.')[-1] if '.' in request.filename else 'mp4'
+        s3_key = f"review/{asset_id}/{version_id}/original.{file_ext}"
+
+        # Generate presigned upload URL
+        s3_client = boto3.client(
+            's3',
+            config=Config(signature_version='s3v4')
+        )
+
+        bucket_name = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        expires_in = 3600  # 1 hour
+
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': s3_key,
+                'ContentType': request.content_type
+            },
+            ExpiresIn=expires_in
+        )
+
+        # Get current version count
+        versions = client.table("backlot_review_versions").select("version_number").eq("asset_id", asset_id).order("version_number", desc=True).limit(1).execute()
+        next_version_number = (versions.data[0]["version_number"] + 1) if versions.data else 1
+
+        # Create version record (pending upload)
+        new_version = {
+            "id": version_id,
+            "asset_id": asset_id,
+            "version_number": next_version_number,
+            "video_url": "",  # Will be filled after upload
+            "video_provider": "s3",
+            "storage_mode": "s3",
+            "s3_key": s3_key,
+            "original_filename": request.filename,
+            "transcode_status": "pending",
+            "created_by_user_id": user["id"],
+        }
+
+        client.table("backlot_review_versions").insert(new_version).execute()
+
+        return {
+            "upload_url": presigned_url,
+            "s3_key": s3_key,
+            "version_id": version_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/review/versions/{version_id}/complete-upload")
+async def complete_review_version_upload(
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """Mark upload as complete and trigger transcoding"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        version = await verify_review_version_access(client, version_id, user["id"], require_edit=True)
+
+        if version.get("storage_mode") != "s3":
+            raise HTTPException(status_code=400, detail="Version is not S3 storage")
+
+        # Update transcode status to processing
+        updated = client.table("backlot_review_versions").update({
+            "transcode_status": "processing"
+        }).eq("id", version_id).execute()
+
+        # TODO: Trigger Lambda transcoding job (same as dailies)
+        # For now, mark as completed with original only
+        client.table("backlot_review_versions").update({
+            "transcode_status": "completed",
+            "renditions": {"original": version["s3_key"]}
+        }).eq("id", version_id).execute()
+
+        # Set as active version
+        client.table("backlot_review_assets").update({
+            "active_version_id": version_id
+        }).eq("id", version["asset_id"]).execute()
+
+        return {
+            "version": updated.data[0] if updated.data else None,
+            "transcode_started": True
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error completing upload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/review/versions/{version_id}/transcode-status")
+async def get_review_version_transcode_status(
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """Get transcoding status for a review version"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        version = await verify_review_version_access(client, version_id, user["id"])
+
+        return {
+            "status": version.get("transcode_status", "pending"),
+            "progress": 100 if version.get("transcode_status") == "completed" else 0,
+            "renditions": version.get("renditions") or {},
+            "error": version.get("transcode_error")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting transcode status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# External Review Links
+# =====================================================
+
+class ExternalLinkCreate(BaseModel):
+    name: str
+    asset_id: Optional[str] = None
+    folder_id: Optional[str] = None
+    password: Optional[str] = None
+    can_comment: bool = True
+    can_download: bool = False
+    can_approve: bool = False
+    expires_at: Optional[str] = None
+    max_views: Optional[int] = None
+
+
+class ExternalLinkUpdate(BaseModel):
+    name: Optional[str] = None
+    password: Optional[str] = None
+    can_comment: Optional[bool] = None
+    can_download: Optional[bool] = None
+    can_approve: Optional[bool] = None
+    expires_at: Optional[str] = None
+    max_views: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+@router.get("/projects/{project_id}/review/external-links")
+async def list_external_links(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """List all external links for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        links = client.table("backlot_review_external_links").select(
+            "*, created_by:profiles!created_by_user_id(id, display_name, avatar_url)"
+        ).eq("project_id", project_id).order("created_at", desc=True).execute()
+
+        return {"links": links.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing external links: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/review/external-links")
+async def create_external_link(
+    project_id: str,
+    request: ExternalLinkCreate,
+    authorization: str = Header(None)
+):
+    """Create an external review link"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        import secrets
+        import hashlib
+
+        # Generate unique token
+        token = secrets.token_urlsafe(32)
+
+        # Hash password if provided
+        password_hash = None
+        if request.password:
+            password_hash = hashlib.sha256(request.password.encode()).hexdigest()
+
+        new_link = {
+            "project_id": project_id,
+            "asset_id": request.asset_id,
+            "folder_id": request.folder_id,
+            "token": token,
+            "name": request.name,
+            "password_hash": password_hash,
+            "can_comment": request.can_comment,
+            "can_download": request.can_download,
+            "can_approve": request.can_approve,
+            "expires_at": request.expires_at,
+            "max_views": request.max_views,
+            "created_by_user_id": user["id"],
+            "is_active": True,
+        }
+
+        result = client.table("backlot_review_external_links").insert(new_link).execute()
+
+        return {"link": result.data[0] if result.data else None, "token": token}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating external link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/review/external-links/{link_id}")
+async def update_external_link(
+    link_id: str,
+    request: ExternalLinkUpdate,
+    authorization: str = Header(None)
+):
+    """Update an external review link"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get link and verify access
+        link = client.table("backlot_review_external_links").select("*").eq("id", link_id).execute()
+        if not link.data:
+            raise HTTPException(status_code=404, detail="Link not found")
+
+        await verify_project_access(client, link.data[0]["project_id"], user["id"], require_edit=True)
+
+        import hashlib
+
+        update_data = {}
+        if request.name is not None:
+            update_data["name"] = request.name
+        if request.password is not None:
+            update_data["password_hash"] = hashlib.sha256(request.password.encode()).hexdigest() if request.password else None
+        if request.can_comment is not None:
+            update_data["can_comment"] = request.can_comment
+        if request.can_download is not None:
+            update_data["can_download"] = request.can_download
+        if request.can_approve is not None:
+            update_data["can_approve"] = request.can_approve
+        if request.expires_at is not None:
+            update_data["expires_at"] = request.expires_at
+        if request.max_views is not None:
+            update_data["max_views"] = request.max_views
+        if request.is_active is not None:
+            update_data["is_active"] = request.is_active
+
+        result = client.table("backlot_review_external_links").update(update_data).eq("id", link_id).execute()
+
+        return {"link": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating external link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/review/external-links/{link_id}")
+async def delete_external_link(
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Delete an external review link"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get link and verify access
+        link = client.table("backlot_review_external_links").select("project_id").eq("id", link_id).execute()
+        if not link.data:
+            raise HTTPException(status_code=404, detail="Link not found")
+
+        await verify_project_access(client, link.data[0]["project_id"], user["id"], require_edit=True)
+
+        client.table("backlot_review_external_links").delete().eq("id", link_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting external link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Public External Review Access (No Auth Required)
+# =====================================================
+
+class ExternalSessionStart(BaseModel):
+    display_name: str
+    email: Optional[str] = None
+    password: Optional[str] = None
+
+
+@router.get("/public/review/{token}")
+async def get_public_review_link(token: str):
+    """Validate an external review link (public endpoint)"""
+    client = get_client()
+
+    try:
+        from datetime import datetime
+
+        link = client.table("backlot_review_external_links").select("*").eq("token", token).eq("is_active", True).execute()
+
+        if not link.data:
+            raise HTTPException(status_code=404, detail="Link not found or expired")
+
+        link_data = link.data[0]
+
+        # Check expiration
+        if link_data.get("expires_at"):
+            expires_at = datetime.fromisoformat(link_data["expires_at"].replace("Z", "+00:00"))
+            if datetime.now(expires_at.tzinfo) > expires_at:
+                raise HTTPException(status_code=410, detail="Link has expired")
+
+        # Check max views
+        if link_data.get("max_views") and link_data["view_count"] >= link_data["max_views"]:
+            raise HTTPException(status_code=410, detail="Link has reached maximum views")
+
+        return {
+            "link": {
+                "id": link_data["id"],
+                "name": link_data["name"],
+                "requires_password": link_data.get("password_hash") is not None,
+                "can_comment": link_data["can_comment"],
+                "can_download": link_data["can_download"],
+                "can_approve": link_data["can_approve"],
+                "asset_id": link_data.get("asset_id"),
+                "folder_id": link_data.get("folder_id"),
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting public review link: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/public/review/{token}/start-session")
+async def start_external_session(token: str, request: ExternalSessionStart):
+    """Start an external review session (public endpoint)"""
+    client = get_client()
+
+    try:
+        import secrets
+        import hashlib
+        from datetime import datetime, timedelta
+
+        link = client.table("backlot_review_external_links").select("*").eq("token", token).eq("is_active", True).execute()
+
+        if not link.data:
+            raise HTTPException(status_code=404, detail="Link not found")
+
+        link_data = link.data[0]
+
+        # Verify password if required
+        if link_data.get("password_hash"):
+            if not request.password:
+                raise HTTPException(status_code=401, detail="Password required")
+            provided_hash = hashlib.sha256(request.password.encode()).hexdigest()
+            if provided_hash != link_data["password_hash"]:
+                raise HTTPException(status_code=401, detail="Invalid password")
+
+        # Create session
+        session_token = secrets.token_urlsafe(32)
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+
+        new_session = {
+            "link_id": link_data["id"],
+            "session_token": session_token,
+            "display_name": request.display_name,
+            "email": request.email,
+            "expires_at": expires_at.isoformat(),
+        }
+
+        client.table("backlot_review_external_sessions").insert(new_session).execute()
+
+        # Increment view count and update last accessed
+        client.table("backlot_review_external_links").update({
+            "view_count": link_data["view_count"] + 1,
+            "last_accessed_at": datetime.utcnow().isoformat()
+        }).eq("id", link_data["id"]).execute()
+
+        return {
+            "session_token": session_token,
+            "expires_at": expires_at.isoformat(),
+            "permissions": {
+                "can_comment": link_data["can_comment"],
+                "can_download": link_data["can_download"],
+                "can_approve": link_data["can_approve"],
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error starting external session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/public/review/{token}/content")
+async def get_public_review_content(
+    token: str,
+    session_token: str = Header(None, alias="X-Session-Token")
+):
+    """Get viewable content for an external review link"""
+    client = get_client()
+
+    try:
+        from datetime import datetime
+
+        # Verify session
+        if not session_token:
+            raise HTTPException(status_code=401, detail="Session token required")
+
+        session = client.table("backlot_review_external_sessions").select(
+            "*, link:backlot_review_external_links(*)"
+        ).eq("session_token", session_token).execute()
+
+        if not session.data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+
+        session_data = session.data[0]
+
+        # Check session expiry
+        expires_at = datetime.fromisoformat(session_data["expires_at"].replace("Z", "+00:00"))
+        if datetime.now(expires_at.tzinfo) > expires_at:
+            raise HTTPException(status_code=401, detail="Session expired")
+
+        link_data = session_data["link"]
+
+        # Verify token matches
+        if link_data["token"] != token:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        # Get content based on link target
+        if link_data.get("asset_id"):
+            # Single asset
+            asset = client.table("backlot_review_assets").select(
+                "*, active_version:backlot_review_versions!active_version_id(*)"
+            ).eq("id", link_data["asset_id"]).execute()
+
+            if not asset.data:
+                raise HTTPException(status_code=404, detail="Asset not found")
+
+            return {"type": "asset", "asset": asset.data[0], "assets": None, "folder": None}
+
+        elif link_data.get("folder_id"):
+            # Folder contents
+            folder = client.table("backlot_review_folders").select("*").eq("id", link_data["folder_id"]).execute()
+            assets = client.table("backlot_review_assets").select(
+                "*, active_version:backlot_review_versions!active_version_id(*)"
+            ).eq("folder_id", link_data["folder_id"]).execute()
+
+            return {
+                "type": "folder",
+                "folder": folder.data[0] if folder.data else None,
+                "assets": assets.data or [],
+                "asset": None
+            }
+
+        else:
+            # Whole project - get root assets
+            assets = client.table("backlot_review_assets").select(
+                "*, active_version:backlot_review_versions!active_version_id(*)"
+            ).eq("project_id", link_data["project_id"]).is_("folder_id", "null").execute()
+
+            folders = client.table("backlot_review_folders").select("*").eq("project_id", link_data["project_id"]).is_("parent_folder_id", "null").execute()
+
+            return {
+                "type": "project",
+                "assets": assets.data or [],
+                "folders": folders.data or [],
+                "asset": None,
+                "folder": None
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting public review content: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ExternalNoteCreate(BaseModel):
+    version_id: str
+    timecode_seconds: Optional[float] = None
+    content: str
+
+
+@router.post("/public/review/{token}/notes")
+async def create_external_note(
+    token: str,
+    request: ExternalNoteCreate,
+    session_token: str = Header(None, alias="X-Session-Token")
+):
+    """Create a note as an external reviewer"""
+    client = get_client()
+
+    try:
+        from datetime import datetime
+
+        # Verify session
+        if not session_token:
+            raise HTTPException(status_code=401, detail="Session token required")
+
+        session = client.table("backlot_review_external_sessions").select(
+            "*, link:backlot_review_external_links(*)"
+        ).eq("session_token", session_token).execute()
+
+        if not session.data:
+            raise HTTPException(status_code=401, detail="Invalid session")
+
+        session_data = session.data[0]
+        link_data = session_data["link"]
+
+        # Verify token and permissions
+        if link_data["token"] != token:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if not link_data["can_comment"]:
+            raise HTTPException(status_code=403, detail="Commenting not allowed")
+
+        # Create note with external session reference
+        new_note = {
+            "version_id": request.version_id,
+            "timecode_seconds": request.timecode_seconds,
+            "content": request.content,
+            "external_session_id": session_data["id"],
+            "external_author_name": session_data["display_name"],
+            "is_resolved": False,
+        }
+
+        result = client.table("backlot_review_notes").insert(new_note).execute()
+
+        # Update session last activity
+        client.table("backlot_review_external_sessions").update({
+            "last_activity_at": datetime.utcnow().isoformat()
+        }).eq("id", session_data["id"]).execute()
+
+        return {"note": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating external note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -23824,31 +24937,21 @@ async def get_dailies_clip_stream_url(
                     # Rendition doesn't exist in S3, fall back to original
                     pass
 
-            # If requested quality not available, auto-queue transcoding
-            if actual_quality == "original" and quality in ["1080p", "720p", "480p"]:
-                # Check if there's already a pending/processing job
-                existing_job = execute_single(
-                    """
-                    SELECT id, status FROM backlot_transcoding_jobs
-                    WHERE clip_id = :clip_id AND status IN ('pending', 'processing')
-                    """,
-                    {"clip_id": clip_id}
-                )
+            # If requested quality not available, handle based on quality level
+            # Server-side transcoding ONLY handles 1080p as a fallback
+            # 720p and 480p should be transcoded by the desktop helper
+            if actual_quality == "original":
+                if quality == "1080p":
+                    # Server can transcode 1080p as a fallback
+                    existing_job = execute_single(
+                        """
+                        SELECT id, status FROM backlot_transcoding_jobs
+                        WHERE clip_id = :clip_id AND status IN ('pending', 'processing')
+                        """,
+                        {"clip_id": clip_id}
+                    )
 
-                if not existing_job:
-                    # Queue transcoding for the requested quality (and lower qualities)
-                    qualities_to_transcode = []
-                    if quality == "1080p":
-                        qualities_to_transcode = ["1080p", "720p", "480p"]
-                    elif quality == "720p":
-                        qualities_to_transcode = ["720p", "480p"]
-                    elif quality == "480p":
-                        qualities_to_transcode = ["480p"]
-
-                    # Only queue qualities that aren't already available
-                    qualities_to_transcode = [q for q in qualities_to_transcode if q not in renditions]
-
-                    if qualities_to_transcode:
+                    if not existing_job and "1080p" not in renditions:
                         job_id = str(uuid.uuid4())
                         execute_single(
                             """
@@ -23861,11 +24964,11 @@ async def get_dailies_clip_stream_url(
                                 "clip_id": clip_id,
                                 "project_id": clip["project_id"],
                                 "source_key": original_s3_key,
-                                "qualities": qualities_to_transcode
+                                "qualities": ["1080p"]  # Server only does 1080p
                             }
                         )
                         transcoding_queued = True
-                        print(f"Auto-queued transcoding job {job_id} for clip {clip_id}: {qualities_to_transcode}")
+                        print(f"Auto-queued 1080p transcoding job {job_id} for clip {clip_id}")
 
                         # Trigger ECS Fargate task for transcoding
                         try:
@@ -23905,12 +25008,15 @@ async def get_dailies_clip_stream_url(
             ExpiresIn=3600,  # 1 hour
         )
 
+        # Filter out 'original' from available renditions - only return proxy quality levels
+        available = [k for k in renditions.keys() if k != 'original'] if renditions else []
+
         return {
             "url": presigned_url,
             "expires_in": 3600,
             "clip_id": clip_id,
             "quality": actual_quality,
-            "available_renditions": list(renditions.keys()) if renditions else ["original"],
+            "available_renditions": available,
             "transcoding_queued": transcoding_queued
         }
 
@@ -24079,6 +25185,106 @@ async def get_clip_transcoding_status(
         raise
     except Exception as e:
         print(f"Error getting transcoding status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AddRenditionRequest(BaseModel):
+    """Request to add a rendition to a clip"""
+    quality: str  # "480p", "720p", "1080p"
+    s3_key: str
+    size: int  # file size in bytes
+
+
+@router.post("/dailies/clips/{clip_id}/renditions")
+async def add_clip_rendition(
+    clip_id: str,
+    request: AddRenditionRequest,
+    authorization: str = Header(None),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Add a rendition to a clip (used by desktop helper after local transcoding).
+
+    This endpoint allows the desktop helper to register renditions that were
+    transcoded locally and uploaded to S3.
+    """
+    # Support both JWT auth and API key auth
+    user = None
+    if authorization:
+        user = await get_current_user_from_token(authorization)
+    elif x_api_key:
+        # Verify desktop API key
+        if not x_api_key.startswith("swn_dk_"):
+            raise HTTPException(status_code=401, detail="Invalid API key format")
+
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        user = {"id": key_record["user_id"]}
+    else:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    client = get_client()
+
+    try:
+        # Get clip info
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, renditions"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+
+        # Verify access - for API key auth, the key was already validated for the project
+        if authorization:
+            await verify_project_access(client, clip["project_id"], user["id"])
+
+        # Validate quality
+        valid_qualities = ["480p", "720p", "1080p", "original"]
+        if request.quality not in valid_qualities:
+            raise HTTPException(status_code=400, detail=f"Invalid quality. Must be one of: {valid_qualities}")
+
+        # Update renditions JSONB column
+        current_renditions = clip.get("renditions") or {}
+        current_renditions[request.quality] = request.s3_key
+
+        # Add size info if we want to track it
+        if not isinstance(current_renditions.get(request.quality), dict):
+            # Simple format: just the S3 key
+            pass
+
+        # Update the clip
+        client.table("backlot_dailies_clips").update({
+            "renditions": current_renditions,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", clip_id).execute()
+
+        print(f"Added {request.quality} rendition for clip {clip_id}: {request.s3_key}")
+
+        return {
+            "success": True,
+            "clip_id": clip_id,
+            "quality": request.quality,
+            "s3_key": request.s3_key,
+            "renditions": current_renditions
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding rendition: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -24484,6 +25690,165 @@ async def get_circle_takes(
         raise
     except Exception as e:
         print(f"Error getting circle takes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Dailies to Review Promotion
+# =====================================================
+
+class PromoteToReviewRequest(BaseModel):
+    """Request to promote a dailies clip to the Review system"""
+    folder_id: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    copy_notes: bool = True
+
+
+@router.post("/dailies/clips/{clip_id}/promote-to-review")
+async def promote_dailies_clip_to_review(
+    clip_id: str,
+    request: PromoteToReviewRequest,
+    authorization: str = Header(None)
+):
+    """
+    Promote a dailies clip to the Review system.
+
+    This creates a new review asset with a version pointing to the same S3 file.
+    Optionally copies notes from the dailies clip.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the dailies clip
+        clip_result = client.table("backlot_dailies_clips").select("*").eq(
+            "id", clip_id
+        ).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        project_id = clip["project_id"]
+
+        # Verify project access
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        # Check if clip has S3 content
+        s3_key = clip.get("s3_key") or clip.get("proxy_s3_key")
+        if not s3_key:
+            raise HTTPException(
+                status_code=400,
+                detail="Clip has no uploaded content to promote"
+            )
+
+        # Determine asset name
+        asset_name = request.name
+        if not asset_name:
+            # Build name from clip metadata
+            parts = []
+            if clip.get("scene_number"):
+                parts.append(f"Scene {clip['scene_number']}")
+            if clip.get("take_number"):
+                parts.append(f"Take {clip['take_number']}")
+            if clip.get("file_name"):
+                parts.append(clip["file_name"])
+            asset_name = " - ".join(parts) if parts else f"Promoted Clip {clip_id[:8]}"
+
+        # Create review asset
+        asset_data = {
+            "project_id": project_id,
+            "name": asset_name,
+            "description": request.description or clip.get("notes", ""),
+            "status": "in_review",
+            "created_by_user_id": user["id"],
+        }
+        if request.folder_id:
+            asset_data["folder_id"] = request.folder_id
+
+        asset_result = client.table("backlot_review_assets").insert(asset_data).execute()
+        if not asset_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create review asset")
+
+        asset = asset_result.data[0]
+        asset_id = asset["id"]
+
+        # Create review version pointing to the S3 file
+        version_data = {
+            "asset_id": asset_id,
+            "version_number": 1,
+            "storage_mode": "s3",
+            "s3_key": s3_key,
+            "original_filename": clip.get("file_name"),
+            "file_size_bytes": clip.get("file_size"),
+            "duration_seconds": clip.get("duration_seconds"),
+            "resolution": clip.get("resolution"),
+            "frame_rate": clip.get("frame_rate"),
+            "codec": clip.get("codec"),
+            "thumbnail_url": clip.get("thumbnail_url"),
+            "created_by_user_id": user["id"],
+            # Copy renditions if available
+            "renditions": clip.get("renditions", {}),
+            "transcode_status": clip.get("transcode_status", "pending"),
+        }
+
+        version_result = client.table("backlot_review_versions").insert(version_data).execute()
+        if not version_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create review version")
+
+        version = version_result.data[0]
+        version_id = version["id"]
+
+        # Update asset with active version
+        client.table("backlot_review_assets").update({
+            "active_version_id": version_id
+        }).eq("id", asset_id).execute()
+
+        # Copy notes if requested
+        copied_notes_count = 0
+        if request.copy_notes:
+            notes_result = client.table("backlot_dailies_clip_notes").select("*").eq(
+                "clip_id", clip_id
+            ).execute()
+
+            if notes_result.data:
+                for note in notes_result.data:
+                    note_data = {
+                        "version_id": version_id,
+                        "user_id": note.get("user_id"),
+                        "content": note.get("content"),
+                        "timecode_in": note.get("timecode_in"),
+                        "timecode_out": note.get("timecode_out"),
+                        "frame_number": note.get("frame_number"),
+                        "note_type": note.get("note_type", "general"),
+                        "is_resolved": note.get("is_resolved", False),
+                    }
+                    client.table("backlot_review_notes").insert(note_data).execute()
+                    copied_notes_count += 1
+
+        # Optionally link the clip to the asset as source
+        link_data = {
+            "clip_id": clip_id,
+            "asset_id": asset_id,
+            "link_type": "promoted_to",
+            "created_by": user["id"],
+        }
+        client.table("backlot_dailies_clip_asset_links").insert(link_data).execute()
+
+        return {
+            "success": True,
+            "asset_id": asset_id,
+            "version_id": version_id,
+            "asset_name": asset_name,
+            "copied_notes_count": copied_notes_count,
+            "message": f"Clip promoted to Review as '{asset_name}'"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error promoting clip to review: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -34395,4 +35760,936 @@ async def register_desktop_dailies_clips(
         raise
     except Exception as e:
         print(f"Error registering desktop clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# UNIFIED ASSETS (for Assets Tab)
+# ============================================================================
+
+@router.get("/projects/{project_id}/assets/unified")
+async def list_unified_assets(
+    project_id: str,
+    source: str = Query(None, description="Filter by source: dailies, review, standalone"),
+    asset_type: str = Query(None, description="Filter by asset type: video, audio, image, etc."),
+    search: str = Query(None, description="Search by name"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    authorization: str = Header(None)
+):
+    """
+    List unified assets from all sources (Dailies, Review, Standalone).
+    Uses the backlot_unified_assets view.
+    """
+    try:
+        # Verify authentication and project access
+        await require_project_member(project_id, authorization)
+
+        # Build query with filters
+        params: dict = {"project_id": project_id}
+        where_clauses = ["project_id = :project_id"]
+
+        if source:
+            where_clauses.append("source = :source")
+            params["source"] = source
+
+        if asset_type:
+            where_clauses.append("asset_type = :asset_type")
+            params["asset_type"] = asset_type
+
+        if search:
+            where_clauses.append("name ILIKE :search")
+            params["search"] = f"%{search}%"
+
+        where_sql = " AND ".join(where_clauses)
+
+        # Get total count
+        count_result = execute_single(
+            f"""
+            SELECT COUNT(*) as total
+            FROM backlot_unified_assets
+            WHERE {where_sql}
+            """,
+            params
+        )
+        total = count_result["total"] if count_result else 0
+
+        # Get assets
+        assets = execute_query(
+            f"""
+            SELECT id, project_id, source, name, asset_type, thumbnail_url,
+                   duration_seconds, file_size_bytes, created_at
+            FROM backlot_unified_assets
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            {**params, "limit": limit, "offset": offset}
+        )
+
+        return {
+            "assets": assets,
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        print(f"Error listing unified assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/assets/summary")
+async def get_assets_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get summary counts for all asset types in a project.
+    """
+    try:
+        summary = execute_query(
+            """
+            SELECT source, asset_type, COUNT(*) as count
+            FROM backlot_unified_assets
+            WHERE project_id = :project_id
+            GROUP BY source, asset_type
+            ORDER BY source, asset_type
+            """,
+            {"project_id": project_id}
+        )
+
+        # Also get total storage used
+        storage = execute_single(
+            """
+            SELECT COALESCE(SUM(file_size_bytes), 0) as total_bytes
+            FROM backlot_unified_assets
+            WHERE project_id = :project_id
+            """,
+            {"project_id": project_id}
+        )
+
+        return {
+            "summary": summary,
+            "total_storage_bytes": storage["total_bytes"] if storage else 0
+        }
+
+    except Exception as e:
+        print(f"Error getting assets summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# STANDALONE ASSETS CRUD
+# ============================================================================
+
+class StandaloneAssetInput(BaseModel):
+    name: str
+    description: Optional[str] = None
+    asset_type: str  # audio, 3d_model, image, document, graphics, music, sfx, other
+    file_name: str
+    s3_key: str
+    file_size_bytes: Optional[int] = None
+    mime_type: Optional[str] = None
+    duration_seconds: Optional[float] = None  # For audio
+    dimensions: Optional[str] = None  # For images (WxH)
+    tags: Optional[List[str]] = None
+    metadata: Optional[dict] = None
+    folder_id: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/assets/standalone")
+async def create_standalone_asset(
+    project_id: str,
+    asset_input: StandaloneAssetInput,
+    authorization: str = Header(None)
+):
+    """
+    Create a new standalone asset (non-video: audio, 3D, images, etc.)
+    """
+    try:
+        client = get_client()
+
+        insert_data = {
+            "project_id": project_id,
+            "name": asset_input.name,
+            "description": asset_input.description,
+            "asset_type": asset_input.asset_type,
+            "file_name": asset_input.file_name,
+            "s3_key": asset_input.s3_key,
+            "file_size_bytes": asset_input.file_size_bytes,
+            "mime_type": asset_input.mime_type,
+            "duration_seconds": asset_input.duration_seconds,
+            "dimensions": asset_input.dimensions,
+            "tags": asset_input.tags or [],
+            "metadata": asset_input.metadata or {},
+            "folder_id": asset_input.folder_id,
+            "created_by_user_id": user["id"],
+        }
+
+        result = client.table("backlot_standalone_assets").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create asset")
+
+        return {"asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating standalone asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/assets/standalone")
+async def list_standalone_assets(
+    project_id: str,
+    folder_id: str = Query(None),
+    asset_type: str = Query(None),
+    tags: str = Query(None, description="Comma-separated tags"),
+    authorization: str = Header(None)
+):
+    """
+    List standalone assets for a project.
+    """
+    try:
+        client = get_client()
+
+        query = client.table("backlot_standalone_assets") \
+            .select("*") \
+            .eq("project_id", project_id) \
+            .order("created_at", desc=True)
+
+        if folder_id:
+            query = query.eq("folder_id", folder_id)
+        elif folder_id == "":
+            query = query.is_("folder_id", "null")
+
+        if asset_type:
+            query = query.eq("asset_type", asset_type)
+
+        if tags:
+            tag_list = [t.strip() for t in tags.split(",")]
+            query = query.contains("tags", tag_list)
+
+        result = query.execute()
+
+        return {"assets": result.data}
+
+    except Exception as e:
+        print(f"Error listing standalone assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/assets/standalone/{asset_id}")
+async def get_standalone_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get a standalone asset by ID.
+    """
+    try:
+        client = get_client()
+
+        result = client.table("backlot_standalone_assets") \
+            .select("*") \
+            .eq("id", asset_id) \
+            .single() \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        return {"asset": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting standalone asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/assets/standalone/{asset_id}")
+async def update_standalone_asset(
+    asset_id: str,
+    update_data: dict,
+    authorization: str = Header(None)
+):
+    """
+    Update a standalone asset.
+    """
+    try:
+        client = get_client()
+
+        allowed_fields = ["name", "description", "tags", "metadata", "folder_id"]
+        filtered_data = {k: v for k, v in update_data.items() if k in allowed_fields}
+
+        if not filtered_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        result = client.table("backlot_standalone_assets") \
+            .update(filtered_data) \
+            .eq("id", asset_id) \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        return {"asset": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating standalone asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/assets/standalone/{asset_id}")
+async def delete_standalone_asset(
+    asset_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Delete a standalone asset.
+    """
+    try:
+        client = get_client()
+
+        # Get asset to find S3 key for cleanup
+        asset = client.table("backlot_standalone_assets") \
+            .select("s3_key") \
+            .eq("id", asset_id) \
+            .single() \
+            .execute()
+
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        # Delete from database
+        client.table("backlot_standalone_assets") \
+            .delete() \
+            .eq("id", asset_id) \
+            .execute()
+
+        # Note: S3 cleanup could be done here or via a background job
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting standalone asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/assets/standalone/{asset_id}/upload-url")
+async def get_standalone_asset_upload_url(
+    asset_id: str,
+    request: dict,
+    authorization: str = Header(None)
+):
+    """
+    Get a presigned URL to upload a standalone asset file.
+    """
+    try:
+        filename = request.get("filename")
+        content_type = request.get("content_type", "application/octet-stream")
+
+        if not filename:
+            raise HTTPException(status_code=400, detail="filename is required")
+
+        # Generate S3 key
+        project_id = request.get("project_id")
+        s3_key = f"projects/{project_id}/assets/{asset_id}/{filename}"
+
+        # Generate presigned URL
+        s3_client = boto3.client("s3", region_name="us-east-1")
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        presigned_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": s3_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        return {
+            "upload_url": presigned_url,
+            "s3_key": s3_key,
+            "expires_in": 3600
+        }
+
+    except Exception as e:
+        print(f"Error generating upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# ASSET FOLDERS CRUD
+# ============================================================================
+
+class AssetFolderInput(BaseModel):
+    name: str
+    folder_type: Optional[str] = None  # audio, 3d, graphics, documents, mixed
+    parent_folder_id: Optional[str] = None
+
+
+@router.get("/projects/{project_id}/assets/folders")
+async def list_asset_folders(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    List asset folders for a project.
+    """
+    try:
+        client = get_client()
+
+        result = client.table("backlot_asset_folders") \
+            .select("*") \
+            .eq("project_id", project_id) \
+            .order("sort_order") \
+            .order("name") \
+            .execute()
+
+        # Build folder tree
+        folders = result.data
+        folder_map = {f["id"]: {**f, "children": []} for f in folders}
+
+        root_folders = []
+        for folder in folders:
+            if folder["parent_folder_id"] and folder["parent_folder_id"] in folder_map:
+                folder_map[folder["parent_folder_id"]]["children"].append(folder_map[folder["id"]])
+            else:
+                root_folders.append(folder_map[folder["id"]])
+
+        return {"folders": root_folders}
+
+    except Exception as e:
+        print(f"Error listing asset folders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/assets/folders")
+async def create_asset_folder(
+    project_id: str,
+    folder_input: AssetFolderInput,
+    authorization: str = Header(None)
+):
+    """
+    Create a new asset folder.
+    """
+    try:
+        client = get_client()
+
+        insert_data = {
+            "project_id": project_id,
+            "name": folder_input.name,
+            "folder_type": folder_input.folder_type,
+            "parent_folder_id": folder_input.parent_folder_id,
+            "created_by_user_id": user["id"],
+        }
+
+        result = client.table("backlot_asset_folders").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create folder")
+
+        return {"folder": result.data[0]}
+
+    except Exception as e:
+        print(f"Error creating asset folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/assets/folders/{folder_id}")
+async def update_asset_folder(
+    folder_id: str,
+    update_data: dict,
+    authorization: str = Header(None)
+):
+    """
+    Update an asset folder.
+    """
+    try:
+        client = get_client()
+
+        allowed_fields = ["name", "folder_type", "parent_folder_id", "sort_order"]
+        filtered_data = {k: v for k, v in update_data.items() if k in allowed_fields}
+
+        if not filtered_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        result = client.table("backlot_asset_folders") \
+            .update(filtered_data) \
+            .eq("id", folder_id) \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        return {"folder": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating asset folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/assets/folders/{folder_id}")
+async def delete_asset_folder(
+    folder_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Delete an asset folder. Assets inside will have their folder_id set to null.
+    """
+    try:
+        client = get_client()
+
+        # Get folder to check it exists
+        folder = client.table("backlot_asset_folders") \
+            .select("id, parent_folder_id") \
+            .eq("id", folder_id) \
+            .single() \
+            .execute()
+
+        if not folder.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+
+        # Move child folders to parent
+        client.table("backlot_asset_folders") \
+            .update({"parent_folder_id": folder.data["parent_folder_id"]}) \
+            .eq("parent_folder_id", folder_id) \
+            .execute()
+
+        # Move assets to parent folder
+        client.table("backlot_standalone_assets") \
+            .update({"folder_id": folder.data["parent_folder_id"]}) \
+            .eq("folder_id", folder_id) \
+            .execute()
+
+        # Delete folder
+        client.table("backlot_asset_folders") \
+            .delete() \
+            .eq("id", folder_id) \
+            .execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting asset folder: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Desktop API Key Endpoints - Review Tab
+# ============================================================================
+
+@router.get("/desktop-keys/projects/{project_id}/review/folders")
+async def get_review_folders_for_desktop(
+    project_id: str,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get review folders for a project using desktop API key authentication."""
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        result = client.table("backlot_review_folders").select("*").eq(
+            "project_id", project_id
+        ).order("sort_order").order("name").execute()
+
+        return {"folders": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting review folders for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/desktop-keys/projects/{project_id}/review/assets")
+async def get_review_assets_for_desktop(
+    project_id: str,
+    folder_id: Optional[str] = Query(None),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get review assets for a project using desktop API key authentication."""
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        query = client.table("backlot_review_assets").select(
+            "*, active_version:backlot_review_versions!active_version_id(*)"
+        ).eq("project_id", project_id)
+
+        if folder_id:
+            query = query.eq("folder_id", folder_id)
+
+        result = query.order("created_at", desc=True).execute()
+
+        return {"assets": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting review assets for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/projects/{project_id}/review/assets")
+async def create_review_asset_for_desktop(
+    project_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Create a review asset using desktop API key authentication."""
+    try:
+        user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        asset_data = {
+            "project_id": project_id,
+            "name": request.get("name", "Untitled"),
+            "description": request.get("description", ""),
+            "status": "draft",
+            "created_by_user_id": user_id,
+        }
+
+        if request.get("folder_id"):
+            asset_data["folder_id"] = request["folder_id"]
+
+        result = client.table("backlot_review_assets").insert(asset_data).execute()
+
+        if result.data:
+            return {"asset": result.data[0]}
+        raise HTTPException(status_code=500, detail="Failed to create asset")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating review asset for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/review/assets/{asset_id}/versions/upload-url")
+async def get_review_upload_url_for_desktop(
+    asset_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get presigned upload URL for a review version using desktop API key."""
+    try:
+        # Verify key and get user
+        key_result = await verify_desktop_key(x_api_key)
+        user_id = key_result["user_id"]
+        client = get_client()
+
+        # Verify asset exists and user has access
+        asset = client.table("backlot_review_assets").select(
+            "*, project:backlot_projects(id)"
+        ).eq("id", asset_id).single().execute()
+
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        project_id = asset.data["project_id"]
+
+        # Verify project access
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+
+        # Create version record
+        filename = request.get("filename", "upload")
+        content_type = request.get("content_type", "video/mp4")
+        storage_mode = request.get("storage_mode", "s3")
+
+        version_data = {
+            "asset_id": asset_id,
+            "version_number": 1,  # Will be updated
+            "storage_mode": storage_mode,
+            "original_filename": filename,
+            "transcode_status": "pending",
+            "created_by_user_id": user_id,
+        }
+
+        # Get next version number
+        versions = client.table("backlot_review_versions").select("version_number").eq(
+            "asset_id", asset_id
+        ).order("version_number", desc=True).limit(1).execute()
+
+        if versions.data:
+            version_data["version_number"] = versions.data[0]["version_number"] + 1
+
+        # Generate S3 key
+        import uuid
+        version_id = str(uuid.uuid4())
+        s3_key = f"review/{project_id}/{asset_id}/{version_id}/{filename}"
+        version_data["id"] = version_id
+        version_data["s3_key"] = s3_key
+
+        # Create version record
+        result = client.table("backlot_review_versions").insert(version_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create version")
+
+        # Generate presigned URL
+        import boto3
+        s3_client = boto3.client("s3", region_name="us-east-1")
+        bucket = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": s3_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=3600,
+        )
+
+        return {
+            "upload_url": upload_url,
+            "version_id": version_id,
+            "s3_key": s3_key,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting review upload URL for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/review/versions/{version_id}/complete-upload")
+async def complete_review_upload_for_desktop(
+    version_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Complete a review version upload and trigger transcoding."""
+    try:
+        # Verify key
+        await verify_desktop_key(x_api_key)
+        client = get_client()
+
+        # Get version and verify access
+        version = client.table("backlot_review_versions").select(
+            "*, asset:backlot_review_assets(project_id)"
+        ).eq("id", version_id).single().execute()
+
+        if not version.data:
+            raise HTTPException(status_code=404, detail="Version not found")
+
+        project_id = version.data["asset"]["project_id"]
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+
+        # Update version with file info
+        update_data = {
+            "file_size_bytes": request.get("file_size_bytes"),
+            "transcode_status": "pending",
+        }
+
+        if request.get("checksum"):
+            update_data["checksum"] = request["checksum"]
+
+        client.table("backlot_review_versions").update(update_data).eq(
+            "id", version_id
+        ).execute()
+
+        # Set as active version
+        client.table("backlot_review_assets").update({
+            "active_version_id": version_id
+        }).eq("id", version.data["asset_id"]).execute()
+
+        # TODO: Trigger transcoding Lambda
+
+        return {"success": True, "version_id": version_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error completing review upload for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Desktop API Key Endpoints - Assets Tab
+# ============================================================================
+
+@router.get("/desktop-keys/projects/{project_id}/assets/folders")
+async def get_asset_folders_for_desktop(
+    project_id: str,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get asset folders for a project using desktop API key authentication."""
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        result = client.table("backlot_asset_folders").select("*").eq(
+            "project_id", project_id
+        ).order("sort_order").order("name").execute()
+
+        return {"folders": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting asset folders for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/desktop-keys/projects/{project_id}/assets")
+async def get_assets_for_desktop(
+    project_id: str,
+    folder_id: Optional[str] = Query(None),
+    asset_type: Optional[str] = Query(None),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get standalone assets for a project using desktop API key authentication."""
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        query = client.table("backlot_standalone_assets").select("*").eq(
+            "project_id", project_id
+        )
+
+        if folder_id:
+            query = query.eq("folder_id", folder_id)
+        if asset_type:
+            query = query.eq("asset_type", asset_type)
+
+        result = query.order("created_at", desc=True).execute()
+
+        return {"assets": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting assets for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/projects/{project_id}/assets/upload-url")
+async def get_asset_upload_url_for_desktop(
+    project_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Get presigned upload URL for a standalone asset."""
+    try:
+        user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        filename = request.get("filename", "upload")
+        content_type = request.get("content_type", "application/octet-stream")
+        asset_type = request.get("asset_type", "other")
+        name = request.get("name", filename)
+        folder_id = request.get("folder_id")
+
+        # Create asset record
+        import uuid
+        asset_id = str(uuid.uuid4())
+        s3_key = f"assets/{project_id}/{asset_type}/{asset_id}/{filename}"
+
+        asset_data = {
+            "id": asset_id,
+            "project_id": project_id,
+            "name": name,
+            "asset_type": asset_type,
+            "file_name": filename,
+            "s3_key": s3_key,
+            "mime_type": content_type,
+            "created_by_user_id": user_id,
+        }
+
+        if folder_id:
+            asset_data["folder_id"] = folder_id
+
+        result = client.table("backlot_standalone_assets").insert(asset_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create asset")
+
+        # Generate presigned URL
+        import boto3
+        s3_client = boto3.client("s3", region_name="us-east-1")
+        bucket = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+
+        upload_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket,
+                "Key": s3_key,
+                "ContentType": content_type,
+            },
+            ExpiresIn=3600,
+        )
+
+        return {
+            "upload_url": upload_url,
+            "asset_id": asset_id,
+            "s3_key": s3_key,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting asset upload URL for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/assets/{asset_id}/complete-upload")
+async def complete_asset_upload_for_desktop(
+    asset_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Complete a standalone asset upload."""
+    try:
+        await verify_desktop_key(x_api_key)
+        client = get_client()
+
+        # Get asset and verify access
+        asset = client.table("backlot_standalone_assets").select("*").eq(
+            "id", asset_id
+        ).single().execute()
+
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        await verify_desktop_key_and_project_access(x_api_key, asset.data["project_id"])
+
+        # Update asset with file info
+        update_data = {
+            "file_size_bytes": request.get("file_size_bytes"),
+        }
+
+        if request.get("checksum"):
+            update_data["checksum"] = request["checksum"]
+        if request.get("duration_seconds"):
+            update_data["duration_seconds"] = request["duration_seconds"]
+        if request.get("dimensions"):
+            update_data["dimensions"] = request["dimensions"]
+
+        client.table("backlot_standalone_assets").update(update_data).eq(
+            "id", asset_id
+        ).execute()
+
+        return {"success": True, "asset_id": asset_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error completing asset upload for desktop: {e}")
         raise HTTPException(status_code=500, detail=str(e))

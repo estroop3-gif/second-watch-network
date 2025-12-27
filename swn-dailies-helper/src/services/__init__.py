@@ -19,6 +19,12 @@ from src.services.checksum import (
     VerificationResult,
     check_xxhash_available,
 )
+# Professional media tool services
+from src.services.binary_manager import BinaryManager, get_binary_manager
+from src.services.mediainfo_service import MediaInfoService, get_mediainfo_service
+from src.services.exiftool_service import ExifToolService, get_exiftool_service
+from src.services.smart_service import SmartService, get_smart_service
+from src.services.mhl_service import MHLService, get_mhl_service
 
 __all__ = [
     "ConfigManager",
@@ -48,4 +54,15 @@ __all__ = [
     "ChecksumResult",
     "VerificationResult",
     "check_xxhash_available",
+    # Professional media tool services
+    "BinaryManager",
+    "get_binary_manager",
+    "MediaInfoService",
+    "get_mediainfo_service",
+    "ExifToolService",
+    "get_exiftool_service",
+    "SmartService",
+    "get_smart_service",
+    "MHLService",
+    "get_mhl_service",
 ]

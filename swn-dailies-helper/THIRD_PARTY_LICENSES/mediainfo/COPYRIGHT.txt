@@ -1,0 +1,9 @@
+MediaInfo CLI
+Version: 24.12
+Copyright: (c) 2002-2024 MediaArea.net SARL
+License: BSD-2-Clause
+Website: https://mediaarea.net/en/MediaInfo
+
+MediaInfo supplies technical and tag information about video and audio files.
+
+This component is included in SWN Dailies Helper for media analysis purposes.

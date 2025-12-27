@@ -11,12 +11,14 @@ interface TimelineControlProps {
   notes?: BacklotDailiesClipNote[];
   onNoteClick?: (note: BacklotDailiesClipNote) => void;
   duration?: number;
+  compact?: boolean;
 }
 
 const TimelineControl: React.FC<TimelineControlProps> = ({
   notes = [],
   onNoteClick,
   duration: propDuration,
+  compact = false,
 }) => {
   const { state, actions } = useVideoPlayer();
   const timelineRef = useRef<HTMLDivElement>(null);
