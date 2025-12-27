@@ -1507,7 +1507,7 @@ function TimecardEditor({ projectId, timecard, onBack, onSubmit, canEdit }: Time
 
   // Open print view in new window
   const handlePrintTimecard = () => {
-    const token = localStorage.getItem('auth_token');
+    const token = localStorage.getItem('access_token');
     const printUrl = `${import.meta.env.VITE_API_URL || ''}/api/v1/backlot/projects/${projectId}/timecards/${timecard.id}/print`;
     // Open the print view - needs auth header, so we'll fetch and open
     window.open(printUrl + `?token=${token}`, '_blank');

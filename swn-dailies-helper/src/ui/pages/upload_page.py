@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSplitter,
+    QSpinBox,
+    QInputDialog,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from pathlib import Path
@@ -29,12 +31,12 @@ import threading
 from src.services.config import ConfigManager
 from src.services.uploader import UploaderService, UploadJob, UploadStatus
 from src.services.watch_folder import WatchFolderService, WatchFolderActivityLog
-from src.services.upload_queue import UploadQueueService, UploadQueueItem, QueueItemStatus
+from src.services.upload_queue import UploadQueueService, UploadQueueItem, QueueItemStatus, UploadHistoryEntry
 from src.ui.styles import COLORS
 
 
 class UploadWorker(QThread):
-    """Background worker for file uploads."""
+    """Background worker for file uploads with parallel and retry support."""
     progress = pyqtSignal(int, float, str)  # job_index, percent, status
     finished = pyqtSignal(bool, list)  # success, jobs
 
@@ -46,7 +48,11 @@ class UploadWorker(QThread):
         day_id: Optional[str],
         camera_label: str,
         roll_name: str,
-        verify_checksum: bool,
+        verify_checksum: bool = True,
+        max_retries: int = 3,
+        retry_delay_base: float = 2.0,
+        parallel_uploads: int = 1,
+        register_clips: bool = True,
     ):
         super().__init__()
         self.uploader = uploader
@@ -56,6 +62,10 @@ class UploadWorker(QThread):
         self.camera_label = camera_label
         self.roll_name = roll_name
         self.verify_checksum = verify_checksum
+        self.max_retries = max_retries
+        self.retry_delay_base = retry_delay_base
+        self.parallel_uploads = parallel_uploads
+        self.register_clips = register_clips
 
     def run(self):
         def progress_callback(job_index, percent, status):
@@ -63,14 +73,32 @@ class UploadWorker(QThread):
 
         self.uploader.set_progress_callback(progress_callback)
 
-        success = self.uploader.upload_batch(
-            jobs=self.jobs,
-            project_id=self.project_id,
-            day_id=self.day_id,
-            camera_label=self.camera_label,
-            roll_name=self.roll_name,
-            verify_checksum=self.verify_checksum,
-        )
+        # Use parallel or sequential upload based on settings
+        if self.parallel_uploads > 1:
+            success = self.uploader.upload_batch_parallel(
+                jobs=self.jobs,
+                project_id=self.project_id,
+                day_id=self.day_id,
+                camera_label=self.camera_label,
+                roll_name=self.roll_name,
+                verify_checksum=self.verify_checksum,
+                max_retries=self.max_retries,
+                retry_delay_base=self.retry_delay_base,
+                max_workers=self.parallel_uploads,
+                register_clips=self.register_clips,
+            )
+        else:
+            success = self.uploader.upload_batch(
+                jobs=self.jobs,
+                project_id=self.project_id,
+                day_id=self.day_id,
+                camera_label=self.camera_label,
+                roll_name=self.roll_name,
+                verify_checksum=self.verify_checksum,
+                max_retries=self.max_retries,
+                retry_delay_base=self.retry_delay_base,
+                register_clips=self.register_clips,
+            )
 
         self.finished.emit(success, self.jobs)
 
@@ -85,6 +113,8 @@ class BrowseUploadTab(QWidget):
         self.selected_files: List[Path] = []
         self.current_jobs: List[UploadJob] = []
         self.upload_worker: Optional[UploadWorker] = None
+        self.dailies_days: List[dict] = []  # Cached days from API
+        self.selected_day_id: Optional[str] = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -159,11 +189,38 @@ class BrowseUploadTab(QWidget):
         panel.setObjectName("card")
 
         layout = QVBoxLayout(panel)
-        layout.setSpacing(15)
+        layout.setSpacing(12)
 
         label = QLabel("Upload Settings")
         label.setObjectName("card-title")
         layout.addWidget(label)
+
+        # Production Day selector
+        day_label = QLabel("Production Day")
+        day_label.setObjectName("label-muted")
+        layout.addWidget(day_label)
+
+        day_row = QHBoxLayout()
+        self.day_combo = QComboBox()
+        self.day_combo.setMinimumWidth(120)
+        self.day_combo.currentIndexChanged.connect(self.on_day_changed)
+        day_row.addWidget(self.day_combo, 1)
+
+        self.refresh_days_btn = QPushButton("↻")
+        self.refresh_days_btn.setFixedWidth(30)
+        self.refresh_days_btn.setToolTip("Refresh days from server")
+        self.refresh_days_btn.clicked.connect(self.refresh_days)
+        self.refresh_days_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        day_row.addWidget(self.refresh_days_btn)
+
+        self.new_day_btn = QPushButton("+")
+        self.new_day_btn.setFixedWidth(30)
+        self.new_day_btn.setToolTip("Create new production day")
+        self.new_day_btn.clicked.connect(self.create_new_day)
+        self.new_day_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        day_row.addWidget(self.new_day_btn)
+
+        layout.addLayout(day_row)
 
         # Camera label
         cam_label = QLabel("Camera")
@@ -191,14 +248,55 @@ class BrowseUploadTab(QWidget):
         sep.setStyleSheet(f"background-color: {COLORS['border-gray']};")
         layout.addWidget(sep)
 
+        # Advanced Settings
+        adv_label = QLabel("Performance")
+        adv_label.setObjectName("label-muted")
+        layout.addWidget(adv_label)
+
+        # Parallel uploads
+        parallel_row = QHBoxLayout()
+        parallel_lbl = QLabel("Parallel uploads:")
+        parallel_lbl.setObjectName("label-small")
+        parallel_row.addWidget(parallel_lbl)
+        parallel_row.addStretch()
+        self.parallel_spin = QSpinBox()
+        self.parallel_spin.setRange(1, 5)
+        self.parallel_spin.setValue(self.config.get_upload_settings().get("parallel_uploads", 3))
+        self.parallel_spin.setMaximumWidth(60)
+        parallel_row.addWidget(self.parallel_spin)
+        layout.addLayout(parallel_row)
+
+        # Max retries
+        retry_row = QHBoxLayout()
+        retry_lbl = QLabel("Max retries:")
+        retry_lbl.setObjectName("label-small")
+        retry_row.addWidget(retry_lbl)
+        retry_row.addStretch()
+        self.retry_spin = QSpinBox()
+        self.retry_spin.setRange(0, 5)
+        self.retry_spin.setValue(self.config.get_upload_settings().get("max_retries", 3))
+        self.retry_spin.setMaximumWidth(60)
+        retry_row.addWidget(self.retry_spin)
+        layout.addLayout(retry_row)
+
+        # Separator
+        sep2 = QFrame()
+        sep2.setFixedHeight(1)
+        sep2.setStyleSheet(f"background-color: {COLORS['border-gray']};")
+        layout.addWidget(sep2)
+
         # Options
         options_label = QLabel("Options")
         options_label.setObjectName("label-muted")
         layout.addWidget(options_label)
 
         self.verify_checksum = QCheckBox("Verify checksums")
-        self.verify_checksum.setChecked(True)
+        self.verify_checksum.setChecked(self.config.get_upload_settings().get("verify_checksum", True))
         layout.addWidget(self.verify_checksum)
+
+        self.register_clips = QCheckBox("Register clips with Backlot")
+        self.register_clips.setChecked(self.config.get_upload_settings().get("register_clips", True))
+        layout.addWidget(self.register_clips)
 
         layout.addStretch()
 
@@ -294,6 +392,18 @@ class BrowseUploadTab(QWidget):
             self.progress_label.setStyleSheet(f"color: {COLORS['orange']};")
             return
 
+        # Check if day is selected when registering clips
+        if self.register_clips.isChecked() and not self.selected_day_id:
+            reply = QMessageBox.question(
+                self,
+                "No Production Day Selected",
+                "No production day is selected. Clips won't appear in Dailies tab.\n\n"
+                "Do you want to continue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         # Create jobs
         self.current_jobs = self.uploader.create_jobs(self.selected_files)
 
@@ -301,18 +411,30 @@ class BrowseUploadTab(QWidget):
         self.upload_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Starting upload...")
+
+        parallel = self.parallel_spin.value()
+        if parallel > 1:
+            self.progress_label.setText(f"Starting upload ({parallel} parallel)...")
+        else:
+            self.progress_label.setText("Starting upload...")
         self.progress_label.setStyleSheet(f"color: {COLORS['bone-white']};")
 
-        # Start worker
+        # Get settings from config
+        upload_settings = self.config.get_upload_settings()
+
+        # Start worker with selected day
         self.upload_worker = UploadWorker(
             uploader=self.uploader,
             jobs=self.current_jobs,
             project_id=project_id,
-            day_id=None,
+            day_id=self.selected_day_id,
             camera_label=self.camera_input.text() or "A",
             roll_name=self.roll_input.text() or "A001",
             verify_checksum=self.verify_checksum.isChecked(),
+            max_retries=self.retry_spin.value(),
+            retry_delay_base=upload_settings.get("retry_delay_base", 2.0),
+            parallel_uploads=self.parallel_spin.value(),
+            register_clips=self.register_clips.isChecked(),
         )
         self.upload_worker.progress.connect(self.on_progress)
         self.upload_worker.finished.connect(self.on_finished)
@@ -345,6 +467,107 @@ class BrowseUploadTab(QWidget):
             failed = sum(1 for j in jobs if j.status == UploadStatus.FAILED)
             self.progress_label.setText(f"Upload finished with {failed} failures")
             self.progress_label.setStyleSheet(f"color: {COLORS['orange']};")
+
+    def on_day_changed(self, index: int):
+        """Handle production day selection change."""
+        if index <= 0:
+            self.selected_day_id = None
+        else:
+            # Index 0 is "Select a day...", so real days start at index 1
+            day_index = index - 1
+            if 0 <= day_index < len(self.dailies_days):
+                self.selected_day_id = self.dailies_days[day_index].get("id")
+
+    def refresh_days(self):
+        """Fetch production days from the API."""
+        project_id = self.config.get_project_id()
+        if not project_id:
+            self.day_combo.clear()
+            self.day_combo.addItem("⚠️ No project connected")
+            return
+
+        # Fetch days from API
+        try:
+            self.dailies_days = self.uploader.get_dailies_days(project_id)
+
+            # Update combo box
+            self.day_combo.clear()
+            self.day_combo.addItem("Select a day...")
+
+            if not self.dailies_days:
+                self.day_combo.addItem("(No days found - create one)")
+            else:
+                for day in self.dailies_days:
+                    label = day.get("label", "Untitled")
+                    shoot_date = day.get("shoot_date", "")
+                    if shoot_date:
+                        display = f"{label} ({shoot_date})"
+                    else:
+                        display = label
+                    self.day_combo.addItem(display)
+
+            # Restore selection if we had one
+            if self.selected_day_id:
+                for i, day in enumerate(self.dailies_days):
+                    if day.get("id") == self.selected_day_id:
+                        self.day_combo.setCurrentIndex(i + 1)  # +1 for "Select a day..."
+                        break
+
+        except Exception as e:
+            self.day_combo.clear()
+            self.day_combo.addItem(f"⚠️ Error: {str(e)[:30]}")
+
+    def create_new_day(self):
+        """Create a new production day via dialog."""
+        project_id = self.config.get_project_id()
+        if not project_id:
+            QMessageBox.warning(self, "No Project", "Please connect to a project first.")
+            return
+
+        # Get day label from user
+        label, ok = QInputDialog.getText(
+            self,
+            "New Production Day",
+            "Day label (e.g., 'Day 1', 'Pickup Day'):",
+            QLineEdit.EchoMode.Normal,
+            f"Day {len(self.dailies_days) + 1}"
+        )
+
+        if not ok or not label.strip():
+            return
+
+        # Get shoot date
+        from datetime import date
+        today = date.today().isoformat()
+        shoot_date, ok = QInputDialog.getText(
+            self,
+            "Shoot Date",
+            "Shoot date (YYYY-MM-DD):",
+            QLineEdit.EchoMode.Normal,
+            today
+        )
+
+        if not ok:
+            return
+
+        # Create the day via API
+        try:
+            new_day = self.uploader.create_dailies_day(project_id, label.strip(), shoot_date)
+            if new_day:
+                self.selected_day_id = new_day.get("id")
+                self.refresh_days()
+                QMessageBox.information(self, "Success", f"Created production day: {label}")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to create production day.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create day: {e}")
+
+    def showEvent(self, event):
+        """Called when tab becomes visible - refresh days."""
+        super().showEvent(event)
+        # Refresh days when tab is shown
+        if not self.dailies_days:
+            self.refresh_days()
 
 
 class RecentOffloadsTab(QWidget):
@@ -1037,6 +1260,167 @@ class WatchFolderTab(QWidget):
         self.log_list.clear()
 
 
+class UploadHistoryTab(QWidget):
+    """Tab showing upload history."""
+
+    def __init__(self, config: ConfigManager):
+        super().__init__()
+        self.config = config
+        self.upload_queue = UploadQueueService.get_instance()
+        self.setup_ui()
+        self.connect_signals()
+        self.refresh_history()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 15, 0, 0)
+        layout.setSpacing(15)
+
+        # Header
+        header = QHBoxLayout()
+
+        title = QLabel("Upload History")
+        title.setObjectName("card-title")
+        header.addWidget(title)
+
+        header.addStretch()
+
+        # Filter dropdown
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["All", "Completed", "Failed"])
+        self.filter_combo.currentTextChanged.connect(self.refresh_history)
+        header.addWidget(self.filter_combo)
+
+        layout.addLayout(header)
+
+        # Stats panel
+        stats_panel = QFrame()
+        stats_panel.setObjectName("card")
+        stats_layout = QHBoxLayout(stats_panel)
+
+        self.stats_completed = QLabel("0 completed")
+        self.stats_completed.setStyleSheet(f"color: {COLORS['green']};")
+        stats_layout.addWidget(self.stats_completed)
+
+        self.stats_failed = QLabel("0 failed")
+        self.stats_failed.setStyleSheet(f"color: {COLORS['red']};")
+        stats_layout.addWidget(self.stats_failed)
+
+        self.stats_bytes = QLabel("0 B uploaded")
+        self.stats_bytes.setObjectName("label-muted")
+        stats_layout.addWidget(self.stats_bytes)
+
+        stats_layout.addStretch()
+
+        layout.addWidget(stats_panel)
+
+        # History list
+        self.history_list = QListWidget()
+        self.history_list.setAlternatingRowColors(True)
+        layout.addWidget(self.history_list, 1)
+
+        # Bottom buttons
+        btn_row = QHBoxLayout()
+
+        clear_failed_btn = QPushButton("Clear Failed")
+        clear_failed_btn.clicked.connect(self.clear_failed)
+        clear_failed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_row.addWidget(clear_failed_btn)
+
+        clear_all_btn = QPushButton("Clear All History")
+        clear_all_btn.setObjectName("danger-button")
+        clear_all_btn.clicked.connect(self.clear_all)
+        clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_row.addWidget(clear_all_btn)
+
+        btn_row.addStretch()
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh_history)
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_row.addWidget(refresh_btn)
+
+        layout.addLayout(btn_row)
+
+    def connect_signals(self):
+        """Connect to upload queue signals."""
+        self.upload_queue.history_updated.connect(self.refresh_history)
+
+    def refresh_history(self):
+        """Refresh the history list."""
+        self.history_list.clear()
+
+        # Get filter
+        filter_text = self.filter_combo.currentText().lower()
+        status_filter = None if filter_text == "all" else filter_text
+
+        # Get history entries
+        entries = self.upload_queue.get_history(limit=100, status=status_filter)
+
+        for entry in entries:
+            # Format display
+            if entry.status == "completed":
+                icon = "✓"
+                color = COLORS['green']
+            else:
+                icon = "✗"
+                color = COLORS['red']
+
+            # Format time
+            time_str = entry.completed_at.strftime("%m/%d %H:%M")
+
+            # Format size
+            size_str = self.format_size(entry.file_size)
+
+            # Format duration
+            duration = (entry.completed_at - entry.started_at).total_seconds()
+            if duration < 60:
+                duration_str = f"{duration:.0f}s"
+            else:
+                duration_str = f"{duration / 60:.1f}m"
+
+            # Display text
+            text = f"{icon} {entry.file_name}"
+            if entry.retry_count > 0:
+                text += f" (retries: {entry.retry_count})"
+            text += f"\n   {size_str} • {duration_str} • {time_str}"
+
+            if entry.error:
+                text += f"\n   Error: {entry.error[:50]}..."
+
+            item = QListWidgetItem(text)
+            self.history_list.addItem(item)
+
+        # Update stats
+        stats = self.upload_queue.get_history_stats()
+        self.stats_completed.setText(f"{stats['completed']} completed")
+        self.stats_failed.setText(f"{stats['failed']} failed")
+        self.stats_bytes.setText(f"{self.format_size(stats['total_bytes_uploaded'])} uploaded")
+
+    def clear_failed(self):
+        """Clear failed entries from history."""
+        self.upload_queue.clear_history(status="failed")
+
+    def clear_all(self):
+        """Clear all history."""
+        reply = QMessageBox.question(
+            self,
+            "Clear History",
+            "Are you sure you want to clear all upload history?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.upload_queue.clear_history()
+
+    def format_size(self, size_bytes: int) -> str:
+        """Format bytes to human readable string."""
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if size_bytes < 1024:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.1f} PB"
+
+
 class UploadPage(QWidget):
     """Main upload page with tabs for different upload modes."""
 
@@ -1096,5 +1480,8 @@ class UploadPage(QWidget):
 
         watch_tab = WatchFolderTab(self.config, self.uploader)
         self.tabs.addTab(watch_tab, "👁  Watch Folder")
+
+        history_tab = UploadHistoryTab(self.config)
+        self.tabs.addTab(history_tab, "📋  History")
 
         layout.addWidget(self.tabs, 1)

@@ -23049,13 +23049,19 @@ class DailiesClipInput(BaseModel):
 
 class DailiesClipUpdateInput(BaseModel):
     """Input for updating a dailies clip"""
+    file_name: Optional[str] = None
     scene_number: Optional[str] = None
     take_number: Optional[int] = None
+    camera_label: Optional[str] = None
+    timecode_start: Optional[str] = None
     is_circle_take: Optional[bool] = None
+    is_locked: Optional[bool] = None
     rating: Optional[int] = None
     script_scene_id: Optional[str] = None
     shot_id: Optional[str] = None
     notes: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    thumbnail_url: Optional[str] = None
 
 
 class DailiesClipNoteInput(BaseModel):
@@ -23106,25 +23112,26 @@ async def get_dailies_days(
             card_count_map[day_id] = card_count_map.get(day_id, 0) + 1
             card_to_day_map[card["id"]] = day_id
 
-        # Get clips for aggregate stats
-        card_ids = [c["id"] for c in cards]
+        # Get clips for aggregate stats (clips are linked to project, not cards)
         clip_stats = {}  # day_id -> {count, circles, duration}
 
-        if card_ids:
-            clips_result = client.table("backlot_dailies_clips").select(
-                "dailies_card_id, is_circle_take, duration_seconds"
-            ).in_("dailies_card_id", card_ids).execute()
+        # Since clips don't have dailies_card_id, get project-level clip stats
+        clips_result = client.table("backlot_dailies_clips").select(
+            "id, is_circle_take, duration_seconds"
+        ).eq("project_id", project_id).execute()
 
-            for clip in (clips_result.data or []):
-                day_id = card_to_day_map.get(clip["dailies_card_id"])
-                if day_id:
-                    if day_id not in clip_stats:
-                        clip_stats[day_id] = {"count": 0, "circles": 0, "duration": 0}
-                    clip_stats[day_id]["count"] += 1
-                    if clip.get("is_circle_take"):
-                        clip_stats[day_id]["circles"] += 1
-                    if clip.get("duration_seconds"):
-                        clip_stats[day_id]["duration"] += clip["duration_seconds"]
+        # For now, aggregate all clips at project level (clips aren't linked to days/cards)
+        total_clips = clips_result.data or []
+        project_clip_stats = {
+            "count": len(total_clips),
+            "circles": sum(1 for c in total_clips if c.get("is_circle_take")),
+            "duration": sum(c.get("duration_seconds") or 0 for c in total_clips)
+        }
+
+        # Distribute clips evenly across days for display (temporary until schema is updated)
+        if days and project_clip_stats["count"] > 0:
+            # Put all clips under the first day for now
+            clip_stats[days[0]["id"]] = project_clip_stats
 
         # Build response
         result = []
@@ -23410,14 +23417,10 @@ async def create_dailies_card(
 
         card_result = client.table("backlot_dailies_cards").insert({
             "dailies_day_id": day_id,
-            "project_id": project_id,
-            "camera_label": input.camera_label,
-            "roll_name": input.roll_name,
-            "storage_mode": input.storage_mode or "cloud",
-            "media_root_path": input.media_root_path,
-            "storage_location": input.storage_location,
+            "camera": input.camera_label,
+            "card_number": input.roll_name,
+            "status": "pending",
             "notes": input.notes,
-            "created_by_user_id": user["id"]
         }).execute()
 
         if not card_result.data:
@@ -23455,11 +23458,9 @@ async def update_dailies_card(
 
         update_data = {}
         if input.camera_label is not None:
-            update_data["camera_label"] = input.camera_label
+            update_data["camera"] = input.camera_label
         if input.roll_name is not None:
-            update_data["roll_name"] = input.roll_name
-        if input.storage_mode is not None:
-            update_data["storage_mode"] = input.storage_mode
+            update_data["card_number"] = input.roll_name
         if input.media_root_path is not None:
             update_data["media_root_path"] = input.media_root_path
         if input.storage_location is not None:
@@ -23563,6 +23564,7 @@ async def get_dailies_clips_by_card(
     authorization: str = Header(None)
 ):
     """Get all clips for a dailies card"""
+    print(f"[Clips] get_dailies_clips_by_card called for card_id={card_id}")
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -23587,16 +23589,45 @@ async def get_dailies_clips_by_card(
         if clips:
             clip_ids = [c["id"] for c in clips]
             notes_result = client.table("backlot_dailies_clip_notes").select(
-                "dailies_clip_id"
-            ).in_("dailies_clip_id", clip_ids).execute()
+                "clip_id"
+            ).in_("clip_id", clip_ids).execute()
 
             note_count_map = {}
             for note in (notes_result.data or []):
-                clip_id = note["dailies_clip_id"]
+                clip_id = note["clip_id"]
                 note_count_map[clip_id] = note_count_map.get(clip_id, 0) + 1
 
             for clip in clips:
                 clip["note_count"] = note_count_map.get(clip["id"], 0)
+
+            # Generate presigned URLs for thumbnails (since bucket has Block Public Access)
+            import boto3
+            s3_client = boto3.client('s3', region_name='us-east-1')
+            bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+            clips_with_thumbs = [c for c in clips if c.get("thumbnail_url")]
+            print(f"[Thumbnail] Processing {len(clips_with_thumbs)} clips with thumbnails out of {len(clips)} total")
+
+            for clip in clips:
+                if clip.get("thumbnail_url"):
+                    thumbnail_url = clip["thumbnail_url"]
+                    print(f"[Thumbnail] Processing: {thumbnail_url[:80]}...")
+                    if bucket_name in thumbnail_url:
+                        s3_key = thumbnail_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
+                        print(f"[Thumbnail] Extracted S3 key: {s3_key}")
+                        if s3_key:
+                            try:
+                                presigned_url = s3_client.generate_presigned_url(
+                                    'get_object',
+                                    Params={'Bucket': bucket_name, 'Key': s3_key},
+                                    ExpiresIn=3600,
+                                )
+                                clip["thumbnail_url"] = presigned_url
+                                print(f"[Thumbnail] Generated presigned URL successfully")
+                            except Exception as e:
+                                print(f"[Thumbnail] Error generating presigned URL: {e}")
+                    else:
+                        print(f"[Thumbnail] Bucket name not in URL, skipping presign")
 
         return {"clips": clips}
 
@@ -23632,33 +23663,14 @@ async def get_dailies_clips_by_project(
     try:
         await verify_project_access(client, project_id, user["id"])
 
-        # Build the query - we need to join with cards to filter by day and camera
-        # First get all cards for this project, optionally filtered by day
-        cards_query = client.table("backlot_dailies_cards").select("id, dailies_day_id, camera_label, roll_name").eq(
+        # Clips are linked directly to project_id (not to cards)
+        query = client.table("backlot_dailies_clips").select("*", count="exact").eq(
             "project_id", project_id
         )
 
-        if day_id:
-            cards_query = cards_query.eq("dailies_day_id", day_id)
-        if camera:
-            cards_query = cards_query.eq("camera_label", camera)
-
-        cards_result = cards_query.execute()
-        cards = cards_result.data or []
-        card_ids = [c["id"] for c in cards]
-
-        if not card_ids:
-            return {"clips": [], "total": 0, "offset": offset, "limit": limit}
-
-        # Build card map for later use
-        card_map = {c["id"]: c for c in cards}
-
-        # Get clips for these cards
-        query = client.table("backlot_dailies_clips").select("*", count="exact").in_(
-            "dailies_card_id", card_ids
-        )
-
         # Apply filters
+        if camera:
+            query = query.eq("camera_label", camera)
         if scene_number:
             query = query.eq("scene_number", scene_number)
         if take_number is not None:
@@ -23685,36 +23697,17 @@ async def get_dailies_clips_by_project(
         clips = clips_result.data or []
         total = clips_result.count if clips_result.count is not None else len(clips)
 
-        # Get card and day info for clips
+        # Get note counts for clips
         if clips:
-            # Get day IDs from cards
-            day_ids = list(set(card_map[c["dailies_card_id"]]["dailies_day_id"] for c in clips if c.get("dailies_card_id") and c["dailies_card_id"] in card_map))
-
-            # Get day info
-            day_map = {}
-            if day_ids:
-                days_result = client.table("backlot_dailies_days").select("id, shoot_date, label, unit, production_day_id").in_(
-                    "id", day_ids
-                ).execute()
-                day_map = {d["id"]: d for d in (days_result.data or [])}
-
-            # Attach card and day info
-            for clip in clips:
-                card = card_map.get(clip.get("dailies_card_id"))
-                clip["card"] = card
-                if card:
-                    clip["day"] = day_map.get(card.get("dailies_day_id"))
-
-            # Get note counts
             clip_ids = [c["id"] for c in clips]
             notes_result = client.table("backlot_dailies_clip_notes").select(
-                "dailies_clip_id"
-            ).in_("dailies_clip_id", clip_ids).execute()
+                "clip_id"
+            ).in_("clip_id", clip_ids).execute()
 
             note_count_map = {}
             for note in (notes_result.data or []):
-                clip_id = note["dailies_clip_id"]
-                note_count_map[clip_id] = note_count_map.get(clip_id, 0) + 1
+                cid = note["clip_id"]
+                note_count_map[cid] = note_count_map.get(cid, 0) + 1
 
             for clip in clips:
                 clip["note_count"] = note_count_map.get(clip["id"], 0)
@@ -23726,12 +23719,422 @@ async def get_dailies_clips_by_project(
             else:
                 clips = [c for c in clips if c.get("note_count", 0) == 0]
 
+        # Generate presigned URLs for thumbnails (since bucket has Block Public Access)
+        if clips:
+            import boto3
+            s3_client = boto3.client('s3', region_name='us-east-1')
+            bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+            clips_with_thumbs = [c for c in clips if c.get("thumbnail_url")]
+            print(f"[Thumbnail-Project] Processing {len(clips_with_thumbs)} clips with thumbnails out of {len(clips)} total")
+
+            for clip in clips:
+                if clip.get("thumbnail_url"):
+                    # Extract S3 key from the stored URL
+                    thumbnail_url = clip["thumbnail_url"]
+                    print(f"[Thumbnail-Project] Processing: {thumbnail_url[:80]}...")
+                    if bucket_name in thumbnail_url:
+                        # Parse the key from URL like https://bucket.s3.region.amazonaws.com/key
+                        s3_key = thumbnail_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
+                        print(f"[Thumbnail-Project] Extracted S3 key: {s3_key}")
+                        if s3_key:
+                            try:
+                                presigned_url = s3_client.generate_presigned_url(
+                                    'get_object',
+                                    Params={'Bucket': bucket_name, 'Key': s3_key},
+                                    ExpiresIn=3600,  # 1 hour
+                                )
+                                clip["thumbnail_url"] = presigned_url
+                                print(f"[Thumbnail-Project] Generated presigned URL successfully")
+                            except Exception as e:
+                                print(f"[Thumbnail-Project] Error generating presigned URL: {e}")
+                    else:
+                        print(f"[Thumbnail-Project] Bucket name not in URL, skipping presign")
+
         return {"clips": clips, "total": total, "offset": offset, "limit": limit}
 
     except HTTPException:
         raise
     except Exception as e:
         print(f"Error getting dailies clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/clips/{clip_id}/stream-url")
+async def get_dailies_clip_stream_url(
+    clip_id: str,
+    quality: str = "auto",
+    authorization: str = Header(None)
+):
+    """Get a presigned URL for streaming a dailies clip
+
+    Quality options: auto, 1080p, 720p, 480p, original
+    If a transcoded version doesn't exist, falls back to original.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, file_path, cloud_url, renditions"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"])
+
+        # Generate presigned URL for the clip
+        import boto3
+        s3_client = boto3.client('s3', region_name='us-east-1')
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        # Use file_path as the S3 key (original quality)
+        original_s3_key = clip.get("file_path") or ""
+        if not original_s3_key and clip.get("cloud_url"):
+            # Extract key from cloud_url if file_path is empty
+            cloud_url = clip["cloud_url"]
+            if f"{bucket_name}.s3" in cloud_url:
+                original_s3_key = cloud_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
+            elif "s3.amazonaws.com" in cloud_url:
+                original_s3_key = cloud_url.split(f"s3.us-east-1.amazonaws.com/{bucket_name}/")[-1]
+
+        if not original_s3_key:
+            raise HTTPException(status_code=404, detail="Clip file path not found")
+
+        # Determine which S3 key to use based on quality
+        s3_key = original_s3_key
+        actual_quality = "original"
+        transcoding_queued = False
+
+        # Check if renditions exist in the database
+        renditions = clip.get("renditions") or {}
+
+        if quality != "original" and quality != "auto":
+            # Try to get the requested quality rendition
+            quality_key = renditions.get(quality)
+            if quality_key:
+                # Verify the rendition exists in S3
+                try:
+                    s3_client.head_object(Bucket=bucket_name, Key=quality_key)
+                    s3_key = quality_key
+                    actual_quality = quality
+                except:
+                    # Rendition doesn't exist in S3, fall back to original
+                    pass
+
+            # If requested quality not available, auto-queue transcoding
+            if actual_quality == "original" and quality in ["1080p", "720p", "480p"]:
+                # Check if there's already a pending/processing job
+                existing_job = execute_single(
+                    """
+                    SELECT id, status FROM backlot_transcoding_jobs
+                    WHERE clip_id = :clip_id AND status IN ('pending', 'processing')
+                    """,
+                    {"clip_id": clip_id}
+                )
+
+                if not existing_job:
+                    # Queue transcoding for the requested quality (and lower qualities)
+                    qualities_to_transcode = []
+                    if quality == "1080p":
+                        qualities_to_transcode = ["1080p", "720p", "480p"]
+                    elif quality == "720p":
+                        qualities_to_transcode = ["720p", "480p"]
+                    elif quality == "480p":
+                        qualities_to_transcode = ["480p"]
+
+                    # Only queue qualities that aren't already available
+                    qualities_to_transcode = [q for q in qualities_to_transcode if q not in renditions]
+
+                    if qualities_to_transcode:
+                        job_id = str(uuid.uuid4())
+                        execute_single(
+                            """
+                            INSERT INTO backlot_transcoding_jobs (id, clip_id, project_id, source_key, target_qualities)
+                            VALUES (:id, :clip_id, :project_id, :source_key, :qualities)
+                            RETURNING id
+                            """,
+                            {
+                                "id": job_id,
+                                "clip_id": clip_id,
+                                "project_id": clip["project_id"],
+                                "source_key": original_s3_key,
+                                "qualities": qualities_to_transcode
+                            }
+                        )
+                        transcoding_queued = True
+                        print(f"Auto-queued transcoding job {job_id} for clip {clip_id}: {qualities_to_transcode}")
+
+                        # Trigger ECS Fargate task for transcoding
+                        try:
+                            ecs_client = boto3.client('ecs', region_name='us-east-1')
+                            ecs_client.run_task(
+                                cluster='swn-transcode-cluster',
+                                taskDefinition='swn-transcode-task',
+                                launchType='FARGATE',
+                                networkConfiguration={
+                                    'awsvpcConfiguration': {
+                                        'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
+                                        'securityGroups': ['sg-01b01424383262ebd'],
+                                        'assignPublicIp': 'ENABLED'
+                                    }
+                                },
+                                count=1
+                            )
+                            print(f"Started ECS transcoding task for job {job_id}")
+                        except Exception as ecs_error:
+                            print(f"Failed to start ECS task: {ecs_error}")
+        elif quality == "auto":
+            # For auto, try to use 720p if available, otherwise original
+            for q in ["720p", "1080p", "480p"]:
+                quality_key = renditions.get(q)
+                if quality_key:
+                    try:
+                        s3_client.head_object(Bucket=bucket_name, Key=quality_key)
+                        s3_key = quality_key
+                        actual_quality = q
+                        break
+                    except:
+                        continue
+
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key},
+            ExpiresIn=3600,  # 1 hour
+        )
+
+        return {
+            "url": presigned_url,
+            "expires_in": 3600,
+            "clip_id": clip_id,
+            "quality": actual_quality,
+            "available_renditions": list(renditions.keys()) if renditions else ["original"],
+            "transcoding_queued": transcoding_queued
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating stream URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TranscodeRequest(BaseModel):
+    """Request to start transcoding a clip"""
+    qualities: List[str] = ["720p", "480p"]
+
+
+@router.post("/dailies/clips/{clip_id}/transcode")
+async def start_clip_transcoding(
+    clip_id: str,
+    request: TranscodeRequest,
+    authorization: str = Header(None)
+):
+    """
+    Queue a transcoding job for a dailies clip.
+    Creates renditions at the requested quality levels.
+
+    Quality options: 1080p, 720p, 480p
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get clip info
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, file_path, cloud_url"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"], require_edit=True)
+
+        # Get source S3 key
+        source_key = clip.get("file_path") or ""
+        if not source_key and clip.get("cloud_url"):
+            bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+            cloud_url = clip["cloud_url"]
+            if f"{bucket_name}.s3" in cloud_url:
+                source_key = cloud_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
+
+        if not source_key:
+            raise HTTPException(status_code=400, detail="Clip has no source file")
+
+        # Check for existing pending/processing job
+        existing_job = execute_single(
+            """
+            SELECT id, status FROM backlot_transcoding_jobs
+            WHERE clip_id = :clip_id AND status IN ('pending', 'processing')
+            """,
+            {"clip_id": clip_id}
+        )
+
+        if existing_job:
+            return {
+                "job_id": existing_job["id"],
+                "status": existing_job["status"],
+                "message": "Transcoding job already exists"
+            }
+
+        # Create new transcoding job
+        job_id = str(uuid.uuid4())
+        execute_single(
+            """
+            INSERT INTO backlot_transcoding_jobs (id, clip_id, project_id, source_key, target_qualities)
+            VALUES (:id, :clip_id, :project_id, :source_key, :qualities)
+            RETURNING id
+            """,
+            {
+                "id": job_id,
+                "clip_id": clip_id,
+                "project_id": clip["project_id"],
+                "source_key": source_key,
+                "qualities": request.qualities
+            }
+        )
+
+        # Trigger ECS Fargate task for transcoding
+        ecs_task_arn = None
+        try:
+            import boto3
+            ecs_client = boto3.client('ecs', region_name='us-east-1')
+            response = ecs_client.run_task(
+                cluster='swn-transcode-cluster',
+                taskDefinition='swn-transcode-task',
+                launchType='FARGATE',
+                networkConfiguration={
+                    'awsvpcConfiguration': {
+                        'subnets': ['subnet-097d1d86c1bc18b3b', 'subnet-013241dd6ffc1e819'],
+                        'securityGroups': ['sg-01b01424383262ebd'],
+                        'assignPublicIp': 'ENABLED'
+                    }
+                },
+                count=1
+            )
+            if response.get('tasks'):
+                ecs_task_arn = response['tasks'][0]['taskArn']
+                print(f"Started ECS task: {ecs_task_arn}")
+        except Exception as ecs_error:
+            print(f"Failed to start ECS task (job still queued): {ecs_error}")
+
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "message": "Transcoding job queued",
+            "target_qualities": request.qualities,
+            "ecs_task_arn": ecs_task_arn
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error starting transcoding: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/clips/{clip_id}/transcode-status")
+async def get_clip_transcoding_status(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Get the transcoding status for a clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, renditions"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"])
+
+        # Get latest transcoding job
+        job = execute_single(
+            """
+            SELECT id, status, progress, target_qualities, error_message, created_at, completed_at
+            FROM backlot_transcoding_jobs
+            WHERE clip_id = :clip_id
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            {"clip_id": clip_id}
+        )
+
+        return {
+            "clip_id": clip_id,
+            "renditions": clip.get("renditions") or {},
+            "job": job if job else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting transcoding status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/clips/{clip_id}/thumbnail-upload-url")
+async def get_dailies_clip_thumbnail_upload_url(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Get a presigned URL for uploading a thumbnail for a dailies clip"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"], require_edit=True)
+
+        # Generate presigned URL for thumbnail upload
+        import boto3
+        import uuid
+        s3_client = boto3.client('s3', region_name='us-east-1')
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        # Create S3 key for thumbnail
+        thumbnail_key = f"dailies/{clip['project_id']}/thumbnails/{clip_id}.jpg"
+
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': thumbnail_key,
+                'ContentType': 'image/jpeg',
+            },
+            ExpiresIn=300,  # 5 minutes
+        )
+
+        # Generate the final thumbnail URL
+        thumbnail_url = f"https://{bucket_name}.s3.us-east-1.amazonaws.com/{thumbnail_key}"
+
+        return {
+            "upload_url": presigned_url,
+            "thumbnail_url": thumbnail_url,
+            "expires_in": 300,
+            "clip_id": clip_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating thumbnail upload URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -23772,7 +24175,7 @@ async def get_dailies_clip(
         # Get note count
         notes_result = client.table("backlot_dailies_clip_notes").select(
             "id", count="exact"
-        ).eq("dailies_clip_id", clip_id).execute()
+        ).eq("clip_id", clip_id).execute()
         clip["note_count"] = notes_result.count or 0
 
         return {"clip": clip}
@@ -23848,6 +24251,7 @@ async def update_dailies_clip(
     authorization: str = Header(None)
 ):
     """Update a dailies clip"""
+    print(f"[ClipUpdate] Updating clip {clip_id} with input: {input}")
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -23863,12 +24267,16 @@ async def update_dailies_clip(
         await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
 
         update_data = {}
+        if input.file_name is not None:
+            update_data["file_name"] = input.file_name
         if input.scene_number is not None:
             update_data["scene_number"] = input.scene_number
         if input.take_number is not None:
             update_data["take_number"] = input.take_number
         if input.is_circle_take is not None:
             update_data["is_circle_take"] = input.is_circle_take
+        if input.is_locked is not None:
+            update_data["is_locked"] = input.is_locked
         if input.rating is not None:
             update_data["rating"] = input.rating
         if input.script_scene_id is not None:
@@ -23877,10 +24285,30 @@ async def update_dailies_clip(
             update_data["shot_id"] = input.shot_id
         if input.notes is not None:
             update_data["notes"] = input.notes
+        if input.duration_seconds is not None:
+            update_data["duration_seconds"] = input.duration_seconds
+        if input.thumbnail_url is not None:
+            update_data["thumbnail_url"] = input.thumbnail_url
+        if input.camera_label is not None:
+            update_data["camera_label"] = input.camera_label
+        if input.timecode_start is not None:
+            update_data["timecode_start"] = input.timecode_start
 
+        print(f"[ClipUpdate] Built update_data: {update_data}")
+
+        # If no fields to update, just return the current clip
+        if not update_data:
+            print(f"[ClipUpdate] No fields to update, returning current clip")
+            current_clip = client.table("backlot_dailies_clips").select("*").eq(
+                "id", clip_id
+            ).single().execute()
+            return {"clip": current_clip.data}
+
+        print(f"[ClipUpdate] Executing update...")
         result = client.table("backlot_dailies_clips").update(update_data).eq(
             "id", clip_id
         ).execute()
+        print(f"[ClipUpdate] Update result: {result.data}")
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update clip")
@@ -24085,26 +24513,40 @@ async def get_clip_notes(
         await verify_project_access(client, clip_result.data["project_id"], user["id"])
 
         query = client.table("backlot_dailies_clip_notes").select("*").eq(
-            "dailies_clip_id", clip_id
+            "clip_id", clip_id
         )
 
-        if not include_resolved:
-            query = query.eq("is_resolved", False)
-
-        notes_result = query.order("time_seconds", desc=False).order("created_at").execute()
+        notes_result = query.order("timecode", desc=False).order("created_at").execute()
         notes = notes_result.data or []
 
-        # Fetch author profiles
+        project_id = clip_result.data["project_id"]
+
+        # Map column names to frontend expected format and fetch author profiles with marker colors
         if notes:
-            author_ids = list(set(n["author_user_id"] for n in notes if n.get("author_user_id")))
+            author_ids = list(set(n["user_id"] for n in notes if n.get("user_id")))
             if author_ids:
+                # Fetch user profiles
                 profiles_result = client.table("profiles").select(
                     "id, username, full_name, display_name, avatar_url"
                 ).in_("id", author_ids).execute()
                 author_map = {p["id"]: p for p in (profiles_result.data or [])}
 
+                # Fetch marker colors from project members
+                members_result = client.table("backlot_project_members").select(
+                    "user_id, marker_color"
+                ).eq("project_id", project_id).in_("user_id", author_ids).execute()
+                color_map = {m["user_id"]: m["marker_color"] for m in (members_result.data or [])}
+
                 for note in notes:
-                    note["author"] = author_map.get(note.get("author_user_id"))
+                    # Map DB column names to frontend expected names
+                    note["author_user_id"] = note.get("user_id")
+                    note["time_seconds"] = float(note.get("timecode", 0)) if note.get("timecode") else None
+                    note["note_text"] = note.get("content")
+                    note["category"] = note.get("note_type")
+                    author = author_map.get(note.get("user_id"))
+                    if author:
+                        author["marker_color"] = color_map.get(note.get("user_id"))
+                    note["author"] = author
 
         return {"notes": notes}
 
@@ -24137,11 +24579,11 @@ async def add_clip_note(
         await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
 
         note_result = client.table("backlot_dailies_clip_notes").insert({
-            "dailies_clip_id": clip_id,
-            "author_user_id": user["id"],
-            "time_seconds": input.time_seconds,
-            "note_text": input.note_text,
-            "category": input.category
+            "clip_id": clip_id,
+            "user_id": user["id"],
+            "timecode": str(input.time_seconds) if input.time_seconds is not None else None,
+            "content": input.note_text,
+            "note_type": input.category
         }).execute()
 
         if not note_result.data:
@@ -24169,25 +24611,31 @@ async def update_clip_note(
     try:
         # Get note to verify access
         note_result = client.table("backlot_dailies_clip_notes").select(
-            "dailies_clip_id"
+            "clip_id"
         ).eq("id", note_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
-            "id", note_result.data["dailies_clip_id"]
+            "id", note_result.data["clip_id"]
         ).single().execute()
 
         await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
 
         update_data = {}
         if input.time_seconds is not None:
-            update_data["time_seconds"] = input.time_seconds
+            update_data["timecode"] = str(input.time_seconds)
         if input.note_text is not None:
-            update_data["note_text"] = input.note_text
+            update_data["content"] = input.note_text
         if input.category is not None:
-            update_data["category"] = input.category
+            update_data["note_type"] = input.category
+
+        if not update_data:
+            note_data = client.table("backlot_dailies_clip_notes").select("*").eq(
+                "id", note_id
+            ).single().execute()
+            return {"note": note_data.data}
 
         result = client.table("backlot_dailies_clip_notes").update(update_data).eq(
             "id", note_id
@@ -24218,14 +24666,14 @@ async def resolve_clip_note(
     try:
         # Get note to verify access
         note_result = client.table("backlot_dailies_clip_notes").select(
-            "dailies_clip_id"
+            "clip_id"
         ).eq("id", note_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
-            "id", note_result.data["dailies_clip_id"]
+            "id", note_result.data["clip_id"]
         ).single().execute()
 
         await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
@@ -24258,14 +24706,14 @@ async def delete_clip_note(
     try:
         # Get note to verify access
         note_result = client.table("backlot_dailies_clip_notes").select(
-            "dailies_clip_id"
+            "clip_id"
         ).eq("id", note_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         clip_result = client.table("backlot_dailies_clips").select("project_id").eq(
-            "id", note_result.data["dailies_clip_id"]
+            "id", note_result.data["clip_id"]
         ).single().execute()
 
         await verify_project_access(client, clip_result.data["project_id"], user["id"], require_edit=True)
@@ -24278,6 +24726,55 @@ async def delete_clip_note(
         raise
     except Exception as e:
         print(f"Error deleting clip note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Member Marker Color (for timeline notes)
+# =====================================================
+
+class MemberMarkerColorInput(BaseModel):
+    marker_color: str  # Hex color code like #3B82F6
+
+
+@router.patch("/projects/{project_id}/members/marker-color")
+async def update_member_marker_color(
+    project_id: str,
+    input: MemberMarkerColorInput,
+    authorization: str = Header(None)
+):
+    """Update the current user's marker color for a project"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify user is a project member
+        member_result = client.table("backlot_project_members").select(
+            "id"
+        ).eq("project_id", project_id).eq("user_id", user["id"]).single().execute()
+
+        if not member_result.data:
+            raise HTTPException(status_code=403, detail="Not a project member")
+
+        # Validate hex color format
+        color = input.marker_color
+        if not color.startswith('#') or len(color) != 7:
+            raise HTTPException(status_code=400, detail="Invalid color format. Use hex like #3B82F6")
+
+        # Update marker color
+        result = client.table("backlot_project_members").update({
+            "marker_color": color
+        }).eq("project_id", project_id).eq("user_id", user["id"]).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update marker color")
+
+        return {"success": True, "marker_color": color}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating marker color: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -24389,40 +24886,34 @@ async def ingest_local_dailies(
             # Create card
             new_card = client.table("backlot_dailies_cards").insert({
                 "dailies_day_id": day_id,
-                "project_id": request.project_id,
-                "camera_label": card_input.camera_label,
-                "roll_name": card_input.roll_name,
-                "storage_mode": "local_drive",
-                "media_root_path": card_input.media_root_path,
-                "storage_location": card_input.storage_location,
-                "created_by_user_id": user["id"]
+                "camera": card_input.camera_label,
+                "card_number": card_input.roll_name,
+                "status": "pending",
             }).execute()
 
             if not new_card.data:
                 continue
 
             cards_created += 1
-            card_id = new_card.data[0]["id"]
 
-            # Create clips for this card
+            # Create clips for this card (clips link to project, not card)
             if card_input.clips:
                 clip_inserts = []
                 for clip in card_input.clips:
                     clip_inserts.append({
-                        "dailies_card_id": card_id,
                         "project_id": request.project_id,
                         "file_name": clip.file_name,
-                        "relative_path": clip.relative_path,
+                        "file_path": clip.relative_path,
                         "storage_mode": "local_drive",
                         "duration_seconds": clip.duration_seconds,
                         "timecode_start": clip.timecode_start,
                         "frame_rate": clip.frame_rate,
                         "resolution": clip.resolution,
                         "codec": clip.codec,
+                        "camera_label": card_input.camera_label,
                         "scene_number": clip.scene_number,
                         "take_number": clip.take_number,
                         "is_circle_take": False,
-                        "created_by_user_id": user["id"]
                     })
 
                 if clip_inserts:
@@ -24497,11 +24988,11 @@ async def get_dailies_summary(
 
         if clip_ids:
             notes_result = client.table("backlot_dailies_clip_notes").select(
-                "is_resolved"
-            ).in_("dailies_clip_id", clip_ids).execute()
+                "id"
+            ).in_("clip_id", clip_ids).execute()
 
             total_notes = len(notes_result.data) if notes_result.data else 0
-            unresolved_notes = sum(1 for n in (notes_result.data or []) if not n.get("is_resolved"))
+            unresolved_notes = 0  # is_resolved column doesn't exist in this table
 
         return DailiesProjectSummary(
             total_days=total_days,
@@ -30293,7 +30784,7 @@ class ClipAssetLinkInput(BaseModel):
 class PresignedUploadRequest(BaseModel):
     """Request for a presigned upload URL"""
     project_id: str
-    card_id: str
+    card_id: Optional[str] = None
     file_name: str
     content_type: str = "video/mp4"
     file_size: Optional[int] = None
@@ -30326,21 +30817,48 @@ async def get_dailies_upload_url(
     project_id = request.project_id
 
     if api_key:
-        # Verify API key
+        # Verify API key - check both desktop key tables
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         client = get_client()
+
+        # First try the old backlot_desktop_api_keys table
         key_result = client.table("backlot_desktop_api_keys").select("*").eq(
             "key_hash", key_hash
         ).eq("is_revoked", False).execute()
 
-        if not key_result.data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        if key_result.data:
+            key = key_result.data[0]
+            if str(key["project_id"]) != project_id:
+                raise HTTPException(status_code=403, detail="API key not valid for this project")
+            user_id = str(key["user_id"])
+        else:
+            # Try the new backlot_desktop_keys table (swn_dk_ keys)
+            key_record = execute_single(
+                """
+                SELECT dk.id, dk.user_id
+                FROM backlot_desktop_keys dk
+                WHERE dk.key_hash = :key_hash AND dk.is_active = true
+                """,
+                {"key_hash": key_hash}
+            )
 
-        key = key_result.data[0]
-        if str(key["project_id"]) != project_id:
-            raise HTTPException(status_code=403, detail="API key not valid for this project")
+            if not key_record:
+                raise HTTPException(status_code=401, detail="Invalid or expired API key")
 
-        user_id = str(key["user_id"])
+            user_id = str(key_record["user_id"])
+
+            # Verify user has access to the project
+            access_check = execute_single(
+                """
+                SELECT 1 FROM backlot_projects p
+                LEFT JOIN backlot_project_members pm ON pm.project_id = p.id AND pm.user_id = :user_id
+                WHERE p.id = :project_id AND (p.owner_id = :user_id OR pm.user_id = :user_id)
+                """,
+                {"project_id": project_id, "user_id": user_id}
+            )
+
+            if not access_check:
+                raise HTTPException(status_code=403, detail="Access denied to this project")
     elif authorization:
         user = await get_current_user_from_token(authorization)
         user_id = user["id"]
@@ -30348,23 +30866,34 @@ async def get_dailies_upload_url(
         raise HTTPException(status_code=401, detail="Authentication required")
 
     try:
-        from app.core.storage import storage_client
         import uuid
+        import boto3
 
         # Generate a unique S3 key
         file_ext = request.file_name.split(".")[-1] if "." in request.file_name else "mp4"
-        s3_key = f"dailies/{project_id}/{request.card_id}/{uuid.uuid4()}.{file_ext}"
+        card_path = request.card_id if request.card_id else "uploads"
+        s3_key = f"dailies/{project_id}/{card_path}/{uuid.uuid4()}.{file_ext}"
 
-        # Get presigned upload URL
-        bucket = storage_client.from_("backlot-files")
-        upload_data = bucket.create_signed_upload_url(s3_key, expires_in=900)  # 15 minutes
+        # Use boto3 to generate a PUT presigned URL
+        s3_client = boto3.client('s3', region_name='us-east-1')
+        bucket_name = "swn-backlot-files-517220555400"
+
+        upload_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': s3_key,
+                'ContentType': request.content_type,
+            },
+            ExpiresIn=900,  # 15 minutes
+        )
 
         return {
-            "upload_url": upload_data.get("signedUrl") or upload_data.get("url"),
-            "fields": upload_data.get("fields", {}),
+            "upload_url": upload_url,
+            "key": s3_key,
             "s3_key": s3_key,
             "expires_in": 900,
-            "bucket": "swn-backlot-files-517220555400",
+            "bucket": bucket_name,
         }
 
     except Exception as e:
@@ -30387,12 +30916,24 @@ async def confirm_dailies_upload(
     if api_key:
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()
         client = get_client()
+
+        # Check old table first
         key_result = client.table("backlot_desktop_api_keys").select("*").eq(
             "key_hash", key_hash
         ).eq("is_revoked", False).execute()
 
         if not key_result.data:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+            # Try new desktop keys table
+            key_record = execute_single(
+                """
+                SELECT dk.id, dk.user_id
+                FROM backlot_desktop_keys dk
+                WHERE dk.key_hash = :key_hash AND dk.is_active = true
+                """,
+                {"key_hash": key_hash}
+            )
+            if not key_record:
+                raise HTTPException(status_code=401, detail="Invalid API key")
     elif authorization:
         await get_current_user_from_token(authorization)
         client = get_client()
@@ -33436,4 +33977,422 @@ async def get_production_days_for_desktop(
         raise
     except Exception as e:
         print(f"Error getting production days for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== Desktop Dailies Days Endpoints ====================
+
+async def verify_desktop_key_and_project_access(
+    x_api_key: str,
+    project_id: str
+) -> str:
+    """
+    Verify desktop API key and return user_id if valid and has project access.
+    Raises HTTPException if invalid.
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key format")
+
+    key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+    key_record = execute_single(
+        """
+        SELECT dk.id, dk.user_id
+        FROM backlot_desktop_keys dk
+        WHERE dk.key_hash = :key_hash AND dk.is_active = true
+        """,
+        {"key_hash": key_hash}
+    )
+
+    if not key_record:
+        raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+    user_id = str(key_record["user_id"])
+
+    # Verify project access
+    access_check = execute_single(
+        """
+        SELECT 1 FROM backlot_projects p
+        LEFT JOIN backlot_project_members pm ON pm.project_id = p.id AND pm.user_id = :user_id
+        WHERE p.id = :project_id AND (p.owner_id = :user_id OR pm.user_id = :user_id)
+        """,
+        {"project_id": project_id, "user_id": user_id}
+    )
+
+    if not access_check:
+        raise HTTPException(status_code=403, detail="Access denied to this project")
+
+    return user_id
+
+
+@router.get("/desktop-keys/projects/{project_id}/dailies/days")
+async def get_dailies_days_for_desktop(
+    project_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Get dailies days for a project using desktop API key authentication.
+    Called by the SWN Dailies Helper desktop application.
+    """
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        # Get days with production day info for labels
+        days_result = client.table("backlot_dailies_days").select(
+            "*, production_day:backlot_production_days(id, day_number, title, date)"
+        ).eq(
+            "project_id", project_id
+        ).order("shoot_date", desc=True).limit(limit).execute()
+
+        days = days_result.data or []
+
+        return [
+            {
+                "id": str(day["id"]),
+                "label": day.get("production_day", {}).get("title") or f"Day {day.get('production_day', {}).get('day_number', '')}" if day.get("production_day") else "",
+                "shoot_date": str(day["shoot_date"]) if day.get("shoot_date") else None,
+                "status": day.get("status"),
+                "notes": day.get("notes"),
+                "created_at": str(day["created_at"]) if day.get("created_at") else None,
+            }
+            for day in days
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies days for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/projects/{project_id}/dailies/days")
+async def create_dailies_day_for_desktop(
+    project_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Create a new dailies day using desktop API key authentication.
+    """
+    try:
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        # Create day with correct schema
+        day_data = {
+            "project_id": project_id,
+            "shoot_date": request.get("shoot_date"),
+            "status": "pending",
+            "notes": request.get("notes", ""),
+        }
+
+        result = client.table("backlot_dailies_days").insert(day_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create dailies day")
+
+        day = result.data[0]
+        return {
+            "id": str(day["id"]),
+            "label": f"Shoot {day['shoot_date']}" if day.get("shoot_date") else "",
+            "shoot_date": str(day["shoot_date"]) if day.get("shoot_date") else None,
+            "status": day.get("status"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating dailies day for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/desktop-keys/dailies/days/{day_id}/cards")
+async def get_dailies_cards_for_desktop(
+    day_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Get dailies cards for a day using desktop API key authentication.
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key format")
+
+    try:
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        client = get_client()
+
+        # Get cards (actual schema: camera, card_number)
+        cards_result = client.table("backlot_dailies_cards").select("*").eq(
+            "dailies_day_id", day_id
+        ).order("created_at", desc=True).limit(limit).execute()
+
+        cards = cards_result.data or []
+
+        return [
+            {
+                "id": str(card["id"]),
+                "camera_label": card.get("camera", ""),
+                "roll_name": card.get("card_number", ""),
+                "card_number": card.get("card_number", ""),
+                "camera": card.get("camera", ""),
+            }
+            for card in cards
+        ]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies cards for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/dailies/days/{day_id}/cards")
+async def create_dailies_card_for_desktop(
+    day_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Create a new dailies card using desktop API key authentication.
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key format")
+
+    try:
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        client = get_client()
+
+        # Create card (actual schema: camera, card_number)
+        card_data = {
+            "dailies_day_id": day_id,
+            "camera": request.get("camera_label", request.get("camera", "A")),
+            "card_number": request.get("roll_name", request.get("card_number", "")),
+            "status": "pending",
+        }
+
+        result = client.table("backlot_dailies_cards").insert(card_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create dailies card")
+
+        card = result.data[0]
+        return {
+            "id": str(card["id"]),
+            "camera_label": card.get("camera", ""),
+            "roll_name": card.get("card_number", ""),
+            "camera": card.get("camera", ""),
+            "card_number": card.get("card_number", ""),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating dailies card for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/dailies/confirm-upload")
+async def confirm_desktop_dailies_upload(
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Confirm a dailies upload from the desktop helper.
+    Creates a new clip record and marks it as uploaded.
+
+    Request body:
+        project_id: Project ID
+        s3_key: The S3 key where the file was uploaded
+        checksum: XXH64 checksum of the file
+        file_size: Size in bytes
+        file_name: Original filename (optional)
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key format")
+
+    try:
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        project_id = request.get("project_id")
+        s3_key = request.get("s3_key")
+        checksum = request.get("checksum")
+        file_size = request.get("file_size")
+        file_name = request.get("file_name", s3_key.split("/")[-1] if s3_key else "unknown")
+
+        if not project_id or not s3_key:
+            raise HTTPException(status_code=400, detail="project_id and s3_key are required")
+
+        # Build the cloud URL
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        cloud_url = f"https://{bucket_name}.s3.us-east-1.amazonaws.com/{s3_key}"
+
+        client = get_client()
+
+        # Create the clip record with upload confirmed
+        clip_data = {
+            "project_id": project_id,
+            "file_name": file_name,
+            "file_path": s3_key,
+            "cloud_url": cloud_url,
+            "proxy_url": cloud_url,
+            "storage_mode": "cloud",
+            "upload_status": "completed",
+        }
+
+        if checksum:
+            clip_data["original_checksum"] = checksum
+            clip_data["proxy_checksum"] = checksum
+
+        result = client.table("backlot_dailies_clips").insert(clip_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create clip record")
+
+        clip = result.data[0]
+        return {
+            "success": True,
+            "clip_id": str(clip["id"]),
+            "cloud_url": cloud_url,
+            "message": "Upload confirmed and clip created"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error confirming desktop upload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/dailies/register-clips")
+async def register_desktop_dailies_clips(
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Register multiple clips that have been uploaded from the desktop helper.
+
+    Request body:
+        project_id: Project ID
+        day_id: Dailies day ID (optional, for metadata only)
+        cards: List of card objects with clips
+    """
+    if not x_api_key or not x_api_key.startswith("swn_dk_"):
+        raise HTTPException(status_code=401, detail="Invalid API key format")
+
+    try:
+        key_hash = hashlib.sha256(x_api_key.encode()).hexdigest()
+
+        key_record = execute_single(
+            """
+            SELECT dk.id, dk.user_id
+            FROM backlot_desktop_keys dk
+            WHERE dk.key_hash = :key_hash AND dk.is_active = true
+            """,
+            {"key_hash": key_hash}
+        )
+
+        if not key_record:
+            raise HTTPException(status_code=401, detail="Invalid or inactive API key")
+
+        project_id = request.get("project_id")
+        day_id = request.get("day_id")
+        cards = request.get("cards", [])
+
+        if not project_id:
+            raise HTTPException(status_code=400, detail="project_id is required")
+
+        client = get_client()
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        clips_created = 0
+        clip_ids = []
+
+        for card in cards:
+            camera_label = card.get("camera_label", card.get("camera", "A"))
+            clips = card.get("clips", [])
+
+            for clip_data in clips:
+                s3_key = clip_data.get("s3_key", clip_data.get("file_path", ""))
+                file_name = clip_data.get("file_name", s3_key.split("/")[-1] if s3_key else "unknown")
+
+                cloud_url = f"https://{bucket_name}.s3.us-east-1.amazonaws.com/{s3_key}" if s3_key else None
+
+                insert_data = {
+                    "project_id": project_id,
+                    "file_name": file_name,
+                    "file_path": s3_key,
+                    "cloud_url": cloud_url,
+                    "proxy_url": cloud_url,
+                    "storage_mode": "cloud",
+                    "upload_status": "completed",
+                    "camera_label": camera_label,
+                }
+
+                # Copy optional fields
+                for field in ["duration_seconds", "timecode_start", "frame_rate", "resolution",
+                              "codec", "scene_number", "take_number", "original_checksum", "proxy_checksum"]:
+                    if clip_data.get(field) is not None:
+                        insert_data[field] = clip_data[field]
+
+                if clip_data.get("checksum"):
+                    insert_data["original_checksum"] = clip_data["checksum"]
+                    insert_data["proxy_checksum"] = clip_data["checksum"]
+
+                result = client.table("backlot_dailies_clips").insert(insert_data).execute()
+                if result.data:
+                    clips_created += 1
+                    clip_ids.append(str(result.data[0]["id"]))
+
+        return {
+            "success": True,
+            "clips_created": clips_created,
+            "clip_ids": clip_ids,
+            "message": f"Registered {clips_created} clips"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error registering desktop clips: {e}")
         raise HTTPException(status_code=500, detail=str(e))

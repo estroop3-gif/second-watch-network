@@ -34,6 +34,7 @@ export interface BacklotProfile {
   avatar_url: string | null;
   role: string | null;
   is_order_member?: boolean;
+  marker_color?: string | null; // Per-project marker color for timeline notes
 }
 
 // Project
@@ -5369,6 +5370,7 @@ export interface BacklotDailiesClip {
   storage_mode: DailiesStorageMode;
   cloud_url?: string | null;
   duration_seconds?: number | null;
+  file_size_bytes?: number | null;
   timecode_start?: string | null;
   frame_rate?: number | null;
   resolution?: string | null;
@@ -5377,10 +5379,12 @@ export interface BacklotDailiesClip {
   scene_number?: string | null;
   take_number?: number | null;
   is_circle_take: boolean;
+  is_locked?: boolean;
   rating?: number | null;
   script_scene_id?: string | null;
   shot_id?: string | null;
   notes?: string | null;
+  thumbnail_url?: string | null;
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
@@ -5443,13 +5447,19 @@ export interface DailiesClipInput {
 }
 
 export interface DailiesClipUpdateInput {
+  file_name?: string | null;
   scene_number?: string | null;
   take_number?: number | null;
+  camera_label?: string | null;
+  timecode_start?: string | null;
   is_circle_take?: boolean;
+  is_locked?: boolean;
   rating?: number | null;
   script_scene_id?: string | null;
   shot_id?: string | null;
   notes?: string | null;
+  duration_seconds?: number | null;
+  thumbnail_url?: string | null;
 }
 
 export interface DailiesClipNoteInput {

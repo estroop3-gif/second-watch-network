@@ -471,7 +471,10 @@ export function useDailiesClips(options: UseDailiesClipsOptions) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['dailies-clips'] });
       queryClient.invalidateQueries({ queryKey: ['dailies-clip'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-cards'] });
       queryClient.invalidateQueries({ queryKey: ['dailies-days'] });
+      queryClient.invalidateQueries({ queryKey: ['media-library'] });
+      queryClient.invalidateQueries({ queryKey: ['dailies-summary'] });
     },
   });
 

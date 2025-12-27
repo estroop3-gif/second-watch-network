@@ -1018,7 +1018,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
         await addScenesBulk.mutateAsync(toAdd);
       } else {
         // For new days, we need to call the API directly with the new dayId
-        const token = localStorage.getItem('auth_token');
+        const token = localStorage.getItem('access_token');
         await fetch(
           `${import.meta.env.VITE_API_URL || 'https://vnvvoelid6.execute-api.us-east-1.amazonaws.com'}/api/v1/backlot/production-days/${dayId}/scenes/bulk`,
           {

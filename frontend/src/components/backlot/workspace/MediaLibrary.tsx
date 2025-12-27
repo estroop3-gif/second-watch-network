@@ -1,7 +1,7 @@
 /**
  * MediaLibrary - Flat list view of all dailies clips with filtering and sorting
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -32,6 +32,7 @@ import {
   ChevronRight,
   ArrowUpDown,
   Filter,
+  Loader2,
 } from 'lucide-react';
 import {
   useMediaLibrary,
@@ -53,19 +54,110 @@ interface MediaLibraryProps {
   onSelectClip: (clip: BacklotDailiesClip) => void;
 }
 
-// Clip Card for flat list view
+// Clip Card for flat list view with auto-thumbnail capture
 const MediaClipCard: React.FC<{
   clip: MediaLibraryClipWithContext;
   onSelect: () => void;
   onToggleCircle: (id: string, isCircle: boolean) => void;
   canEdit: boolean;
 }> = ({ clip, onSelect, onToggleCircle, canEdit }) => {
+  const [thumbnailUrl, setThumbnailUrl] = useState<string | null>(clip.thumbnail_url || null);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
   const formatDuration = (seconds: number | null | undefined) => {
     if (!seconds) return '--:--';
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
+
+  // Auto-capture thumbnail for cloud clips without one
+  useEffect(() => {
+    if (thumbnailUrl || !clip.cloud_url || clip.storage_mode !== 'cloud' || isCapturing || !canEdit) {
+      return;
+    }
+
+    const captureThumb = async () => {
+      setIsCapturing(true);
+      try {
+        const token = localStorage.getItem('access_token');
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+        // Get stream URL
+        const streamRes = await fetch(
+          `${apiUrl}/api/v1/backlot/dailies/clips/${clip.id}/stream-url`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!streamRes.ok) return;
+        const { url: streamUrl } = await streamRes.json();
+
+        // Load video and capture first frame
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (!video || !canvas) return;
+
+        video.src = streamUrl;
+        video.crossOrigin = 'anonymous';
+        video.muted = true;
+        video.preload = 'metadata';
+
+        await new Promise<void>((resolve, reject) => {
+          video.onloadeddata = () => resolve();
+          video.onerror = () => reject(new Error('Video load failed'));
+          video.load();
+        });
+
+        await new Promise(r => setTimeout(r, 200));
+        if (video.videoWidth === 0) return;
+
+        // Capture frame
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+
+        const blob = await new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(b => b ? resolve(b) : reject(), 'image/jpeg', 0.85);
+        });
+
+        // Get upload URL
+        const presignRes = await fetch(
+          `${apiUrl}/api/v1/backlot/dailies/clips/${clip.id}/thumbnail-upload-url`,
+          { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        );
+        if (!presignRes.ok) return;
+        const { upload_url, thumbnail_url } = await presignRes.json();
+
+        // Upload to S3
+        const uploadRes = await fetch(upload_url, {
+          method: 'PUT',
+          body: blob,
+          headers: { 'Content-Type': 'image/jpeg' }
+        });
+        if (!uploadRes.ok) return;
+
+        // Update clip in DB
+        await fetch(`${apiUrl}/api/v1/backlot/dailies/clips/${clip.id}`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ thumbnail_url })
+        });
+
+        setThumbnailUrl(thumbnail_url);
+        console.log('[MediaClipCard] Auto-captured thumbnail for:', clip.file_name);
+      } catch (err) {
+        console.error('[MediaClipCard] Thumbnail capture failed:', err);
+      } finally {
+        setIsCapturing(false);
+        if (videoRef.current) videoRef.current.src = '';
+      }
+    };
+
+    captureThumb();
+  }, [clip.id, clip.cloud_url, clip.storage_mode, thumbnailUrl, isCapturing, canEdit]);
 
   return (
     <div
@@ -75,11 +167,30 @@ const MediaClipCard: React.FC<{
       )}
       onClick={onSelect}
     >
+      {/* Hidden video/canvas for thumbnail capture */}
+      <video ref={videoRef} className="hidden" muted playsInline />
+      <canvas ref={canvasRef} className="hidden" />
+
       {/* Thumbnail area */}
-      <div className="aspect-video bg-charcoal-black rounded mb-2 flex items-center justify-center relative">
-        {clip.storage_mode === 'cloud' && clip.cloud_url ? (
+      <div className="aspect-video bg-charcoal-black rounded mb-2 flex items-center justify-center relative overflow-hidden">
+        {thumbnailUrl ? (
+          <>
+            <img
+              src={thumbnailUrl}
+              alt={clip.file_name}
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 hover:opacity-100 transition-opacity">
+              <Play className="w-8 h-8 text-bone-white" />
+            </div>
+          </>
+        ) : clip.storage_mode === 'cloud' && clip.cloud_url ? (
           <div className="absolute inset-0 flex items-center justify-center">
-            <Play className="w-8 h-8 text-bone-white/50" />
+            {isCapturing ? (
+              <Loader2 className="w-6 h-6 text-muted-gray animate-spin" />
+            ) : (
+              <Play className="w-8 h-8 text-bone-white/50" />
+            )}
           </div>
         ) : (
           <div className="text-center">

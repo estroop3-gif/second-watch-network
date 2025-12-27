@@ -220,3 +220,19 @@ class ConfigManager:
                 self.set("linked_drives", drives)
                 return True
         return False
+
+    # Upload Settings
+    def get_upload_settings(self) -> dict:
+        """Get upload configuration settings."""
+        return self.get("upload_settings", {
+            "parallel_uploads": 3,
+            "max_retries": 3,
+            "retry_delay_base": 2.0,
+            "verify_checksum": True,
+            "register_clips": True,
+            "auto_upload_watch_folder": False,
+        })
+
+    def set_upload_settings(self, settings: dict):
+        """Set upload configuration settings."""
+        self.set("upload_settings", settings)

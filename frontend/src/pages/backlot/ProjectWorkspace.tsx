@@ -332,8 +332,8 @@ const ProjectWorkspace: React.FC = () => {
   // Filter nav items based on both permissions and view config
   const visibleNavItems = NAV_ITEMS.filter((item) => {
     if (item.adminOnly && !permission?.isAdmin) return false;
-    // Approvals tab only visible to users who can approve
-    if (item.id === 'approvals' && !canViewApprovalsDashboard) return false;
+    // Approvals tab only visible to users who can approve (or admins)
+    if (item.id === 'approvals' && !canViewApprovalsDashboard && !permission?.isAdmin) return false;
     return isTabVisible(item.id);
   });
 
@@ -527,8 +527,8 @@ const ProjectWorkspace: React.FC = () => {
               // Filter items based on permissions and view config
               const visibleItems = section.items.filter((item) => {
                 if (item.adminOnly && !permission?.isAdmin) return false;
-                // Approvals tab only visible to users who can approve
-                if (item.id === 'approvals' && !canViewApprovalsDashboard) return false;
+                // Approvals tab only visible to users who can approve (or admins)
+                if (item.id === 'approvals' && !canViewApprovalsDashboard && !permission?.isAdmin) return false;
                 return isTabVisible(item.id);
               });
               if (visibleItems.length === 0) return null;
