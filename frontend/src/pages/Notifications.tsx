@@ -130,7 +130,7 @@ const Notifications = () => {
     }
     // Application notifications for project owners/admins
     if (t === 'role_application' && projectId) {
-      navigate(`/backlot/${projectId}/workspace/cast-crew?tab=role-postings&roleId=${roleId}`);
+      navigate(`/backlot/projects/${projectId}`);
       return;
     }
     // Application notifications for applicants
