@@ -1,8 +1,9 @@
 """
 Email Service for Second Watch Network
-Supports Resend, SendGrid, and SMTP providers
+Supports AWS SES, Resend, SendGrid, and SMTP providers
 """
 import smtplib
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import List, Optional, Dict, Any
@@ -34,9 +35,11 @@ class EmailService:
         Returns:
             Dict with success status and details
         """
-        provider = settings.EMAIL_PROVIDER.lower()
+        provider = getattr(settings, 'EMAIL_PROVIDER', 'ses').lower()
 
-        if provider == "resend":
+        if provider == "ses" or provider == "aws":
+            return await EmailService._send_via_ses(to_emails, subject, html_content, text_content, reply_to)
+        elif provider == "resend":
             return await EmailService._send_via_resend(to_emails, subject, html_content, text_content, reply_to)
         elif provider == "sendgrid":
             return await EmailService._send_via_sendgrid(to_emails, subject, html_content, text_content, reply_to)
@@ -45,6 +48,103 @@ class EmailService:
         else:
             # Fallback: log only (for development)
             return await EmailService._log_email(to_emails, subject, html_content)
+
+    @staticmethod
+    async def _send_via_ses(
+        to_emails: List[str],
+        subject: str,
+        html_content: str,
+        text_content: Optional[str] = None,
+        reply_to: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Send email using AWS SES"""
+        try:
+            import boto3
+            from botocore.exceptions import ClientError
+
+            # Get AWS region from settings or environment
+            aws_region = getattr(settings, 'AWS_REGION', None) or os.getenv('AWS_REGION', 'us-east-1')
+
+            # Get email from address
+            from_name = getattr(settings, 'EMAIL_FROM_NAME', 'Second Watch Network')
+            from_address = getattr(settings, 'EMAIL_FROM_ADDRESS', None) or os.getenv('SES_FROM_EMAIL', 'noreply@secondwatchnetwork.com')
+
+            # Create SES client
+            ses_client = boto3.client(
+                'ses',
+                region_name=aws_region,
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
+            )
+
+            # Build email message
+            message = {
+                'Subject': {
+                    'Data': subject,
+                    'Charset': 'UTF-8'
+                },
+                'Body': {
+                    'Html': {
+                        'Data': html_content,
+                        'Charset': 'UTF-8'
+                    }
+                }
+            }
+
+            # Add plain text version if provided
+            if text_content:
+                message['Body']['Text'] = {
+                    'Data': text_content,
+                    'Charset': 'UTF-8'
+                }
+
+            # Build destination
+            destination = {
+                'ToAddresses': to_emails
+            }
+
+            # Send email
+            send_params = {
+                'Source': f"{from_name} <{from_address}>",
+                'Destination': destination,
+                'Message': message
+            }
+
+            # Add reply-to if specified
+            if reply_to:
+                send_params['ReplyToAddresses'] = [reply_to]
+
+            response = ses_client.send_email(**send_params)
+
+            return {
+                "success": True,
+                "provider": "ses",
+                "message_id": response.get('MessageId'),
+                "recipients": len(to_emails)
+            }
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+            print(f"AWS SES error ({error_code}): {error_message}")
+
+            # If email is not verified in sandbox mode, log helpful message
+            if error_code == 'MessageRejected' and 'not verified' in error_message.lower():
+                print(f"Note: In SES sandbox mode, both sender and recipient emails must be verified.")
+                print(f"Verify email addresses at: https://console.aws.amazon.com/ses/home?region={aws_region}#/verified-identities")
+
+            return {
+                "success": False,
+                "provider": "ses",
+                "error": f"{error_code}: {error_message}"
+            }
+        except Exception as e:
+            print(f"AWS SES error: {e}")
+            return {
+                "success": False,
+                "provider": "ses",
+                "error": str(e)
+            }
 
     @staticmethod
     async def _send_via_resend(
@@ -670,3 +770,197 @@ def generate_clearance_email_text(
     ])
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# WELCOME EMAIL TEMPLATES
+# =============================================================================
+
+def generate_welcome_email_html(
+    name: str,
+    email: str,
+    temp_password: str,
+    login_url: str = "https://www.secondwatchnetwork.com/login"
+) -> str:
+    """
+    Generate HTML welcome email with temporary password.
+    Uses the same dark theme as other emails for consistency.
+    """
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Second Watch Network</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #121212; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 24px;">
+        <!-- Header with Logo -->
+        <div style="text-align: center; padding: 32px 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%); border-radius: 12px 12px 0 0; border-bottom: 3px solid #d4af37;">
+            <h1 style="color: #d4af37; margin: 0 0 8px 0; font-size: 28px; letter-spacing: 1px;">SECOND WATCH</h1>
+            <p style="color: #f5f0e1; margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 2px;">NETWORK</p>
+        </div>
+
+        <!-- Main Content -->
+        <div style="background-color: #1a1a1a; padding: 32px 24px; border-radius: 0 0 12px 12px;">
+            <!-- Welcome Message -->
+            <h2 style="color: #f5f0e1; margin: 0 0 16px 0; font-size: 24px;">
+                Welcome, {name}!
+            </h2>
+
+            <p style="color: #a0a0a0; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
+                Your account has been created on Second Watch Network, the premier platform for faith-driven filmmakers.
+                We're excited to have you join our community!
+            </p>
+
+            <!-- Credentials Box -->
+            <div style="background-color: #2a2a2a; padding: 24px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #d4af37;">
+                <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">
+                    Your Login Credentials
+                </h3>
+
+                <div style="margin-bottom: 12px;">
+                    <p style="color: #666; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Email</p>
+                    <p style="color: #f5f0e1; margin: 0; font-size: 16px; font-family: monospace; background-color: #1a1a1a; padding: 8px 12px; border-radius: 4px;">
+                        {email}
+                    </p>
+                </div>
+
+                <div>
+                    <p style="color: #666; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Temporary Password</p>
+                    <p style="color: #d4af37; margin: 0; font-size: 18px; font-family: monospace; font-weight: bold; background-color: #1a1a1a; padding: 8px 12px; border-radius: 4px; letter-spacing: 1px;">
+                        {temp_password}
+                    </p>
+                </div>
+            </div>
+
+            <!-- Security Note -->
+            <div style="background-color: #3a3a2a; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #fbbf24;">
+                <p style="color: #fbbf24; margin: 0; font-size: 14px;">
+                    <strong>Important:</strong> You will be required to change your password when you first log in.
+                </p>
+            </div>
+
+            <!-- CTA Button -->
+            <div style="text-align: center; margin: 32px 0;">
+                <a href="{login_url}" style="display: inline-block; background-color: #d4af37; color: #121212; padding: 16px 48px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; letter-spacing: 0.5px;">
+                    Log In Now
+                </a>
+            </div>
+
+            <!-- What's Next -->
+            <div style="border-top: 1px solid #333; padding-top: 24px; margin-top: 24px;">
+                <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px;">What You Can Do:</h3>
+                <ul style="color: #a0a0a0; margin: 0; padding-left: 20px; line-height: 1.8;">
+                    <li>Complete your filmmaker profile</li>
+                    <li>Connect with other filmmakers</li>
+                    <li>Access the Backlot production tools</li>
+                    <li>Submit your projects for consideration</li>
+                    <li>Join the community forums</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; padding: 24px; color: #666;">
+            <p style="margin: 0 0 8px 0;">
+                <a href="https://www.secondwatchnetwork.com" style="color: #d4af37; text-decoration: none;">www.secondwatchnetwork.com</a>
+            </p>
+            <p style="margin: 0 0 16px 0; font-size: 12px;">
+                If you did not request this account, please ignore this email.
+            </p>
+            <p style="margin: 0; font-size: 12px; color: #444;">
+                Need help? Contact us at support@secondwatch.network
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+    """
+    return html
+
+
+def generate_welcome_email_text(
+    name: str,
+    email: str,
+    temp_password: str,
+    login_url: str = "https://www.secondwatchnetwork.com/login"
+) -> str:
+    """Generate plain text version of welcome email"""
+    lines = [
+        "=" * 50,
+        "WELCOME TO SECOND WATCH NETWORK",
+        "=" * 50,
+        "",
+        f"Hello {name}!",
+        "",
+        "Your account has been created on Second Watch Network,",
+        "the premier platform for faith-driven filmmakers.",
+        "",
+        "-" * 50,
+        "YOUR LOGIN CREDENTIALS",
+        "-" * 50,
+        f"Email: {email}",
+        f"Temporary Password: {temp_password}",
+        "",
+        "IMPORTANT: You will be required to change your password",
+        "when you first log in.",
+        "",
+        f"Log in here: {login_url}",
+        "",
+        "-" * 50,
+        "WHAT YOU CAN DO:",
+        "-" * 50,
+        "- Complete your filmmaker profile",
+        "- Connect with other filmmakers",
+        "- Access the Backlot production tools",
+        "- Submit your projects for consideration",
+        "- Join the community forums",
+        "",
+        "=" * 50,
+        "www.secondwatchnetwork.com",
+        "",
+        "If you did not request this account, please ignore this email.",
+        "Need help? Contact us at support@secondwatch.network",
+        "=" * 50,
+    ]
+    return "\n".join(lines)
+
+
+async def send_welcome_email(
+    email: str,
+    name: str,
+    temp_password: str
+) -> Dict[str, Any]:
+    """
+    Send welcome email with temporary password to new user.
+
+    Args:
+        email: User's email address
+        name: User's display name
+        temp_password: Temporary password to include in email
+
+    Returns:
+        Dict with success status and details
+    """
+    html_content = generate_welcome_email_html(
+        name=name,
+        email=email,
+        temp_password=temp_password,
+        login_url="https://www.secondwatchnetwork.com/login"
+    )
+
+    text_content = generate_welcome_email_text(
+        name=name,
+        email=email,
+        temp_password=temp_password,
+        login_url="https://www.secondwatchnetwork.com/login"
+    )
+
+    return await EmailService.send_email(
+        to_emails=[email],
+        subject="Welcome to Second Watch Network - Your Account is Ready",
+        html_content=html_content,
+        text_content=text_content
+    )

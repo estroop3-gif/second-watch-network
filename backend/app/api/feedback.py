@@ -8,10 +8,33 @@ from pydantic import BaseModel
 from uuid import uuid4
 from datetime import datetime
 
-from app.core.database import get_client
+from app.core.database import get_client, execute_single
 from app.core.storage import StorageBucket
 
 router = APIRouter()
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
+    """Look up profile ID from Cognito user ID"""
+    uid_str = str(cognito_user_id)
+
+    # Try cognito_user_id first
+    result = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid LIMIT 1",
+        {"cuid": uid_str}
+    )
+    if result:
+        return str(result["id"])
+
+    # Fallback: try direct ID match
+    result = execute_single(
+        "SELECT id FROM profiles WHERE id::text = :uid LIMIT 1",
+        {"uid": uid_str}
+    )
+    if result:
+        return str(result["id"])
+
+    return None
 
 
 async def get_current_user_from_token(authorization: str = Header(None)) -> Dict[str, Any]:
@@ -58,22 +81,27 @@ async def submit_alpha_feedback(
     """Submit feedback - only alpha testers can use this endpoint"""
     try:
         user = await get_current_user_from_token(authorization)
-        user_id = user.get("sub") or user.get("user_id") or user.get("id")
+        cognito_id = user.get("sub") or user.get("user_id") or user.get("id")
 
-        if not user_id:
+        if not cognito_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
+
+        # Get profile ID from Cognito ID
+        profile_id = get_profile_id_from_cognito_id(cognito_id)
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="Profile not found")
 
         client = get_client()
 
         # Verify user is alpha tester
-        profile_result = client.table("profiles").select("is_alpha_tester").eq("id", user_id).single().execute()
+        profile_result = client.table("profiles").select("is_alpha_tester").eq("id", profile_id).limit(1).execute()
 
-        if not profile_result.data or not profile_result.data.get("is_alpha_tester"):
+        if not profile_result.data or not profile_result.data[0].get("is_alpha_tester"):
             raise HTTPException(status_code=403, detail="Only alpha testers can submit feedback")
 
         # Insert feedback
         feedback = {
-            "user_id": user_id,
+            "user_id": profile_id,
             "title": data.title,
             "description": data.description,
             "feedback_type": data.feedback_type,
@@ -112,22 +140,27 @@ async def get_screenshot_upload_url(
     """Get presigned URL for screenshot upload - only for alpha testers"""
     try:
         user = await get_current_user_from_token(authorization)
-        user_id = user.get("sub") or user.get("user_id") or user.get("id")
+        cognito_id = user.get("sub") or user.get("user_id") or user.get("id")
 
-        if not user_id:
+        if not cognito_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
+
+        # Get profile ID from Cognito ID
+        profile_id = get_profile_id_from_cognito_id(cognito_id)
+        if not profile_id:
+            raise HTTPException(status_code=404, detail="Profile not found")
 
         client = get_client()
 
         # Verify user is alpha tester
-        profile_result = client.table("profiles").select("is_alpha_tester").eq("id", user_id).single().execute()
+        profile_result = client.table("profiles").select("is_alpha_tester").eq("id", profile_id).limit(1).execute()
 
-        if not profile_result.data or not profile_result.data.get("is_alpha_tester"):
+        if not profile_result.data or not profile_result.data[0].get("is_alpha_tester"):
             raise HTTPException(status_code=403, detail="Only alpha testers can upload screenshots")
 
         # Generate unique key for the screenshot
         unique_id = str(uuid4())
-        key = f"alpha-feedback/{user_id}/{unique_id}/{data.filename}"
+        key = f"alpha-feedback/{profile_id}/{unique_id}/{data.filename}"
 
         # Create presigned upload URL
         bucket = StorageBucket(BACKLOT_FILES_BUCKET)

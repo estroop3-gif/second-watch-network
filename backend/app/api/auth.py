@@ -45,6 +45,18 @@ class AuthResponse(BaseModel):
     user: dict
 
 
+class ChallengeResponse(BaseModel):
+    challenge: str
+    session: str
+    parameters: dict = {}
+
+
+class CompleteNewPasswordRequest(BaseModel):
+    email: EmailStr
+    new_password: str
+    session: str
+
+
 @router.post("/signup", response_model=AuthResponse)
 async def sign_up(request: SignUpRequest):
     """Register a new user with AWS Cognito"""
@@ -118,7 +130,7 @@ async def confirm_sign_up(request: ConfirmSignUpRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/signin", response_model=AuthResponse)
+@router.post("/signin")
 async def sign_in(request: SignInRequest):
     """Sign in an existing user with AWS Cognito"""
     try:
@@ -132,6 +144,15 @@ async def sign_in(request: SignInRequest):
 
         if result.get("error"):
             raise HTTPException(status_code=401, detail=result["error"]["message"])
+
+        # Check if there's a challenge (e.g., NEW_PASSWORD_REQUIRED)
+        if result.get("challenge"):
+            challenge = result["challenge"]
+            return {
+                "challenge": challenge["name"],
+                "session": challenge["session"],
+                "parameters": challenge.get("parameters", {}),
+            }
 
         session = result["session"]
         cognito_user = result["user"]
@@ -195,6 +216,70 @@ async def sign_in(request: SignInRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
+
+
+@router.post("/complete-new-password", response_model=AuthResponse)
+async def complete_new_password(request: CompleteNewPasswordRequest):
+    """Complete the NEW_PASSWORD_REQUIRED challenge for first-time login"""
+    try:
+        from app.core.cognito import CognitoAuth
+        from app.core.database import execute_single
+
+        result = CognitoAuth.respond_to_new_password_challenge(
+            email=request.email,
+            new_password=request.new_password,
+            session=request.session
+        )
+
+        if result.get("error"):
+            raise HTTPException(status_code=400, detail=result["error"]["message"])
+
+        session = result["session"]
+        cognito_user = result["user"]
+
+        # Get profile from database
+        profile = None
+        if cognito_user:
+            try:
+                profile = execute_single("""
+                    SELECT * FROM profiles WHERE cognito_user_id = :cognito_user_id OR email = :email
+                """, {
+                    "cognito_user_id": cognito_user.get("id"),
+                    "email": request.email
+                })
+            except Exception as e:
+                print(f"Profile lookup error: {e}")
+
+        # Build user data
+        if profile:
+            user_data = {
+                "id": str(profile["id"]),
+                "email": cognito_user.get("email") or request.email,
+                "full_name": profile.get("full_name") or cognito_user.get("name"),
+                "cognito_user_id": cognito_user.get("id"),
+                "username": profile.get("username"),
+                "avatar_url": profile.get("avatar_url"),
+                "role": profile.get("role"),
+                "display_name": profile.get("display_name"),
+            }
+        else:
+            user_data = {
+                "id": cognito_user.get("id"),
+                "email": cognito_user.get("email") or request.email,
+                "full_name": cognito_user.get("name"),
+                "cognito_user_id": cognito_user.get("id"),
+            }
+
+        return {
+            "access_token": session["access_token"],
+            "refresh_token": session.get("refresh_token"),
+            "user": user_data
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/signout")

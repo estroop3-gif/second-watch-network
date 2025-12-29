@@ -14,13 +14,35 @@ import {
   DropdownMenuGroup,
 } from "@/components/ui/dropdown-menu";
 import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Landmark, Send, Inbox, Clapperboard, Crown, Handshake } from 'lucide-react';
-import { BadgeDisplay } from './UserBadge';
+import { useLivePermissions, BADGE_CONFIG, BadgeType } from '@/hooks/useLivePermissions';
+import { cn } from '@/lib/utils';
+
+// Live badge display component
+function LiveBadge({ badge, size = 'sm' }: { badge: BadgeType; size?: 'sm' | 'md' | 'lg' }) {
+  const config = BADGE_CONFIG[badge];
+  const sizeClasses = {
+    sm: 'text-xs px-2 py-0.5',
+    md: 'text-sm px-2.5 py-1',
+    lg: 'text-base px-3 py-1.5',
+  };
+
+  return (
+    <span
+      className={cn(
+        'rounded-[4px] transform -rotate-3 uppercase whitespace-nowrap font-bold',
+        sizeClasses[size],
+        config.className
+      )}
+    >
+      {config.label}
+    </span>
+  );
+}
 
 export const UserNav = () => {
   const { session, user } = useAuth();
   const {
     profile,
-    primaryBadge,
     isAdmin,
     isSuperadmin,
     isFilmmaker,
@@ -28,6 +50,9 @@ export const UserNav = () => {
     isOrderMember,
     isLodgeOfficer,
   } = useEnrichedProfile();
+
+  // Use live permissions for the badge (updates in real-time when role changes)
+  const { highestBadge, isLoading: permissionsLoading } = useLivePermissions();
 
   const { signOut } = useAuth();
 
@@ -74,7 +99,7 @@ export const UserNav = () => {
           </Avatar>
           <div className="hidden sm:flex items-center gap-2">
             <span className="font-heading uppercase text-sm text-bone-white">{displayName}</span>
-            <BadgeDisplay badge={primaryBadge} size="sm" />
+            {!permissionsLoading && <LiveBadge badge={highestBadge} size="sm" />}
           </div>
         </Button>
       </DropdownMenuTrigger>

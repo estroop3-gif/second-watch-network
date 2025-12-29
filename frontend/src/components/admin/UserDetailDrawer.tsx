@@ -42,9 +42,26 @@ import {
   Check,
   X,
   Loader2,
+  FolderKanban,
+  HardDrive,
+  Send,
+  Pencil,
+  Save,
 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Progress } from '@/components/ui/progress';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
+
+// Helper to format bytes to human readable format
+const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+};
 
 interface UserDetailDrawerProps {
   userId: string | null;
@@ -68,6 +85,7 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
   const [showBanDialog, setShowBanDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showResetPasswordDialog, setShowResetPasswordDialog] = useState(false);
+  const [showResendTempPasswordDialog, setShowResendTempPasswordDialog] = useState(false);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['admin-user-details', userId],
@@ -111,6 +129,17 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
     },
     onError: (err: any) => {
       toast.error(err.message || 'Failed to send password reset');
+    },
+  });
+
+  const resendTempPasswordMutation = useMutation({
+    mutationFn: () => api.resendTempPassword(userId!),
+    onSuccess: (result) => {
+      toast.success(result.message || 'Temporary password email sent');
+      setShowResendTempPasswordDialog(false);
+    },
+    onError: (err: any) => {
+      toast.error(err.message || 'Failed to resend temporary password');
     },
   });
 
@@ -168,6 +197,15 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                 <Button
                   variant="outline"
                   size="sm"
+                  onClick={() => setShowResendTempPasswordDialog(true)}
+                  className="bg-charcoal-black border-accent-yellow text-accent-yellow"
+                >
+                  <Send className="h-4 w-4 mr-1" />
+                  Resend Temp Password
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setShowBanDialog(true)}
                   className={`bg-charcoal-black ${
                     profile.is_banned
@@ -193,7 +231,7 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
 
               {/* Tabs */}
               <Tabs defaultValue="profile" className="w-full">
-                <TabsList className="grid w-full grid-cols-5 bg-charcoal-black border border-muted-gray mb-4">
+                <TabsList className="grid w-full grid-cols-6 bg-charcoal-black border border-muted-gray mb-4">
                   <TabsTrigger
                     value="profile"
                     className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black text-xs"
@@ -205,6 +243,12 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                     className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black text-xs"
                   >
                     <Shield className="h-4 w-4" />
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="projects"
+                    className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black text-xs"
+                  >
+                    <FolderKanban className="h-4 w-4" />
                   </TabsTrigger>
                   <TabsTrigger
                     value="filmmaker"
@@ -252,6 +296,33 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                       </div>
                     )}
                   </div>
+
+                  {/* Storage Usage */}
+                  {data?.storage_usage && (
+                    <div className="pt-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <HardDrive className="h-4 w-4 text-muted-gray" />
+                        <p className="text-xs text-muted-gray uppercase">Storage Usage</p>
+                      </div>
+                      <div className="p-3 bg-muted-gray/10 border border-muted-gray/30 rounded">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-bone-white text-sm">
+                            {formatBytes(data.storage_usage.bytes_used || 0)}
+                          </span>
+                          <span className="text-muted-gray text-sm">
+                            {formatBytes(data.storage_usage.quota_bytes || 0)}
+                          </span>
+                        </div>
+                        <Progress
+                          value={data.storage_usage.percentage || 0}
+                          className="h-2 bg-muted-gray/30"
+                        />
+                        <p className="text-xs text-muted-gray mt-1 text-right">
+                          {(data.storage_usage.percentage || 0).toFixed(1)}% used
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </TabsContent>
 
                 {/* Roles Tab */}
@@ -294,6 +365,58 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
                           </p>
                         )}
                       </div>
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* Projects Tab */}
+                <TabsContent value="projects" className="space-y-3">
+                  <p className="text-xs text-muted-gray uppercase mb-2">
+                    Backlot Projects ({data?.backlot_projects?.length || 0})
+                  </p>
+                  {data?.backlot_projects && data.backlot_projects.length > 0 ? (
+                    <div className="space-y-2">
+                      {data.backlot_projects.map((project: any) => (
+                        <div
+                          key={project.id}
+                          className="p-3 bg-muted-gray/10 border border-muted-gray/30 rounded hover:bg-muted-gray/20 transition-colors cursor-pointer"
+                          onClick={() => window.open(`/backlot/project/${project.id}`, '_blank')}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Film className="h-4 w-4 text-cyan-500" />
+                            <span className="text-bone-white font-medium truncate">{project.title}</span>
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <Badge
+                              variant="outline"
+                              className={`text-xs ${
+                                project.status === 'active'
+                                  ? 'border-green-500 text-green-500'
+                                  : project.status === 'completed'
+                                  ? 'border-blue-500 text-blue-500'
+                                  : project.status === 'on_hold'
+                                  ? 'border-yellow-500 text-yellow-500'
+                                  : 'border-muted-gray text-muted-gray'
+                              }`}
+                            >
+                              {project.status?.replace('_', ' ')}
+                            </Badge>
+                            {project.project_type && (
+                              <span className="text-xs text-muted-gray capitalize">
+                                {project.project_type.replace('_', ' ')}
+                              </span>
+                            )}
+                            <span className="text-xs text-muted-gray ml-auto">
+                              {format(new Date(project.created_at), 'PP')}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-muted-gray">
+                      <FolderKanban className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                      <p>No Backlot projects</p>
                     </div>
                   )}
                 </TabsContent>
@@ -538,6 +661,31 @@ export const UserDetailDrawer = ({ userId, onClose }: UserDetailDrawerProps) => 
               className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500"
             >
               {resetPasswordMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send Reset Email'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Resend Temp Password Dialog */}
+      <AlertDialog open={showResendTempPasswordDialog} onOpenChange={setShowResendTempPasswordDialog}>
+        <AlertDialogContent className="bg-charcoal-black border-muted-gray">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-bone-white">Resend Temporary Password?</AlertDialogTitle>
+            <AlertDialogDescription className="text-muted-gray">
+              This will generate a new temporary password and send a welcome email to {profile?.email}.
+              The user will need to change their password on first login.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-charcoal-black border-muted-gray text-bone-white">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => resendTempPasswordMutation.mutate()}
+              disabled={resendTempPasswordMutation.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-yellow-500"
+            >
+              {resendTempPasswordMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send New Password'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

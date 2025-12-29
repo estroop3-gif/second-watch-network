@@ -173,6 +173,7 @@ class CognitoAuth:
     def sign_in(email: str, password: str) -> Dict[str, Any]:
         """
         Sign in a user and return tokens.
+        May return a challenge if user needs to change password on first login.
         """
         try:
             params = {
@@ -189,6 +190,19 @@ class CognitoAuth:
                 params['AuthParameters']['SECRET_HASH'] = secret_hash
 
             response = cognito_client.initiate_auth(**params)
+
+            # Check if this is a challenge (e.g., NEW_PASSWORD_REQUIRED)
+            if response.get('ChallengeName') == 'NEW_PASSWORD_REQUIRED':
+                return {
+                    'session': None,
+                    'user': None,
+                    'challenge': {
+                        'name': 'NEW_PASSWORD_REQUIRED',
+                        'session': response.get('Session'),
+                        'parameters': response.get('ChallengeParameters', {}),
+                    },
+                    'error': None
+                }
 
             auth_result = response.get('AuthenticationResult', {})
 
@@ -212,6 +226,55 @@ class CognitoAuth:
                 return {'session': None, 'user': None, 'error': {'message': 'Invalid email or password'}}
             elif error_code == 'UserNotConfirmedException':
                 return {'session': None, 'user': None, 'error': {'message': 'Please verify your email first'}}
+            else:
+                return {'session': None, 'user': None, 'error': {'message': error_message}}
+
+    @staticmethod
+    def respond_to_new_password_challenge(
+        email: str,
+        new_password: str,
+        session: str
+    ) -> Dict[str, Any]:
+        """
+        Respond to NEW_PASSWORD_REQUIRED challenge with new password.
+        """
+        try:
+            params = {
+                'ChallengeName': 'NEW_PASSWORD_REQUIRED',
+                'ClientId': COGNITO_CLIENT_ID,
+                'ChallengeResponses': {
+                    'USERNAME': email,
+                    'NEW_PASSWORD': new_password,
+                },
+                'Session': session,
+            }
+
+            secret_hash = get_secret_hash(email)
+            if secret_hash:
+                params['ChallengeResponses']['SECRET_HASH'] = secret_hash
+
+            response = cognito_client.respond_to_auth_challenge(**params)
+
+            auth_result = response.get('AuthenticationResult', {})
+
+            return {
+                'session': {
+                    'access_token': auth_result.get('AccessToken'),
+                    'refresh_token': auth_result.get('RefreshToken'),
+                    'id_token': auth_result.get('IdToken'),
+                    'expires_in': auth_result.get('ExpiresIn'),
+                    'token_type': auth_result.get('TokenType', 'Bearer'),
+                },
+                'user': CognitoAuth.get_user_from_token(auth_result.get('AccessToken')),
+                'error': None
+            }
+
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            error_message = e.response['Error']['Message']
+
+            if error_code == 'InvalidPasswordException':
+                return {'session': None, 'user': None, 'error': {'message': error_message}}
             else:
                 return {'session': None, 'user': None, 'error': {'message': error_message}}
 
@@ -500,6 +563,34 @@ class CognitoAuth:
 
         except ClientError:
             return None
+
+    @staticmethod
+    def admin_delete_user(email: str) -> Dict[str, Any]:
+        """
+        Admin: Delete a user from Cognito.
+        """
+        try:
+            cognito_client.admin_delete_user(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=email
+            )
+            return {'success': True, 'error': None}
+        except ClientError as e:
+            return {'success': False, 'error': {'message': e.response['Error']['Message']}}
+
+    @staticmethod
+    def admin_reset_password(email: str) -> Dict[str, Any]:
+        """
+        Admin: Reset a user's password (sends reset email).
+        """
+        try:
+            cognito_client.admin_reset_user_password(
+                UserPoolId=COGNITO_USER_POOL_ID,
+                Username=email
+            )
+            return {'success': True, 'error': None}
+        except ClientError as e:
+            return {'success': False, 'error': {'message': e.response['Error']['Message']}}
 
 
 # FastAPI dependency for getting current user

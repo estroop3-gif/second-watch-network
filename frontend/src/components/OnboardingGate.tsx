@@ -28,17 +28,8 @@ const OnboardingGate = () => {
     return <Navigate to="/landing" state={{ from: location }} replace />;
   }
 
-  // Check if filmmaker onboarding is needed:
-  // - User has filmmaker role (is_filmmaker flag set in profiles table, or has filmmaker_profile, or auth metadata)
-  // - User has NOT completed onboarding (no filmmaker_profiles entry exists)
-  // - Onboarding feature is enabled in settings
-  const hasCompletedOnboarding = profile?.has_completed_filmmaker_onboarding || hasFilmmakerProfile;
-
-  if (settings?.filmmaker_onboarding_enabled && isFilmmaker && !hasCompletedOnboarding) {
-    if (location.pathname !== '/filmmaker-onboarding') {
-      return <Navigate to="/filmmaker-onboarding" replace />;
-    }
-  }
+  // Filmmaker onboarding is no longer required - users can optionally complete it
+  // The onboarding page still exists at /filmmaker-onboarding if needed
 
   return <Outlet />;
 };

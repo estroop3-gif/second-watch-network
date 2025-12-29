@@ -22,13 +22,23 @@ interface SignUpResult {
   user?: any;
 }
 
+interface SignInResult {
+  success: boolean;
+  challenge?: {
+    name: string;
+    session: string;
+    parameters?: Record<string, any>;
+  };
+}
+
 interface AuthContextType {
   session: AuthSession | null;
   user: AuthUser | null;
   profile: any | null;
   profileId: string | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  completeNewPassword: (email: string, newPassword: string, session: string) => Promise<void>;
   signUp: (email: string, password: string, fullName?: string) => Promise<SignUpResult>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -96,21 +106,33 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     checkSession();
   }, []);
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string): Promise<SignInResult> => {
     try {
       const data = await api.signIn(email, password);
 
+      // Check if there's a challenge (e.g., NEW_PASSWORD_REQUIRED)
+      if (data.challenge) {
+        return {
+          success: false,
+          challenge: {
+            name: data.challenge,
+            session: data.session || '',
+            parameters: data.parameters,
+          },
+        };
+      }
+
       // Store tokens
-      safeStorage.setItem('access_token', data.access_token);
+      safeStorage.setItem('access_token', data.access_token!);
       if (data.refresh_token) {
         safeStorage.setItem('refresh_token', data.refresh_token);
       }
 
-      api.setToken(data.access_token);
+      api.setToken(data.access_token!);
 
       // Create session
       const authSession: AuthSession = {
-        access_token: data.access_token,
+        access_token: data.access_token!,
         refresh_token: data.refresh_token || '',
         expires_in: 3600,
         token_type: 'bearer',
@@ -140,8 +162,50 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           // Profile may not exist yet
         }
       }
+
+      return { success: true };
     } catch (error) {
       console.error('Sign in error:', error);
+      throw error;
+    }
+  };
+
+  const completeNewPassword = async (email: string, newPassword: string, session: string) => {
+    try {
+      const data = await api.completeNewPassword(email, newPassword, session);
+
+      // Store tokens
+      safeStorage.setItem('access_token', data.access_token);
+      if (data.refresh_token) {
+        safeStorage.setItem('refresh_token', data.refresh_token);
+      }
+
+      api.setToken(data.access_token);
+
+      // Create session
+      const authSession: AuthSession = {
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || '',
+        expires_in: 3600,
+        token_type: 'bearer',
+        user: data.user as AuthUser,
+      };
+
+      setSession(authSession);
+      setUser(data.user as AuthUser);
+
+      // Fetch profile
+      try {
+        const profileData = await api.getProfile();
+        setProfile(profileData);
+        if (profileData?.id) {
+          safeStorage.setItem('profile_id', profileData.id);
+        }
+      } catch {
+        // Profile may not exist yet
+      }
+    } catch (error) {
+      console.error('Complete new password error:', error);
       throw error;
     }
   };
@@ -222,6 +286,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       profileId,
       loading,
       signIn,
+      completeNewPassword,
       signUp,
       confirmSignUp,
       signOut

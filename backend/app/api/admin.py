@@ -149,18 +149,50 @@ async def reorder_featured_users(user_ids: list):
 
 @router.delete("/users/{user_id}")
 async def delete_user(user_id: str):
-    """Delete user account"""
+    """Delete user account from both database and Cognito"""
     try:
+        import boto3
+        from app.core.config import settings
+
         client = get_client()
-        
+
+        # Get user email before deleting from database
+        user_result = client.table("profiles").select("email").eq("id", user_id).single().execute()
+        user_email = user_result.data.get("email") if user_result.data else None
+
+        # Delete from Cognito if we have the email
+        if user_email:
+            try:
+                cognito_client = boto3.client(
+                    "cognito-idp",
+                    region_name=settings.COGNITO_REGION
+                )
+
+                # Find user in Cognito by email
+                cognito_users = cognito_client.list_users(
+                    UserPoolId=settings.COGNITO_USER_POOL_ID,
+                    Filter=f'email = "{user_email}"'
+                )
+
+                # Delete from Cognito if found
+                if cognito_users.get("Users"):
+                    cognito_username = cognito_users["Users"][0]["Username"]
+                    cognito_client.admin_delete_user(
+                        UserPoolId=settings.COGNITO_USER_POOL_ID,
+                        Username=cognito_username
+                    )
+            except Exception as cognito_error:
+                # Log but don't fail if Cognito deletion fails
+                print(f"Warning: Failed to delete user from Cognito: {cognito_error}")
+
         # Delete user profile
         client.table("profiles").delete().eq("id", user_id).execute()
-        
+
         # Delete associated data
         client.table("filmmaker_profiles").delete().eq("user_id", user_id).execute()
         client.table("submissions").delete().eq("user_id", user_id).execute()
-        
-        return {"message": "User deleted successfully"}
+
+        return {"message": "User deleted successfully from database and Cognito"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -313,6 +345,8 @@ def build_roles_array(profile: dict) -> list:
         roles.append("filmmaker")
     if profile.get("is_premium"):
         roles.append("premium")
+    if profile.get("is_alpha_tester"):
+        roles.append("alpha_tester")
 
     # Fallback to legacy role if no flags set
     if not roles and profile.get("role"):
@@ -344,7 +378,7 @@ async def get_all_users_with_profiles(
         query = client.table("profiles").select(
             "id, email, created_at, username, full_name, role, avatar_url, is_banned, status, bio, "
             "is_superadmin, is_admin, is_moderator, is_lodge_officer, "
-            "is_order_member, is_partner, is_filmmaker, is_premium, is_featured, featured_order",
+            "is_order_member, is_partner, is_filmmaker, is_premium, is_alpha_tester, is_featured, featured_order",
             count="exact"
         )
 
@@ -564,12 +598,44 @@ async def get_user_details(user_id: str):
         except Exception:
             pass
 
+        # Get backlot projects owned by user
+        backlot_projects = []
+        try:
+            projects_result = client.table("backlot_projects").select(
+                "id, title, status, project_type, created_at, thumbnail_url"
+            ).eq("owner_id", user_id).order("created_at", desc=True).execute()
+            backlot_projects = projects_result.data or []
+        except Exception:
+            pass
+
+        # Get storage usage
+        storage_usage = None
+        try:
+            storage_result = client.table("user_storage_usage").select(
+                "total_bytes_used, custom_quota_bytes"
+            ).eq("user_id", user_id).single().execute()
+            if storage_result.data:
+                bytes_used = storage_result.data.get("total_bytes_used") or 0
+                custom_quota = storage_result.data.get("custom_quota_bytes")
+                # Default 1GB quota if none set
+                quota = custom_quota or 1073741824
+                percentage = (bytes_used / quota * 100) if quota > 0 else 0
+                storage_usage = {
+                    "bytes_used": bytes_used,
+                    "quota_bytes": quota,
+                    "custom_quota_bytes": custom_quota,
+                    "percentage": round(percentage, 1)
+                }
+        except Exception:
+            pass
+
         return {
             "profile": {
                 "id": profile.get("id"),
                 "email": profile.get("email"),
                 "username": profile.get("username"),
                 "full_name": profile.get("full_name"),
+                "display_name": profile.get("display_name"),
                 "bio": profile.get("bio"),
                 "avatar_url": profile.get("avatar_url"),
                 "created_at": profile.get("created_at"),
@@ -583,7 +649,9 @@ async def get_user_details(user_id: str):
             "order_membership": order_membership,
             "submissions": submissions,
             "applications": applications,
-            "recent_activity": recent_activity
+            "recent_activity": recent_activity,
+            "backlot_projects": backlot_projects,
+            "storage_usage": storage_usage
         }
     except HTTPException:
         raise
@@ -622,6 +690,152 @@ async def reset_user_password(user_id: str):
         )
 
         return {"success": True, "message": f"Password reset email sent to {email}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class AdminProfileUpdate(BaseModel):
+    """Request model for admin profile updates"""
+    full_name: Optional[str] = None
+    display_name: Optional[str] = None
+    username: Optional[str] = None
+    bio: Optional[str] = None
+    email: Optional[str] = None
+
+
+@router.put("/users/{user_id}/profile")
+async def admin_update_user_profile(user_id: str, data: AdminProfileUpdate):
+    """Admin updates user profile fields"""
+    try:
+        import boto3
+        from app.core.config import settings
+
+        client = get_client()
+
+        # Get current profile
+        profile_result = client.table("profiles").select("email").eq("id", user_id).single().execute()
+        if not profile_result.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        old_email = profile_result.data.get("email")
+
+        # Build update data
+        update_data = {}
+        if data.full_name is not None:
+            update_data["full_name"] = data.full_name
+        if data.display_name is not None:
+            update_data["display_name"] = data.display_name
+        if data.username is not None:
+            # Check username uniqueness
+            existing = client.table("profiles").select("id").eq("username", data.username).neq("id", user_id).execute()
+            if existing.data:
+                raise HTTPException(status_code=400, detail="Username already taken")
+            update_data["username"] = data.username
+        if data.bio is not None:
+            update_data["bio"] = data.bio
+        if data.email is not None and data.email != old_email:
+            # Check email uniqueness
+            existing = client.table("profiles").select("id").eq("email", data.email).neq("id", user_id).execute()
+            if existing.data:
+                raise HTTPException(status_code=400, detail="Email already in use")
+            update_data["email"] = data.email
+
+            # Update email in Cognito
+            try:
+                cognito_client = boto3.client(
+                    "cognito-idp",
+                    region_name=settings.COGNITO_REGION
+                )
+                cognito_client.admin_update_user_attributes(
+                    UserPoolId=settings.COGNITO_USER_POOL_ID,
+                    Username=user_id,
+                    UserAttributes=[
+                        {"Name": "email", "Value": data.email},
+                        {"Name": "email_verified", "Value": "true"}
+                    ]
+                )
+            except Exception as cognito_error:
+                print(f"Warning: Failed to update email in Cognito: {cognito_error}")
+
+        if not update_data:
+            return {"success": True, "message": "No changes to apply"}
+
+        # Update profile in database
+        result = client.table("profiles").update(update_data).eq("id", user_id).execute()
+
+        return {
+            "success": True,
+            "message": "Profile updated successfully",
+            "updated_fields": list(update_data.keys())
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/users/{user_id}/resend-temp-password")
+async def resend_temp_password(user_id: str):
+    """Generate new temporary password and send welcome email"""
+    try:
+        import boto3
+        import secrets
+        import string
+        from app.core.config import settings
+        from app.services.email_service import send_welcome_email
+
+        client = get_client()
+
+        # Get user info
+        profile_result = client.table("profiles").select("email, display_name, full_name").eq("id", user_id).single().execute()
+
+        if not profile_result.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        email = profile_result.data.get("email")
+        name = profile_result.data.get("display_name") or profile_result.data.get("full_name") or email
+
+        if not email:
+            raise HTTPException(status_code=400, detail="User has no email address")
+
+        # Generate new temporary password
+        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        password = [
+            secrets.choice(string.ascii_lowercase),
+            secrets.choice(string.ascii_uppercase),
+            secrets.choice(string.digits),
+            secrets.choice("!@#$%^&*")
+        ]
+        password.extend(secrets.choice(alphabet) for _ in range(12))
+        secrets.SystemRandom().shuffle(password)
+        temp_password = ''.join(password)
+
+        # Set new password in Cognito (Permanent=False forces change on next login)
+        cognito_client = boto3.client(
+            "cognito-idp",
+            region_name=settings.COGNITO_REGION
+        )
+
+        cognito_client.admin_set_user_password(
+            UserPoolId=settings.COGNITO_USER_POOL_ID,
+            Username=user_id,
+            Password=temp_password,
+            Permanent=False
+        )
+
+        # Send welcome email with new temp password
+        await send_welcome_email(
+            email=email,
+            name=name,
+            temp_password=temp_password
+        )
+
+        return {
+            "success": True,
+            "message": f"Temporary password email sent to {email}"
+        }
     except HTTPException:
         raise
     except Exception as e:

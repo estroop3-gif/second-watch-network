@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
@@ -91,15 +92,16 @@ const EditRolesDialog: React.FC<EditRolesDialogProps> = ({ user, isOpen, onClose
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-md">
+      <DialogContent className="bg-charcoal-black border-muted-gray text-bone-white max-w-md max-h-[90vh]">
         <DialogHeader>
           <DialogTitle>Edit Roles for <span className="text-accent-yellow">{user.profile.username || user.email}</span></DialogTitle>
           <DialogDescription>
             Select the roles to assign to this user.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-3 py-4">
-          {ROLE_DEFINITIONS.map(role => {
+        <ScrollArea className="max-h-[50vh] pr-4">
+          <div className="grid gap-3 py-4">
+            {ROLE_DEFINITIONS.map(role => {
             const IconComponent = role.icon;
             const isLocked = role.requiresSuperadmin && !isSuperadmin;
             const isChecked = selectedRoles.includes(role.id);
@@ -133,7 +135,8 @@ const EditRolesDialog: React.FC<EditRolesDialogProps> = ({ user, isOpen, onClose
               </div>
             );
           })}
-        </div>
+          </div>
+        </ScrollArea>
         {!isSuperadmin && (
           <p className="text-xs text-muted-gray flex items-center gap-1">
             <Lock className="w-3 h-3" /> Superadmin/Admin roles require superadmin privileges to assign

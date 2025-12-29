@@ -815,6 +815,75 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
+async def check_storage_quota(user_id: str, file_size: int = 0) -> Dict[str, Any]:
+    """Check if user has available storage quota for upload.
+
+    Args:
+        user_id: The user's profile ID
+        file_size: Size of file to upload in bytes (optional, 0 for pre-check)
+
+    Returns:
+        Dict with quota info: can_upload, bytes_used, quota_bytes, bytes_remaining
+
+    Raises:
+        HTTPException 403 if quota would be exceeded
+    """
+    client = get_client()
+
+    # Get current usage
+    usage_result = client.table("user_storage_usage").select(
+        "total_bytes_used, custom_quota_bytes"
+    ).eq("user_id", user_id).single().execute()
+
+    current_usage = 0
+    custom_quota = None
+
+    if usage_result.data:
+        current_usage = usage_result.data.get("total_bytes_used") or 0
+        custom_quota = usage_result.data.get("custom_quota_bytes")
+
+    # Get effective quota
+    if custom_quota:
+        effective_quota = custom_quota
+    else:
+        # Get max quota from user's roles
+        roles_result = client.table("user_roles").select(
+            "custom_roles(storage_quota_bytes)"
+        ).eq("user_id", user_id).execute()
+
+        max_quota = 1073741824  # 1GB default
+        for role in (roles_result.data or []):
+            role_quota = (role.get("custom_roles") or {}).get("storage_quota_bytes") or 0
+            if role_quota > max_quota:
+                max_quota = role_quota
+        effective_quota = max_quota
+
+    bytes_remaining = effective_quota - current_usage
+    can_upload = (current_usage + file_size) <= effective_quota
+
+    result = {
+        "can_upload": can_upload,
+        "bytes_used": current_usage,
+        "quota_bytes": effective_quota,
+        "bytes_remaining": bytes_remaining,
+        "percentage_used": round((current_usage / effective_quota) * 100, 1) if effective_quota > 0 else 0
+    }
+
+    if not can_upload and file_size > 0:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Storage quota exceeded",
+                "bytes_used": current_usage,
+                "quota_bytes": effective_quota,
+                "file_size": file_size,
+                "bytes_remaining": bytes_remaining
+            }
+        )
+
+    return result
+
+
 async def verify_project_access(
     client,
     project_id: str,
@@ -33953,6 +34022,10 @@ async def get_dailies_upload_url(
     else:
         raise HTTPException(status_code=401, detail="Authentication required")
 
+    # Check storage quota before allowing upload
+    file_size = getattr(request, 'file_size', 0) or 0
+    await check_storage_quota(user_id, file_size)
+
     try:
         import uuid
         import boto3
@@ -33987,6 +34060,36 @@ async def get_dailies_upload_url(
     except Exception as e:
         print(f"Error generating presigned URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/storage/quota")
+async def get_user_storage_quota(authorization: str = Header(None)):
+    """Get the current user's storage quota status"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+
+    # Get quota info without checking file size
+    quota_info = await check_storage_quota(user_id, 0)
+
+    # Format bytes for display
+    def format_bytes(bytes_val: int) -> str:
+        if bytes_val is None:
+            return "0 B"
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(bytes_val) < 1024.0:
+                return f"{bytes_val:.1f} {unit}"
+            bytes_val /= 1024.0
+        return f"{bytes_val:.1f} PB"
+
+    return {
+        "bytes_used": quota_info["bytes_used"],
+        "bytes_used_formatted": format_bytes(quota_info["bytes_used"]),
+        "quota_bytes": quota_info["quota_bytes"],
+        "quota_formatted": format_bytes(quota_info["quota_bytes"]),
+        "bytes_remaining": quota_info["bytes_remaining"],
+        "bytes_remaining_formatted": format_bytes(quota_info["bytes_remaining"]),
+        "percentage_used": quota_info["percentage_used"]
+    }
 
 
 @router.post("/dailies/clips/{clip_id}/confirm-upload")

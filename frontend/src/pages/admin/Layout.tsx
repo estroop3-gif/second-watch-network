@@ -15,7 +15,9 @@ import {
   Handshake,
   Flag,
   Heart,
-  FlaskConical
+  FlaskConical,
+  UserCog,
+  HardDrive,
 } from 'lucide-react';
 
 const AdminLayout = () => {

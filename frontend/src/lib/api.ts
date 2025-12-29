@@ -217,9 +217,26 @@ class APIClient {
   }
 
   async signIn(email: string, password: string) {
-    const response = await this.request<{ access_token: string; user: any }>('/api/v1/auth/signin', {
+    const response = await this.request<{
+      access_token?: string
+      user?: any
+      challenge?: string
+      session?: string
+      parameters?: Record<string, any>
+    }>('/api/v1/auth/signin', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
+    })
+    if (response.access_token) {
+      this.setToken(response.access_token)
+    }
+    return response
+  }
+
+  async completeNewPassword(email: string, newPassword: string, session: string) {
+    const response = await this.request<{ access_token: string; user: any }>('/api/v1/auth/complete-new-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, new_password: newPassword, session }),
     })
     if (response.access_token) {
       this.setToken(response.access_token)
@@ -335,6 +352,19 @@ class APIClient {
     }
     // Get current user's profile
     return this.request<any>('/api/v1/profiles/me')
+  }
+
+  /**
+   * Get current user's effective permissions from all assigned roles
+   * This is live data from the database, not cached
+   */
+  async getMyPermissions() {
+    return this.request<{
+      user_id: string;
+      roles: string[];
+      permissions: Record<string, boolean>;
+      profile_flags: Record<string, boolean>;
+    }>('/api/v1/users/me/permissions')
   }
 
   async getProfileByUsername(username: string) {
@@ -940,6 +970,20 @@ class APIClient {
       submissions: any[]
       applications: any[]
       recent_activity: any[]
+      backlot_projects: Array<{
+        id: string
+        title: string
+        status: string
+        project_type: string
+        created_at: string
+        thumbnail_url?: string
+      }>
+      storage_usage: {
+        bytes_used: number
+        quota_bytes: number
+        custom_quota_bytes?: number
+        percentage: number
+      } | null
     }>(`/api/v1/admin/users/${userId}/details`)
   }
 
@@ -948,6 +992,30 @@ class APIClient {
       `/api/v1/admin/users/${userId}/reset-password`,
       { method: 'POST' }
     )
+  }
+
+  async resendTempPassword(userId: string) {
+    return this.request<{ success: boolean; message: string }>(
+      `/api/v1/admin/users/${userId}/resend-temp-password`,
+      { method: 'POST' }
+    )
+  }
+
+  async adminUpdateUserProfile(userId: string, data: {
+    full_name?: string
+    display_name?: string
+    username?: string
+    bio?: string
+    email?: string
+  }) {
+    return this.request<{
+      success: boolean
+      message: string
+      updated_fields?: string[]
+    }>(`/api/v1/admin/users/${userId}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    })
   }
 
   async bulkUserAction(userIds: string[], action: string, role?: string) {
@@ -2942,6 +3010,371 @@ class APIClient {
       feedback: any[]
       total: number
     }>(`/api/v1/feedback/my-feedback?${query}`)
+  }
+
+  // =====================================
+  // Admin Custom Roles API
+  // =====================================
+
+  async listCustomRoles() {
+    return this.request<{
+      roles: Array<{
+        id: string
+        name: string
+        display_name: string
+        description?: string
+        color: string
+        storage_quota_bytes: number
+        is_system_role: boolean
+        can_access_backlot: boolean
+        can_access_greenroom: boolean
+        can_access_forum: boolean
+        can_access_community: boolean
+        can_submit_content: boolean
+        can_upload_files: boolean
+        can_create_projects: boolean
+        can_invite_collaborators: boolean
+        user_count: number
+        created_at: string
+        updated_at: string
+      }>
+    }>('/api/v1/admin/roles')
+  }
+
+  async getCustomRole(roleId: string) {
+    return this.request<any>(`/api/v1/admin/roles/${roleId}`)
+  }
+
+  async createCustomRole(data: {
+    name: string
+    display_name: string
+    description?: string
+    color?: string
+    storage_quota_bytes?: number
+    permissions: {
+      can_access_backlot: boolean
+      can_access_greenroom: boolean
+      can_access_forum: boolean
+      can_access_community: boolean
+      can_submit_content: boolean
+      can_upload_files: boolean
+      can_create_projects: boolean
+      can_invite_collaborators: boolean
+    }
+  }) {
+    return this.request<any>('/api/v1/admin/roles', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateCustomRole(roleId: string, data: {
+    display_name?: string
+    description?: string
+    color?: string
+    storage_quota_bytes?: number
+    permissions?: {
+      can_access_backlot: boolean
+      can_access_greenroom: boolean
+      can_access_forum: boolean
+      can_access_community: boolean
+      can_submit_content: boolean
+      can_upload_files: boolean
+      can_create_projects: boolean
+      can_invite_collaborators: boolean
+    }
+  }) {
+    return this.request<any>(`/api/v1/admin/roles/${roleId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteCustomRole(roleId: string) {
+    return this.request<any>(`/api/v1/admin/roles/${roleId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async assignRoleToUser(roleId: string, userId: string) {
+    return this.request<any>(`/api/v1/admin/roles/${roleId}/assign/${userId}`, {
+      method: 'POST',
+    })
+  }
+
+  async unassignRoleFromUser(roleId: string, userId: string) {
+    return this.request<any>(`/api/v1/admin/roles/${roleId}/unassign/${userId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getRoleUsers(roleId: string, params?: { skip?: number; limit?: number }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+
+    return this.request<{
+      role: any
+      users: any[]
+      total: number
+    }>(`/api/v1/admin/roles/${roleId}/users?${query}`)
+  }
+
+  async getUserRoles(userId: string) {
+    return this.request<{
+      roles: any[]
+    }>(`/api/v1/admin/users/${userId}/roles`)
+  }
+
+  async updateUserCustomRoles(userId: string, roleIds: string[]) {
+    return this.request<any>(`/api/v1/admin/users/${userId}/roles`, {
+      method: 'PUT',
+      body: JSON.stringify(roleIds),
+    })
+  }
+
+  // =====================================
+  // Admin Storage API
+  // =====================================
+
+  async getStorageOverview() {
+    return this.request<{
+      total_bytes_used: number
+      total_formatted: string
+      breakdown: {
+        backlot_files: { bytes: number; formatted: string }
+        backlot_media: { bytes: number; formatted: string }
+        avatars: { bytes: number; formatted: string }
+      }
+      total_users: number
+      users_with_storage: number
+      top_users: Array<{
+        user_id: string
+        display_name: string
+        email: string
+        avatar_url?: string
+        bytes_used: number
+        bytes_used_formatted: string
+        custom_quota?: number
+      }>
+      users_near_quota: Array<{
+        user_id: string
+        display_name: string
+        email: string
+        bytes_used: number
+        bytes_used_formatted: string
+        quota_bytes: number
+        quota_formatted: string
+        percentage: number
+      }>
+    }>('/api/v1/admin/storage/overview')
+  }
+
+  async getUsersStorage(params?: {
+    skip?: number
+    limit?: number
+    sort_by?: string
+    sort_order?: string
+    search?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.sort_by) query.append('sort_by', params.sort_by)
+    if (params?.sort_order) query.append('sort_order', params.sort_order)
+    if (params?.search) query.append('search', params.search)
+
+    return this.request<{
+      users: Array<{
+        user_id: string
+        display_name: string
+        email: string
+        avatar_url?: string
+        bytes_used: number
+        bytes_used_formatted: string
+        quota_bytes: number
+        quota_formatted: string
+        custom_quota_bytes?: number
+        percentage: number
+        last_updated: string
+      }>
+      total: number
+    }>(`/api/v1/admin/storage/users?${query}`)
+  }
+
+  async getUserStorageDetail(userId: string) {
+    return this.request<{
+      user: any
+      roles: any[]
+      storage: {
+        total_bytes_used: number
+        total_formatted: string
+        quota_bytes: number
+        quota_formatted: string
+        custom_quota_bytes?: number
+        percentage: number
+        breakdown: {
+          backlot_files: { bytes: number; formatted: string }
+          backlot_media: { bytes: number; formatted: string }
+          avatars: { bytes: number; formatted: string }
+        }
+        last_updated: string
+      }
+      largest_files: Array<{
+        id: string
+        name: string
+        size: number
+        size_formatted: string
+        type: string
+        created_at: string
+      }>
+    }>(`/api/v1/admin/storage/users/${userId}`)
+  }
+
+  async setUserStorageQuota(userId: string, quotaBytes: number) {
+    return this.request<any>(`/api/v1/admin/storage/users/${userId}/quota`, {
+      method: 'PUT',
+      body: JSON.stringify({ quota_bytes: quotaBytes }),
+    })
+  }
+
+  async removeUserStorageQuota(userId: string) {
+    return this.request<any>(`/api/v1/admin/storage/users/${userId}/quota`, {
+      method: 'DELETE',
+    })
+  }
+
+  async recalculateStorage() {
+    return this.request<{
+      success: boolean
+      message: string
+    }>('/api/v1/admin/storage/recalculate', {
+      method: 'POST',
+    })
+  }
+
+  // =====================================
+  // Admin User Creation API
+  // =====================================
+
+  async adminCreateUser(data: {
+    email: string
+    display_name: string
+    full_name?: string
+    role_ids?: string[]
+    custom_quota_bytes?: number
+    send_welcome_email?: boolean
+  }) {
+    return this.request<{
+      success: boolean
+      user: {
+        id: string
+        email: string
+        display_name: string
+        roles_assigned: number
+      }
+      temp_password?: string
+      message: string
+    }>('/api/v1/admin/users/create', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async adminListUsersWithRoles(params?: {
+    skip?: number
+    limit?: number
+    search?: string
+    role_id?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+    if (params?.role_id) query.append('role_id', params.role_id)
+
+    return this.request<{
+      users: Array<{
+        id: string
+        email: string
+        display_name: string
+        full_name?: string
+        avatar_url?: string
+        is_admin: boolean
+        is_filmmaker: boolean
+        is_partner: boolean
+        created_at: string
+        created_by_admin: boolean
+        roles: Array<{
+          id: string
+          name: string
+          display_name: string
+          color: string
+          storage_quota_bytes: number
+        }>
+        storage: {
+          bytes_used: number
+          quota_bytes: number
+          custom_quota_bytes?: number
+          percentage: number
+        }
+      }>
+      total: number
+    }>(`/api/v1/admin/users?${query}`)
+  }
+
+  async adminGetUserDetail(userId: string) {
+    return this.request<{
+      user: any
+      roles: any[]
+      storage: any
+      created_by?: any
+    }>(`/api/v1/admin/users/${userId}`)
+  }
+
+  async adminUpdateUser(userId: string, data: {
+    display_name?: string
+    full_name?: string
+    bio?: string
+  }) {
+    return this.request<any>(`/api/v1/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async adminResetUserPassword(userId: string) {
+    return this.request<{
+      success: boolean
+      message: string
+    }>(`/api/v1/admin/users/${userId}/reset-password`, {
+      method: 'POST',
+    })
+  }
+
+  async adminDeleteUser(userId: string) {
+    return this.request<{
+      success: boolean
+      message: string
+    }>(`/api/v1/admin/users/${userId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // =====================================
+  // User Storage Quota (for current user)
+  // =====================================
+
+  async getMyStorageQuota() {
+    return this.request<{
+      bytes_used: number
+      bytes_used_formatted: string
+      quota_bytes: number
+      quota_formatted: string
+      bytes_remaining: number
+      bytes_remaining_formatted: string
+      percentage_used: number
+    }>('/api/v1/backlot/storage/quota')
   }
 }
 

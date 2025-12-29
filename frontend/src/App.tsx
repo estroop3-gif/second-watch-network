@@ -257,7 +257,7 @@ const App = () => (
                         <Route index element={<Navigate to="dashboard" replace />} />
                         <Route path="dashboard" element={<AdminDashboard />} />
                         <Route path="users" element={<UserManagement />} />
-                        <Route path="submissions" element={<SubmissionManagement />} />
+                                                <Route path="submissions" element={<SubmissionManagement />} />
                         <Route path="applications" element={<ApplicationsManagement />} />
                         <Route path="forum" element={<ForumManagement />} />
                         <Route path="content" element={<ContentManagement />} />

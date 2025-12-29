@@ -30,6 +30,14 @@ interface AlphaFeedbackModalProps {
   type: 'bug' | 'feedback';
 }
 
+// State to preserve form data during screenshot capture
+let preservedFormState: {
+  title: string;
+  description: string;
+  feedbackType: string;
+  priority: string;
+} | null = null;
+
 const FEEDBACK_TYPES = [
   { value: 'bug', label: 'Bug Report' },
   { value: 'feature', label: 'Feature Request' },
@@ -56,6 +64,7 @@ const AlphaFeedbackModal: React.FC<AlphaFeedbackModalProps> = ({
   const [priority, setPriority] = useState('medium');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showCaptureConfirm, setShowCaptureConfirm] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
 
   const { recentActions, consoleErrors, getBrowserInfo, getNetworkTiming } = useAlphaTracking();
   const { captureScreen, clearCapture, isCapturing, preview, capturedBlob } = useScreenCapture();
@@ -67,9 +76,38 @@ const AlphaFeedbackModal: React.FC<AlphaFeedbackModalProps> = ({
   };
 
   const handleConfirmCapture = async () => {
+    // Preserve form state before hiding modal
+    preservedFormState = {
+      title,
+      description,
+      feedbackType,
+      priority,
+    };
+
+    // Hide both dialogs to capture clean screenshot
     setShowCaptureConfirm(false);
+    setIsCapturingScreenshot(true);
+
+    // Small delay to ensure modals are fully hidden
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Capture the screenshot
     await captureScreen();
+
+    // Reopen the main modal
+    setIsCapturingScreenshot(false);
   };
+
+  // Restore form state when modal reopens after screenshot capture
+  React.useEffect(() => {
+    if (isOpen && preservedFormState && !isCapturingScreenshot) {
+      setTitle(preservedFormState.title);
+      setDescription(preservedFormState.description);
+      setFeedbackType(preservedFormState.feedbackType);
+      setPriority(preservedFormState.priority);
+      preservedFormState = null;
+    }
+  }, [isOpen, isCapturingScreenshot]);
 
   const resetForm = useCallback(() => {
     setTitle('');
@@ -163,9 +201,9 @@ const AlphaFeedbackModal: React.FC<AlphaFeedbackModalProps> = ({
 
   return (
     <>
-      <Dialog open={isOpen} onOpenChange={handleClose}>
-        <DialogContent className="bg-charcoal-black border-purple-600 text-bone-white max-w-lg">
-          <DialogHeader>
+      <Dialog open={isOpen && !isCapturingScreenshot} onOpenChange={handleClose}>
+        <DialogContent className="bg-charcoal-black border-purple-600 text-bone-white max-w-lg max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader className="shrink-0">
             <DialogTitle className="flex items-center gap-2">
               {isBugReport ? (
                 <>
@@ -186,7 +224,7 @@ const AlphaFeedbackModal: React.FC<AlphaFeedbackModalProps> = ({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-2">
             {/* Title */}
             <div className="space-y-2">
               <Label htmlFor="title">Title *</Label>
@@ -297,7 +335,7 @@ const AlphaFeedbackModal: React.FC<AlphaFeedbackModalProps> = ({
             </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={handleClose} disabled={isSubmitting}>
               Cancel
             </Button>

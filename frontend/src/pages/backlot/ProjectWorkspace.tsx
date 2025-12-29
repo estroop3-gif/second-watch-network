@@ -49,6 +49,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 
 // Lazy loading fallback component
 const ViewSkeleton = () => (
@@ -291,6 +292,10 @@ const ProjectWorkspace: React.FC = () => {
   const { data: canViewAsRole } = useCanViewAsRole(projectId || null);
   const { todayDay, hasShootToday } = useTodayShootDay(projectId || null);
   const { canViewApprovalsDashboard } = useCanApprove(projectId || null);
+  const { profile } = useEnrichedProfile();
+
+  // Check if the alpha tester banner is visible (to adjust sidebar height)
+  const isAlphaTester = profile?.is_alpha_tester === true;
 
   const isLoading = projectLoading || permissionLoading || viewConfigLoading;
 
@@ -518,10 +523,12 @@ const ProjectWorkspace: React.FC = () => {
 
       {/* Add pt-14 to account for fixed project header */}
       <div className="flex pt-14">
-        {/* Sidebar - fixed below AppHeader (5rem) + project header (3.5rem) = 8.5rem */}
+        {/* Sidebar - fixed below AppHeader (5rem) + project header (3.5rem) = 8.5rem
+            When alpha tester banner is visible, reduce height by 4rem (~64px) to avoid overlap */}
         <aside
           className={cn(
-            'fixed top-[8.5rem] left-0 z-30 h-[calc(100vh-8.5rem)] w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform overflow-y-auto',
+            'fixed top-[8.5rem] left-0 z-30 w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform overflow-y-auto',
+            isAlphaTester ? 'h-[calc(100vh-8.5rem-4rem)]' : 'h-[calc(100vh-8.5rem)]',
             sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
           )}
         >
