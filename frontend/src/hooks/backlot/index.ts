@@ -362,11 +362,28 @@ export {
   useClearanceTemplates,
   useLocationClearances,
   usePersonClearances,
+  usePersonClearancesDetailed,
   useBulkClearanceStatus,
   locationHasSignedRelease,
   personHasSignedRelease,
   getClearanceStatusColor,
+  // Document versions
+  useClearanceDocumentUpload,
+  useClearanceDocumentRemove,
+  useClearanceDocumentVersions,
+  useRestoreClearanceVersion,
+  // E&O Requirements
+  useEORequirements,
+  useInitializeEORequirements,
+  useUpdateEORequirement,
+  useEOSummary,
 } from './useClearances';
+
+// Clearance Recipients
+export {
+  useClearanceRecipients,
+  useSendClearance,
+} from './useClearanceRecipients';
 
 // Shot Lists & Coverage
 export {
@@ -1074,3 +1091,36 @@ export type {
   PurchaseOrderFilters,
   PurchaseOrderSummary,
 } from './usePurchaseOrders';
+
+// Document Packages (Crew Onboarding)
+export {
+  useDocumentPackages,
+  useDocumentPackage,
+  usePackageAssignments,
+  useUserPackageAssignments,
+  useSendPackage,
+  useCancelPackageAssignment,
+} from './useDocumentPackages';
+
+// Pending Documents (Signing Portal)
+export {
+  usePendingDocuments,
+  useDocumentHistory,
+  useBatchSign,
+} from './usePendingDocuments';
+
+// Clearance Approvals
+export {
+  useClearanceApproval,
+  usePendingApprovals,
+  useConfigureApproval,
+  useApproveClearance,
+  useRequestClearanceChanges,
+  useRejectClearance,
+} from './useClearanceApproval';
+
+// Crew Document Summary (Cast/Crew tracking)
+export {
+  useCrewDocumentSummary,
+  usePersonDocumentChecklist,
+} from './useCrewDocuments';

@@ -4,6 +4,7 @@
  */
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -41,6 +42,8 @@ import { useProjects } from '@/hooks/backlot';
 import { BacklotProject, BacklotProjectStatus, BacklotVisibility } from '@/types/backlot';
 import { formatDistanceToNow } from 'date-fns';
 import CreateProjectModal from '@/components/backlot/CreateProjectModal';
+import BacklotUpgradePrompt from '@/components/backlot/BacklotUpgradePrompt';
+import { api } from '@/lib/api';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -189,6 +192,13 @@ const BacklotHome: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<BacklotProjectStatus | 'all'>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
 
+  // Check backlot access
+  const { data: accessData, isLoading: isCheckingAccess } = useQuery({
+    queryKey: ['backlot-access'],
+    queryFn: () => api.checkBacklotAccess(),
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+
   const { projects, isLoading, deleteProject } = useProjects({
     status: statusFilter,
     search: search || undefined,
@@ -199,6 +209,28 @@ const BacklotHome: React.FC = () => {
       await deleteProject.mutateAsync(id);
     }
   };
+
+  // Show loading while checking access
+  if (isCheckingAccess) {
+    return (
+      <div className="container mx-auto px-4 max-w-6xl py-8">
+        <div className="text-center mb-8">
+          <Skeleton className="h-16 w-64 mx-auto mb-4" />
+          <Skeleton className="h-4 w-96 mx-auto" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <ProjectCardSkeleton key={i} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Show upgrade prompt if no access
+  if (!accessData?.has_access) {
+    return <BacklotUpgradePrompt />;
+  }
 
   return (
     <div className="container mx-auto px-4 max-w-6xl py-8">

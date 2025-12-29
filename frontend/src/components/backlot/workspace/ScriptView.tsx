@@ -783,7 +783,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 script={activeScript}
                 canEdit={canEdit}
                 onVersionCreated={(newScript) => {
-                  // Refresh the scripts list when a new version is created
+                  // Switch to the new version and refresh the scripts list
+                  if (newScript?.id) {
+                    setSelectedScriptId(newScript.id);
+                  }
                   refetchScripts();
                 }}
                 onScriptUpdated={() => {

@@ -281,6 +281,9 @@ const ProjectWorkspace: React.FC = () => {
   // New view states for scenes, people
   const [selectedSceneForView, setSelectedSceneForView] = useState<SceneListItem | null>(null);
   const [selectedPersonForView, setSelectedPersonForView] = useState<PersonListItem | null>(null);
+  // Clearances person filter state (from Casting & Crew navigation)
+  const [clearancePersonFilter, setClearancePersonFilter] = useState<string | null>(null);
+  const [clearancePersonFilterName, setClearancePersonFilterName] = useState<string | undefined>(undefined);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
@@ -620,7 +623,16 @@ const ProjectWorkspace: React.FC = () => {
             <CallSheetsView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'casting' && (
-            <CastingCrewTab projectId={project.id} />
+            <CastingCrewTab
+              projectId={project.id}
+              onNavigateToClearances={(personId, personName) => {
+                setClearancePersonFilter(personId || null);
+                setClearancePersonFilterName(personName);
+                startTransition(() => {
+                  setActiveView('clearances');
+                });
+              }}
+            />
           )}
           {activeView === 'people' && (
             selectedPersonForView ? (
@@ -768,7 +780,18 @@ const ProjectWorkspace: React.FC = () => {
             />
           )}
           {activeView === 'clearances' && (
-            <ClearancesView projectId={project.id} canEdit={permission?.canEdit || false} />
+            <ClearancesView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              personFilter={clearancePersonFilter}
+              personFilterName={clearancePersonFilterName}
+              onClearPersonFilter={() => {
+                setClearancePersonFilter(null);
+                setClearancePersonFilterName(undefined);
+              }}
+              prefillPersonId={clearancePersonFilter}
+              prefillPersonName={clearancePersonFilterName}
+            />
           )}
           {activeView === 'assets' && (
             <AssetsView projectId={project.id} canEdit={permission?.canEdit || false} />

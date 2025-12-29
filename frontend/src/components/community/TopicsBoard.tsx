@@ -2,6 +2,7 @@
  * TopicsBoard - Lightweight forum topics with thread browsing
  */
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useTopics, useThreads } from '@/hooks/useTopics';
 import ThreadCard from './ThreadCard';
@@ -38,15 +39,27 @@ const iconMap: Record<string, React.ElementType> = {
 };
 
 const TopicsBoard: React.FC<TopicsBoardProps> = ({ onCreateThread, onViewThread }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: topics, isLoading: topicsLoading } = useTopics();
   const [activeTopic, setActiveTopic] = useState<CommunityTopic | null>(null);
 
-  // Set first topic as active when topics load
+  // Set topic from URL param or default to first topic
   useEffect(() => {
-    if (topics && topics.length > 0 && !activeTopic) {
-      setActiveTopic(topics[0]);
+    if (topics && topics.length > 0) {
+      const topicSlug = searchParams.get('topic');
+      if (topicSlug) {
+        const urlTopic = topics.find(t => t.slug === topicSlug);
+        if (urlTopic) {
+          setActiveTopic(urlTopic);
+          return;
+        }
+      }
+      // Default to first topic if no URL param or topic not found
+      if (!activeTopic) {
+        setActiveTopic(topics[0]);
+      }
     }
-  }, [topics, activeTopic]);
+  }, [topics, searchParams]);
 
   const { threads, isLoading: threadsLoading, error } = useThreads({
     topicId: activeTopic?.id,
@@ -55,6 +68,10 @@ const TopicsBoard: React.FC<TopicsBoardProps> = ({ onCreateThread, onViewThread 
 
   const handleTopicClick = (topic: CommunityTopic) => {
     setActiveTopic(topic);
+    // Update URL with topic slug
+    const newParams = new URLSearchParams(searchParams);
+    newParams.set('topic', topic.slug);
+    setSearchParams(newParams, { replace: true });
   };
 
   const handleCreateThread = () => {

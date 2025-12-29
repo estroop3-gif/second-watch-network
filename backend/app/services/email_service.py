@@ -466,3 +466,207 @@ def generate_call_sheet_text(
     ])
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# CLEARANCE DOCUMENT EMAIL TEMPLATES
+# =============================================================================
+
+CLEARANCE_TYPE_LABELS = {
+    'talent_release': 'Talent Release',
+    'appearance_release': 'Appearance Release',
+    'location_release': 'Location Release',
+    'music_license': 'Music License',
+    'stock_license': 'Stock License',
+    'nda': 'NDA',
+    'other_contract': 'Contract',
+}
+
+
+def generate_clearance_email_html(
+    project_title: str,
+    clearance_title: str,
+    clearance_type: str,
+    sender_name: str,
+    view_url: str,
+    sender_message: Optional[str] = None,
+    requires_signature: bool = False,
+    expiration_date: Optional[str] = None,
+    has_attachment: bool = False
+) -> str:
+    """
+    Generate HTML email for clearance document distribution.
+    Uses the same dark theme as call sheet emails for consistency.
+    """
+    type_label = CLEARANCE_TYPE_LABELS.get(clearance_type, 'Document')
+
+    # Action text based on whether signature is required
+    action_text = "review and sign" if requires_signature else "review"
+    button_text = "Review & Sign Document" if requires_signature else "View Document"
+
+    # Sender message section
+    sender_section = ""
+    if sender_message:
+        sender_section = f"""
+        <div style="background-color: #2a3a2a; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #4ade80;">
+            <p style="color: #4ade80; margin: 0 0 4px 0; font-weight: bold;">Message from {sender_name}:</p>
+            <p style="color: #a0a0a0; margin: 0; white-space: pre-wrap;">{sender_message}</p>
+        </div>
+        """
+
+    # Expiration warning
+    expiration_section = ""
+    if expiration_date:
+        expiration_section = f"""
+        <div style="background-color: #3a3a2a; padding: 12px; border-radius: 8px; margin-top: 16px; border-left: 4px solid #fbbf24;">
+            <p style="color: #fbbf24; margin: 0; font-size: 14px;">
+                <strong>Note:</strong> This document expires on {expiration_date}
+            </p>
+        </div>
+        """
+
+    # Signature note
+    signature_note = ""
+    if requires_signature:
+        signature_note = """
+        <p style="color: #a0a0a0; margin: 16px 0; font-size: 14px;">
+            Your signature is required on this document. You can sign directly in your browser
+            using the link above.
+        </p>
+        """
+
+    # Attachment note
+    attachment_note = ""
+    if has_attachment:
+        attachment_note = """
+        <p style="color: #a0a0a0; margin: 16px 0; font-size: 14px; text-align: center;">
+            The document is also attached to this email for your records.
+        </p>
+        """
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{clearance_title} - {project_title}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #121212; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 24px;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%); padding: 24px; border-radius: 12px 12px 0 0; border-bottom: 2px solid #d4af37;">
+            <h1 style="color: #d4af37; margin: 0 0 8px 0; font-size: 24px;">{type_label}</h1>
+            <p style="color: #f5f0e1; margin: 0; font-size: 18px;">{project_title}</p>
+        </div>
+
+        <!-- Main Content -->
+        <div style="background-color: #1a1a1a; padding: 24px; border-radius: 0 0 12px 12px;">
+            {sender_section}
+
+            <p style="color: #f5f0e1; margin: 0 0 16px 0; font-size: 16px;">
+                You have been sent a document to {action_text}:
+            </p>
+
+            <div style="background-color: #2a2a2a; padding: 20px; border-radius: 8px; margin-bottom: 24px;">
+                <h2 style="color: #f5f0e1; margin: 0 0 8px 0; font-size: 20px;">
+                    {clearance_title}
+                </h2>
+                <p style="color: #d4af37; margin: 0; font-size: 14px; text-transform: uppercase;">
+                    {type_label}
+                </p>
+            </div>
+
+            {expiration_section}
+
+            <!-- CTA Button -->
+            <div style="text-align: center; margin: 32px 0;">
+                <a href="{view_url}" style="display: inline-block; background-color: #d4af37; color: #121212; padding: 14px 36px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                    {button_text}
+                </a>
+            </div>
+
+            {signature_note}
+            {attachment_note}
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; padding: 24px; color: #666;">
+            <p style="margin: 0 0 8px 0;">Sent via <span style="color: #d4af37;">Second Watch Network</span> Backlot</p>
+            <p style="margin: 0; font-size: 12px;">If you have questions, please contact the production team.</p>
+        </div>
+    </div>
+</body>
+</html>
+    """
+
+    return html
+
+
+def generate_clearance_email_text(
+    project_title: str,
+    clearance_title: str,
+    clearance_type: str,
+    sender_name: str,
+    view_url: str,
+    sender_message: Optional[str] = None,
+    requires_signature: bool = False,
+    expiration_date: Optional[str] = None,
+    has_attachment: bool = False
+) -> str:
+    """Generate plain text version of clearance email"""
+    type_label = CLEARANCE_TYPE_LABELS.get(clearance_type, 'Document')
+    action_text = "review and sign" if requires_signature else "review"
+
+    lines = [
+        f"{'='*50}",
+        f"{type_label}",
+        f"{project_title}",
+        f"{'='*50}",
+        "",
+    ]
+
+    if sender_message:
+        lines.extend([
+            f"Message from {sender_name}:",
+            f"{sender_message}",
+            "",
+        ])
+
+    lines.extend([
+        f"You have been sent a document to {action_text}.",
+        "",
+        f"Document: {clearance_title}",
+        f"Type: {type_label}",
+        "",
+    ])
+
+    if expiration_date:
+        lines.append(f"Expires: {expiration_date}")
+        lines.append("")
+
+    lines.extend([
+        f"View/Sign: {view_url}",
+        "",
+    ])
+
+    if requires_signature:
+        lines.extend([
+            "Your signature is required on this document.",
+            "You can sign directly in your browser using the link above.",
+            "",
+        ])
+
+    if has_attachment:
+        lines.extend([
+            "The document is also attached to this email for your records.",
+            "",
+        ])
+
+    lines.extend([
+        f"{'='*50}",
+        "Sent via Second Watch Network Backlot",
+        f"{'='*50}",
+    ])
+
+    return "\n".join(lines)

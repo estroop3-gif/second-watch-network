@@ -379,7 +379,7 @@ const UpdatesView: React.FC<UpdatesViewProps> = ({ projectId, canEdit }) => {
 
       {/* Update Form Modal */}
       <Dialog open={showForm} onOpenChange={setShowForm}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingUpdate ? 'Edit Update' : 'Post Update'}</DialogTitle>
           </DialogHeader>

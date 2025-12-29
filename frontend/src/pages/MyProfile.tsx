@@ -38,6 +38,7 @@ import {
 } from 'lucide-react';
 import { type BadgeConfig, getBadgeConfig } from '@/lib/badges';
 import { OrderSection, OrderJoinCTA } from '@/components/profile/OrderSection';
+import { PendingDocumentsSection } from '@/components/profile/PendingDocumentsSection';
 
 // Profile Header Component
 interface ProfileHeaderProps {
@@ -973,6 +974,9 @@ const MyProfile: React.FC = () => {
 
         {/* Sidebar - 1 column on desktop */}
         <div className="space-y-6">
+          {/* Pending Documents (Signing Portal) */}
+          <PendingDocumentsSection />
+
           {/* Roles & Upgrades Panel */}
           <RolesUpgradesPanel
             isFilmmaker={isFilmmaker}

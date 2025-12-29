@@ -3439,9 +3439,151 @@ export type BacklotClearanceType =
 export type BacklotClearanceStatus =
   | 'not_started'
   | 'requested'
+  | 'pending'
   | 'signed'
   | 'expired'
   | 'rejected';
+
+// Clearance Priority
+export type ClearancePriority = 'low' | 'normal' | 'high' | 'urgent';
+
+// Clearance Media Types (for usage rights)
+export type ClearanceMediaType =
+  | 'theatrical'
+  | 'streaming'
+  | 'television'
+  | 'home_video'
+  | 'online'
+  | 'festival'
+  | 'educational'
+  | 'all_media';
+
+// Territory Scope
+export type TerritoryScope = 'worldwide' | 'north_america' | 'us_only' | 'regional' | 'specific';
+
+// Term Type
+export type TermType = 'perpetual' | 'limited';
+
+// Music License Type
+export type MusicLicenseType = 'sync' | 'master' | 'both';
+
+// Music Usage Context
+export type MusicUsageContext = 'background' | 'feature' | 'credits' | 'promotional';
+
+// PRO Affiliation
+export type PROAffiliation = 'ascap' | 'bmi' | 'sesac' | 'other' | 'none';
+
+// Usage Rights (flexible JSONB structure)
+export interface ClearanceUsageRights {
+  media_types?: ClearanceMediaType[];
+  territories?: {
+    scope: TerritoryScope;
+    regions?: string[];
+    countries?: string[];
+  };
+  term?: {
+    type: TermType;
+    start_date?: string;
+    end_date?: string;
+  };
+  exclusivity?: 'exclusive' | 'non-exclusive';
+  music_details?: {
+    license_type?: MusicLicenseType;
+    usage_context?: MusicUsageContext[];
+    duration_limit?: '30_sec' | '60_sec' | 'full_track' | 'unlimited';
+    pro_affiliation?: PROAffiliation;
+    publisher?: string;
+    isrc?: string;
+  };
+}
+
+// Clearance History Action
+export type ClearanceHistoryAction =
+  | 'created'
+  | 'status_changed'
+  | 'assigned'
+  | 'unassigned'
+  | 'file_uploaded'
+  | 'file_removed'
+  | 'edited'
+  | 'rejected'
+  | 'reminder_sent'
+  | 'expired'
+  | 'reviewed'
+  | 'usage_rights_updated'
+  | 'eo_flagged';
+
+// Clearance History Entry
+export interface ClearanceHistoryEntry {
+  id: string;
+  clearance_id: string;
+  action: ClearanceHistoryAction;
+  old_status?: string;
+  new_status?: string;
+  user_id?: string;
+  user_name?: string;
+  notes?: string;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+}
+
+// E&O Requirement Status
+export type EORequirementStatus = 'missing' | 'partial' | 'complete' | 'waived';
+
+// E&O Requirement
+export interface EORequirement {
+  id: string;
+  project_id: string;
+  clearance_type: BacklotClearanceType;
+  requirement_name: string;
+  description?: string;
+  is_required: boolean;
+  linked_clearance_id?: string;
+  linked_clearance?: Pick<BacklotClearanceItem, 'id' | 'title' | 'status' | 'file_url'>;
+  status: EORequirementStatus;
+  waived_reason?: string;
+  waived_by_user_id?: string;
+  waived_at?: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// E&O Summary
+export interface EOSummary {
+  total_requirements: number;
+  required_count: number;
+  complete_count: number;
+  partial_count: number;
+  missing_count: number;
+  waived_count: number;
+  readiness_percentage: number;
+  is_delivery_ready: boolean;
+  by_type: Record<BacklotClearanceType, {
+    total: number;
+    complete: number;
+    missing: number;
+    partial: number;
+  }>;
+  missing_critical: Array<{
+    id: string;
+    requirement_name: string;
+    clearance_type: BacklotClearanceType;
+  }>;
+}
+
+// Expiring Clearance
+export interface ExpiringClearance {
+  id: string;
+  title: string;
+  type: BacklotClearanceType;
+  status: BacklotClearanceStatus;
+  expiration_date: string;
+  days_until_expiry: number;
+  is_eo_critical: boolean;
+  related_name?: string;
+  assigned_to_user_id?: string;
+}
 
 // Clearance Item
 export interface BacklotClearanceItem {
@@ -3470,6 +3612,24 @@ export interface BacklotClearanceItem {
   notes: string | null;
   contact_email: string | null;
   contact_phone: string | null;
+  // Assignment & workflow (new)
+  assigned_to_user_id: string | null;
+  assigned_at: string | null;
+  assigned_by_user_id: string | null;
+  rejection_reason: string | null;
+  rejected_at: string | null;
+  rejected_by_user_id: string | null;
+  priority: ClearancePriority;
+  // Usage rights (new)
+  usage_rights: ClearanceUsageRights;
+  // E&O tracking (new)
+  is_eo_critical: boolean;
+  chain_of_title_url: string | null;
+  chain_of_title_notes: string | null;
+  scene_id: string | null;
+  // Reminder tracking (new)
+  last_reminder_sent_at: string | null;
+  reminder_count: number;
   // Audit
   created_by_user_id: string;
   created_at: string;
@@ -3477,6 +3637,8 @@ export interface BacklotClearanceItem {
   // Joined data
   related_location?: BacklotLocation;
   created_by?: BacklotProfile;
+  assigned_to?: BacklotProfile;
+  scene?: { id: string; scene_number: string; };
 }
 
 // Clearance Template
@@ -3516,6 +3678,13 @@ export interface ClearanceItemInput {
   notes?: string | null;
   contact_email?: string | null;
   contact_phone?: string | null;
+  // New workflow fields
+  priority?: ClearancePriority;
+  usage_rights?: ClearanceUsageRights;
+  is_eo_critical?: boolean;
+  chain_of_title_url?: string | null;
+  chain_of_title_notes?: string | null;
+  scene_id?: string | null;
 }
 
 // =============================================================================
@@ -3526,6 +3695,83 @@ export interface ClearanceFilters {
   type?: BacklotClearanceType | 'all';
   status?: BacklotClearanceStatus | 'all';
   search?: string;
+}
+
+// =============================================================================
+// CLEARANCE RECIPIENTS TYPES
+// =============================================================================
+
+export type ClearanceRecipientType = 'contact' | 'member' | 'manual';
+export type ClearanceSignatureStatus = 'not_required' | 'pending' | 'viewed' | 'signed' | 'declined';
+
+export interface ClearanceRecipient {
+  id: string;
+  clearance_id: string;
+  project_contact_id: string | null;
+  project_member_user_id: string | null;
+  manual_email: string | null;
+  manual_name: string | null;
+  requires_signature: boolean;
+  signature_status: ClearanceSignatureStatus;
+  signed_at: string | null;
+  viewed_at: string | null;
+  last_email_sent_at: string | null;
+  email_send_count: number;
+  last_email_type: 'link' | 'pdf_attachment' | null;
+  access_token: string | null;
+  access_token_expires_at: string | null;
+  added_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Resolved data (populated by backend)
+  name: string;
+  email: string | null;
+  phone?: string | null;
+  recipient_type: ClearanceRecipientType;
+  // Optional joined data
+  contact?: BacklotProjectContact;
+  member?: BacklotProfile;
+}
+
+export interface ClearanceRecipientInput {
+  project_contact_id?: string;
+  project_member_user_id?: string;
+  manual_email?: string;
+  manual_name?: string;
+  requires_signature?: boolean;
+}
+
+export type ClearanceSendType = 'link' | 'pdf_attachment';
+
+export interface ClearanceSendRequest {
+  recipient_ids: string[];
+  send_type: ClearanceSendType;
+  message?: string;
+  subject_override?: string;
+}
+
+export interface ClearanceSendResult {
+  success: boolean;
+  emails_sent: number;
+  emails_failed: number;
+  message: string;
+}
+
+// Person clearance with recipients (for Casting & Crew integration)
+export interface PersonClearanceDetail extends BacklotClearanceItem {
+  recipients: ClearanceRecipient[];
+}
+
+export interface PersonClearanceSummary {
+  total: number;
+  signed: number;
+  pending: number;
+  missing: number;
+}
+
+export interface PersonClearancesResponse {
+  clearances: PersonClearanceDetail[];
+  summary: PersonClearanceSummary;
 }
 
 // =============================================================================
@@ -3595,6 +3841,7 @@ export const CLEARANCE_TYPE_COLORS: Record<BacklotClearanceType, string> = {
 export const CLEARANCE_STATUS_LABELS: Record<BacklotClearanceStatus, string> = {
   not_started: 'Not Started',
   requested: 'Requested',
+  pending: 'Pending',
   signed: 'Signed',
   expired: 'Expired',
   rejected: 'Rejected',
@@ -3603,9 +3850,61 @@ export const CLEARANCE_STATUS_LABELS: Record<BacklotClearanceStatus, string> = {
 export const CLEARANCE_STATUS_COLORS: Record<BacklotClearanceStatus, string> = {
   not_started: 'gray',
   requested: 'yellow',
+  pending: 'blue',
   signed: 'green',
   expired: 'orange',
   rejected: 'red',
+};
+
+// Priority labels and colors
+export const CLEARANCE_PRIORITY_LABELS: Record<ClearancePriority, string> = {
+  low: 'Low',
+  normal: 'Normal',
+  high: 'High',
+  urgent: 'Urgent',
+};
+
+export const CLEARANCE_PRIORITY_COLORS: Record<ClearancePriority, string> = {
+  low: 'gray',
+  normal: 'blue',
+  high: 'orange',
+  urgent: 'red',
+};
+
+// E&O Requirement Status Labels
+export const EO_STATUS_LABELS: Record<EORequirementStatus, string> = {
+  missing: 'Missing',
+  partial: 'Partial',
+  complete: 'Complete',
+  waived: 'Waived',
+};
+
+export const EO_STATUS_COLORS: Record<EORequirementStatus, string> = {
+  missing: 'red',
+  partial: 'yellow',
+  complete: 'green',
+  waived: 'gray',
+};
+
+// Media Type Labels
+export const MEDIA_TYPE_LABELS: Record<ClearanceMediaType, string> = {
+  theatrical: 'Theatrical',
+  streaming: 'Streaming',
+  television: 'Television',
+  home_video: 'Home Video',
+  online: 'Online/Digital',
+  festival: 'Festival',
+  educational: 'Educational',
+  all_media: 'All Media',
+};
+
+// Territory Labels
+export const TERRITORY_SCOPE_LABELS: Record<TerritoryScope, string> = {
+  worldwide: 'Worldwide',
+  north_america: 'North America',
+  us_only: 'US Only',
+  regional: 'Regional',
+  specific: 'Specific Countries',
 };
 
 // Clearance type groups for matrix view
@@ -3622,6 +3921,52 @@ export const CLEARANCE_TYPE_GROUP_LABELS: Record<keyof typeof CLEARANCE_TYPE_GRO
   music: 'Music',
   other: 'Stock & Other',
 };
+
+// =============================================================================
+// CLEARANCE DOCUMENT VERSIONS
+// =============================================================================
+
+export interface ClearanceDocumentVersion {
+  id: string;
+  clearance_id: string;
+  version_number: number;
+  file_url: string;
+  file_name: string;
+  file_size: number | null;
+  content_type: string | null;
+  uploaded_by_user_id: string | null;
+  uploaded_by_name: string | null;
+  notes: string | null;
+  is_current: boolean;
+  created_at: string;
+}
+
+export type ClearanceFileType = 'pdf' | 'image' | 'spreadsheet' | 'document' | 'other';
+
+/**
+ * Get the file type category from a file name
+ */
+export function getClearanceFileType(fileName: string): ClearanceFileType {
+  const ext = fileName.toLowerCase().split('.').pop();
+  if (ext === 'pdf') return 'pdf';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '')) return 'image';
+  if (['xls', 'xlsx', 'csv'].includes(ext || '')) return 'spreadsheet';
+  if (['doc', 'docx'].includes(ext || '')) return 'document';
+  return 'other';
+}
+
+/**
+ * Get a human-readable label for a file type
+ */
+export function getClearanceFileTypeLabel(fileType: ClearanceFileType): string {
+  switch (fileType) {
+    case 'pdf': return 'PDF Document';
+    case 'image': return 'Image';
+    case 'spreadsheet': return 'Spreadsheet';
+    case 'document': return 'Word Document';
+    default: return 'File';
+  }
+}
 
 // =============================================================================
 // SHOT LIST & COVERAGE TYPES
@@ -6492,4 +6837,278 @@ export interface DocuSignWebhook {
   processed_at: string | null;
   processing_error: string | null;
   created_at: string;
+}
+
+// =============================================================================
+// DOCUMENT PACKAGES (Crew Onboarding)
+// =============================================================================
+
+export type DocumentPackageTargetType = 'cast' | 'crew' | 'all';
+
+export interface DocumentPackage {
+  id: string;
+  project_id: string | null;
+  owner_user_id: string | null;
+  name: string;
+  description: string | null;
+  target_type: DocumentPackageTargetType;
+  is_active: boolean;
+  use_count: number;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  items?: DocumentPackageItem[];
+  owner?: BacklotProfile;
+}
+
+export interface DocumentPackageItem {
+  id: string;
+  package_id: string;
+  clearance_type: BacklotClearanceType;
+  template_id: string | null;
+  is_required: boolean;
+  sort_order: number;
+  custom_title: string | null;
+  custom_description: string | null;
+  created_at: string;
+  // Joined data
+  template?: BacklotClearanceTemplate;
+}
+
+export interface DocumentPackageInput {
+  name: string;
+  description?: string | null;
+  target_type?: DocumentPackageTargetType;
+  is_active?: boolean;
+  items?: DocumentPackageItemInput[];
+}
+
+export interface DocumentPackageItemInput {
+  clearance_type: BacklotClearanceType;
+  template_id?: string | null;
+  is_required?: boolean;
+  sort_order?: number;
+  custom_title?: string | null;
+  custom_description?: string | null;
+}
+
+export type PackageAssignmentStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled';
+
+export interface PackageAssignment {
+  id: string;
+  package_id: string;
+  project_id: string;
+  assigned_to_user_id: string | null;
+  assigned_by_user_id: string | null;
+  assigned_at: string;
+  due_date: string | null;
+  notes: string | null;
+  status: PackageAssignmentStatus;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  package?: DocumentPackage;
+  assigned_to_user?: BacklotProfile;
+  assigned_by_user?: BacklotProfile;
+  items?: PackageAssignmentItem[];
+  // Computed
+  total_items?: number;
+  signed_items?: number;
+  pending_items?: number;
+  completion_percentage?: number;
+}
+
+export interface PackageAssignmentItem {
+  id: string;
+  assignment_id: string;
+  package_item_id: string;
+  clearance_id: string | null;
+  status: BacklotClearanceStatus;
+  is_required: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  clearance?: BacklotClearanceItem;
+  package_item?: DocumentPackageItem;
+}
+
+export interface SendPackageInput {
+  package_id: string;
+  recipient_user_ids: string[];
+  due_date?: string | null;
+  notes?: string | null;
+  send_email_notification?: boolean;
+}
+
+export interface SendPackageResult {
+  success: boolean;
+  assignments_created: number;
+  clearances_created: number;
+  emails_sent: number;
+  message: string;
+  assignment_ids: string[];
+}
+
+// =============================================================================
+// CLEARANCE APPROVALS (Post-Sign Workflow)
+// =============================================================================
+
+export type ClearanceApprovalStatus =
+  | 'not_required'
+  | 'pending_approval'
+  | 'approved'
+  | 'changes_requested'
+  | 'rejected';
+
+export interface ClearanceApproval {
+  id: string;
+  clearance_id: string;
+  requires_approval: boolean;
+  approver_user_id: string | null;
+  approver_role: string | null;
+  approval_status: ClearanceApprovalStatus;
+  approved_at: string | null;
+  approved_by_user_id: string | null;
+  approved_by_name: string | null;
+  change_request_notes: string | null;
+  change_requested_at: string | null;
+  change_requested_by_user_id: string | null;
+  locked_at: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  approver?: BacklotProfile;
+  approved_by?: BacklotProfile;
+}
+
+export interface ClearanceApprovalInput {
+  requires_approval: boolean;
+  approver_user_id?: string | null;
+  approver_role?: string | null;
+}
+
+export interface ApprovalActionInput {
+  action: 'approve' | 'request_changes' | 'reject';
+  notes?: string | null;
+}
+
+export const CLEARANCE_APPROVAL_STATUS_LABELS: Record<ClearanceApprovalStatus, string> = {
+  not_required: 'No Approval Required',
+  pending_approval: 'Pending Approval',
+  approved: 'Approved',
+  changes_requested: 'Changes Requested',
+  rejected: 'Rejected',
+};
+
+export const CLEARANCE_APPROVAL_STATUS_COLORS: Record<ClearanceApprovalStatus, string> = {
+  not_required: 'gray',
+  pending_approval: 'yellow',
+  approved: 'green',
+  changes_requested: 'orange',
+  rejected: 'red',
+};
+
+// =============================================================================
+// SIGNING PORTAL (Profile Pending Documents)
+// =============================================================================
+
+export interface PendingDocument {
+  clearance_id: string;
+  clearance_title: string;
+  clearance_type: BacklotClearanceType;
+  project_id: string;
+  project_title: string;
+  recipient_id: string;
+  requires_signature: boolean;
+  signature_status: ClearanceSignatureStatus;
+  batch_sign_allowed: boolean;
+  file_url: string | null;
+  file_name: string | null;
+  sent_at: string | null;
+  expiration_date: string | null;
+  access_token: string | null;
+  // Package info if part of a package
+  package_assignment_id: string | null;
+  package_name: string | null;
+}
+
+export interface PendingDocumentsSummary {
+  total: number;
+  pending_signature: number;
+  viewed: number;
+  by_project: {
+    project_id: string;
+    project_title: string;
+    count: number;
+  }[];
+}
+
+export interface BatchSignInput {
+  recipient_ids: string[];
+  signature_data: string; // Base64 signature image
+}
+
+export interface BatchSignResult {
+  success: boolean;
+  documents_signed: number;
+  session_id: string;
+  message: string;
+}
+
+// =============================================================================
+// CREW DOCUMENT SUMMARY (Cast/Crew Tab Dashboard)
+// =============================================================================
+
+export interface CrewDocumentSummary {
+  person_id: string;
+  person_name: string;
+  role_title: string | null;
+  role_type: 'cast' | 'crew' | null;
+  department: string | null;
+  avatar_url: string | null;
+  documents: {
+    required: number;
+    signed: number;
+    pending: number;
+    missing: number;
+  };
+  completion_percentage: number;
+  last_activity: string | null;
+  onboarding_complete: boolean;
+}
+
+export interface CrewDocumentDashboardData {
+  crew: CrewDocumentSummary[];
+  totals: {
+    total_crew: number;
+    fully_complete: number;
+    in_progress: number;
+    not_started: number;
+  };
+}
+
+export interface PersonDocumentChecklist {
+  person_id: string;
+  person_name: string;
+  documents: {
+    clearance_id: string;
+    clearance_title: string;
+    clearance_type: BacklotClearanceType;
+    status: BacklotClearanceStatus;
+    is_required: boolean;
+    signed_date: string | null;
+    sent_date: string | null;
+    file_url: string | null;
+    // Package info
+    package_assignment_id: string | null;
+    package_name: string | null;
+  }[];
+  summary: {
+    total: number;
+    signed: number;
+    pending: number;
+    missing: number;
+    completion_percentage: number;
+  };
 }

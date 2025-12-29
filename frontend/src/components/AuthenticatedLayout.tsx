@@ -2,6 +2,8 @@ import { useAuth } from "@/context/AuthContext";
 import { Navigate, Outlet } from "react-router-dom";
 import AppHeader from "@/components/AppHeader";
 import Footer from "@/components/landing/Footer";
+import { AlphaTrackingProvider } from "@/context/AlphaTrackingContext";
+import AlphaTesterBanner from "@/components/alpha/AlphaTesterBanner";
 
 const AuthenticatedLayout = () => {
   const { user, loading } = useAuth();
@@ -15,13 +17,16 @@ const AuthenticatedLayout = () => {
   }
 
   return (
-    <div className="bg-charcoal-black text-bone-white min-h-screen flex flex-col">
-      <AppHeader />
-      <main className="flex-grow pt-20 flex flex-col">
-        <Outlet />
-      </main>
-      <Footer />
-    </div>
+    <AlphaTrackingProvider>
+      <div className="bg-charcoal-black text-bone-white min-h-screen flex flex-col">
+        <AppHeader />
+        <main className="flex-grow pt-20 flex flex-col">
+          <Outlet />
+        </main>
+        <Footer />
+        <AlphaTesterBanner />
+      </div>
+    </AlphaTrackingProvider>
   );
 };
 

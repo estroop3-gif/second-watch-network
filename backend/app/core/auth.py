@@ -53,24 +53,33 @@ async def get_current_user(
 
         # Look up profile by cognito_user_id to get the profile ID
         client = get_client()
-        profile_result = client.table("profiles").select("id, full_name").eq(
+        profile_result = client.table("profiles").select("id, full_name, is_admin, is_staff, role").eq(
             "cognito_user_id", cognito_id
         ).execute()
 
         profile_id = None
         full_name = None
+        is_admin = False
+        is_staff = False
+        role = None
         if profile_result.data:
             profile_id = profile_result.data[0]["id"]
             full_name = profile_result.data[0].get("full_name")
+            is_admin = profile_result.data[0].get("is_admin", False)
+            is_staff = profile_result.data[0].get("is_staff", False)
+            role = profile_result.data[0].get("role")
         else:
             # Fallback: try lookup by email
             if email:
-                profile_result = client.table("profiles").select("id, full_name").eq(
+                profile_result = client.table("profiles").select("id, full_name, is_admin, is_staff, role").eq(
                     "email", email
                 ).execute()
                 if profile_result.data:
                     profile_id = profile_result.data[0]["id"]
                     full_name = profile_result.data[0].get("full_name")
+                    is_admin = profile_result.data[0].get("is_admin", False)
+                    is_staff = profile_result.data[0].get("is_staff", False)
+                    role = profile_result.data[0].get("role")
 
         if not profile_id:
             raise HTTPException(
@@ -84,8 +93,12 @@ async def get_current_user(
             "id": profile_id,
             "cognito_id": cognito_id,
             "email": email,
+            "is_admin": is_admin,
+            "is_staff": is_staff,
             "user_metadata": {
                 "full_name": full_name or user.get("name"),
+                "role": "admin" if is_admin else role,
+                "is_moderator": is_staff,
             },
         }
 

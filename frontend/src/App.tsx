@@ -88,6 +88,15 @@ import FilmmakerProfileManagement from "./pages/admin/FilmmakerProfiles";
 import AvailabilityManagement from "./pages/admin/Availability";
 import SiteSettings from "./pages/admin/SiteSettings";
 import GreenRoomManagement from "./pages/admin/GreenRoomManagement";
+import OrderManagement from "./pages/admin/OrderManagement";
+import BacklotOversight from "./pages/admin/BacklotOversight";
+import BillingManagement from "./pages/admin/Billing";
+import PartnerManagement from "./pages/admin/PartnerManagement";
+import Moderation from "./pages/admin/Moderation";
+import CommunityManagement from "./pages/admin/CommunityManagement";
+import AuditLog from "./pages/admin/AuditLog";
+import AdminDonations from "./pages/admin/Donations";
+import AlphaTesting from "./pages/admin/AlphaTesting";
 
 // Partner Pages
 import PartnerLayout from "./pages/partner/Layout";
@@ -105,6 +114,11 @@ const ExternalReviewerView = React.lazy(() =>
   import("./components/backlot/review/external/ExternalReviewerView")
 );
 
+// Lazy load clearance view page for public document viewing/signing
+const ClearanceViewPage = React.lazy(() =>
+  import("./pages/ClearanceViewPage")
+);
+
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 
@@ -113,15 +127,15 @@ const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <SettingsProvider>
-      <AuthProvider>
+    <AuthProvider>
+      <SettingsProvider>
         <EnrichedProfileProvider>
           <SocketProvider>
           <PlatformStatusGate>
             <TooltipProvider>
             <Toaster />
             <Sonner />
-            <BrowserRouter>
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
               <ScrollToTop />
               <Routes>
                 <Route path="/" element={<Index />} />
@@ -157,6 +171,13 @@ const App = () => (
                 <Route path="/review/:token" element={
                   <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
                     <ExternalReviewerView />
+                  </Suspense>
+                } />
+
+                {/* Public Clearance View/Sign Route (no auth required) */}
+                <Route path="/clearance/view/:token" element={
+                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                    <ClearanceViewPage />
                   </Suspense>
                 } />
 
@@ -243,6 +264,15 @@ const App = () => (
                         <Route path="greenroom" element={<GreenRoomManagement />} />
                         <Route path="profiles" element={<FilmmakerProfileManagement />} />
                         <Route path="availability" element={<AvailabilityManagement />} />
+                        <Route path="order" element={<OrderManagement />} />
+                        <Route path="backlot" element={<BacklotOversight />} />
+                        <Route path="billing" element={<BillingManagement />} />
+                        <Route path="partners" element={<PartnerManagement />} />
+                        <Route path="moderation" element={<Moderation />} />
+                        <Route path="community" element={<CommunityManagement />} />
+                        <Route path="audit-log" element={<AuditLog />} />
+                        <Route path="donations" element={<AdminDonations />} />
+                        <Route path="alpha-testing" element={<AlphaTesting />} />
                         <Route path="settings" element={<SiteSettings />} />
                       </Route>
                     </Route>
@@ -256,8 +286,8 @@ const App = () => (
           </PlatformStatusGate>
           </SocketProvider>
         </EnrichedProfileProvider>
-      </AuthProvider>
-    </SettingsProvider>
+      </SettingsProvider>
+    </AuthProvider>
   </QueryClientProvider>
 );
 

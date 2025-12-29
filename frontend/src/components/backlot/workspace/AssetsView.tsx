@@ -309,7 +309,7 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
   const { data: assetsSummary } = useAssetsSummary(projectId);
   const { data: deliverables, isLoading: deliverablesLoading } = useProjectDeliverables(projectId);
   const { data: deliverablesSummary } = useDeliverablesSummary(projectId);
-  const { data: templates } = useDeliverableTemplates();
+  const { data: templates = [] } = useDeliverableTemplates();
 
   // Mutations
   const assetMutations = useAssetMutations(projectId);

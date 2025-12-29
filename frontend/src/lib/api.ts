@@ -103,6 +103,26 @@ class APIClient {
     safeStorage.removeItem('access_token')
   }
 
+  /**
+   * Get the base URL for direct fetch calls
+   */
+  getBaseUrl(): string {
+    return this.baseURL
+  }
+
+  /**
+   * Get headers for direct fetch calls
+   */
+  getHeaders(): HeadersInit {
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    }
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`
+    }
+    return headers
+  }
+
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const token = this.getToken()
     const url = `${this.baseURL}${endpoint}`
@@ -282,10 +302,15 @@ class APIClient {
   // BILLING
   // ============================================================================
 
-  async createCheckoutSession(plan: string = 'premium', context?: string, returnTo?: string) {
+  async createCheckoutSession(
+    plan: 'monthly' | 'yearly' = 'monthly',
+    product: 'premium' | 'backlot' = 'premium',
+    context?: string,
+    returnTo?: string
+  ) {
     return this.request<{ url: string }>('/api/v1/billing/checkout-session', {
       method: 'POST',
-      body: JSON.stringify({ plan, context, returnTo }),
+      body: JSON.stringify({ plan, product, context, returnTo }),
     })
   }
 
@@ -294,6 +319,10 @@ class APIClient {
       method: 'POST',
       body: JSON.stringify({ returnTo }),
     })
+  }
+
+  async checkBacklotAccess(): Promise<{ has_access: boolean; reason: string }> {
+    return this.request<{ has_access: boolean; reason: string }>('/api/v1/billing/backlot/access')
   }
 
   // ============================================================================
@@ -566,6 +595,24 @@ class APIClient {
     return this.request<any[]>(`/api/v1/messages/conversations?user_id=${userId}`)
   }
 
+  // Unified inbox (DMs + Project Updates)
+  async getUnifiedInbox(userId: string) {
+    return this.request<any[]>(`/api/v1/messages/inbox?user_id=${userId}`)
+  }
+
+  async getProjectInboxUpdates(projectId: string, userId: string, params?: { skip?: number; limit?: number }) {
+    const query = new URLSearchParams({ user_id: userId })
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    return this.request<any[]>(`/api/v1/messages/inbox/project/${projectId}/updates?${query}`)
+  }
+
+  async markProjectUpdateRead(projectId: string, updateId: string, userId: string) {
+    return this.request<any>(`/api/v1/messages/inbox/project/${projectId}/updates/${updateId}/mark-read?user_id=${userId}`, {
+      method: 'POST',
+    })
+  }
+
   async listConversationMessages(conversationId: string, params?: { skip?: number; limit?: number }) {
     const query = new URLSearchParams()
     if (params?.skip !== undefined) query.append('skip', params.skip.toString())
@@ -823,12 +870,94 @@ class APIClient {
     return this.request<any[]>(`/api/v1/admin/dashboard/newly-available?hours=${hours}`)
   }
 
-  async getAllUsersAdmin(params?: { skip?: number; limit?: number }) {
+  async getAllUsersAdmin(params?: {
+    skip?: number
+    limit?: number
+    search?: string
+    roles?: string
+    status?: string
+    date_from?: string
+    date_to?: string
+    sort_by?: string
+    sort_order?: string
+  }) {
     const query = new URLSearchParams()
     if (params?.skip !== undefined) query.append('skip', params.skip.toString())
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+    if (params?.roles) query.append('roles', params.roles)
+    if (params?.status) query.append('status', params.status)
+    if (params?.date_from) query.append('date_from', params.date_from)
+    if (params?.date_to) query.append('date_to', params.date_to)
+    if (params?.sort_by) query.append('sort_by', params.sort_by)
+    if (params?.sort_order) query.append('sort_order', params.sort_order)
 
-    return this.request<any[]>(`/api/v1/admin/users/all?${query}`)
+    return this.request<{
+      users: any[]
+      total: number
+      page: number
+      pages: number
+      limit: number
+    }>(`/api/v1/admin/users/all?${query}`)
+  }
+
+  async listUsersAdmin(params?: {
+    skip?: number
+    limit?: number
+    search?: string
+    role?: string
+    is_featured?: boolean
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+    if (params?.role) query.append('roles', params.role)
+    if (params?.is_featured !== undefined) query.append('is_featured', params.is_featured.toString())
+
+    return this.request<{
+      users: any[]
+      total: number
+    }>(`/api/v1/admin/users/all?${query}`)
+  }
+
+  async getUserStats() {
+    return this.request<{
+      total_users: number
+      new_this_week: number
+      active_filmmakers: number
+      order_members: number
+      premium_subscribers: number
+      banned_users: number
+    }>('/api/v1/admin/users/stats')
+  }
+
+  async getUserDetails(userId: string) {
+    return this.request<{
+      profile: any
+      filmmaker_profile: any | null
+      order_membership: any | null
+      submissions: any[]
+      applications: any[]
+      recent_activity: any[]
+    }>(`/api/v1/admin/users/${userId}/details`)
+  }
+
+  async resetUserPassword(userId: string) {
+    return this.request<{ success: boolean; message: string }>(
+      `/api/v1/admin/users/${userId}/reset-password`,
+      { method: 'POST' }
+    )
+  }
+
+  async bulkUserAction(userIds: string[], action: string, role?: string) {
+    return this.request<{ success: boolean; affected_count: number; message: string }>(
+      '/api/v1/admin/users/bulk',
+      {
+        method: 'POST',
+        body: JSON.stringify({ user_ids: userIds, action, role }),
+      }
+    )
   }
 
   async listSubmissionsAdmin(params?: { skip?: number; limit?: number; status?: string; search?: string }) {
@@ -859,6 +988,58 @@ class APIClient {
       method: 'PUT',
       body: JSON.stringify({ notes }),
     })
+  }
+
+  async getSubmissionStats() {
+    return this.request<{
+      total_content: number
+      total_greenroom: number
+      content_pending: number
+      content_in_review: number
+      content_approved: number
+      content_rejected: number
+      greenroom_pending: number
+      greenroom_approved: number
+      greenroom_rejected: number
+      new_this_week: number
+    }>('/api/v1/admin/submissions/stats')
+  }
+
+  async listGreenRoomAdmin(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+    search?: string
+    cycle_id?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.status) query.append('status', params.status)
+    if (params?.search) query.append('search', params.search)
+    if (params?.cycle_id !== undefined) query.append('cycle_id', params.cycle_id.toString())
+
+    return this.request<{ projects: any[]; total: number }>(`/api/v1/admin/greenroom/list?${query}`)
+  }
+
+  async bulkSubmissionAction(
+    submissionIds: string[],
+    action: string,
+    submissionType: 'content' | 'greenroom',
+    sendEmail: boolean = false
+  ) {
+    return this.request<{ success: boolean; affected_count: number; message: string }>(
+      '/api/v1/admin/submissions/bulk',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          submission_ids: submissionIds,
+          action,
+          submission_type: submissionType,
+          send_email: sendEmail,
+        }),
+      }
+    )
   }
 
   async updateUserRoles(userId: string, roles: string[]) {
@@ -936,6 +1117,29 @@ class APIClient {
     return this.request<any>(`/api/v1/admin/applications/partners/${applicationId}/status`, {
       method: 'PUT',
       body: JSON.stringify({ status, admin_notes: adminNotes }),
+    })
+  }
+
+  // Order Application Methods
+  async listOrderApplications(status?: string): Promise<{ applications: any[]; total: number }> {
+    const query = new URLSearchParams()
+    if (status) query.append('status', status)
+    const queryString = query.toString()
+    return this.request<{ applications: any[]; total: number }>(
+      `/api/v1/order/applications${queryString ? `?${queryString}` : ''}`
+    )
+  }
+
+  async approveOrderApplication(applicationId: number) {
+    return this.request<any>(`/api/v1/order/applications/${applicationId}/approve`, {
+      method: 'POST',
+    })
+  }
+
+  async rejectOrderApplication(applicationId: number, reason?: string) {
+    return this.request<any>(`/api/v1/order/applications/${applicationId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ status: 'rejected', rejection_reason: reason }),
     })
   }
 
@@ -1913,6 +2117,831 @@ class APIClient {
     return this.request<{ success: boolean; message: string }>(`/api/v1/backlot/desktop-keys/${keyId}`, {
       method: 'DELETE',
     })
+  }
+
+  // ============================================================================
+  // ADMIN COMMUNITY MANAGEMENT
+  // ============================================================================
+
+  // Topics Admin
+  async listCommunityTopicsAdmin() {
+    return this.request<any[]>('/api/v1/admin/community/topics')
+  }
+
+  async createCommunityTopicAdmin(data: {
+    name: string;
+    slug: string;
+    description?: string;
+    icon?: string;
+    is_active?: boolean;
+  }) {
+    return this.request<any>('/api/v1/admin/community/topics', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateCommunityTopicAdmin(topicId: string, data: Partial<{
+    name: string;
+    slug: string;
+    description: string;
+    icon: string;
+    is_active: boolean;
+  }>) {
+    return this.request<any>(`/api/v1/admin/community/topics/${topicId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteCommunityTopicAdmin(topicId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/topics/${topicId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async reorderCommunityTopicsAdmin(topicIds: string[]) {
+    return this.request<{ success: boolean }>('/api/v1/admin/community/topics/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ topic_ids: topicIds }),
+    })
+  }
+
+  // Threads Admin
+  async listThreadsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    topic_id?: string;
+    search?: string;
+    is_pinned?: boolean;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.topic_id) query.append('topic_id', params.topic_id)
+    if (params?.search) query.append('search', params.search)
+    if (params?.is_pinned !== undefined) query.append('is_pinned', params.is_pinned.toString())
+
+    return this.request<{ threads: any[]; total: number }>(`/api/v1/admin/community/threads?${query}`)
+  }
+
+  async deleteThreadAdmin(threadId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/threads/${threadId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async pinThreadAdmin(threadId: string, isPinned: boolean) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/threads/${threadId}/pin`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_pinned: isPinned }),
+    })
+  }
+
+  async bulkDeleteThreadsAdmin(threadIds: string[]) {
+    return this.request<{ success: boolean; deleted_count: number }>('/api/v1/admin/community/threads/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids: threadIds }),
+    })
+  }
+
+  // Replies Admin
+  async listRepliesAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    thread_id?: string;
+    search?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.thread_id) query.append('thread_id', params.thread_id)
+    if (params?.search) query.append('search', params.search)
+
+    return this.request<{ replies: any[]; total: number }>(`/api/v1/admin/community/replies?${query}`)
+  }
+
+  async deleteReplyAdmin(replyId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/replies/${replyId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Collabs Admin
+  async listCollabsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    is_active?: boolean;
+    is_featured?: boolean;
+    collab_type?: string;
+    search?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.is_active !== undefined) query.append('is_active', params.is_active.toString())
+    if (params?.is_featured !== undefined) query.append('is_featured', params.is_featured.toString())
+    if (params?.collab_type) query.append('collab_type', params.collab_type)
+    if (params?.search) query.append('search', params.search)
+
+    return this.request<{ collabs: any[]; total: number }>(`/api/v1/admin/community/collabs?${query}`)
+  }
+
+  async featureCollabAdmin(collabId: string, isFeatured: boolean, featuredUntil?: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/collabs/${collabId}/feature`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_featured: isFeatured, featured_until: featuredUntil }),
+    })
+  }
+
+  async deactivateCollabAdmin(collabId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/collabs/${collabId}/deactivate`, {
+      method: 'PUT',
+    })
+  }
+
+  async bulkDeactivateCollabsAdmin(collabIds: string[]) {
+    return this.request<{ success: boolean; deactivated_count: number }>('/api/v1/admin/community/collabs/bulk-deactivate', {
+      method: 'POST',
+      body: JSON.stringify({ collab_ids: collabIds }),
+    })
+  }
+
+  // User Moderation
+  async warnUserAdmin(userId: string, data: {
+    reason: string;
+    details?: string;
+    related_content_type?: string;
+    related_content_id?: string;
+  }) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/admin/community/users/${userId}/warn`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async muteUserAdmin(userId: string, data: {
+    reason: string;
+    duration_hours: number;
+    related_content_type?: string;
+    related_content_id?: string;
+  }) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/admin/community/users/${userId}/mute`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async unmuteUserAdmin(userId: string) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/admin/community/users/${userId}/unmute`, {
+      method: 'POST',
+    })
+  }
+
+  async getUserModerationHistory(userId: string) {
+    return this.request<any[]>(`/api/v1/admin/community/users/${userId}/moderation-history`)
+  }
+
+  async listActiveMutes() {
+    return this.request<any[]>('/api/v1/admin/community/moderation/active-mutes')
+  }
+
+  // Content Reports
+  async listContentReportsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    status?: string;
+    content_type?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.status) query.append('status', params.status)
+    if (params?.content_type) query.append('content_type', params.content_type)
+
+    return this.request<{ reports: any[]; total: number }>(`/api/v1/admin/community/reports?${query}`)
+  }
+
+  // Alias for backward compatibility
+  async listReportsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    status?: string;
+    content_type?: string;
+  }) {
+    return this.listContentReportsAdmin(params)
+  }
+
+  async getReportStats() {
+    return this.request<{
+      pending: number;
+      reviewing: number;
+      resolved: number;
+      dismissed: number;
+      total: number;
+    }>('/api/v1/admin/community/reports/stats')
+  }
+
+  async resolveContentReportAdmin(reportId: string, resolutionNotes?: string, actionTaken?: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/reports/${reportId}/resolve`, {
+      method: 'PUT',
+      body: JSON.stringify({ resolution_notes: resolutionNotes, action_taken: actionTaken }),
+    })
+  }
+
+  async dismissContentReportAdmin(reportId: string, resolutionNotes?: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/reports/${reportId}/dismiss`, {
+      method: 'PUT',
+      body: JSON.stringify({ resolution_notes: resolutionNotes }),
+    })
+  }
+
+  // Flagged Content
+  async listFlaggedContentAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    status?: string;
+    severity?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.status) query.append('status', params.status)
+    if (params?.severity) query.append('severity', params.severity)
+
+    return this.request<{ flagged: any[]; total: number }>(`/api/v1/admin/community/flagged?${query}`)
+  }
+
+  async approveFlaggedContentAdmin(flaggedId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/flagged/${flaggedId}/approve`, {
+      method: 'PUT',
+    })
+  }
+
+  async removeFlaggedContentAdmin(flaggedId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/flagged/${flaggedId}/remove`, {
+      method: 'PUT',
+    })
+  }
+
+  // Broadcasts
+  async listBroadcastsAdmin() {
+    return this.request<any[]>('/api/v1/admin/community/broadcasts')
+  }
+
+  async createBroadcastAdmin(data: {
+    title: string;
+    message: string;
+    broadcast_type?: string;
+    target_audience?: string;
+    starts_at?: string;
+    expires_at?: string;
+  }) {
+    return this.request<any>('/api/v1/admin/community/broadcasts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateBroadcastAdmin(broadcastId: string, data: Partial<{
+    title: string;
+    message: string;
+    broadcast_type: string;
+    target_audience: string;
+    is_active: boolean;
+    starts_at: string;
+    expires_at: string;
+  }>) {
+    return this.request<any>(`/api/v1/admin/community/broadcasts/${broadcastId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteBroadcastAdmin(broadcastId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/broadcasts/${broadcastId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // Forum Bans (Admin)
+  async createForumBan(userId: string, data: {
+    restriction_type: 'read_only' | 'full_block' | 'shadow_restrict';
+    reason: string;
+    details?: string;
+    duration_hours?: number;
+  }) {
+    return this.request<any>(`/api/v1/admin/community/users/${userId}/forum-ban`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async removeForumBan(userId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/admin/community/users/${userId}/forum-ban`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getUserForumBan(userId: string) {
+    return this.request<any>(`/api/v1/admin/community/users/${userId}/forum-ban`)
+  }
+
+  async listForumBans(params?: {
+    skip?: number;
+    limit?: number;
+    is_active?: boolean;
+    restriction_type?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.is_active !== undefined) query.append('is_active', params.is_active.toString())
+    if (params?.restriction_type) query.append('restriction_type', params.restriction_type)
+
+    return this.request<{ bans: any[]; total: number }>(`/api/v1/admin/community/forum-bans?${query}`)
+  }
+
+  // Public Community Methods
+  async submitContentReport(data: {
+    content_type: 'thread' | 'reply';
+    content_id: string;
+    reason: string;
+    details?: string;
+  }) {
+    return this.request<any>('/api/v1/community/reports', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getUserForumStatus() {
+    return this.request<{
+      is_banned: boolean;
+      restriction_type: string | null;
+      reason: string | null;
+      expires_at: string | null;
+    }>('/api/v1/community/user-forum-status')
+  }
+
+  // =====================================
+  // Admin Content - Fast Channel Methods
+  // =====================================
+
+  async listFastChannelContent(params?: {
+    skip?: number;
+    limit?: number;
+    content_type?: string;
+    is_active?: boolean;
+    search?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.content_type) query.append('content_type', params.content_type)
+    if (params?.is_active !== undefined) query.append('is_active', params.is_active.toString())
+    if (params?.search) query.append('search', params.search)
+    return this.request<{ content: any[]; total: number }>(`/api/v1/admin/content/fast-channel?${query}`)
+  }
+
+  async createFastChannelContent(data: any) {
+    return this.request<any>('/api/v1/admin/content/fast-channel', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateFastChannelContent(id: string, data: any) {
+    return this.request<any>(`/api/v1/admin/content/fast-channel/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteFastChannelContent(id: string) {
+    return this.request<any>(`/api/v1/admin/content/fast-channel/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async bulkUpdateFastChannelContent(content_ids: string[], is_active: boolean) {
+    return this.request<any>('/api/v1/admin/content/fast-channel/bulk-update', {
+      method: 'POST',
+      body: JSON.stringify({ content_ids, is_active }),
+    })
+  }
+
+  async listFastChannels() {
+    return this.request<any[]>('/api/v1/admin/content/channels')
+  }
+
+  async createFastChannel(data: any) {
+    return this.request<any>('/api/v1/admin/content/channels', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updateFastChannel(id: string, data: any) {
+    return this.request<any>(`/api/v1/admin/content/channels/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getChannelSchedule(channelId: string, startDate?: string, endDate?: string) {
+    const query = new URLSearchParams()
+    if (startDate) query.append('start_date', startDate)
+    if (endDate) query.append('end_date', endDate)
+    return this.request<any[]>(`/api/v1/admin/content/channels/${channelId}/schedule?${query}`)
+  }
+
+  async addToChannelSchedule(channelId: string, data: any) {
+    return this.request<any>(`/api/v1/admin/content/channels/${channelId}/schedule`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async removeFromChannelSchedule(channelId: string, scheduleId: string) {
+    return this.request<any>(`/api/v1/admin/content/channels/${channelId}/schedule/${scheduleId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async listFastChannelPlaylists() {
+    return this.request<any[]>('/api/v1/admin/content/playlists')
+  }
+
+  async createFastChannelPlaylist(data: any) {
+    return this.request<any>('/api/v1/admin/content/playlists', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getFastChannelPlaylist(id: string) {
+    return this.request<any>(`/api/v1/admin/content/playlists/${id}`)
+  }
+
+  async updateFastChannelPlaylist(id: string, data: any) {
+    return this.request<any>(`/api/v1/admin/content/playlists/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteFastChannelPlaylist(id: string) {
+    return this.request<any>(`/api/v1/admin/content/playlists/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async addToPlaylist(playlistId: string, data: { content_id: string; sort_order?: number }) {
+    return this.request<any>(`/api/v1/admin/content/playlists/${playlistId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async removeFromPlaylist(playlistId: string, itemId: string) {
+    return this.request<any>(`/api/v1/admin/content/playlists/${playlistId}/items/${itemId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  // =====================================
+  // Admin Backlot Methods
+  // =====================================
+
+  async listBacklotProjectsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    status?: string;
+    project_type?: string;
+    search?: string;
+    owner_id?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.status) query.append('status', params.status)
+    if (params?.project_type) query.append('project_type', params.project_type)
+    if (params?.search) query.append('search', params.search)
+    if (params?.owner_id) query.append('owner_id', params.owner_id)
+    return this.request<{ projects: any[]; total: number }>(`/api/v1/admin/backlot/projects?${query}`)
+  }
+
+  async createBacklotProjectAdmin(data: any) {
+    return this.request<any>('/api/v1/admin/backlot/projects', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getBacklotProjectAdmin(id: string) {
+    return this.request<any>(`/api/v1/admin/backlot/projects/${id}`)
+  }
+
+  async updateBacklotProjectAdmin(id: string, data: any) {
+    return this.request<any>(`/api/v1/admin/backlot/projects/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deleteBacklotProjectAdmin(id: string) {
+    return this.request<any>(`/api/v1/admin/backlot/projects/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async updateBacklotProjectStatus(id: string, status: string) {
+    return this.request<any>(`/api/v1/admin/backlot/projects/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status }),
+    })
+  }
+
+  async getBacklotStats() {
+    return this.request<{
+      total_projects: number;
+      by_status: { draft: number; active: number; complete: number; archived: number };
+      total_credits: number;
+      total_files: number;
+    }>('/api/v1/admin/backlot/stats')
+  }
+
+  // =====================================
+  // Admin Profiles Methods
+  // =====================================
+
+  async listProfileProductionsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    search?: string;
+    production_type?: string;
+    user_id?: string;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+    if (params?.production_type) query.append('production_type', params.production_type)
+    if (params?.user_id) query.append('user_id', params.user_id)
+    return this.request<{ productions: any[]; total: number }>(`/api/v1/admin/profiles/productions?${query}`)
+  }
+
+  async deleteProfileProductionAdmin(id: string) {
+    return this.request<any>(`/api/v1/admin/profiles/productions/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async listProfileCreditsAdmin(params?: {
+    skip?: number;
+    limit?: number;
+    search?: string;
+    user_id?: string;
+    production_id?: string;
+    is_featured?: boolean;
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+    if (params?.user_id) query.append('user_id', params.user_id)
+    if (params?.production_id) query.append('production_id', params.production_id)
+    if (params?.is_featured !== undefined) query.append('is_featured', params.is_featured.toString())
+    return this.request<{ credits: any[]; total: number }>(`/api/v1/admin/profiles/credits?${query}`)
+  }
+
+  async deleteProfileCreditAdmin(id: string) {
+    return this.request<any>(`/api/v1/admin/profiles/credits/${id}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async toggleProfileCreditFeatured(id: string, is_featured: boolean) {
+    return this.request<any>(`/api/v1/admin/profiles/credits/${id}/featured?is_featured=${is_featured}`, {
+      method: 'PUT',
+    })
+  }
+
+  async getProfileContentStats() {
+    return this.request<{
+      total_productions: number;
+      total_credits: number;
+      featured_credits: number;
+      users_with_credits: number;
+    }>('/api/v1/admin/profiles/stats')
+  }
+
+  async getProfileConfig() {
+    return this.request<any>('/api/v1/admin/profiles/config')
+  }
+
+  async updateProfileConfig(data: { config_key: string; config_value: any }) {
+    return this.request<any>('/api/v1/admin/profiles/config', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getPrivacyDefaults() {
+    return this.request<any>('/api/v1/admin/profiles/privacy-defaults')
+  }
+
+  async updatePrivacyDefaults(data: any) {
+    return this.request<any>('/api/v1/admin/profiles/privacy-defaults', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getAvailableLayouts() {
+    return this.request<string[]>('/api/v1/admin/profiles/layouts')
+  }
+
+  async updateAvailableLayouts(layouts: string[]) {
+    return this.request<string[]>('/api/v1/admin/profiles/layouts', {
+      method: 'PUT',
+      body: JSON.stringify(layouts),
+    })
+  }
+
+  async getVisibleFields() {
+    return this.request<string[]>('/api/v1/admin/profiles/visible-fields')
+  }
+
+  async updateVisibleFields(fields: string[]) {
+    return this.request<string[]>('/api/v1/admin/profiles/visible-fields', {
+      method: 'PUT',
+      body: JSON.stringify(fields),
+    })
+  }
+
+  // Featured Users (Admin)
+  async toggleUserFeatured(userId: string, isFeatured: boolean) {
+    return this.request<any>(`/api/v1/admin/users/${userId}/feature?is_featured=${isFeatured}`, {
+      method: 'PUT',
+    })
+  }
+
+  async listFeaturedUsers() {
+    return this.request<any[]>('/api/v1/admin/users/featured')
+  }
+
+  async reorderFeaturedUsers(userIds: string[]) {
+    return this.request<any>('/api/v1/admin/users/featured/reorder', {
+      method: 'PUT',
+      body: JSON.stringify(userIds),
+    })
+  }
+
+  // Alpha Testing Management
+  async getAlphaStats() {
+    return this.request<{
+      total_testers: number
+      feedback_new: number
+      feedback_reviewing: number
+      feedback_in_progress: number
+      feedback_resolved: number
+      bugs_reported: number
+      features_requested: number
+      ux_issues: number
+      sessions_this_week: number
+    }>('/api/v1/admin/alpha/stats')
+  }
+
+  async listAlphaTesters(params?: {
+    skip?: number
+    limit?: number
+    search?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.search) query.append('search', params.search)
+
+    return this.request<{
+      testers: any[]
+      total: number
+    }>(`/api/v1/admin/alpha/testers?${query}`)
+  }
+
+  async toggleAlphaTester(userId: string, isAlpha: boolean, notes?: string) {
+    const query = new URLSearchParams()
+    query.append('is_alpha', isAlpha.toString())
+    if (notes) query.append('notes', notes)
+
+    return this.request<any>(`/api/v1/admin/alpha/testers/${userId}/toggle?${query}`, {
+      method: 'PUT',
+    })
+  }
+
+  async listAlphaFeedback(params?: {
+    skip?: number
+    limit?: number
+    status?: string
+    feedback_type?: string
+    priority?: string
+    user_id?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.status) query.append('status', params.status)
+    if (params?.feedback_type) query.append('feedback_type', params.feedback_type)
+    if (params?.priority) query.append('priority', params.priority)
+    if (params?.user_id) query.append('user_id', params.user_id)
+
+    return this.request<{
+      feedback: any[]
+      total: number
+    }>(`/api/v1/admin/alpha/feedback?${query}`)
+  }
+
+  async getAlphaFeedback(feedbackId: string) {
+    return this.request<any>(`/api/v1/admin/alpha/feedback/${feedbackId}`)
+  }
+
+  async updateAlphaFeedback(feedbackId: string, data: {
+    status?: string
+    priority?: string
+    admin_notes?: string
+    resolved_by?: string
+  }) {
+    return this.request<any>(`/api/v1/admin/alpha/feedback/${feedbackId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async listAlphaSessions(params?: {
+    skip?: number
+    limit?: number
+    user_id?: string
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    if (params?.user_id) query.append('user_id', params.user_id)
+
+    return this.request<{
+      sessions: any[]
+      total: number
+    }>(`/api/v1/admin/alpha/sessions?${query}`)
+  }
+
+  // =====================================
+  // Alpha Feedback User Methods
+  // =====================================
+
+  async submitAlphaFeedback(data: {
+    title: string
+    description: string
+    feedback_type: string
+    priority?: string
+    page_url?: string
+    browser_info?: Record<string, any>
+    context?: Record<string, any>
+    screenshot_url?: string
+  }) {
+    return this.request<{
+      success: boolean
+      message: string
+      feedback_id: string
+    }>('/api/v1/feedback/submit', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getAlphaScreenshotUploadUrl(filename: string) {
+    return this.request<{
+      upload_url: string
+      fields: Record<string, string>
+      key: string
+      public_url: string
+    }>('/api/v1/feedback/screenshot-upload-url', {
+      method: 'POST',
+      body: JSON.stringify({ filename }),
+    })
+  }
+
+  async getMyAlphaFeedback(params?: {
+    skip?: number
+    limit?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+
+    return this.request<{
+      feedback: any[]
+      total: number
+    }>(`/api/v1/feedback/my-feedback?${query}`)
   }
 }
 

@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_PREMIUM_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_PRICE_ID", "")
     STRIPE_PREMIUM_YEARLY_PRICE_ID: str = os.getenv("STRIPE_PREMIUM_YEARLY_PRICE_ID", "")
+    STRIPE_BACKLOT_MONTHLY_PRICE_ID: str = os.getenv("STRIPE_BACKLOT_MONTHLY_PRICE_ID", "")
+    STRIPE_BACKLOT_YEARLY_PRICE_ID: str = os.getenv("STRIPE_BACKLOT_YEARLY_PRICE_ID", "")
 
     # WebSocket Configuration (AWS API Gateway WebSocket)
     WEBSOCKET_API_ENDPOINT: str = os.getenv("WEBSOCKET_API_ENDPOINT", "")

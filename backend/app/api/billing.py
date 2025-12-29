@@ -16,7 +16,8 @@ router = APIRouter()
 
 
 class CheckoutSessionRequest(BaseModel):
-    plan: str = "premium"
+    plan: str = "monthly"  # monthly or yearly
+    product: str = "premium"  # premium or backlot
     context: Optional[str] = None
     returnTo: Optional[str] = None
 
@@ -67,13 +68,20 @@ async def create_checkout_session(
                 UPDATE profiles SET stripe_customer_id = :customer_id WHERE id = :id
             """, {"customer_id": customer_id, "id": profile["id"]})
 
-    # Determine price ID
-    price_id = settings.STRIPE_PREMIUM_PRICE_ID
-    if request.plan == "premium_yearly":
-        price_id = settings.STRIPE_PREMIUM_YEARLY_PRICE_ID
+    # Determine price ID based on product and plan
+    if request.product == "backlot":
+        if request.plan == "yearly":
+            price_id = settings.STRIPE_BACKLOT_YEARLY_PRICE_ID
+        else:
+            price_id = settings.STRIPE_BACKLOT_MONTHLY_PRICE_ID
+    else:  # premium (content subscription)
+        if request.plan == "yearly" or request.plan == "premium_yearly":
+            price_id = settings.STRIPE_PREMIUM_YEARLY_PRICE_ID
+        else:
+            price_id = settings.STRIPE_PREMIUM_PRICE_ID
 
     if not price_id:
-        raise HTTPException(status_code=500, detail="Stripe price not configured")
+        raise HTTPException(status_code=500, detail=f"Stripe price not configured for {request.product} {request.plan}")
 
     # Build URLs
     base_url = settings.FRONTEND_URL
@@ -94,11 +102,55 @@ async def create_checkout_session(
         cancel_url=cancel_url,
         metadata={
             "user_id": user_id,
+            "product": request.product,
             "context": request.context or "",
+        },
+        subscription_data={
+            "metadata": {
+                "user_id": user_id,
+                "product": request.product,
+            }
         }
     )
 
     return {"url": session.url}
+
+
+@router.get("/backlot/access")
+async def check_backlot_access(user=Depends(get_current_user)):
+    """Check if current user has backlot access.
+
+    Returns True if:
+    - Stripe backlot prices not configured (dev mode), OR
+    - User has active backlot subscription, OR
+    - User is admin/superadmin
+    """
+    # If Stripe backlot prices not configured, grant access to all (dev mode)
+    if not settings.STRIPE_BACKLOT_MONTHLY_PRICE_ID:
+        return {"has_access": True, "reason": "dev_mode"}
+
+    user_id = user.get("id")
+    email = user.get("email")
+
+    profile = execute_single("""
+        SELECT id, is_admin, is_superadmin, backlot_subscription_status
+        FROM profiles
+        WHERE cognito_user_id = :user_id OR id::text = :user_id OR email = :email
+    """, {"user_id": user_id, "email": email})
+
+    if not profile:
+        return {"has_access": False, "reason": "no_profile"}
+
+    # Admins always have access
+    if profile.get("is_admin") or profile.get("is_superadmin"):
+        return {"has_access": True, "reason": "admin"}
+
+    # Check backlot subscription status
+    backlot_status = profile.get("backlot_subscription_status")
+    if backlot_status in ["active", "trialing"]:
+        return {"has_access": True, "reason": "subscription"}
+
+    return {"has_access": False, "reason": "no_subscription"}
 
 
 @router.post("/portal-session")
@@ -159,28 +211,43 @@ async def stripe_webhook(request: Request):
     if event["type"] == "customer.subscription.created":
         subscription = event["data"]["object"]
         customer_id = subscription["customer"]
-        await _update_subscription_status(customer_id, "premium", subscription)
+        product = subscription.get("metadata", {}).get("product", "premium")
+        await _update_subscription_status(customer_id, subscription, product, is_active=True)
 
     elif event["type"] == "customer.subscription.updated":
         subscription = event["data"]["object"]
         customer_id = subscription["customer"]
         status = subscription["status"]
+        product = subscription.get("metadata", {}).get("product", "premium")
 
-        if status in ["active", "trialing"]:
-            await _update_subscription_status(customer_id, "premium", subscription)
-        elif status in ["canceled", "unpaid", "past_due"]:
-            await _update_subscription_status(customer_id, "free", subscription)
+        is_active = status in ["active", "trialing"]
+        await _update_subscription_status(customer_id, subscription, product, is_active=is_active)
 
     elif event["type"] == "customer.subscription.deleted":
         subscription = event["data"]["object"]
         customer_id = subscription["customer"]
-        await _update_subscription_status(customer_id, "free", subscription)
+        product = subscription.get("metadata", {}).get("product", "premium")
+        await _update_subscription_status(customer_id, subscription, product, is_active=False)
 
     return {"received": True}
 
 
-async def _update_subscription_status(customer_id: str, tier: str, subscription: dict):
-    """Update user's subscription tier based on Stripe webhook."""
+async def _update_subscription_status(
+    customer_id: str,
+    subscription: dict,
+    product: str = "premium",
+    is_active: bool = True
+):
+    """Update user's subscription status based on Stripe webhook.
+
+    Args:
+        customer_id: Stripe customer ID
+        subscription: Stripe subscription object
+        product: 'premium' (content) or 'backlot' subscription
+        is_active: Whether the subscription is currently active
+    """
+    from datetime import datetime
+
     # Find profile by stripe customer ID
     profile = execute_single("""
         SELECT id, role FROM profiles WHERE stripe_customer_id = :customer_id
@@ -189,25 +256,49 @@ async def _update_subscription_status(customer_id: str, tier: str, subscription:
     if not profile:
         return
 
-    # Update role based on tier
-    new_role = profile.get("role", "member")
-    if tier == "premium":
-        new_role = "premium"
-    elif tier == "free" and new_role == "premium":
-        new_role = "member"
+    status = subscription.get("status")
+    period_end = subscription.get("current_period_end")
 
-    # Update profile
-    execute_update("""
-        UPDATE profiles
-        SET role = :role,
-            subscription_tier = :tier,
-            subscription_status = :status,
-            subscription_period_end = :period_end
-        WHERE id = :id
-    """, {
-        "id": profile["id"],
-        "role": new_role,
-        "tier": tier,
-        "status": subscription.get("status"),
-        "period_end": subscription.get("current_period_end"),
-    })
+    # Convert Unix timestamp to datetime if present
+    period_end_dt = None
+    if period_end:
+        period_end_dt = datetime.fromtimestamp(period_end).isoformat()
+
+    if product == "backlot":
+        # Update backlot subscription fields
+        execute_update("""
+            UPDATE profiles
+            SET backlot_subscription_status = :status,
+                backlot_subscription_period_end = :period_end,
+                backlot_subscription_id = :subscription_id
+            WHERE id = :id
+        """, {
+            "id": profile["id"],
+            "status": status if is_active else "canceled",
+            "period_end": period_end_dt,
+            "subscription_id": subscription.get("id"),
+        })
+    else:
+        # Update premium (content) subscription fields
+        new_role = profile.get("role", "member")
+        tier = "premium" if is_active else "free"
+
+        if is_active:
+            new_role = "premium"
+        elif new_role == "premium":
+            new_role = "member"
+
+        execute_update("""
+            UPDATE profiles
+            SET role = :role,
+                subscription_tier = :tier,
+                subscription_status = :status,
+                subscription_period_end = :period_end
+            WHERE id = :id
+        """, {
+            "id": profile["id"],
+            "role": new_role,
+            "tier": tier,
+            "status": status,
+            "period_end": period_end_dt,
+        })

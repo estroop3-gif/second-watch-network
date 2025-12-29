@@ -685,7 +685,7 @@ async def get_continuity_photos(
 
     query = (
         client.table("backlot_continuity_photos")
-        .select("*, backlot_continuity_photo_tags(id, tag)")
+        .select("*, tags:backlot_continuity_photo_tags(id, tag)")
         .eq("project_id", project_id)
     )
 
@@ -706,7 +706,7 @@ async def get_continuity_photos(
         photo["full_url"] = get_s3_url(photo["s3_bucket"], photo["s3_key"])
         if photo.get("thumbnail_s3_key"):
             photo["thumbnail_url"] = get_s3_url(photo["s3_bucket"], photo["thumbnail_s3_key"])
-        photo["tags"] = photo.get("backlot_continuity_photo_tags", [])
+        photo["tags"] = photo.get("tags", [])
 
     return photos
 

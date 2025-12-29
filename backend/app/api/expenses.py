@@ -2133,7 +2133,7 @@ async def get_budget_actuals(
         raise HTTPException(status_code=403, detail="Access denied")
 
     query = client.table("backlot_budget_actuals").select(
-        "*, profiles!created_by_user_id(full_name, avatar_url)"
+        "*, created_by:profiles!created_by_user_id(full_name, avatar_url)"
     ).eq("project_id", project_id)
 
     if budget_category_id:

@@ -118,7 +118,8 @@ export function useDeliverableTemplates() {
   return useQuery({
     queryKey: ['backlot', 'deliverable-templates'],
     queryFn: async (): Promise<BacklotDeliverableTemplate[]> => {
-      return api.get<BacklotDeliverableTemplate[]>('/api/v1/backlot/deliverable-templates');
+      const response = await api.get<{ success: boolean; templates: BacklotDeliverableTemplate[] }>('/api/v1/backlot/deliverable-templates');
+      return response.templates || [];
     },
   });
 }

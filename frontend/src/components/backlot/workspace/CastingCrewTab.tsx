@@ -66,6 +66,10 @@ import { CrewRatesTab } from './CrewRatesTab';
 import { DealMemoSummary, DealMemoStatusBadge, DealMemoStatus, DealMemoWorkflow, DealMemoHistory } from './DealMemoStatus';
 import { DealMemoDialog } from './DealMemoDialog';
 import { useDealMemoHistory } from '@/hooks/backlot';
+import { ClearanceStatusBadge } from './casting/ClearanceStatusBadge';
+import { PersonClearancesSection } from './casting/PersonClearancesSection';
+import { CrewDocumentDashboard, OnboardingProgressBadge } from './casting';
+import { useCrewDocumentSummary } from '@/hooks/backlot';
 import {
   Plus,
   Users,
@@ -97,11 +101,12 @@ import { format } from 'date-fns';
 
 interface CastingCrewTabProps {
   projectId: string;
+  onNavigateToClearances?: (personId?: string, personName?: string) => void;
 }
 
 type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'communication' | 'rates';
 
-export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
+export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCrewTabProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabType>('roles');
@@ -126,6 +131,7 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
   });
 
   const { data: bookedPeople } = useBookedPeople(projectId);
+  const { data: crewDocSummaries } = useCrewDocumentSummary(projectId);
   const { deleteRole } = useProjectRoleMutations(projectId);
 
   // Filtered roles
@@ -394,6 +400,20 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
                             {person.end_date && ` - ${format(new Date(person.end_date), 'MMM d')}`}
                           </p>
                         )}
+                        {/* Document Status Badges */}
+                        <div className="mt-2 flex items-center gap-2 flex-wrap">
+                          <ClearanceStatusBadge
+                            projectId={projectId}
+                            personId={person.user_id}
+                            personName={person.name}
+                            onClick={() => onNavigateToClearances?.(person.user_id, person.name)}
+                          />
+                          {/* Onboarding Progress */}
+                          {crewDocSummaries && (() => {
+                            const summary = crewDocSummaries.find(s => s.person_id === person.user_id);
+                            return summary && <OnboardingProgressBadge summary={summary} />;
+                          })()}
+                        </div>
                       </div>
                     </div>
                   </CardContent>
@@ -425,6 +445,24 @@ export function CastingCrewTab({ projectId }: CastingCrewTabProps) {
 
         {/* Documents Tab */}
         <TabsContent value="documents" className="space-y-6">
+          {/* Crew Document Status Dashboard */}
+          <CrewDocumentDashboard
+            projectId={projectId}
+            canEdit={true}
+            onViewPerson={(personId) => onNavigateToClearances?.(personId)}
+            onSendPackage={(personId, personName) => {
+              // Navigate to send package flow
+              onNavigateToClearances?.(personId, personName);
+            }}
+          />
+
+          {/* Clearances per person */}
+          <PersonClearancesSection
+            projectId={projectId}
+            bookedPeople={bookedPeople || []}
+            onNavigateToClearances={onNavigateToClearances}
+          />
+          {/* Deal Memos and other documents */}
           <DocumentsSection projectId={projectId} />
         </TabsContent>
 

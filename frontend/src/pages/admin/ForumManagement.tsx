@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
@@ -13,9 +13,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { MessageSquare, Trash2, ListTree, Reply, Pencil } from 'lucide-react';
+import { Trash2, Pencil, Loader2, MessageSquare, Flag, MessageCircle, FolderOpen } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -39,33 +39,25 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 
-// Types
-interface ForumThread {
-  id: string;
-  title: string;
-  created_at: string;
-  username: string | null;
-  full_name: string | null;
-  category_name: string | null;
-  replies_count: number;
-}
+// Import tab components
+import ThreadsAdminTab from '@/components/admin/community/ThreadsAdminTab';
+import CommentsAdminTab from '@/components/admin/community/CommentsAdminTab';
+import ReportsAdminTab from '@/components/admin/community/ReportsAdminTab';
 
-interface ForumReply {
-  id: string;
-  body: string;
-  created_at: string;
-  username: string | null;
-  full_name: string | null;
-  thread_id: string;
-  thread_title: string;
-}
-
-interface ForumCategory {
+// Types for community tables
+interface CommunityTopic {
   id: string;
   name: string;
   slug: string;
   description: string | null;
+  icon: string | null;
+  is_active: boolean;
+  sort_order: number;
+  thread_count?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 const slugify = (text: string) =>
@@ -78,187 +70,55 @@ const slugify = (text: string) =>
     .replace(/^-+/, '')
     .replace(/-+$/, '');
 
-// Components
-const ThreadsTable = () => {
-  const queryClient = useQueryClient();
-  const { data: threads, isLoading, error } = useQuery({
-    queryKey: ['admin-forum-threads'],
-    queryFn: () => api.listForumThreadsAdmin(),
-  });
-
-  const handleDeleteThread = async (threadId: string) => {
-    try {
-      await api.deleteForumThreadAdmin(threadId);
-      toast.success("Thread and its replies have been deleted.");
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-threads'] });
-    } catch (error: any) {
-      toast.error(`Failed to delete thread: ${error.message}`);
-    }
-  };
-
-  if (error) toast.error(`Failed to fetch threads: ${(error as Error).message}`);
-
-  return (
-    <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
-      <Table>
-        <TableHeader>
-          <TableRow className="border-b-muted-gray hover:bg-charcoal-black/20">
-            <TableHead>Title</TableHead>
-            <TableHead>Author</TableHead>
-            <TableHead>Category</TableHead>
-            <TableHead>Replies</TableHead>
-            <TableHead>Created At</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            <TableRow><TableCell colSpan={6} className="text-center h-48">Loading threads...</TableCell></TableRow>
-          ) : error ? (
-            <TableRow><TableCell colSpan={6} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
-          ) : threads?.map((thread: ForumThread) => (
-            <TableRow key={thread.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
-              <TableCell className="font-medium max-w-xs truncate">
-                <Link to={`/the-backlot/threads/${thread.id}`} className="hover:underline" title={thread.title}>
-                  {thread.title}
-                </Link>
-              </TableCell>
-              <TableCell>{thread.full_name || thread.username || 'N/A'}</TableCell>
-              <TableCell>{thread.category_name || 'N/A'}</TableCell>
-              <TableCell>{thread.replies_count ?? 0}</TableCell>
-              <TableCell>{format(new Date(thread.created_at), 'MMM dd, yyyy')}</TableCell>
-              <TableCell className="text-right">
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button type="button" variant="ghost" size="icon" className="text-primary-red hover:text-red-400"><Trash2 className="h-4 w-4" /></Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader><AlertDialogTitle>Are you sure?</AlertDialogTitle><AlertDialogDescription>This will permanently delete this thread and all of its replies. This action cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => handleDeleteThread(thread.id)} className="bg-primary-red hover:bg-red-700">Delete Thread</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  );
-};
-
-const RepliesTable = () => {
-  const queryClient = useQueryClient();
-  const { data: replies, isLoading, error } = useQuery({
-    queryKey: ['admin-forum-replies'],
-    queryFn: () => api.listForumRepliesAdmin(),
-  });
-
-  const handleDeleteReply = async (replyId: string) => {
-    try {
-      await api.deleteForumReplyAdmin(replyId);
-      toast.success("The reply has been deleted.");
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-replies'] });
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-threads'] });
-    } catch (error: any) {
-      toast.error(`Failed to delete reply: ${error.message}`);
-    }
-  };
-
-  if (error) toast.error(`Failed to fetch replies: ${(error as Error).message}`);
-
-  return (
-    <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
-      <Table>
-        <TableHeader>
-          <TableRow className="border-b-muted-gray hover:bg-charcoal-black/20">
-            <TableHead>Reply</TableHead>
-            <TableHead>Author</TableHead>
-            <TableHead>In Thread</TableHead>
-            <TableHead>Posted At</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            <TableRow><TableCell colSpan={5} className="text-center h-48">Loading replies...</TableCell></TableRow>
-          ) : error ? (
-            <TableRow><TableCell colSpan={5} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
-          ) : replies?.map((reply: ForumReply) => (
-            <TableRow key={reply.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
-              <TableCell className="font-medium max-w-sm truncate" title={reply.body}>{reply.body}</TableCell>
-              <TableCell>{reply.full_name || reply.username || 'N/A'}</TableCell>
-              <TableCell className="max-w-xs truncate">
-                <Link to={`/the-backlot/threads/${reply.thread_id}`} className="hover:underline" title={reply.thread_title}>
-                  {reply.thread_title || 'N/A'}
-                </Link>
-              </TableCell>
-              <TableCell>{format(new Date(reply.created_at), 'MMM dd, yyyy, p')}</TableCell>
-              <TableCell className="text-right">
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button type="button" variant="ghost" size="icon" className="text-primary-red hover:text-red-400"><Trash2 className="h-4 w-4" /></Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader><AlertDialogTitle>Are you sure?</AlertDialogTitle><AlertDialogDescription>This will permanently delete this reply. This action cannot be undone.</AlertDialogDescription></AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => handleDeleteReply(reply.id)} className="bg-primary-red hover:bg-red-700">Delete Reply</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div>
-  );
-};
-
-const categoryFormSchema = z.object({
-  name: z.string().min(3, { message: "Category name must be at least 3 characters." }),
+// Topic Form Schema
+const topicFormSchema = z.object({
+  name: z.string().min(3, { message: "Topic name must be at least 3 characters." }),
   description: z.string().max(200, { message: "Description must be 200 characters or less." }).optional(),
+  icon: z.string().optional(),
+  is_active: z.boolean().default(true),
 });
 
-type CategoryFormValues = z.infer<typeof categoryFormSchema>;
+type TopicFormValues = z.infer<typeof topicFormSchema>;
 
-const CategoryDialog = ({ category, children }: { category?: ForumCategory, children: React.ReactNode }) => {
+// Topic Edit/Create Dialog
+const TopicDialog = ({ topic, children }: { topic?: CommunityTopic, children: React.ReactNode }) => {
   const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = React.useState(false);
 
-  const form = useForm<CategoryFormValues>({
-    resolver: zodResolver(categoryFormSchema),
+  const form = useForm<TopicFormValues>({
+    resolver: zodResolver(topicFormSchema),
     defaultValues: {
-      name: category?.name || "",
-      description: category?.description || "",
+      name: topic?.name || "",
+      description: topic?.description || "",
+      icon: topic?.icon || "",
+      is_active: topic?.is_active ?? true,
     },
   });
 
   React.useEffect(() => {
     if (isOpen) {
       form.reset({
-        name: category?.name || "",
-        description: category?.description || "",
+        name: topic?.name || "",
+        description: topic?.description || "",
+        icon: topic?.icon || "",
+        is_active: topic?.is_active ?? true,
       });
     }
-  }, [isOpen, category, form]);
+  }, [isOpen, topic, form]);
 
-  const onSubmit = async (values: CategoryFormValues) => {
+  const onSubmit = async (values: TopicFormValues) => {
     const slug = slugify(values.name);
     try {
-      if (category) {
-        await api.updateForumCategoryAdmin(category.id, { ...values, slug });
+      if (topic) {
+        await api.updateCommunityTopicAdmin(topic.id, { ...values, slug });
       } else {
-        await api.createForumCategoryAdmin({ ...values, slug });
+        await api.createCommunityTopicAdmin({ ...values, slug });
       }
-      toast.success(`Category ${category ? 'updated' : 'created'} successfully.`);
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-categories'] });
+      toast.success(`Topic ${topic ? 'updated' : 'created'} successfully.`);
+      queryClient.invalidateQueries({ queryKey: ['admin-community-topics'] });
       setIsOpen(false);
     } catch (error: any) {
-      toast.error(`Failed to save category: ${error.message}`);
+      toast.error(`Failed to save topic: ${error.message}`);
     }
   };
 
@@ -267,9 +127,9 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
       <DialogTrigger asChild>{children}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{category ? 'Edit' : 'Create'} Category</DialogTitle>
+          <DialogTitle>{topic ? 'Edit' : 'Create'} Topic</DialogTitle>
           <DialogDescription>
-            {category ? 'Update the details for this category.' : 'Create a new category for forum threads.'}
+            {topic ? 'Update the details for this topic.' : 'Create a new topic for community discussions.'}
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -279,7 +139,7 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
               name="name"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Category Name</FormLabel>
+                  <FormLabel>Topic Name</FormLabel>
                   <FormControl>
                     <Input placeholder="e.g., Cinematography" {...field} />
                   </FormControl>
@@ -294,16 +154,47 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
                 <FormItem>
                   <FormLabel>Description</FormLabel>
                   <FormControl>
-                    <Textarea placeholder="A short description of the category." {...field} />
+                    <Textarea placeholder="A short description of the topic." {...field} />
                   </FormControl>
                   <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="icon"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Icon (emoji or icon name)</FormLabel>
+                  <FormControl>
+                    <Input placeholder="e.g., camera" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="is_active"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
+                  <div className="space-y-0.5">
+                    <FormLabel>Active</FormLabel>
+                    <p className="text-sm text-muted-gray">Allow new threads in this topic</p>
+                  </div>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
                 </FormItem>
               )}
             />
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>Cancel</Button>
               <Button type="submit" disabled={form.formState.isSubmitting}>
-                {form.formState.isSubmitting ? 'Saving...' : 'Save Category'}
+                {form.formState.isSubmitting ? 'Saving...' : 'Save Topic'}
               </Button>
             </DialogFooter>
           </form>
@@ -313,123 +204,170 @@ const CategoryDialog = ({ category, children }: { category?: ForumCategory, chil
   );
 };
 
-const CategoriesTable = () => {
+// Topics Tab Component
+const TopicsTab = () => {
   const queryClient = useQueryClient();
-  const { data: categories, isLoading, error } = useQuery({
-    queryKey: ['admin-forum-categories'],
-    queryFn: () => api.listForumCategoriesAdmin(),
+  const { data: topics, isLoading, error } = useQuery({
+    queryKey: ['admin-community-topics'],
+    queryFn: () => api.listCommunityTopicsAdmin(),
   });
 
-  const handleDeleteCategory = async (categoryId: string) => {
+  const handleDeleteTopic = async (topicId: string) => {
     try {
-      await api.deleteForumCategoryAdmin(categoryId);
-      toast.success("Category has been deleted.");
-      queryClient.invalidateQueries({ queryKey: ['admin-forum-categories'] });
+      await api.deleteCommunityTopicAdmin(topicId);
+      toast.success("Topic has been deleted.");
+      queryClient.invalidateQueries({ queryKey: ['admin-community-topics'] });
     } catch (error: any) {
-      toast.error(`Failed to delete category: ${error.message}`, {
-        description: "You may need to re-assign or delete threads in this category first."
-      });
+      toast.error(`Failed to delete topic: ${error.message}`);
     }
   };
 
-  if (error) toast.error(`Failed to fetch categories: ${(error as Error).message}`);
+  if (error) toast.error(`Failed to fetch topics: ${(error as Error).message}`);
+
+  const topicsList = topics || [];
 
   return (
-    <div className="border-2 border-muted-gray p-2 bg-charcoal-black/50">
-      <div className="flex justify-end mb-4">
-        <CategoryDialog>
-          <Button>Create Category</Button>
-        </CategoryDialog>
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold text-white">Forum Topics</h2>
+        <TopicDialog>
+          <Button>Create Topic</Button>
+        </TopicDialog>
       </div>
-      <Table>
-        <TableHeader>
-          <TableRow className="border-b-muted-gray hover:bg-charcoal-black/20">
-            <TableHead>Name</TableHead>
-            <TableHead>Description</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            <TableRow><TableCell colSpan={3} className="text-center h-48">Loading categories...</TableCell></TableRow>
-          ) : error ? (
-            <TableRow><TableCell colSpan={3} className="text-center h-48 text-primary-red">Error: {(error as Error).message}</TableCell></TableRow>
-          ) : categories?.map((category: ForumCategory) => (
-            <TableRow key={category.id} className="border-b-muted-gray hover:bg-charcoal-black/20">
-              <TableCell className="font-medium">{category.name}</TableCell>
-              <TableCell className="max-w-md truncate">{category.description}</TableCell>
-              <TableCell className="text-right">
-                <CategoryDialog category={category}>
-                  <Button type="button" variant="ghost" size="icon" className="text-accent-yellow hover:text-yellow-400 mr-2">
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                </CategoryDialog>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button type="button" variant="ghost" size="icon" className="text-primary-red hover:text-red-400"><Trash2 className="h-4 w-4" /></Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader><AlertDialogTitle>Are you sure?</AlertDialogTitle><AlertDialogDescription>This will permanently delete this category. This action cannot be undone. Make sure no threads are using this category.</AlertDialogDescription></AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => handleDeleteCategory(category.id)} className="bg-primary-red hover:bg-red-700">Delete Category</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </TableCell>
+      <div className="rounded-md border border-zinc-800">
+        <Table>
+          <TableHeader>
+            <TableRow className="border-zinc-800 hover:bg-zinc-900/50">
+              <TableHead className="text-zinc-400">Icon</TableHead>
+              <TableHead className="text-zinc-400">Name</TableHead>
+              <TableHead className="text-zinc-400">Description</TableHead>
+              <TableHead className="text-zinc-400">Threads</TableHead>
+              <TableHead className="text-zinc-400">Status</TableHead>
+              <TableHead className="text-zinc-400">Created At</TableHead>
+              <TableHead className="text-zinc-400 text-right">Actions</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow><TableCell colSpan={7} className="text-center h-48">
+                <Loader2 className="h-6 w-6 animate-spin mx-auto" />
+              </TableCell></TableRow>
+            ) : error ? (
+              <TableRow><TableCell colSpan={7} className="text-center h-48 text-red-500">Error: {(error as Error).message}</TableCell></TableRow>
+            ) : topicsList.length === 0 ? (
+              <TableRow><TableCell colSpan={7} className="text-center h-48 text-zinc-500">No topics found</TableCell></TableRow>
+            ) : topicsList.map((topic: CommunityTopic) => (
+              <TableRow key={topic.id} className="border-zinc-800 hover:bg-zinc-900/50">
+                <TableCell className="text-2xl">{topic.icon || 'forum'}</TableCell>
+                <TableCell className="font-medium text-white">
+                  <Link to={`/filmmakers?tab=topics&topic=${topic.slug}`} className="hover:underline">
+                    {topic.name}
+                  </Link>
+                </TableCell>
+                <TableCell className="max-w-md text-sm text-zinc-400 line-clamp-2">{topic.description || '-'}</TableCell>
+                <TableCell className="text-zinc-400">{topic.thread_count ?? 0}</TableCell>
+                <TableCell>
+                  <Badge variant={topic.is_active ? "default" : "secondary"} className={topic.is_active ? "bg-green-600" : ""}>
+                    {topic.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-zinc-400">{format(new Date(topic.created_at || new Date()), 'MMM dd, yyyy')}</TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <TopicDialog topic={topic}>
+                      <Button type="button" variant="ghost" size="icon" className="text-yellow-500 hover:text-yellow-400">
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </TopicDialog>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button type="button" variant="ghost" size="icon" className="text-red-500 hover:text-red-400">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will permanently delete this topic and all its threads. This action cannot be undone.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction onClick={() => handleDeleteTopic(topic.id)} className="bg-red-600 hover:bg-red-700">
+                            Delete Topic
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 };
 
+// Main Forum Management Page with Tabs
 const ForumManagement = () => {
+  const [activeTab, setActiveTab] = useState('topics');
+
+  // Get report stats for badge
+  const { data: reportStats } = useQuery({
+    queryKey: ['admin-report-stats'],
+    queryFn: () => api.getReportStats(),
+  });
+
+  const pendingReports = reportStats?.pending || 0;
+
   return (
     <div>
       <h1 className="text-4xl md:text-6xl font-heading tracking-tighter mb-8 -rotate-1">
-        Forum <span className="font-spray text-accent-yellow">Tools</span>
+        Community <span className="font-spray text-accent-yellow">Forum</span>
       </h1>
 
-      <Tabs defaultValue="threads" className="w-full">
-        <TabsList className="grid w-full grid-cols-3">
-          <TabsTrigger value="threads"><MessageSquare className="mr-2 h-4 w-4" />Threads</TabsTrigger>
-          <TabsTrigger value="replies"><Reply className="mr-2 h-4 w-4" />Replies</TabsTrigger>
-          <TabsTrigger value="categories"><ListTree className="mr-2 h-4 w-4" />Categories</TabsTrigger>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="bg-zinc-900 border-zinc-800 mb-6">
+          <TabsTrigger value="topics" className="data-[state=active]:bg-zinc-800 gap-2">
+            <FolderOpen className="h-4 w-4" />
+            Topics
+          </TabsTrigger>
+          <TabsTrigger value="threads" className="data-[state=active]:bg-zinc-800 gap-2">
+            <MessageSquare className="h-4 w-4" />
+            Threads
+          </TabsTrigger>
+          <TabsTrigger value="comments" className="data-[state=active]:bg-zinc-800 gap-2">
+            <MessageCircle className="h-4 w-4" />
+            Comments
+          </TabsTrigger>
+          <TabsTrigger value="reports" className="data-[state=active]:bg-zinc-800 gap-2 relative">
+            <Flag className="h-4 w-4" />
+            Reports
+            {pendingReports > 0 && (
+              <Badge variant="destructive" className="ml-2 h-5 min-w-5 text-xs px-1.5">
+                {pendingReports}
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
-        <TabsContent value="threads" className="mt-6">
-          <Card className="bg-transparent border-0 p-0">
-            <CardHeader className="p-0 mb-4">
-              <CardTitle>Manage Threads</CardTitle>
-              <CardDescription>Oversee and moderate all forum threads.</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <ThreadsTable />
-            </CardContent>
-          </Card>
+
+        <TabsContent value="topics" className="mt-0">
+          <TopicsTab />
         </TabsContent>
-        <TabsContent value="replies" className="mt-6">
-          <Card className="bg-transparent border-0 p-0">
-            <CardHeader className="p-0 mb-4">
-              <CardTitle>Manage Replies</CardTitle>
-              <CardDescription>Oversee and moderate all individual replies.</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <RepliesTable />
-            </CardContent>
-          </Card>
+
+        <TabsContent value="threads" className="mt-0">
+          <ThreadsAdminTab />
         </TabsContent>
-        <TabsContent value="categories" className="mt-6">
-          <Card className="bg-transparent border-0 p-0">
-            <CardHeader className="p-0 mb-4">
-              <CardTitle>Manage Categories</CardTitle>
-              <CardDescription>Create, edit, and delete forum categories.</CardDescription>
-            </CardHeader>
-            <CardContent className="p-0">
-              <CategoriesTable />
-            </CardContent>
-          </Card>
+
+        <TabsContent value="comments" className="mt-0">
+          <CommentsAdminTab />
+        </TabsContent>
+
+        <TabsContent value="reports" className="mt-0">
+          <ReportsAdminTab />
         </TabsContent>
       </Tabs>
     </div>

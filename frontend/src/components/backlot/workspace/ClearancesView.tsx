@@ -1,7 +1,7 @@
 /**
  * ClearancesView - Manage project clearances, releases, and contracts
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -45,6 +45,9 @@ import {
   Music,
   FileText,
   ExternalLink,
+  UserPlus,
+  Send,
+  Package,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -57,30 +60,57 @@ import {
   useClearanceSummary,
   useClearanceTemplates,
   useProjectLocations,
+  useClearanceDocumentUpload,
+  useBulkUpdateClearances,
 } from '@/hooks/backlot';
+import {
+  ClearanceDocumentUpload,
+  ClearanceHistoryTimeline,
+  EOChecklistView,
+  ExpiringClearancesAlert,
+  ClearanceDetailView,
+  PendingDocumentUpload,
+  RecipientPicker,
+  PendingRecipientsList,
+  ClearanceSendModal,
+  type PendingRecipient,
+} from './clearances';
+import { DocumentPackagesView } from './packages/DocumentPackagesView';
 import {
   BacklotClearanceItem,
   BacklotClearanceType,
   BacklotClearanceStatus,
   ClearanceItemInput,
+  ClearancePriority,
+  ClearanceRecipientInput,
   CLEARANCE_TYPE_LABELS,
   CLEARANCE_TYPE_COLORS,
   CLEARANCE_STATUS_LABELS,
   CLEARANCE_STATUS_COLORS,
   CLEARANCE_TYPE_GROUPS,
   CLEARANCE_TYPE_GROUP_LABELS,
+  CLEARANCE_PRIORITY_LABELS,
+  CLEARANCE_PRIORITY_COLORS,
 } from '@/types/backlot';
+import { api } from '@/lib/api';
 import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 
 interface ClearancesViewProps {
   projectId: string;
   canEdit: boolean;
+  personFilter?: string | null; // Filter to show only clearances for this person
+  personFilterName?: string; // Display name for the person filter chip
+  onClearPersonFilter?: () => void; // Callback to clear the person filter
+  // Pre-fill data for Add form (when navigating from Casting tab)
+  prefillPersonId?: string | null;
+  prefillPersonName?: string | null;
 }
 
 const STATUS_ICONS: Record<BacklotClearanceStatus | 'missing', React.ElementType> = {
   not_started: Clock,
   requested: Clock,
+  pending: Clock,
   signed: CheckCircle,
   expired: AlertTriangle,
   rejected: XCircle,
@@ -90,6 +120,7 @@ const STATUS_ICONS: Record<BacklotClearanceStatus | 'missing', React.ElementType
 const STATUS_CONFIG: Record<BacklotClearanceStatus, { label: string; color: string }> = {
   not_started: { label: 'Not Started', color: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
   requested: { label: 'Requested', color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
+  pending: { label: 'Pending', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   signed: { label: 'Signed', color: 'bg-green-500/20 text-green-400 border-green-500/30' },
   expired: { label: 'Expired', color: 'bg-orange-500/20 text-orange-400 border-orange-500/30' },
   rejected: { label: 'Rejected', color: 'bg-red-500/20 text-red-400 border-red-500/30' },
@@ -112,7 +143,8 @@ const ClearanceCard: React.FC<{
   onEdit: (item: BacklotClearanceItem) => void;
   onDelete: (id: string) => void;
   onStatusChange: (id: string, status: BacklotClearanceStatus) => void;
-}> = ({ item, canEdit, onEdit, onDelete, onStatusChange }) => {
+  onClick: (item: BacklotClearanceItem) => void;
+}> = ({ item, canEdit, onEdit, onDelete, onStatusChange, onClick }) => {
   const statusConfig = STATUS_CONFIG[item.status];
   const TypeIcon = TYPE_ICONS[item.type] || FileText;
   const StatusIcon = STATUS_ICONS[item.status];
@@ -126,7 +158,10 @@ const ClearanceCard: React.FC<{
   }, [item.expiration_date, item.status]);
 
   return (
-    <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
+    <div
+      className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-primary-red/50 transition-colors cursor-pointer"
+      onClick={() => onClick(item)}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           {/* Title & Type */}
@@ -144,6 +179,18 @@ const ClearanceCard: React.FC<{
               <StatusIcon className="w-3 h-3 mr-1" />
               {statusConfig.label}
             </Badge>
+            {/* Document Status Badge */}
+            {item.file_url ? (
+              <Badge className="text-xs bg-green-500/10 text-green-400 border border-green-500/30">
+                <FileCheck className="w-3 h-3 mr-1" />
+                Doc
+              </Badge>
+            ) : (
+              <Badge className="text-xs bg-gray-500/10 text-gray-400 border border-gray-500/30">
+                <FileText className="w-3 h-3 mr-1" />
+                No Doc
+              </Badge>
+            )}
             {isExpiringSoon && (
               <Badge variant="outline" className="text-xs bg-orange-500/20 text-orange-400 border-orange-500/30">
                 <AlertTriangle className="w-3 h-3 mr-1" />
@@ -269,10 +316,20 @@ const ClearanceStats: React.FC<{ projectId: string }> = ({ projectId }) => {
   );
 };
 
-const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) => {
-  const [activeTab, setActiveTab] = useState<keyof typeof CLEARANCE_TYPE_GROUPS | 'all'>('all');
+const ClearancesView: React.FC<ClearancesViewProps> = ({
+  projectId,
+  canEdit,
+  personFilter,
+  personFilterName,
+  onClearPersonFilter,
+  prefillPersonId,
+  prefillPersonName,
+}) => {
+  const [activeTab, setActiveTab] = useState<keyof typeof CLEARANCE_TYPE_GROUPS | 'all' | 'eo' | 'expiring' | 'packages'>('all');
   const [statusFilter, setStatusFilter] = useState<BacklotClearanceStatus | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedClearances, setSelectedClearances] = useState<Set<string>>(new Set());
+  const [selectedClearanceId, setSelectedClearanceId] = useState<string | null>(null);
 
   const { clearances, isLoading, createClearance, updateClearance, updateStatus, deleteClearance } = useClearances({
     projectId,
@@ -286,6 +343,18 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
   const [showForm, setShowForm] = useState(false);
   const [editingItem, setEditingItem] = useState<BacklotClearanceItem | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+
+  // Recipients state (for new clearances)
+  const [pendingRecipients, setPendingRecipients] = useState<PendingRecipient[]>([]);
+  const [showRecipientPicker, setShowRecipientPicker] = useState(false);
+
+  // Send after save state
+  const [sendAfterSave, setSendAfterSave] = useState(false);
+  const [showSendModal, setShowSendModal] = useState(false);
+  const [newClearanceForSend, setNewClearanceForSend] = useState<BacklotClearanceItem | null>(null);
+
+  const uploadMutation = useClearanceDocumentUpload();
 
   // Form state
   const [formData, setFormData] = useState<ClearanceItemInput>({
@@ -305,12 +374,25 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
     file_is_sensitive: false,
   });
 
-  // Filter clearances by active tab
+  // Filter clearances by active tab and person filter
   const filteredClearances = useMemo(() => {
-    if (activeTab === 'all') return clearances;
-    const typeGroup = CLEARANCE_TYPE_GROUPS[activeTab];
-    return clearances.filter((c) => typeGroup.includes(c.type));
-  }, [clearances, activeTab]);
+    let filtered = clearances;
+
+    // Apply person filter if set
+    if (personFilter) {
+      filtered = filtered.filter((c) => c.related_person_id === personFilter);
+    }
+
+    // Apply tab filter
+    if (activeTab !== 'all' && activeTab !== 'eo' && activeTab !== 'expiring') {
+      const typeGroup = CLEARANCE_TYPE_GROUPS[activeTab as keyof typeof CLEARANCE_TYPE_GROUPS];
+      if (typeGroup) {
+        filtered = filtered.filter((c) => typeGroup.includes(c.type));
+      }
+    }
+
+    return filtered;
+  }, [clearances, activeTab, personFilter]);
 
   // Group clearances by type for matrix view
   const clearancesByType = useMemo(() => {
@@ -328,6 +410,27 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
     });
     return groups;
   }, [filteredClearances]);
+
+  // Track if we've already auto-opened for this prefill
+  const prefillHandledRef = useRef<string | null>(null);
+
+  // Auto-open form when navigating from Casting with pre-fill data
+  useEffect(() => {
+    if (
+      prefillPersonId &&
+      prefillPersonName &&
+      canEdit &&
+      !showForm &&
+      prefillHandledRef.current !== prefillPersonId
+    ) {
+      prefillHandledRef.current = prefillPersonId;
+      // Small delay to ensure component is fully mounted
+      const timer = setTimeout(() => {
+        handleOpenForm();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [prefillPersonId, prefillPersonName, canEdit]);
 
   const resetForm = () => {
     setFormData({
@@ -369,9 +472,58 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
       });
     } else {
       setEditingItem(null);
-      resetForm();
+      // Check for pre-fill data from Casting navigation
+      if (prefillPersonId && prefillPersonName) {
+        setFormData({
+          type: 'talent_release',
+          title: `${prefillPersonName} - Talent Release`,
+          description: '',
+          related_person_name: prefillPersonName,
+          related_person_id: prefillPersonId,
+          related_location_id: '',
+          related_asset_label: '',
+          status: 'not_started',
+          requested_date: '',
+          signed_date: '',
+          expiration_date: '',
+          contact_email: '',
+          contact_phone: '',
+          notes: '',
+          file_is_sensitive: false,
+        });
+      } else {
+        resetForm();
+      }
     }
+    setPendingFile(null);
+    setPendingRecipients([]);
+    setSendAfterSave(false);
     setShowForm(true);
+  };
+
+  // Helper to add recipient to a clearance
+  const addRecipientToClearance = async (clearanceId: string, input: ClearanceRecipientInput) => {
+    const token = api.getToken();
+    if (!token) throw new Error('Not authenticated');
+
+    const response = await fetch(
+      `${import.meta.env.VITE_API_URL || ''}/api/v1/backlot/clearances/${clearanceId}/recipients`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(input),
+      }
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Failed to add recipient' }));
+      throw new Error(error.detail);
+    }
+
+    return response.json();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -385,13 +537,63 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
           ...formData,
         });
       } else {
-        await createClearance.mutateAsync({
+        // Create clearance first
+        const newClearance = await createClearance.mutateAsync({
           projectId,
           ...formData,
         });
+
+        // If there's a pending file, upload it after creation
+        if (pendingFile && newClearance?.id) {
+          try {
+            await uploadMutation.mutateAsync({
+              clearanceId: newClearance.id,
+              file: pendingFile,
+            });
+          } catch (uploadErr) {
+            console.error('Failed to upload document:', uploadErr);
+            // Don't fail the whole operation, clearance was created
+          }
+        }
+
+        // Add pending recipients
+        if (pendingRecipients.length > 0 && newClearance?.id) {
+          for (const recipient of pendingRecipients) {
+            try {
+              const input: ClearanceRecipientInput = {
+                requires_signature: recipient.requires_signature,
+              };
+              if (recipient.project_contact_id) {
+                input.project_contact_id = recipient.project_contact_id;
+              }
+              if (recipient.project_member_user_id) {
+                input.project_member_user_id = recipient.project_member_user_id;
+              }
+              if (recipient.manual_email) {
+                input.manual_email = recipient.manual_email;
+                input.manual_name = recipient.manual_name;
+              }
+
+              await addRecipientToClearance(newClearance.id, input);
+            } catch (recipientErr) {
+              console.error('Failed to add recipient:', recipientErr);
+              // Continue with other recipients
+            }
+          }
+        }
+
+        // Handle send after save
+        if (sendAfterSave && newClearance?.id && pendingFile && pendingRecipients.length > 0) {
+          // Set up for send modal to open after form closes
+          setNewClearanceForSend(newClearance);
+          setShowSendModal(true);
+        }
       }
       setShowForm(false);
       resetForm();
+      setPendingFile(null);
+      setPendingRecipients([]);
+      setSendAfterSave(false);
     } catch (err) {
       console.error('Failed to save clearance:', err);
     } finally {
@@ -430,6 +632,18 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
   const showPersonField = ['talent_release', 'appearance_release', 'nda'].includes(formData.type);
   const showLocationField = formData.type === 'location_release';
   const showAssetField = ['music_license', 'stock_license', 'other_contract'].includes(formData.type);
+
+  // Show detail view when a clearance is selected
+  if (selectedClearanceId) {
+    return (
+      <ClearanceDetailView
+        projectId={projectId}
+        clearanceId={selectedClearanceId}
+        canEdit={canEdit}
+        onBack={() => setSelectedClearanceId(null)}
+      />
+    );
+  }
 
   if (isLoading) {
     return (
@@ -477,7 +691,7 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
       <ClearanceStats projectId={projectId} />
 
       {/* Filters */}
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap gap-3 items-center">
         <Input
           placeholder="Search clearances..."
           value={searchQuery}
@@ -497,7 +711,33 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
             ))}
           </SelectContent>
         </Select>
+
+        {/* Person Filter Chip */}
+        {personFilter && personFilterName && (
+          <Badge
+            variant="outline"
+            className="bg-primary-red/10 text-primary-red border-primary-red/30 px-3 py-1.5 flex items-center gap-2"
+          >
+            <User className="w-3 h-3" />
+            <span>Showing clearances for: {personFilterName}</span>
+            {onClearPersonFilter && (
+              <button
+                onClick={onClearPersonFilter}
+                className="ml-1 hover:bg-primary-red/20 rounded-full p-0.5"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            )}
+          </Badge>
+        )}
       </div>
+
+      {/* Expiring Clearances Alert */}
+      <ExpiringClearancesAlert
+        projectId={projectId}
+        days={90}
+        onClearanceClick={(id) => setSelectedClearanceId(id)}
+      />
 
       {/* Tabs for type groups */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
@@ -508,10 +748,32 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
               {CLEARANCE_TYPE_GROUP_LABELS[group]}
             </TabsTrigger>
           ))}
+          <TabsTrigger value="eo" className="gap-1">
+            <FileCheck className="w-3.5 h-3.5" />
+            E&O Checklist
+          </TabsTrigger>
+          <TabsTrigger value="packages" className="gap-1">
+            <Package className="w-3.5 h-3.5" />
+            Packages
+          </TabsTrigger>
         </TabsList>
 
+        {/* E&O Checklist Tab */}
+        <TabsContent value="eo" className="mt-6">
+          <EOChecklistView
+            projectId={projectId}
+            clearances={clearances.map((c) => ({ id: c.id, title: c.title, status: c.status }))}
+          />
+        </TabsContent>
+
+        {/* Document Packages Tab */}
+        <TabsContent value="packages" className="mt-6">
+          <DocumentPackagesView projectId={projectId} canEdit={canEdit} />
+        </TabsContent>
+
+        {/* Clearances List Tabs */}
         <TabsContent value={activeTab} className="mt-6">
-          {filteredClearances.length > 0 ? (
+          {activeTab === 'eo' || activeTab === 'packages' ? null : filteredClearances.length > 0 ? (
             activeTab === 'all' ? (
               // Matrix view: grouped by type
               <div className="space-y-8">
@@ -534,6 +796,7 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
                             onEdit={handleOpenForm}
                             onDelete={handleDelete}
                             onStatusChange={handleStatusChange}
+                            onClick={(item) => setSelectedClearanceId(item.id)}
                           />
                         ))}
                       </div>
@@ -552,6 +815,7 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
                     onEdit={handleOpenForm}
                     onDelete={handleDelete}
                     onStatusChange={handleStatusChange}
+                    onClick={(item) => setSelectedClearanceId(item.id)}
                   />
                 ))}
               </div>
@@ -789,6 +1053,32 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
               />
             </div>
 
+            {/* Document Upload Section */}
+            <div className="space-y-2 p-4 bg-muted-gray/10 rounded-lg border border-muted-gray/20">
+              <Label>Document</Label>
+              {editingItem ? (
+                <ClearanceDocumentUpload
+                  clearanceId={editingItem.id}
+                  currentFileUrl={editingItem.file_url}
+                  currentFileName={editingItem.file_name}
+                  isSensitive={editingItem.file_is_sensitive}
+                  disabled={isSubmitting}
+                />
+              ) : (
+                <PendingDocumentUpload
+                  file={pendingFile}
+                  onFileSelect={setPendingFile}
+                  onRemove={() => setPendingFile(null)}
+                  disabled={isSubmitting}
+                />
+              )}
+              <p className="text-xs text-muted-foreground">
+                {editingItem
+                  ? 'Upload or replace the document for this clearance'
+                  : 'Optionally attach a document. It will be uploaded after the clearance is created.'}
+              </p>
+            </div>
+
             {/* Sensitive File Toggle */}
             <div className="flex items-center justify-between py-2">
               <Label htmlFor="file_is_sensitive">Sensitive document (restrict downloads)</Label>
@@ -799,6 +1089,66 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
                 disabled={isSubmitting}
               />
             </div>
+
+            {/* Recipients Section (for new clearances only) */}
+            {!editingItem && (
+              <div className="space-y-2 p-4 bg-muted-gray/10 rounded-lg border border-muted-gray/20">
+                <div className="flex items-center justify-between">
+                  <Label>Recipients (optional)</Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowRecipientPicker(true)}
+                    disabled={isSubmitting}
+                    className="border-primary-red/50 text-primary-red hover:bg-primary-red/10"
+                  >
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Add Recipient
+                  </Button>
+                </div>
+                {pendingRecipients.length > 0 && (
+                  <PendingRecipientsList
+                    recipients={pendingRecipients}
+                    onRemove={(id) => setPendingRecipients(prev => prev.filter(r => r.id !== id))}
+                    onToggleSignature={(id) =>
+                      setPendingRecipients(prev =>
+                        prev.map(r => r.id === id ? { ...r, requires_signature: !r.requires_signature } : r)
+                      )
+                    }
+                  />
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Recipients will be added after the clearance is created.
+                </p>
+              </div>
+            )}
+
+            {/* Send After Save Toggle (only for new with document and recipients) */}
+            {!editingItem && pendingFile && pendingRecipients.length > 0 && (
+              <div className="flex items-center justify-between py-3 px-4 bg-accent-yellow/10 rounded-lg border border-accent-yellow/30">
+                <div className="flex items-center gap-2">
+                  <Send className="w-4 h-4 text-accent-yellow" />
+                  <Label htmlFor="send_after_save" className="text-sm cursor-pointer">
+                    Open send dialog after saving
+                  </Label>
+                </div>
+                <Switch
+                  id="send_after_save"
+                  checked={sendAfterSave}
+                  onCheckedChange={setSendAfterSave}
+                  disabled={isSubmitting}
+                />
+              </div>
+            )}
+
+            {/* History Section (only for editing existing clearance) */}
+            {editingItem && (
+              <div className="space-y-2 p-4 bg-muted-gray/10 rounded-lg border border-muted-gray/20">
+                <Label>Change History</Label>
+                <ClearanceHistoryTimeline clearanceId={editingItem.id} maxHeight="200px" />
+              </div>
+            )}
 
             <div className="flex justify-end gap-3 pt-4">
               <Button type="button" variant="ghost" onClick={() => setShowForm(false)}>
@@ -824,6 +1174,37 @@ const ClearancesView: React.FC<ClearancesViewProps> = ({ projectId, canEdit }) =
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Recipient Picker Modal */}
+      <RecipientPicker
+        projectId={projectId}
+        open={showRecipientPicker}
+        onOpenChange={setShowRecipientPicker}
+        onAdd={(recipient) => {
+          setPendingRecipients((prev) => [...prev, recipient]);
+        }}
+        excludeContactIds={pendingRecipients
+          .filter((r) => r.project_contact_id)
+          .map((r) => r.project_contact_id!)}
+        excludeMemberIds={pendingRecipients
+          .filter((r) => r.project_member_user_id)
+          .map((r) => r.project_member_user_id!)}
+      />
+
+      {/* Send Modal (after creation) */}
+      {newClearanceForSend && (
+        <ClearanceSendModal
+          open={showSendModal}
+          onOpenChange={(open) => {
+            setShowSendModal(open);
+            if (!open) {
+              setNewClearanceForSend(null);
+            }
+          }}
+          clearanceId={newClearanceForSend.id}
+          clearanceTitle={newClearanceForSend.title}
+        />
+      )}
     </div>
   );
 };

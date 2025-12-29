@@ -14,13 +14,14 @@ from app.core.startup import on_startup
 from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
-    admin, availability, credits, community, greenroom, order, backlot,
+    admin, admin_community, admin_content, admin_backlot, admin_profiles,
+    availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses, camera_log,
     church_services, church_people, church_content, church_planning,
     church_resources, church_readiness, cast_crew, hot_set, invoices, coms,
     application_templates, cover_letter_templates, resumes, networks, productions,
-    companies, dm_adapter, uploads
+    companies, dm_adapter, uploads, feedback
 )
 
 # Configure logging
@@ -122,6 +123,10 @@ app.include_router(forum.router, prefix=f"{settings.API_V1_PREFIX}/forum", tags=
 app.include_router(notifications.router, prefix=f"{settings.API_V1_PREFIX}/notifications", tags=["Notifications"])
 app.include_router(connections.router, prefix=f"{settings.API_V1_PREFIX}/connections", tags=["Connections"])
 app.include_router(admin.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin"])
+app.include_router(admin_community.router, prefix=f"{settings.API_V1_PREFIX}/admin/community", tags=["Admin Community"])
+app.include_router(admin_content.router, prefix=f"{settings.API_V1_PREFIX}/admin/content", tags=["Admin Content"])
+app.include_router(admin_backlot.router, prefix=f"{settings.API_V1_PREFIX}/admin/backlot", tags=["Admin Backlot"])
+app.include_router(admin_profiles.router, prefix=f"{settings.API_V1_PREFIX}/admin/profiles", tags=["Admin Profiles"])
 app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availability", tags=["Availability"])
 app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", tags=["Credits"])
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])
@@ -156,6 +161,7 @@ app.include_router(invoices.router, prefix=f"{settings.API_V1_PREFIX}/backlot", 
 app.include_router(coms.router, prefix=f"{settings.API_V1_PREFIX}/coms", tags=["Coms"])
 app.include_router(dm_adapter.router, prefix=f"{settings.API_V1_PREFIX}/dm", tags=["Direct Messages"])
 app.include_router(uploads.router, prefix=f"{settings.API_V1_PREFIX}/uploads", tags=["Uploads"])
+app.include_router(feedback.router, prefix=f"{settings.API_V1_PREFIX}/feedback", tags=["Alpha Feedback"])
 
 # Church Production Tools
 app.include_router(church_services.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Services"])

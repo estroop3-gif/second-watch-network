@@ -53,7 +53,7 @@ async def get_user_profile(user = Depends(get_current_user)) -> Dict[str, Any]:
     """
     try:
         client = get_client()
-        user_id = user.id
+        user_id = user["id"]
 
         response = client.table("profiles").select("*").eq("id", user_id).single().execute()
 
@@ -91,7 +91,7 @@ async def get_user_profile_optional(
 
     try:
         client = get_client()
-        user_id = user.id
+        user_id = user["id"]
 
         response = client.table("profiles").select("*").eq("id", user_id).single().execute()
         return response.data

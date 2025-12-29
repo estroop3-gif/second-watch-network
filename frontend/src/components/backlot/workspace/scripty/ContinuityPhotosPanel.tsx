@@ -53,12 +53,21 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { useContinuityPhotos, useUploadContinuityPhoto, useDeleteContinuityPhoto, useUpdateContinuityPhoto } from '@/hooks/backlot/useContinuity';
 import { useDropzone } from 'react-dropzone';
+import imageCompression from 'browser-image-compression';
 
 interface ContinuityPhotosPanelProps {
   projectId: string;
   sceneId: string | null;
   canEdit: boolean;
 }
+
+// Image compression options - defined outside component to avoid recreating on each render
+const COMPRESSION_OPTIONS = {
+  maxSizeMB: 2, // Max file size in MB
+  maxWidthOrHeight: 2048, // Max dimension
+  useWebWorker: true,
+  fileType: 'image/jpeg' as const,
+};
 
 // Photo categories with icons
 const PHOTO_CATEGORIES = [
@@ -118,7 +127,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
   const updatePhoto = useUpdateContinuityPhoto();
   const deletePhoto = useDeleteContinuityPhoto();
 
-  // Handle file drop
+  // Handle file drop with compression
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (!sceneId) {
       toast({
@@ -133,17 +142,44 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
 
     for (const file of acceptedFiles) {
       try {
+        // Compress image before upload
+        let fileToUpload: File = file;
+        const originalSize = file.size / 1024 / 1024; // MB
+
+        // Only compress if file is larger than 1MB
+        if (originalSize > 1) {
+          toast({
+            title: `Compressing ${file.name}...`,
+            description: `Original size: ${originalSize.toFixed(2)}MB`
+          });
+
+          const compressedFile = await imageCompression(file, COMPRESSION_OPTIONS);
+          const compressedSize = compressedFile.size / 1024 / 1024; // MB
+
+          // Create a new File object with original name
+          fileToUpload = new File([compressedFile], file.name, {
+            type: compressedFile.type,
+            lastModified: Date.now(),
+          });
+
+          toast({
+            title: `Compressed ${file.name}`,
+            description: `${originalSize.toFixed(2)}MB → ${compressedSize.toFixed(2)}MB (${Math.round((1 - compressedSize/originalSize) * 100)}% smaller)`
+          });
+        }
+
         await uploadPhoto.mutateAsync({
           project_id: projectId,
           scene_id: sceneId,
-          file,
+          file: fileToUpload,
           category: uploadCategory,
         });
         toast({ title: `Uploaded ${file.name}` });
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : `Failed to upload ${file.name}`;
         toast({
           title: 'Upload failed',
-          description: err.message || `Failed to upload ${file.name}`,
+          description: errorMessage,
           variant: 'destructive',
         });
       }
@@ -169,10 +205,11 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
         is_favorite: !photo.is_favorite,
       });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update photo';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to update photo',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -186,10 +223,11 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
       await deletePhoto.mutateAsync({ id: photoId });
       toast({ title: 'Photo deleted' });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete photo';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to delete photo',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -233,14 +271,14 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div data-testid="continuity-photos-panel" className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-2 p-3 border-b border-muted-gray/20 shrink-0">
         <Select
           value={filterCategory}
           onValueChange={setFilterCategory}
         >
-          <SelectTrigger className="w-28 h-7 text-xs">
+          <SelectTrigger data-testid="photos-category-filter" className="w-28 h-7 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -257,6 +295,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
         </Select>
 
         <Button
+          data-testid="compare-mode-button"
           size="sm"
           variant={compareMode ? 'secondary' : 'ghost'}
           className="h-7 text-xs"
@@ -275,6 +314,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-gray" />
           <Input
+            data-testid="photos-search-input"
             placeholder="Search photos..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -288,6 +328,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
         <div className="px-3 py-2 shrink-0">
           <div
             {...getRootProps()}
+            data-testid="photo-upload-area"
             className={cn(
               'border-2 border-dashed rounded-lg p-3 text-center transition-colors cursor-pointer',
               isDragActive ? 'border-accent-yellow bg-accent-yellow/10' : 'border-muted-gray/30 hover:border-muted-gray/50',
@@ -313,7 +354,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
               value={uploadCategory}
               onValueChange={setUploadCategory}
             >
-              <SelectTrigger className="h-6 text-[10px] flex-1">
+              <SelectTrigger data-testid="upload-category-select" className="h-6 text-[10px] flex-1">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -330,7 +371,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
 
       {/* Photo Grid */}
       <ScrollArea className="flex-1">
-        <div className="p-2">
+        <div data-testid="photos-grid" className="p-2">
           {photosLoading ? (
             <div className="grid grid-cols-2 gap-2">
               {Array.from({ length: 4 }).map((_, i) => (
@@ -343,13 +384,14 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
             </p>
           ) : (
             <div className="grid grid-cols-2 gap-2">
-              {filteredPhotos.map((photo: ContinuityPhoto) => {
+              {filteredPhotos.map((photo: ContinuityPhoto, index: number) => {
                 const catConfig = getCategoryConfig(photo.category);
                 const isSelectedForCompare = comparePhotos.find(p => p.id === photo.id);
 
                 return (
                   <div
                     key={photo.id}
+                    data-testid={`photo-item-${index}`}
                     className={cn(
                       'relative group aspect-square rounded-lg overflow-hidden bg-soft-black border cursor-pointer',
                       isSelectedForCompare ? 'border-accent-yellow ring-2 ring-accent-yellow' : 'border-muted-gray/20 hover:border-muted-gray/40'
@@ -391,6 +433,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
                     {/* Actions */}
                     <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Button
+                        data-testid={`favorite-photo-${index}`}
                         size="icon"
                         variant="ghost"
                         className="h-5 w-5 bg-black/50 hover:bg-black/70"
@@ -407,6 +450,7 @@ const ContinuityPhotosPanel: React.FC<ContinuityPhotosPanelProps> = ({
                       </Button>
                       {canEdit && (
                         <Button
+                          data-testid={`delete-photo-${index}`}
                           size="icon"
                           variant="ghost"
                           className="h-5 w-5 bg-black/50 hover:bg-red-500/70"

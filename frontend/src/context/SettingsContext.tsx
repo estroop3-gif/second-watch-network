@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useQuery } from '@tanstack/react-query';
+import { useAuth } from './AuthContext';
 
 interface Setting {
   key: string;
@@ -23,19 +24,21 @@ const fetchSettings = async (): Promise<Setting[]> => {
   try {
     const data = await api.getSiteSettings();
     return data || [];
-  } catch (error) {
-    // This is expected for non-admin users who don't have permission.
-    // We return an empty array so the app doesn't crash for them.
-    console.warn("Could not fetch settings. This is expected for non-admin users.");
+  } catch {
+    // Expected for non-admin users - silently return empty
     return [];
   }
 };
 
 export const SettingsProvider = ({ children }: { children: React.ReactNode }) => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
   const { data, isLoading } = useQuery({
     queryKey: ['siteSettings'],
     queryFn: fetchSettings,
     staleTime: 1000 * 60 * 5, // Cache settings for 5 minutes
+    enabled: isAdmin, // Only fetch if user is admin
   });
 
   const [settings, setSettings] = useState<Record<string, any> | null>(null);

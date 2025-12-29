@@ -11,9 +11,7 @@ from app.core.auth import get_current_user, get_current_user_optional
 from app.core.deps import (
     get_user_profile,
     get_user_profile_optional,
-    require_admin,
     require_staff,
-    require_order_member,
     require_lodge_officer,
     require_partner,
 )
@@ -125,7 +123,7 @@ async def is_order_member(user_id: str) -> bool:
     return profile.get("status") in [OrderMemberStatus.PROBATIONARY.value, OrderMemberStatus.ACTIVE.value]
 
 
-async def require_order_member(user = Depends(get_current_user)):
+async def require_order_member_local(user = Depends(get_current_user)):
     """Dependency that requires user to be an Order member"""
     user_id = get_user_id(user)
     if not await is_order_member(user_id):
@@ -136,13 +134,26 @@ async def require_order_member(user = Depends(get_current_user)):
     return user
 
 
-async def require_admin(user = Depends(get_current_user)):
-    """Dependency that requires admin role"""
-    if not is_admin(user):
+async def require_admin_local(user = Depends(get_current_user)):
+    """Dependency that requires admin role - checks profile is_admin flag"""
+    user_id = get_user_id(user)
+    client = get_client()
+
+    # Check profile for admin status
+    profile = client.table("profiles").select("is_admin, is_superadmin").eq("id", user_id).single().execute()
+
+    if not profile.data:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
         )
+
+    if not (profile.data.get("is_admin") or profile.data.get("is_superadmin")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+
     return user
 
 
@@ -230,7 +241,7 @@ async def list_applications(
     status: Optional[OrderApplicationStatus] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """List all applications (admin only)"""
     client = get_client()
@@ -262,7 +273,7 @@ async def list_applications(
 @router.post("/applications/{application_id}/approve", response_model=OrderApplicationResponse)
 async def approve_application(
     application_id: int,
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """Approve an application (admin only)"""
     client = get_client()
@@ -322,7 +333,7 @@ async def approve_application(
 async def reject_application(
     application_id: int,
     update: OrderApplicationAdminUpdate,
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """Reject an application (admin only)"""
     client = get_client()
@@ -447,7 +458,7 @@ async def create_or_update_profile(
 @router.patch("/profile", response_model=OrderMemberProfileResponse)
 async def update_profile(
     profile_update: OrderMemberProfileUpdate,
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Update Order member profile fields"""
     user_id = get_user_id(user)
@@ -489,7 +500,7 @@ async def list_members(
     status: Optional[OrderMemberStatus] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """List all Order members (admin only)"""
     client = get_client()
@@ -522,7 +533,7 @@ async def list_members(
 async def admin_update_member(
     user_id: str,
     update: OrderMemberAdminUpdate,
-    admin = Depends(require_admin)
+    admin = Depends(require_admin_local)
 ):
     """Update member status (admin only) - suspend, expel, etc."""
     client = get_client()
@@ -556,7 +567,7 @@ async def get_member_directory(
     search: Optional[str] = None,
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Get searchable directory of Order members (Order members only)"""
     client = get_client()
@@ -601,7 +612,7 @@ async def get_member_directory(
 @router.get("/members/{user_id}", response_model=OrderMemberProfileResponse)
 async def get_member_profile(
     user_id: str,
-    current_user = Depends(require_order_member)
+    current_user = Depends(require_order_member_local)
 ):
     """Get a specific Order member's profile (Order members only)"""
     client = get_client()
@@ -666,7 +677,7 @@ async def list_lodges(
 
 
 @router.get("/lodges/my", response_model=List[LodgeMembershipResponse])
-async def get_my_lodge_memberships(user = Depends(require_order_member)):
+async def get_my_lodge_memberships(user = Depends(require_order_member_local)):
     """Get current user's lodge memberships"""
     user_id = get_user_id(user)
     client = get_client()
@@ -715,7 +726,7 @@ async def get_lodge(
 @router.post("/lodges/{lodge_id}/join", response_model=LodgeMembershipResponse)
 async def join_lodge(
     lodge_id: int,
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Join a lodge (Order members only)"""
     user_id = get_user_id(user)
@@ -776,7 +787,7 @@ async def join_lodge(
 @router.post("/lodges", response_model=LodgeResponse)
 async def create_lodge(
     lodge: LodgeCreate,
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """Create a new lodge (admin only)"""
     client = get_client()
@@ -816,7 +827,7 @@ async def create_lodge(
 async def update_lodge(
     lodge_id: int,
     lodge_update: LodgeUpdate,
-    user = Depends(require_admin)
+    user = Depends(require_admin_local)
 ):
     """Update a lodge (admin only)"""
     client = get_client()
@@ -1044,7 +1055,7 @@ async def update_job(
 async def apply_to_job(
     job_id: int,
     application: OrderJobApplicationCreate,
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Apply to a job (Order members only)"""
     user_id = get_user_id(user)
@@ -1097,7 +1108,7 @@ async def apply_to_job(
 
 @router.get("/jobs/applications/my", response_model=OrderJobApplicationListResponse)
 async def get_my_job_applications(
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Get current user's job applications"""
     user_id = get_user_id(user)
@@ -1167,7 +1178,7 @@ async def create_booking_request(
 
 @router.get("/booking-requests/my", response_model=List[OrderBookingRequestResponse])
 async def get_my_booking_requests(
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Get booking requests for current user (as target)"""
     user_id = get_user_id(user)
@@ -1182,7 +1193,7 @@ async def get_my_booking_requests(
 async def update_booking_request(
     request_id: int,
     update: OrderBookingRequestUpdate,
-    user = Depends(require_order_member)
+    user = Depends(require_order_member_local)
 ):
     """Update booking request status (by target member)"""
     user_id = get_user_id(user)
@@ -1350,7 +1361,7 @@ async def get_order_profile_settings_for_user(user_id: str):
 
 
 @router.get("/admin/stats", response_model=OrderAdminStats)
-async def get_admin_stats(user = Depends(require_admin)):
+async def get_admin_stats(user = Depends(require_admin_local)):
     """Get Order admin statistics"""
     client = get_client()
 

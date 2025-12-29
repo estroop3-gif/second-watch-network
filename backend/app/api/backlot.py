@@ -2,10 +2,10 @@
 Backlot API Endpoints
 Handles AI co-pilot chat, call sheet distribution, and other Backlot-specific functionality
 """
-from fastapi import APIRouter, HTTPException, Depends, Header, File, UploadFile, Form, Body, Query
+from fastapi import APIRouter, HTTPException, Depends, Header, File, UploadFile, Form, Body, Query, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from app.services.ai_service import get_ai_response
 from app.services.email_service import (
     EmailService,
@@ -10872,16 +10872,50 @@ async def update_script_text(
 
             color_sequence = ["white", "blue", "pink", "yellow", "green", "goldenrod", "buff", "salmon", "cherry", "tan", "gray", "ivory"]
             default_color = color_sequence[min(next_version - 1, len(color_sequence) - 1)]
+            color_code = input_data.color_code or default_color
+            version_label = input_data.version_label or f"v{next_version}"
+
+            # Generate PDF from text content with revision color
+            generated_pdf_url = None
+            try:
+                from app.services.screenplay_pdf_service import generate_screenplay_pdf
+                from datetime import datetime
+                import io
+
+                pdf_bytes = generate_screenplay_pdf(
+                    text_content=input_data.text_content or "",
+                    title=script_data["title"],
+                    version=version_label,
+                    color_code=color_code,
+                    revision_date=datetime.now().strftime("%B %d, %Y"),
+                )
+
+                # Upload PDF to S3
+                s3_filename = f"{script_data['title'].replace(' ', '_')}_{version_label}_{color_code}.pdf"
+                s3_path = f"scripts/{project_id}/{generate_unique_filename(s3_filename)}"
+
+                upload_file(
+                    bucket=BACKLOT_FILES_BUCKET,
+                    path=s3_path,
+                    file=io.BytesIO(pdf_bytes),
+                    content_type="application/pdf"
+                )
+
+                generated_pdf_url = f"s3://{BACKLOT_FILES_BUCKET}/{s3_path}"
+                print(f"Generated revision PDF: {generated_pdf_url}")
+            except Exception as pdf_error:
+                print(f"Warning: Failed to generate revision PDF: {pdf_error}")
+                # Continue without PDF - not a fatal error
 
             new_script_data = {
                 "project_id": project_id,
                 "title": script_data["title"],
-                "file_url": script_data.get("file_url"),
-                "format": script_data.get("format"),
-                "version": input_data.version_label or f"v{next_version}",
+                "file_url": generated_pdf_url or script_data.get("file_url"),
+                "format": "pdf" if generated_pdf_url else script_data.get("format"),
+                "version": version_label,
                 "version_number": next_version,
                 "parent_version_id": script_id,
-                "color_code": input_data.color_code or default_color,
+                "color_code": color_code,
                 "revision_notes": input_data.revision_notes,
                 "is_current": True,
                 "is_locked": False,
@@ -15802,6 +15836,24 @@ async def get_project_clearances(
         result = query.order("created_at", desc=True).execute()
         clearances = result.data or []
 
+        # Generate pre-signed URLs for clearance documents
+        for clearance in clearances:
+            if clearance.get("file_url"):
+                file_url = clearance["file_url"]
+                # Handle both https:// and s3:// formats
+                if file_url.startswith("https://swn-backlot-files-517220555400.s3"):
+                    # Extract s3_key from https URL
+                    s3_key = file_url.split(".amazonaws.com/", 1)[-1] if ".amazonaws.com/" in file_url else None
+                    if s3_key:
+                        clearance["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+                elif file_url.startswith("s3://"):
+                    # Handle s3:// format
+                    s3_uri = file_url[5:]
+                    parts = s3_uri.split("/", 1)
+                    if len(parts) == 2:
+                        _, s3_key = parts
+                        clearance["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+
         # Compute summary in Python instead of using RPC
         summary = {"total": len(clearances), "by_status": {}, "by_type": {}}
         for c in clearances:
@@ -15920,7 +15972,23 @@ async def get_clearance_item(
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="Access denied")
 
-        return {"success": True, "clearance": result.data}
+        # Generate pre-signed URL for clearance document
+        clearance = result.data
+        if clearance.get("file_url"):
+            file_url = clearance["file_url"]
+            # Handle both https:// and s3:// formats
+            if file_url.startswith("https://swn-backlot-files-517220555400.s3"):
+                s3_key = file_url.split(".amazonaws.com/", 1)[-1] if ".amazonaws.com/" in file_url else None
+                if s3_key:
+                    clearance["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+            elif file_url.startswith("s3://"):
+                s3_uri = file_url[5:]
+                parts = s3_uri.split("/", 1)
+                if len(parts) == 2:
+                    _, s3_key = parts
+                    clearance["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+
+        return {"success": True, "clearance": clearance}
 
     except HTTPException:
         raise
@@ -16170,6 +16238,86 @@ async def get_person_clearances(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/projects/{project_id}/clearances/person/{person_id}/detailed")
+async def get_person_clearances_detailed(
+    project_id: str,
+    person_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get all clearances for a person WITH recipient and signature details.
+    Used by Casting & Crew tab to show full clearance info per person.
+    """
+    await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get all clearances for this person (any type)
+        clearances_result = client.table("backlot_clearance_items").select("*").eq("project_id", project_id).eq("related_person_id", person_id).order("created_at", desc=True).execute()
+
+        clearances = clearances_result.data or []
+
+        # For each clearance, fetch recipients
+        for clearance in clearances:
+            recipients_result = client.table("backlot_clearance_recipients").select("*").eq("clearance_id", clearance["id"]).execute()
+            recipients_data = recipients_result.data or []
+
+            # Resolve recipient names/emails
+            resolved_recipients = []
+            for r in recipients_data:
+                name = r.get("manual_name") or ""
+                email = r.get("manual_email") or ""
+                recipient_type = "manual"
+
+                if r.get("project_contact_id"):
+                    contact = client.table("backlot_project_contacts").select("name, email").eq("id", r["project_contact_id"]).single().execute()
+                    if contact.data:
+                        name = contact.data.get("name", "")
+                        email = contact.data.get("email", "")
+                        recipient_type = "contact"
+                elif r.get("project_member_user_id"):
+                    profile = client.table("profiles").select("full_name, email").eq("id", r["project_member_user_id"]).single().execute()
+                    if profile.data:
+                        name = profile.data.get("full_name", "")
+                        email = profile.data.get("email", "")
+                        recipient_type = "member"
+
+                resolved_recipients.append({
+                    "id": r["id"],
+                    "name": name,
+                    "email": email,
+                    "recipient_type": recipient_type,
+                    "requires_signature": r.get("requires_signature", False),
+                    "signature_status": r.get("signature_status", "not_required"),
+                    "signed_at": r.get("signed_at"),
+                    "viewed_at": r.get("viewed_at"),
+                    "last_email_sent_at": r.get("last_email_sent_at"),
+                    "email_send_count": r.get("email_send_count", 0),
+                })
+
+            clearance["recipients"] = resolved_recipients
+
+        # Calculate summary
+        total = len(clearances)
+        signed = sum(1 for c in clearances if c.get("status") == "signed")
+        pending = sum(1 for c in clearances if c.get("status") in ["requested", "pending", "not_started"])
+        missing = 0  # We could track expected vs actual clearances here
+
+        return {
+            "clearances": clearances,
+            "summary": {
+                "total": total,
+                "signed": signed,
+                "pending": pending,
+                "missing": missing,
+            }
+        }
+
+    except Exception as e:
+        print(f"Error fetching detailed person clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/projects/{project_id}/clearances/bulk-status")
 async def get_bulk_clearance_status(
     project_id: str,
@@ -16402,6 +16550,1573 @@ async def get_clearance_templates(
 
     except Exception as e:
         print(f"Error fetching clearance templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE DOCUMENT UPLOAD
+# =============================================================================
+
+class ClearanceDocumentUpload(BaseModel):
+    """Input for uploading a document to a clearance"""
+    file_name: str
+    content_type: str
+    file_size: int
+
+
+@router.post("/clearances/{clearance_id}/upload-url")
+async def get_clearance_upload_url(
+    clearance_id: str,
+    data: ClearanceDocumentUpload,
+    authorization: str = Header(None)
+):
+    """Get a presigned URL for uploading a clearance document to S3"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing clearance and verify access
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify user has edit access to project
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to upload clearance documents")
+
+        if membership.data and membership.data.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="Only admins and editors can upload clearance documents")
+
+        # Generate S3 key for the file
+        import uuid
+        file_ext = data.file_name.split(".")[-1] if "." in data.file_name else "pdf"
+        s3_key = f"clearances/{project_id}/{clearance_id}/{uuid.uuid4()}.{file_ext}"
+
+        # Generate presigned upload URL
+        import boto3
+        s3_client = boto3.client("s3", region_name="us-east-1")
+        presigned_url = s3_client.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": "swn-backlot-files-517220555400",
+                "Key": s3_key,
+                "ContentType": data.content_type,
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        # Generate the final file URL (for after upload)
+        file_url = f"https://swn-backlot-files-517220555400.s3.us-east-1.amazonaws.com/{s3_key}"
+
+        return {
+            "success": True,
+            "upload_url": presigned_url,
+            "file_url": file_url,
+            "s3_key": s3_key
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating clearance upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/clearances/{clearance_id}/document")
+async def update_clearance_document(
+    clearance_id: str,
+    data: dict,
+    authorization: str = Header(None)
+):
+    """Update clearance with uploaded document info and create version record"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Get existing clearance
+        existing = client.table("backlot_clearance_items").select("project_id, file_url").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+        old_file_url = existing.data.get("file_url")
+
+        # Verify access
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to update clearance documents")
+
+        # Get next version number
+        versions_result = client.table("backlot_clearance_document_versions").select("version_number").eq("clearance_id", clearance_id).order("version_number", desc=True).limit(1).execute()
+        next_version = (versions_result.data[0]["version_number"] + 1) if versions_result.data else 1
+
+        # Mark all previous versions as not current
+        client.table("backlot_clearance_document_versions").update({"is_current": False}).eq("clearance_id", clearance_id).execute()
+
+        # Create new version record
+        version_data = {
+            "clearance_id": clearance_id,
+            "version_number": next_version,
+            "file_url": data.get("file_url"),
+            "file_name": data.get("file_name"),
+            "file_size": data.get("file_size"),
+            "content_type": data.get("content_type"),
+            "uploaded_by_user_id": user_id,
+            "uploaded_by_name": user_name,
+            "notes": data.get("notes"),
+            "is_current": True
+        }
+        client.table("backlot_clearance_document_versions").insert(version_data).execute()
+
+        # Update clearance with file info
+        update_data = {
+            "file_url": data.get("file_url"),
+            "file_name": data.get("file_name"),
+            "updated_at": "now()"
+        }
+
+        client.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+
+        # Record history
+        history_action = "file_uploaded" if not old_file_url else "file_uploaded"
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": history_action,
+            "user_id": user_id,
+            "user_name": user_name,
+            "notes": f"Uploaded document: {data.get('file_name')} (v{next_version})",
+            "metadata": {"file_url": data.get("file_url"), "file_name": data.get("file_name"), "version": next_version}
+        }).execute()
+
+        return {"success": True, "message": "Document uploaded successfully", "version": next_version}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clearance document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clearances/{clearance_id}/document")
+async def remove_clearance_document(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Remove document from a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Get existing clearance
+        existing = client.table("backlot_clearance_items").select("project_id, file_url, file_name").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+        old_file_name = existing.data.get("file_name")
+
+        # Verify access - only admins
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not owner_check.data and (not membership.data or membership.data.get("role") != "admin"):
+            raise HTTPException(status_code=403, detail="Only owners and admins can remove clearance documents")
+
+        # Clear file fields
+        client.table("backlot_clearance_items").update({
+            "file_url": None,
+            "file_name": None,
+            "updated_at": "now()"
+        }).eq("id", clearance_id).execute()
+
+        # Record history
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": "file_removed",
+            "user_id": user_id,
+            "user_name": user_name,
+            "notes": f"Removed document: {old_file_name}",
+            "metadata": {}
+        }).execute()
+
+        return {"success": True, "message": "Document removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing clearance document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE DOCUMENT VERSIONS
+# =============================================================================
+
+@router.get("/clearances/{clearance_id}/versions")
+async def get_clearance_document_versions(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Get all document versions for a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get clearance and verify access
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify user has access to project
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to view this clearance")
+
+        # Get all versions
+        versions = client.table("backlot_clearance_document_versions").select("*").eq("clearance_id", clearance_id).order("version_number", desc=True).execute()
+
+        # Generate pre-signed URLs for version documents
+        for version in versions.data or []:
+            if version.get("file_url"):
+                file_url = version["file_url"]
+                # Handle both https:// and s3:// formats
+                if file_url.startswith("https://swn-backlot-files-517220555400.s3"):
+                    s3_key = file_url.split(".amazonaws.com/", 1)[-1] if ".amazonaws.com/" in file_url else None
+                    if s3_key:
+                        version["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+                elif file_url.startswith("s3://"):
+                    s3_uri = file_url[5:]
+                    parts = s3_uri.split("/", 1)
+                    if len(parts) == 2:
+                        _, s3_key = parts
+                        version["file_url"] = get_signed_url('backlot-files', s3_key, expires_in=86400)
+
+        return versions.data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clearance versions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/versions/{version_id}/restore")
+async def restore_clearance_document_version(
+    clearance_id: str,
+    version_id: str,
+    authorization: str = Header(None)
+):
+    """Restore an old document version (creates a new version from the old one)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Get clearance and verify access
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify user has edit access
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to restore document versions")
+
+        if membership.data and membership.data.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="Only admins and editors can restore document versions")
+
+        # Get the version to restore
+        old_version = client.table("backlot_clearance_document_versions").select("*").eq("id", version_id).eq("clearance_id", clearance_id).single().execute()
+        if not old_version.data:
+            raise HTTPException(status_code=404, detail="Version not found")
+
+        # Get next version number
+        versions_result = client.table("backlot_clearance_document_versions").select("version_number").eq("clearance_id", clearance_id).order("version_number", desc=True).limit(1).execute()
+        next_version = versions_result.data[0]["version_number"] + 1 if versions_result.data else 1
+
+        # Mark all previous versions as not current
+        client.table("backlot_clearance_document_versions").update({"is_current": False}).eq("clearance_id", clearance_id).execute()
+
+        # Create new version from old version
+        new_version_data = {
+            "clearance_id": clearance_id,
+            "version_number": next_version,
+            "file_url": old_version.data["file_url"],
+            "file_name": old_version.data["file_name"],
+            "file_size": old_version.data.get("file_size"),
+            "content_type": old_version.data.get("content_type"),
+            "uploaded_by_user_id": user_id,
+            "uploaded_by_name": user_name,
+            "notes": f"Restored from v{old_version.data['version_number']}",
+            "is_current": True
+        }
+        client.table("backlot_clearance_document_versions").insert(new_version_data).execute()
+
+        # Update clearance with restored file info
+        client.table("backlot_clearance_items").update({
+            "file_url": old_version.data["file_url"],
+            "file_name": old_version.data["file_name"],
+            "updated_at": "now()"
+        }).eq("id", clearance_id).execute()
+
+        # Record history
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": "file_uploaded",
+            "user_id": user_id,
+            "user_name": user_name,
+            "notes": f"Restored document: {old_version.data['file_name']} (v{old_version.data['version_number']} → v{next_version})",
+            "metadata": {"restored_from_version": old_version.data["version_number"], "new_version": next_version}
+        }).execute()
+
+        return {"success": True, "message": "Version restored successfully", "new_version": next_version}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error restoring clearance version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE WORKFLOW (ASSIGNMENT, STATUS WITH HISTORY)
+# =============================================================================
+
+class ClearanceAssignInput(BaseModel):
+    """Input for assigning a clearance to a team member"""
+    user_id: str
+    notes: Optional[str] = None
+
+
+@router.post("/clearances/{clearance_id}/assign")
+async def assign_clearance(
+    clearance_id: str,
+    data: ClearanceAssignInput,
+    authorization: str = Header(None)
+):
+    """Assign a clearance to a team member"""
+    user = await get_current_user_from_token(authorization)
+    assigner_id = user["id"]
+    assigner_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Get existing clearance
+        existing = client.table("backlot_clearance_items").select("project_id, assigned_to_user_id, title").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+        clearance_title = existing.data.get("title", "Clearance")
+
+        # Verify assigner has permission
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", assigner_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", assigner_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to assign clearances")
+
+        if membership.data and membership.data.get("role") not in ["admin", "editor"]:
+            raise HTTPException(status_code=403, detail="Only admins and editors can assign clearances")
+
+        # Verify assignee is a project member
+        assignee_check = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", data.user_id).execute()
+        assignee_owner = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", data.user_id).execute()
+
+        if not assignee_check.data and not assignee_owner.data:
+            raise HTTPException(status_code=400, detail="User is not a member of this project")
+
+        # Get assignee name
+        assignee_profile = client.table("profiles").select("full_name, email").eq("id", data.user_id).single().execute()
+        assignee_name = assignee_profile.data.get("full_name") or assignee_profile.data.get("email", "Unknown") if assignee_profile.data else "Unknown"
+
+        # Update clearance
+        client.table("backlot_clearance_items").update({
+            "assigned_to_user_id": data.user_id,
+            "assigned_at": "now()",
+            "assigned_by_user_id": assigner_id,
+            "updated_at": "now()"
+        }).eq("id", clearance_id).execute()
+
+        # Record history
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": "assigned",
+            "user_id": assigner_id,
+            "user_name": assigner_name,
+            "notes": data.notes or f"Assigned to {assignee_name}",
+            "metadata": {"assigned_to_user_id": data.user_id, "assigned_to_name": assignee_name}
+        }).execute()
+
+        # Create notification for assignee
+        try:
+            client.table("notifications").insert({
+                "user_id": data.user_id,
+                "type": "clearance_assigned",
+                "title": "Clearance Assigned to You",
+                "message": f"You've been assigned to handle: {clearance_title}",
+                "data": {
+                    "clearance_id": clearance_id,
+                    "project_id": project_id,
+                    "assigned_by": assigner_name
+                }
+            }).execute()
+        except:
+            pass  # Notification is non-critical
+
+        return {"success": True, "message": f"Clearance assigned to {assignee_name}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error assigning clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/unassign")
+async def unassign_clearance(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Remove assignment from a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Get existing clearance
+        existing = client.table("backlot_clearance_items").select("project_id, assigned_to_user_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify access
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to unassign clearances")
+
+        # Clear assignment
+        client.table("backlot_clearance_items").update({
+            "assigned_to_user_id": None,
+            "assigned_at": None,
+            "assigned_by_user_id": None,
+            "updated_at": "now()"
+        }).eq("id", clearance_id).execute()
+
+        # Record history
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": "unassigned",
+            "user_id": user_id,
+            "user_name": user_name,
+            "notes": "Assignment removed",
+            "metadata": {}
+        }).execute()
+
+        return {"success": True, "message": "Assignment removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error unassigning clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ClearanceStatusUpdateInput(BaseModel):
+    """Input for updating clearance status with rejection support"""
+    status: str
+    rejection_reason: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.patch("/clearances/{clearance_id}/workflow-status")
+async def update_clearance_workflow_status(
+    clearance_id: str,
+    data: ClearanceStatusUpdateInput,
+    authorization: str = Header(None)
+):
+    """Update clearance status with full workflow tracking (history, rejection, signed_date)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    VALID_STATUSES = ["not_started", "requested", "pending", "signed", "rejected", "expired"]
+
+    try:
+        if data.status not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {VALID_STATUSES}")
+
+        # Get existing clearance
+        existing = client.table("backlot_clearance_items").select("project_id, status").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+        old_status = existing.data.get("status")
+
+        # Verify access
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+        owner_check = client.table("backlot_projects").select("owner_id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have permission to update clearance status")
+
+        # Build update data
+        update_data = {
+            "status": data.status,
+            "updated_at": "now()"
+        }
+
+        # Auto-set signed_date when status becomes signed
+        if data.status == "signed" and old_status != "signed":
+            from datetime import date
+            update_data["signed_date"] = date.today().isoformat()
+
+        # Handle rejection
+        if data.status == "rejected":
+            update_data["rejection_reason"] = data.rejection_reason
+            update_data["rejected_at"] = "now()"
+            update_data["rejected_by_user_id"] = user_id
+
+        # Clear rejection if no longer rejected
+        if data.status != "rejected" and old_status == "rejected":
+            update_data["rejection_reason"] = None
+            update_data["rejected_at"] = None
+            update_data["rejected_by_user_id"] = None
+
+        client.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+
+        # Determine history action
+        history_action = "rejected" if data.status == "rejected" else "status_changed"
+
+        # Record history
+        client.table("backlot_clearance_history").insert({
+            "clearance_id": clearance_id,
+            "action": history_action,
+            "old_status": old_status,
+            "new_status": data.status,
+            "user_id": user_id,
+            "user_name": user_name,
+            "notes": data.notes or data.rejection_reason or f"Status changed from {old_status} to {data.status}",
+            "metadata": {"rejection_reason": data.rejection_reason} if data.rejection_reason else {}
+        }).execute()
+
+        return {"success": True, "message": f"Status updated to {data.status}"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clearance workflow status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE HISTORY
+# =============================================================================
+
+@router.get("/clearances/{clearance_id}/history")
+async def get_clearance_history(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Get audit history for a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get clearance and verify access
+        existing = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify access
+        membership = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this clearance")
+
+        # Get history
+        result = client.table("backlot_clearance_history").select("*").eq("clearance_id", clearance_id).order("created_at", desc=True).execute()
+
+        return {"success": True, "history": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching clearance history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# E&O REQUIREMENTS
+# =============================================================================
+
+@router.get("/projects/{project_id}/eo-requirements")
+async def get_eo_requirements(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get E&O requirements checklist for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify access
+        membership = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this project")
+
+        # Get requirements with linked clearance info
+        result = client.table("backlot_eo_requirements").select(
+            "*, linked_clearance:backlot_clearance_items(id, title, status, file_url)"
+        ).eq("project_id", project_id).order("sort_order").execute()
+
+        return {"success": True, "requirements": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching E&O requirements: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/eo-requirements/initialize")
+async def initialize_eo_requirements(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Initialize E&O requirements from templates for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify ownership/admin
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+
+        if not owner_check.data and (not membership.data or membership.data.get("role") != "admin"):
+            raise HTTPException(status_code=403, detail="Only owners and admins can initialize E&O requirements")
+
+        # Call database function
+        result = client.rpc("initialize_eo_requirements", {"p_project_id": project_id, "p_user_id": user_id}).execute()
+        inserted_count = result.data if result.data else 0
+
+        return {"success": True, "message": f"Initialized {inserted_count} E&O requirements", "count": inserted_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error initializing E&O requirements: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class EORequirementUpdate(BaseModel):
+    """Input for updating an E&O requirement"""
+    status: Optional[str] = None
+    linked_clearance_id: Optional[str] = None
+    waived_reason: Optional[str] = None
+
+
+@router.patch("/eo-requirements/{requirement_id}")
+async def update_eo_requirement(
+    requirement_id: str,
+    data: EORequirementUpdate,
+    authorization: str = Header(None)
+):
+    """Update an E&O requirement (link clearance, change status, waive)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    VALID_STATUSES = ["missing", "partial", "complete", "waived"]
+
+    try:
+        if data.status and data.status not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {VALID_STATUSES}")
+
+        # Get requirement
+        existing = client.table("backlot_eo_requirements").select("project_id").eq("id", requirement_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="E&O requirement not found")
+
+        project_id = existing.data["project_id"]
+
+        # Verify access
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+
+        if not owner_check.data and (not membership.data or membership.data.get("role") not in ["admin", "editor"]):
+            raise HTTPException(status_code=403, detail="Only owners, admins, and editors can update E&O requirements")
+
+        # Build update
+        update_data = {"updated_at": "now()"}
+
+        if data.status:
+            update_data["status"] = data.status
+
+        if data.linked_clearance_id is not None:
+            update_data["linked_clearance_id"] = data.linked_clearance_id if data.linked_clearance_id else None
+
+        if data.status == "waived":
+            update_data["waived_reason"] = data.waived_reason
+            update_data["waived_by_user_id"] = user_id
+            update_data["waived_at"] = "now()"
+        elif data.status and data.status != "waived":
+            update_data["waived_reason"] = None
+            update_data["waived_by_user_id"] = None
+            update_data["waived_at"] = None
+
+        client.table("backlot_eo_requirements").update(update_data).eq("id", requirement_id).execute()
+
+        return {"success": True, "message": "E&O requirement updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating E&O requirement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/eo-summary")
+async def get_eo_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get E&O readiness summary for a project"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify access
+        membership = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this project")
+
+        # Call database function
+        result = client.rpc("get_project_eo_summary", {"p_project_id": project_id}).execute()
+
+        return {"success": True, "summary": result.data if result.data else {}}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching E&O summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# EXPIRING CLEARANCES
+# =============================================================================
+
+@router.get("/projects/{project_id}/clearances/expiring")
+async def get_expiring_clearances(
+    project_id: str,
+    days: int = 90,
+    authorization: str = Header(None)
+):
+    """Get clearances expiring within the specified number of days"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify access
+        membership = client.table("backlot_project_members").select("id").eq("project_id", project_id).eq("user_id", user_id).execute()
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+
+        if not membership.data and not owner_check.data:
+            raise HTTPException(status_code=403, detail="You don't have access to this project")
+
+        # Call database function
+        result = client.rpc("get_expiring_clearances", {"p_project_id": project_id, "p_days_ahead": days}).execute()
+
+        return {"success": True, "expiring_clearances": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching expiring clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BulkClearanceStatusInput(BaseModel):
+    """Input for bulk updating clearance statuses"""
+    clearance_ids: List[str]
+    status: str
+    notes: Optional[str] = None
+
+
+@router.patch("/projects/{project_id}/clearances/bulk-update")
+async def bulk_update_clearances(
+    project_id: str,
+    data: BulkClearanceStatusInput,
+    authorization: str = Header(None)
+):
+    """Update status of multiple clearances at once"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    VALID_STATUSES = ["not_started", "requested", "pending", "signed", "rejected", "expired"]
+
+    try:
+        if data.status not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {VALID_STATUSES}")
+
+        # Verify access
+        owner_check = client.table("backlot_projects").select("id").eq("id", project_id).eq("owner_id", user_id).execute()
+        membership = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).single().execute()
+
+        if not owner_check.data and (not membership.data or membership.data.get("role") not in ["admin", "editor"]):
+            raise HTTPException(status_code=403, detail="Only owners, admins, and editors can bulk update clearances")
+
+        updated_count = 0
+        for clearance_id in data.clearance_ids:
+            # Get current status
+            existing = client.table("backlot_clearance_items").select("status").eq("id", clearance_id).eq("project_id", project_id).single().execute()
+            if not existing.data:
+                continue
+
+            old_status = existing.data.get("status")
+
+            # Update
+            update_data = {"status": data.status, "updated_at": "now()"}
+            if data.status == "signed" and old_status != "signed":
+                from datetime import date
+                update_data["signed_date"] = date.today().isoformat()
+
+            client.table("backlot_clearance_items").update(update_data).eq("id", clearance_id).execute()
+
+            # Record history
+            client.table("backlot_clearance_history").insert({
+                "clearance_id": clearance_id,
+                "action": "status_changed",
+                "old_status": old_status,
+                "new_status": data.status,
+                "user_id": user_id,
+                "user_name": user_name,
+                "notes": data.notes or f"Bulk update: {old_status} → {data.status}",
+                "metadata": {"bulk_update": True}
+            }).execute()
+
+            updated_count += 1
+
+        return {"success": True, "message": f"Updated {updated_count} clearances", "count": updated_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk updating clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE RECIPIENTS - MODELS & ENDPOINTS
+# =============================================================================
+
+class ClearanceRecipientInput(BaseModel):
+    """Input for adding a recipient to a clearance"""
+    project_contact_id: Optional[str] = None
+    project_member_user_id: Optional[str] = None
+    manual_email: Optional[str] = None
+    manual_name: Optional[str] = None
+    requires_signature: bool = False
+
+
+class ClearanceRecipientUpdate(BaseModel):
+    """Input for updating a recipient"""
+    requires_signature: Optional[bool] = None
+
+
+@router.get("/clearances/{clearance_id}/recipients")
+async def get_clearance_recipients(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Get all recipients for a clearance with resolved names and emails"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify clearance exists and user has access
+        clearance = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = clearance.data["project_id"]
+        await verify_project_access(client, project_id, user_id)
+
+        # Get recipients
+        recipients = client.table("backlot_clearance_recipients").select("*").eq("clearance_id", clearance_id).order("created_at").execute()
+
+        # Resolve names and emails for each recipient
+        resolved_recipients = []
+        for r in recipients.data or []:
+            resolved = {**r}
+
+            if r.get("project_contact_id"):
+                # Get contact info
+                contact = client.table("backlot_project_contacts").select("name, email, phone, contact_type").eq("id", r["project_contact_id"]).single().execute()
+                if contact.data:
+                    resolved["name"] = contact.data.get("name", "Unknown")
+                    resolved["email"] = contact.data.get("email")
+                    resolved["phone"] = contact.data.get("phone")
+                    resolved["recipient_type"] = "contact"
+                    resolved["contact"] = contact.data
+                else:
+                    resolved["name"] = "Deleted Contact"
+                    resolved["email"] = None
+                    resolved["recipient_type"] = "contact"
+
+            elif r.get("project_member_user_id"):
+                # Get team member info
+                member = client.table("profiles").select("id, full_name, email, avatar_url, username").eq("id", r["project_member_user_id"]).single().execute()
+                if member.data:
+                    resolved["name"] = member.data.get("full_name") or member.data.get("username") or "Unknown"
+                    resolved["email"] = member.data.get("email")
+                    resolved["recipient_type"] = "member"
+                    resolved["member"] = member.data
+                else:
+                    resolved["name"] = "Deleted User"
+                    resolved["email"] = None
+                    resolved["recipient_type"] = "member"
+
+            else:
+                # Manual entry
+                resolved["name"] = r.get("manual_name") or r.get("manual_email") or "Unknown"
+                resolved["email"] = r.get("manual_email")
+                resolved["recipient_type"] = "manual"
+
+            resolved_recipients.append(resolved)
+
+        return {"success": True, "recipients": resolved_recipients, "count": len(resolved_recipients)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching clearance recipients: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/recipients")
+async def add_clearance_recipient(
+    clearance_id: str,
+    input: ClearanceRecipientInput,
+    authorization: str = Header(None)
+):
+    """Add a recipient to a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify clearance exists and user has edit access
+        clearance = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = clearance.data["project_id"]
+        await verify_project_access(client, project_id, user_id, require_edit=True)
+
+        # Validate that at least one identifier is provided
+        if not input.project_contact_id and not input.project_member_user_id and not input.manual_email:
+            raise HTTPException(status_code=400, detail="Must provide contact_id, member_user_id, or manual_email")
+
+        # Validate email format if manual
+        if input.manual_email:
+            import re
+            if not re.match(r"[^@]+@[^@]+\.[^@]+", input.manual_email):
+                raise HTTPException(status_code=400, detail="Invalid email format")
+
+        # Generate access token for external viewing
+        import secrets
+        access_token = secrets.token_urlsafe(32)
+        from datetime import timedelta
+        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+
+        # Determine initial signature status
+        signature_status = "pending" if input.requires_signature else "not_required"
+
+        recipient_data = {
+            "clearance_id": clearance_id,
+            "project_contact_id": input.project_contact_id or None,
+            "project_member_user_id": input.project_member_user_id or None,
+            "manual_email": input.manual_email or None,
+            "manual_name": input.manual_name or None,
+            "requires_signature": input.requires_signature,
+            "signature_status": signature_status,
+            "access_token": access_token,
+            "access_token_expires_at": expires_at.isoformat(),
+            "added_by_user_id": user_id,
+        }
+
+        result = client.table("backlot_clearance_recipients").insert(recipient_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to add recipient")
+
+        return {"success": True, "recipient": result.data[0], "message": "Recipient added"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        if "unique" in error_msg.lower() or "duplicate" in error_msg.lower():
+            raise HTTPException(status_code=400, detail="This recipient is already added to the clearance")
+        print(f"Error adding clearance recipient: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/clearances/{clearance_id}/recipients/{recipient_id}")
+async def update_clearance_recipient(
+    clearance_id: str,
+    recipient_id: str,
+    input: ClearanceRecipientUpdate,
+    authorization: str = Header(None)
+):
+    """Update a clearance recipient (e.g., toggle requires_signature)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify clearance exists and user has edit access
+        clearance = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = clearance.data["project_id"]
+        await verify_project_access(client, project_id, user_id, require_edit=True)
+
+        # Verify recipient exists and belongs to this clearance
+        recipient = client.table("backlot_clearance_recipients").select("*").eq("id", recipient_id).eq("clearance_id", clearance_id).single().execute()
+        if not recipient.data:
+            raise HTTPException(status_code=404, detail="Recipient not found")
+
+        update_data = {}
+
+        if input.requires_signature is not None:
+            update_data["requires_signature"] = input.requires_signature
+            # Update signature status based on requires_signature change
+            if input.requires_signature:
+                # Only set to pending if not already signed
+                if recipient.data.get("signature_status") in ["not_required", None]:
+                    update_data["signature_status"] = "pending"
+            else:
+                # If turning off signature requirement, set to not_required
+                # unless already signed (preserve that status)
+                if recipient.data.get("signature_status") != "signed":
+                    update_data["signature_status"] = "not_required"
+
+        if not update_data:
+            return {"success": True, "message": "No changes to apply"}
+
+        result = client.table("backlot_clearance_recipients").update(update_data).eq("id", recipient_id).execute()
+
+        return {"success": True, "recipient": result.data[0] if result.data else None, "message": "Recipient updated"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating clearance recipient: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/clearances/{clearance_id}/recipients/{recipient_id}")
+async def remove_clearance_recipient(
+    clearance_id: str,
+    recipient_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a recipient from a clearance"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify clearance exists and user has edit access
+        clearance = client.table("backlot_clearance_items").select("project_id").eq("id", clearance_id).single().execute()
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = clearance.data["project_id"]
+        await verify_project_access(client, project_id, user_id, require_edit=True)
+
+        # Delete the recipient
+        result = client.table("backlot_clearance_recipients").delete().eq("id", recipient_id).eq("clearance_id", clearance_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Recipient not found")
+
+        return {"success": True, "message": "Recipient removed"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error removing clearance recipient: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE SEND EMAIL ENDPOINT
+# =============================================================================
+
+class ClearanceSendEmailRequest(BaseModel):
+    """Request to send clearance document to recipients"""
+    recipient_ids: List[str]
+    send_type: str  # 'link' or 'pdf_attachment'
+    message: Optional[str] = None
+    subject_override: Optional[str] = None
+
+
+@router.post("/clearances/{clearance_id}/send")
+async def send_clearance_email(
+    clearance_id: str,
+    request: ClearanceSendEmailRequest,
+    authorization: str = Header(None)
+):
+    """Send clearance document to selected recipients via email"""
+    from app.services.email_service import (
+        EmailService,
+        generate_clearance_email_html,
+        generate_clearance_email_text
+    )
+    from app.core.config import settings
+
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    user_name = user.get("full_name") or user.get("email", "Unknown")
+    client = get_client()
+
+    try:
+        # Validate send_type
+        if request.send_type not in ['link', 'pdf_attachment']:
+            raise HTTPException(status_code=400, detail="send_type must be 'link' or 'pdf_attachment'")
+
+        # Verify clearance exists and user has edit access
+        clearance = client.table("backlot_clearance_items").select("*").eq("id", clearance_id).single().execute()
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Clearance not found")
+
+        project_id = clearance.data["project_id"]
+        await verify_project_access(client, project_id, user_id, require_edit=True)
+
+        # Verify clearance has a document
+        if not clearance.data.get("file_url"):
+            raise HTTPException(status_code=400, detail="Clearance has no document attached")
+
+        # Get project info for email
+        project = client.table("backlot_projects").select("title").eq("id", project_id).single().execute()
+        project_title = project.data.get("title", "Untitled Project") if project.data else "Untitled Project"
+
+        # Get the recipients to send to
+        recipients = client.table("backlot_clearance_recipients").select("*").in_("id", request.recipient_ids).eq("clearance_id", clearance_id).execute()
+
+        if not recipients.data:
+            raise HTTPException(status_code=400, detail="No valid recipients found")
+
+        # Resolve email addresses for each recipient
+        emails_to_send = []
+        for r in recipients.data:
+            email = None
+            name = "Recipient"
+
+            if r.get("project_contact_id"):
+                contact = client.table("backlot_project_contacts").select("name, email").eq("id", r["project_contact_id"]).single().execute()
+                if contact.data:
+                    email = contact.data.get("email")
+                    name = contact.data.get("name", "Recipient")
+
+            elif r.get("project_member_user_id"):
+                member = client.table("profiles").select("full_name, email").eq("id", r["project_member_user_id"]).single().execute()
+                if member.data:
+                    email = member.data.get("email")
+                    name = member.data.get("full_name", "Recipient")
+
+            else:
+                email = r.get("manual_email")
+                name = r.get("manual_name") or email or "Recipient"
+
+            if email:
+                emails_to_send.append({
+                    "recipient_id": r["id"],
+                    "email": email,
+                    "name": name,
+                    "requires_signature": r.get("requires_signature", False),
+                    "access_token": r.get("access_token")
+                })
+
+        if not emails_to_send:
+            raise HTTPException(status_code=400, detail="No recipients have valid email addresses")
+
+        # Download PDF if sending as attachment
+        pdf_content = None
+        pdf_filename = None
+        if request.send_type == 'pdf_attachment':
+            import boto3
+            try:
+                file_url = clearance.data["file_url"]
+                # Extract S3 key from URL
+                if "amazonaws.com/" in file_url:
+                    s3_key = file_url.split("amazonaws.com/", 1)[-1]
+                    # Remove query params if present
+                    if "?" in s3_key:
+                        s3_key = s3_key.split("?")[0]
+
+                    s3_client = boto3.client("s3", region_name="us-east-1")
+                    response = s3_client.get_object(Bucket="swn-backlot-files-517220555400", Key=s3_key)
+                    pdf_content = response['Body'].read()
+                    pdf_filename = clearance.data.get("file_name") or f"{clearance.data['title']}.pdf"
+            except Exception as e:
+                print(f"Error downloading PDF for attachment: {e}")
+                # Fall back to link-only
+                pdf_content = None
+
+        # Send emails
+        email_service = EmailService()
+        emails_sent = 0
+        emails_failed = 0
+        email_addresses = []
+        error_details = []
+
+        for recipient in emails_to_send:
+            try:
+                # Build view URL with access token
+                view_url = f"{settings.FRONTEND_URL}/clearance/view/{recipient['access_token']}"
+
+                # Generate email content
+                html_content = generate_clearance_email_html(
+                    project_title=project_title,
+                    clearance_title=clearance.data.get("title", "Document"),
+                    clearance_type=clearance.data.get("type", "other_contract"),
+                    sender_name=user_name,
+                    view_url=view_url,
+                    sender_message=request.message,
+                    requires_signature=recipient["requires_signature"],
+                    expiration_date=clearance.data.get("expiration_date"),
+                    has_attachment=pdf_content is not None
+                )
+
+                text_content = generate_clearance_email_text(
+                    project_title=project_title,
+                    clearance_title=clearance.data.get("title", "Document"),
+                    clearance_type=clearance.data.get("type", "other_contract"),
+                    sender_name=user_name,
+                    view_url=view_url,
+                    sender_message=request.message,
+                    requires_signature=recipient["requires_signature"],
+                    expiration_date=clearance.data.get("expiration_date"),
+                    has_attachment=pdf_content is not None
+                )
+
+                # Build subject
+                type_labels = {
+                    'talent_release': 'Talent Release',
+                    'appearance_release': 'Appearance Release',
+                    'location_release': 'Location Release',
+                    'music_license': 'Music License',
+                    'stock_license': 'Stock License',
+                    'nda': 'NDA',
+                    'other_contract': 'Document',
+                }
+                type_label = type_labels.get(clearance.data.get("type", "other_contract"), "Document")
+                action_word = "Review & Sign" if recipient["requires_signature"] else "Review"
+                subject = request.subject_override or f"{action_word}: {clearance.data.get('title', type_label)} - {project_title}"
+
+                # Prepare attachments
+                attachments = None
+                if pdf_content and pdf_filename:
+                    import base64
+                    attachments = [{
+                        "filename": pdf_filename,
+                        "content": base64.b64encode(pdf_content).decode('utf-8'),
+                        "content_type": "application/pdf"
+                    }]
+
+                # Send email
+                success = await email_service.send_email(
+                    to_email=recipient["email"],
+                    subject=subject,
+                    html_content=html_content,
+                    text_content=text_content,
+                    attachments=attachments
+                )
+
+                if success:
+                    emails_sent += 1
+                    email_addresses.append(recipient["email"])
+
+                    # Update recipient send tracking
+                    client.table("backlot_clearance_recipients").update({
+                        "last_email_sent_at": datetime.now(timezone.utc).isoformat(),
+                        "email_send_count": (client.table("backlot_clearance_recipients")
+                            .select("email_send_count")
+                            .eq("id", recipient["recipient_id"])
+                            .single().execute().data or {}).get("email_send_count", 0) + 1,
+                        "last_email_type": request.send_type
+                    }).eq("id", recipient["recipient_id"]).execute()
+                else:
+                    emails_failed += 1
+                    error_details.append({"email": recipient["email"], "error": "Send failed"})
+
+            except Exception as e:
+                emails_failed += 1
+                error_details.append({"email": recipient["email"], "error": str(e)})
+                print(f"Error sending to {recipient['email']}: {e}")
+
+        # Log to send history
+        client.table("backlot_clearance_send_history").insert({
+            "clearance_id": clearance_id,
+            "sent_by_user_id": user_id,
+            "sent_by_name": user_name,
+            "send_type": request.send_type,
+            "recipient_ids": request.recipient_ids,
+            "email_addresses": email_addresses,
+            "subject": subject if 'subject' in dir() else None,
+            "message": request.message,
+            "emails_sent": emails_sent,
+            "emails_failed": emails_failed,
+            "error_details": error_details if error_details else None
+        }).execute()
+
+        return {
+            "success": True,
+            "emails_sent": emails_sent,
+            "emails_failed": emails_failed,
+            "message": f"Sent to {emails_sent} recipient(s)" + (f", {emails_failed} failed" if emails_failed else "")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending clearance email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# CLEARANCE PUBLIC VIEW/SIGN ENDPOINTS (No Auth Required)
+# =============================================================================
+
+@router.get("/clearances/view/{access_token}")
+async def view_clearance_by_token(access_token: str):
+    """
+    Public endpoint: View a clearance document using access token.
+    No authentication required - the token IS the authentication.
+    """
+    client = get_client()
+
+    try:
+        # Find the recipient by access token
+        recipient = client.table("backlot_clearance_recipients").select("*").eq("access_token", access_token).single().execute()
+
+        if not recipient.data:
+            raise HTTPException(status_code=404, detail="Invalid or expired link")
+
+        # Check if token is expired
+        expires_at = recipient.data.get("access_token_expires_at")
+        if expires_at:
+            from dateutil import parser
+            expiry_dt = parser.parse(expires_at)
+            if datetime.now(timezone.utc) > expiry_dt:
+                raise HTTPException(status_code=410, detail="This link has expired")
+
+        clearance_id = recipient.data["clearance_id"]
+
+        # Get the clearance
+        clearance = client.table("backlot_clearance_items").select("*").eq("id", clearance_id).single().execute()
+
+        if not clearance.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Get project title
+        project = client.table("backlot_projects").select("title").eq("id", clearance.data["project_id"]).single().execute()
+        project_title = project.data.get("title", "Untitled") if project.data else "Untitled"
+
+        # Generate pre-signed URL for the document
+        file_url = clearance.data.get("file_url")
+        signed_file_url = None
+        if file_url:
+            if file_url.startswith("https://swn-backlot-files-517220555400.s3"):
+                s3_key = file_url.split(".amazonaws.com/", 1)[-1] if ".amazonaws.com/" in file_url else None
+                if s3_key:
+                    signed_file_url = get_signed_url('backlot-files', s3_key, expires_in=86400)
+            elif file_url.startswith("s3://"):
+                s3_uri = file_url[5:]
+                parts = s3_uri.split("/", 1)
+                if len(parts) == 2:
+                    _, s3_key = parts
+                    signed_file_url = get_signed_url('backlot-files', s3_key, expires_in=86400)
+
+        # Mark as viewed if first view
+        if not recipient.data.get("viewed_at"):
+            client.table("backlot_clearance_recipients").update({
+                "viewed_at": datetime.now(timezone.utc).isoformat(),
+                "signature_status": "viewed" if recipient.data.get("requires_signature") and recipient.data.get("signature_status") == "pending" else recipient.data.get("signature_status")
+            }).eq("id", recipient.data["id"]).execute()
+
+        return {
+            "success": True,
+            "clearance": {
+                "id": clearance.data["id"],
+                "title": clearance.data.get("title"),
+                "type": clearance.data.get("type"),
+                "description": clearance.data.get("description"),
+                "file_url": signed_file_url,
+                "file_name": clearance.data.get("file_name"),
+                "expiration_date": clearance.data.get("expiration_date"),
+            },
+            "project_title": project_title,
+            "recipient": {
+                "id": recipient.data["id"],
+                "requires_signature": recipient.data.get("requires_signature", False),
+                "signature_status": recipient.data.get("signature_status"),
+                "signed_at": recipient.data.get("signed_at"),
+                "viewed_at": recipient.data.get("viewed_at") or datetime.now(timezone.utc).isoformat(),
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error viewing clearance by token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ClearanceSignatureInput(BaseModel):
+    """Input for signing a clearance"""
+    signature_data: str  # Base64 encoded signature image
+
+
+@router.post("/clearances/sign/{access_token}")
+async def sign_clearance_by_token(
+    access_token: str,
+    input: ClearanceSignatureInput,
+    request: Request
+):
+    """
+    Public endpoint: Sign a clearance document.
+    No authentication required - the token IS the authentication.
+    """
+    client = get_client()
+
+    try:
+        # Find the recipient by access token
+        recipient = client.table("backlot_clearance_recipients").select("*").eq("access_token", access_token).single().execute()
+
+        if not recipient.data:
+            raise HTTPException(status_code=404, detail="Invalid or expired link")
+
+        # Check if token is expired
+        expires_at = recipient.data.get("access_token_expires_at")
+        if expires_at:
+            from dateutil import parser
+            expiry_dt = parser.parse(expires_at)
+            if datetime.now(timezone.utc) > expiry_dt:
+                raise HTTPException(status_code=410, detail="This link has expired")
+
+        # Check if signature is required
+        if not recipient.data.get("requires_signature"):
+            raise HTTPException(status_code=400, detail="Signature not required for this document")
+
+        # Check if already signed
+        if recipient.data.get("signature_status") == "signed":
+            raise HTTPException(status_code=400, detail="Document has already been signed")
+
+        # Validate signature data (should be base64)
+        import base64
+        try:
+            # Try to decode to verify it's valid base64
+            base64.b64decode(input.signature_data)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid signature data format")
+
+        # Get client IP
+        client_ip = request.client.host if request.client else None
+
+        # Update recipient with signature
+        now = datetime.now(timezone.utc).isoformat()
+        client.table("backlot_clearance_recipients").update({
+            "signature_status": "signed",
+            "signed_at": now,
+            "signature_data": input.signature_data,
+            "signature_ip": client_ip,
+            "viewed_at": recipient.data.get("viewed_at") or now
+        }).eq("id", recipient.data["id"]).execute()
+
+        # Check if all required signatures are collected
+        clearance_id = recipient.data["clearance_id"]
+        all_recipients = client.table("backlot_clearance_recipients").select("requires_signature, signature_status").eq("clearance_id", clearance_id).execute()
+
+        required_recipients = [r for r in (all_recipients.data or []) if r.get("requires_signature")]
+        all_signed = all(r.get("signature_status") == "signed" for r in required_recipients) if required_recipients else False
+
+        # If all required signatures collected, update clearance status to signed
+        if all_signed and required_recipients:
+            client.table("backlot_clearance_items").update({
+                "status": "signed",
+                "signed_date": datetime.now(timezone.utc).date().isoformat()
+            }).eq("id", clearance_id).execute()
+
+            # Record in history
+            client.table("backlot_clearance_history").insert({
+                "clearance_id": clearance_id,
+                "action": "status_changed",
+                "old_status": "requested",
+                "new_status": "signed",
+                "notes": "All required signatures collected",
+                "metadata": {"auto_signed": True, "recipients_count": len(required_recipients)}
+            }).execute()
+
+        return {
+            "success": True,
+            "message": "Document signed successfully",
+            "all_signatures_complete": all_signed
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error signing clearance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -21653,7 +23368,7 @@ async def list_review_folders(
 
         # Get all folders
         folders_response = client.table("backlot_review_folders").select(
-            "*, profiles!created_by_user_id(id, display_name, avatar_url)"
+            "*, created_by:profiles!created_by_user_id(id, display_name, avatar_url)"
         ).eq("project_id", project_id).order("sort_order").execute()
 
         folders = folders_response.data or []
@@ -27258,14 +28973,15 @@ async def create_project_update(
     try:
         await verify_project_access(client, project_id, user["id"])
 
+        import json
         update_data = {
             "project_id": project_id,
             "title": input.title,
             "content": input.content,
             "type": input.type,
             "is_public": input.is_public,
-            "attachments": input.attachments or [],
-            "visible_to_roles": input.visible_to_roles or [],
+            "attachments": json.dumps(input.attachments or []),
+            "visible_to_roles": json.dumps(input.visible_to_roles or []),
             "created_by": user["id"]
         }
 
@@ -27354,12 +29070,13 @@ async def update_project_update(
         project_id = update_result.data[0]["project_id"]
         await verify_project_access(client, str(project_id), user["id"])
 
+        import json
         update_data = {
             "title": input.title,
             "content": input.content,
             "type": input.type,
             "is_public": input.is_public,
-            "attachments": input.attachments or []
+            "attachments": json.dumps(input.attachments or [])
         }
 
         result = client.table("backlot_project_updates").update(update_data).eq("id", update_id).execute()
@@ -36692,4 +38409,1066 @@ async def complete_asset_upload_for_desktop(
         raise
     except Exception as e:
         print(f"Error completing asset upload for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Document Packages & Crew Onboarding
+# =====================================================
+
+class DocumentPackageItemInput(BaseModel):
+    """Input for a document package item"""
+    clearance_type: str
+    template_id: Optional[str] = None
+    is_required: bool = True
+    sort_order: int = 0
+    custom_title: Optional[str] = None
+    custom_description: Optional[str] = None
+
+
+class DocumentPackageInput(BaseModel):
+    """Input for creating/updating a document package"""
+    name: str
+    description: Optional[str] = None
+    target_type: str = "all"  # cast, crew, all
+    items: Optional[List[DocumentPackageItemInput]] = None
+
+
+class SendPackageInput(BaseModel):
+    """Input for sending a package to recipients"""
+    package_id: str
+    recipient_user_ids: List[str]
+    due_date: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/projects/{project_id}/document-packages")
+async def get_document_packages(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all document packages for a project"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get packages for this project (including org-wide packages with null project_id)
+        result = client.table("backlot_document_packages").select(
+            "*, backlot_document_package_items(*)"
+        ).or_(
+            f"project_id.eq.{project_id},project_id.is.null"
+        ).eq("is_active", True).order("created_at", desc=True).execute()
+
+        return {"packages": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting document packages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/document-packages")
+async def create_document_package(
+    project_id: str,
+    input: DocumentPackageInput,
+    authorization: str = Header(None)
+):
+    """Create a new document package"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Create the package
+        package_data = {
+            "project_id": project_id,
+            "owner_user_id": user["id"],
+            "name": input.name,
+            "description": input.description,
+            "target_type": input.target_type,
+            "is_active": True,
+        }
+
+        result = client.table("backlot_document_packages").insert(
+            package_data
+        ).execute()
+
+        package = result.data[0]
+
+        # Create package items if provided
+        if input.items:
+            items_data = []
+            for idx, item in enumerate(input.items):
+                items_data.append({
+                    "package_id": package["id"],
+                    "clearance_type": item.clearance_type,
+                    "template_id": item.template_id,
+                    "is_required": item.is_required,
+                    "sort_order": item.sort_order if item.sort_order else idx,
+                    "custom_title": item.custom_title,
+                    "custom_description": item.custom_description,
+                })
+
+            client.table("backlot_document_package_items").insert(
+                items_data
+            ).execute()
+
+            # Fetch updated package with items
+            result = client.table("backlot_document_packages").select(
+                "*, backlot_document_package_items(*)"
+            ).eq("id", package["id"]).single().execute()
+            package = result.data
+
+        return {"package": package}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating document package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/document-packages/{package_id}")
+async def get_document_package(
+    package_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single document package with items"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        result = client.table("backlot_document_packages").select(
+            "*, backlot_document_package_items(*)"
+        ).eq("id", package_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Package not found")
+
+        return {"package": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting document package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/document-packages/{package_id}")
+async def update_document_package(
+    package_id: str,
+    input: DocumentPackageInput,
+    authorization: str = Header(None)
+):
+    """Update a document package"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Update package
+        update_data = {
+            "name": input.name,
+            "description": input.description,
+            "target_type": input.target_type,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        client.table("backlot_document_packages").update(
+            update_data
+        ).eq("id", package_id).execute()
+
+        # Replace items if provided
+        if input.items is not None:
+            # Delete existing items
+            client.table("backlot_document_package_items").delete().eq(
+                "package_id", package_id
+            ).execute()
+
+            # Insert new items
+            if input.items:
+                items_data = []
+                for idx, item in enumerate(input.items):
+                    items_data.append({
+                        "package_id": package_id,
+                        "clearance_type": item.clearance_type,
+                        "template_id": item.template_id,
+                        "is_required": item.is_required,
+                        "sort_order": item.sort_order if item.sort_order else idx,
+                        "custom_title": item.custom_title,
+                        "custom_description": item.custom_description,
+                    })
+
+                client.table("backlot_document_package_items").insert(
+                    items_data
+                ).execute()
+
+        # Fetch updated package
+        result = client.table("backlot_document_packages").select(
+            "*, backlot_document_package_items(*)"
+        ).eq("id", package_id).single().execute()
+
+        return {"package": result.data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating document package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/document-packages/{package_id}")
+async def delete_document_package(
+    package_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a document package (soft delete)"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Soft delete by setting is_active to false
+        client.table("backlot_document_packages").update({
+            "is_active": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", package_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting document package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/send-package")
+async def send_document_package(
+    project_id: str,
+    input: SendPackageInput,
+    authorization: str = Header(None)
+):
+    """Send a document package to one or more recipients"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get the package with items
+        package_result = client.table("backlot_document_packages").select(
+            "*, backlot_document_package_items(*)"
+        ).eq("id", input.package_id).single().execute()
+
+        if not package_result.data:
+            raise HTTPException(status_code=404, detail="Package not found")
+
+        package = package_result.data
+        items = package.get("backlot_document_package_items", [])
+
+        if not items:
+            raise HTTPException(status_code=400, detail="Package has no documents")
+
+        assignments_created = 0
+        clearances_created = 0
+
+        # Create an assignment for each recipient
+        for recipient_id in input.recipient_user_ids:
+            # Create package assignment
+            assignment_data = {
+                "package_id": input.package_id,
+                "project_id": project_id,
+                "assigned_to_user_id": recipient_id,
+                "assigned_by_user_id": user["id"],
+                "due_date": input.due_date,
+                "notes": input.notes,
+                "status": "pending",
+            }
+
+            assignment_result = client.table("backlot_document_package_assignments").insert(
+                assignment_data
+            ).execute()
+
+            assignment = assignment_result.data[0]
+            assignments_created += 1
+
+            # Get recipient info for clearance creation
+            recipient = client.table("profiles").select(
+                "id, full_name, email"
+            ).eq("id", recipient_id).single().execute()
+
+            recipient_name = recipient.data.get("full_name", "Unknown") if recipient.data else "Unknown"
+            recipient_email = recipient.data.get("email") if recipient.data else None
+
+            # Create a clearance for each item in the package
+            for item in items:
+                # Create the clearance item
+                clearance_data = {
+                    "project_id": project_id,
+                    "type": item["clearance_type"],
+                    "title": item.get("custom_title") or f"{item['clearance_type'].replace('_', ' ').title()} - {recipient_name}",
+                    "status": "requested",
+                    "priority": "medium",
+                    "related_person_id": recipient_id,
+                    "related_person_name": recipient_name,
+                    "created_by": user["id"],
+                    "template_id": item.get("template_id"),
+                    "batch_sign_allowed": True,
+                }
+
+                clearance_result = client.table("backlot_clearance_items").insert(
+                    clearance_data
+                ).execute()
+
+                clearance = clearance_result.data[0]
+                clearances_created += 1
+
+                # Create the assignment item linking to the clearance
+                assignment_item_data = {
+                    "assignment_id": assignment["id"],
+                    "package_item_id": item["id"],
+                    "clearance_id": clearance["id"],
+                    "status": "not_started",
+                    "is_required": item.get("is_required", True),
+                }
+
+                client.table("backlot_document_package_assignment_items").insert(
+                    assignment_item_data
+                ).execute()
+
+                # Update clearance with the assignment item ID
+                client.table("backlot_clearance_items").update({
+                    "package_assignment_item_id": assignment_item_data.get("id")
+                }).eq("id", clearance["id"]).execute()
+
+                # Create a recipient record for the clearance
+                if recipient_email:
+                    access_token = secrets.token_urlsafe(32)
+                    recipient_data = {
+                        "clearance_id": clearance["id"],
+                        "user_id": recipient_id,
+                        "email": recipient_email,
+                        "name": recipient_name,
+                        "status": "pending",
+                        "access_token": access_token,
+                    }
+
+                    client.table("backlot_clearance_recipients").insert(
+                        recipient_data
+                    ).execute()
+
+        # Increment package use count
+        client.table("backlot_document_packages").update({
+            "use_count": package.get("use_count", 0) + len(input.recipient_user_ids),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", input.package_id).execute()
+
+        return {
+            "success": True,
+            "assignments_created": assignments_created,
+            "clearances_created": clearances_created,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending document package: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/package-assignments")
+async def get_package_assignments(
+    project_id: str,
+    user_id: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get package assignments for a project, optionally filtered by user"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        query = client.table("backlot_document_package_assignments").select(
+            "*, backlot_document_packages(name, description), backlot_document_package_assignment_items(*, backlot_clearance_items(id, title, status, type))"
+        ).eq("project_id", project_id)
+
+        if user_id:
+            query = query.eq("assigned_to_user_id", user_id)
+
+        result = query.order("created_at", desc=True).execute()
+
+        return {"assignments": result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting package assignments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/projects/{project_id}/package-assignments/{assignment_id}")
+async def update_package_assignment(
+    project_id: str,
+    assignment_id: str,
+    input: dict,
+    authorization: str = Header(None)
+):
+    """Update a package assignment (e.g., cancel it)"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+
+        if "status" in input:
+            update_data["status"] = input["status"]
+            if input["status"] == "cancelled":
+                update_data["completed_at"] = None
+            elif input["status"] == "completed":
+                update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        client.table("backlot_document_package_assignments").update(
+            update_data
+        ).eq("id", assignment_id).eq("project_id", project_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating package assignment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Signing Portal & Pending Documents
+# =====================================================
+
+@router.get("/users/me/pending-documents")
+async def get_my_pending_documents(
+    authorization: str = Header(None)
+):
+    """Get all pending documents for the current user across all projects"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get clearance recipients where this user is the recipient and status is pending
+        result = client.table("backlot_clearance_recipients").select(
+            "*, backlot_clearance_items(id, title, type, status, file_url, project_id, batch_sign_allowed, backlot_projects(id, title))"
+        ).eq("user_id", user["id"]).in_(
+            "status", ["pending", "viewed"]
+        ).execute()
+
+        documents = []
+        for recipient in result.data or []:
+            clearance = recipient.get("backlot_clearance_items")
+            if not clearance:
+                continue
+
+            project = clearance.get("backlot_projects", {})
+
+            documents.append({
+                "clearance_id": clearance["id"],
+                "clearance_title": clearance.get("title", "Untitled"),
+                "clearance_type": clearance.get("type", "other"),
+                "project_id": clearance.get("project_id"),
+                "project_title": project.get("title", "Unknown Project") if project else "Unknown Project",
+                "recipient_id": recipient["id"],
+                "requires_signature": True,
+                "batch_sign_allowed": clearance.get("batch_sign_allowed", True),
+                "file_url": clearance.get("file_url"),
+                "access_token": recipient.get("access_token"),
+                "due_date": recipient.get("due_date"),
+            })
+
+        return {"documents": documents}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting pending documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/users/me/clearances/history")
+async def get_my_clearance_history(
+    authorization: str = Header(None)
+):
+    """Get signed document history for the current user"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get clearance recipients where this user signed
+        result = client.table("backlot_clearance_recipients").select(
+            "*, backlot_clearance_items(id, title, type, status, file_url, project_id, signed_at, backlot_projects(id, title))"
+        ).eq("user_id", user["id"]).eq("status", "signed").order(
+            "signed_at", desc=True
+        ).execute()
+
+        documents = []
+        for recipient in result.data or []:
+            clearance = recipient.get("backlot_clearance_items")
+            if not clearance:
+                continue
+
+            project = clearance.get("backlot_projects", {})
+
+            documents.append({
+                "clearance_id": clearance["id"],
+                "clearance_title": clearance.get("title", "Untitled"),
+                "clearance_type": clearance.get("type", "other"),
+                "project_id": clearance.get("project_id"),
+                "project_title": project.get("title", "Unknown Project") if project else "Unknown Project",
+                "signed_at": recipient.get("signed_at"),
+                "signed_by_name": recipient.get("signed_by_name"),
+                "file_url": clearance.get("file_url"),
+            })
+
+        return {"documents": documents}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clearance history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BatchSignInput(BaseModel):
+    """Input for batch signing multiple documents"""
+    clearance_ids: List[str]
+    recipient_ids: List[str]
+    signature_data: str
+    signed_by_name: str
+
+
+@router.post("/clearances/batch-sign")
+async def batch_sign_clearances(
+    input: BatchSignInput,
+    request: Request,
+    authorization: str = Header(None)
+):
+    """Sign multiple documents at once with a single signature"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        if len(input.clearance_ids) != len(input.recipient_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="clearance_ids and recipient_ids must have the same length"
+            )
+
+        # Get client IP for audit
+        client_ip = request.client.host if request.client else None
+
+        documents_signed = 0
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Create batch sign session for audit trail
+        session_data = {
+            "user_id": user["id"],
+            "signature_data": input.signature_data,
+            "signature_ip": client_ip,
+            "recipient_ids": input.recipient_ids,
+            "clearance_ids": input.clearance_ids,
+            "documents_signed": 0,
+        }
+
+        session_result = client.table("backlot_batch_sign_sessions").insert(
+            session_data
+        ).execute()
+
+        session_id = session_result.data[0]["id"]
+
+        # Sign each document
+        for clearance_id, recipient_id in zip(input.clearance_ids, input.recipient_ids):
+            # Verify the recipient belongs to this user
+            recipient_check = client.table("backlot_clearance_recipients").select(
+                "id, user_id, clearance_id"
+            ).eq("id", recipient_id).single().execute()
+
+            if not recipient_check.data:
+                continue
+
+            if recipient_check.data.get("user_id") != user["id"]:
+                continue
+
+            # Update the recipient record
+            client.table("backlot_clearance_recipients").update({
+                "status": "signed",
+                "signed_at": now,
+                "signed_by_name": input.signed_by_name,
+                "signature_data": input.signature_data,
+                "signature_ip": client_ip,
+            }).eq("id", recipient_id).execute()
+
+            # Update the clearance item status
+            client.table("backlot_clearance_items").update({
+                "status": "signed",
+                "signed_at": now,
+                "updated_at": now,
+            }).eq("id", clearance_id).execute()
+
+            documents_signed += 1
+
+        # Update session with count
+        client.table("backlot_batch_sign_sessions").update({
+            "documents_signed": documents_signed,
+        }).eq("id", session_id).execute()
+
+        return {
+            "success": True,
+            "documents_signed": documents_signed,
+            "session_id": session_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error batch signing clearances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Clearance Approval Workflow
+# =====================================================
+
+class ConfigureApprovalInput(BaseModel):
+    """Input for configuring approval requirements"""
+    requires_approval: bool = True
+    approver_user_id: Optional[str] = None
+    approver_role: Optional[str] = None
+
+
+class ApprovalActionInput(BaseModel):
+    """Input for approval actions"""
+    notes: Optional[str] = None
+
+
+@router.get("/clearances/{clearance_id}/approval")
+async def get_clearance_approval(
+    clearance_id: str,
+    authorization: str = Header(None)
+):
+    """Get approval status for a clearance"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        result = client.table("backlot_clearance_approvals").select(
+            "*, profiles!approver_user_id(id, full_name), approved_by_profile:profiles!approved_by_user_id(id, full_name)"
+        ).eq("clearance_id", clearance_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="No approval configured")
+
+        approval = result.data
+        # Add approver name from profile
+        approver = approval.pop("profiles", None)
+        approved_by = approval.pop("approved_by_profile", None)
+
+        if approver:
+            approval["approver_name"] = approver.get("full_name")
+        if approved_by:
+            approval["approved_by_name"] = approved_by.get("full_name")
+
+        return {"approval": approval}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting clearance approval: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/approval/configure")
+async def configure_clearance_approval(
+    clearance_id: str,
+    input: ConfigureApprovalInput,
+    authorization: str = Header(None)
+):
+    """Configure approval requirements for a clearance"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Check if approval record exists
+        existing = client.table("backlot_clearance_approvals").select(
+            "id"
+        ).eq("clearance_id", clearance_id).execute()
+
+        approval_data = {
+            "clearance_id": clearance_id,
+            "requires_approval": input.requires_approval,
+            "approver_user_id": input.approver_user_id,
+            "approver_role": input.approver_role,
+            "approval_status": "pending_approval" if input.requires_approval else "not_required",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        if existing.data:
+            # Update existing
+            result = client.table("backlot_clearance_approvals").update(
+                approval_data
+            ).eq("clearance_id", clearance_id).execute()
+        else:
+            # Create new
+            result = client.table("backlot_clearance_approvals").insert(
+                approval_data
+            ).execute()
+
+        return {"approval": result.data[0] if result.data else approval_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error configuring clearance approval: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/approval/approve")
+async def approve_clearance(
+    clearance_id: str,
+    input: ApprovalActionInput,
+    authorization: str = Header(None)
+):
+    """Approve a signed clearance"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Update approval record
+        client.table("backlot_clearance_approvals").update({
+            "approval_status": "approved",
+            "approved_at": now,
+            "approved_by_user_id": user["id"],
+            "locked_at": now,
+            "updated_at": now,
+        }).eq("clearance_id", clearance_id).execute()
+
+        # Update clearance item
+        client.table("backlot_clearance_items").update({
+            "status": "approved",
+            "approved_at": now,
+            "approved_by": user["id"],
+            "updated_at": now,
+        }).eq("id", clearance_id).execute()
+
+        return {"success": True, "status": "approved"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error approving clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/approval/request-changes")
+async def request_clearance_changes(
+    clearance_id: str,
+    input: ApprovalActionInput,
+    authorization: str = Header(None)
+):
+    """Request changes on a signed clearance"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Update approval record
+        client.table("backlot_clearance_approvals").update({
+            "approval_status": "changes_requested",
+            "change_request_notes": input.notes,
+            "change_requested_at": now,
+            "change_requested_by_user_id": user["id"],
+            "updated_at": now,
+        }).eq("clearance_id", clearance_id).execute()
+
+        # Reset clearance status to allow re-signing
+        client.table("backlot_clearance_items").update({
+            "status": "requested",
+            "signed_at": None,
+            "updated_at": now,
+        }).eq("id", clearance_id).execute()
+
+        # Reset recipient status
+        client.table("backlot_clearance_recipients").update({
+            "status": "pending",
+            "signed_at": None,
+            "signature_data": None,
+        }).eq("clearance_id", clearance_id).execute()
+
+        return {"success": True, "status": "changes_requested"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error requesting changes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/clearances/{clearance_id}/approval/reject")
+async def reject_clearance(
+    clearance_id: str,
+    input: ApprovalActionInput,
+    authorization: str = Header(None)
+):
+    """Reject a signed clearance"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Update approval record
+        client.table("backlot_clearance_approvals").update({
+            "approval_status": "rejected",
+            "change_request_notes": input.notes,
+            "updated_at": now,
+        }).eq("clearance_id", clearance_id).execute()
+
+        # Update clearance item
+        client.table("backlot_clearance_items").update({
+            "status": "rejected",
+            "updated_at": now,
+        }).eq("id", clearance_id).execute()
+
+        return {"success": True, "status": "rejected"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting clearance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/approvals/pending")
+async def get_pending_approvals(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all pending approvals for a project"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get all clearances with pending approval
+        result = client.table("backlot_clearance_approvals").select(
+            "*, backlot_clearance_items!inner(id, title, type, project_id, signed_at, related_person_name)"
+        ).eq("approval_status", "pending_approval").execute()
+
+        approvals = []
+        for item in result.data or []:
+            clearance = item.get("backlot_clearance_items")
+            if not clearance or clearance.get("project_id") != project_id:
+                continue
+
+            approvals.append({
+                "clearance_id": clearance["id"],
+                "clearance_title": clearance.get("title", "Untitled"),
+                "clearance_type": clearance.get("type", "other"),
+                "signer_name": clearance.get("related_person_name", "Unknown"),
+                "signed_at": clearance.get("signed_at"),
+                "approval": {
+                    "id": item["id"],
+                    "requires_approval": item["requires_approval"],
+                    "approval_status": item["approval_status"],
+                    "approver_user_id": item.get("approver_user_id"),
+                },
+            })
+
+        return {"approvals": approvals}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting pending approvals: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/users/me/approvals/pending")
+async def get_my_pending_approvals(
+    authorization: str = Header(None)
+):
+    """Get all pending approvals assigned to the current user"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get approvals where this user is the approver
+        result = client.table("backlot_clearance_approvals").select(
+            "*, backlot_clearance_items!inner(id, title, type, project_id, signed_at, related_person_name, backlot_projects(id, title))"
+        ).eq("approver_user_id", user["id"]).eq(
+            "approval_status", "pending_approval"
+        ).execute()
+
+        approvals = []
+        for item in result.data or []:
+            clearance = item.get("backlot_clearance_items")
+            if not clearance:
+                continue
+
+            project = clearance.get("backlot_projects", {})
+
+            approvals.append({
+                "clearance_id": clearance["id"],
+                "clearance_title": clearance.get("title", "Untitled"),
+                "clearance_type": clearance.get("type", "other"),
+                "project_id": clearance.get("project_id"),
+                "project_title": project.get("title", "Unknown Project") if project else "Unknown Project",
+                "signer_name": clearance.get("related_person_name", "Unknown"),
+                "signed_at": clearance.get("signed_at"),
+                "approval": {
+                    "id": item["id"],
+                    "requires_approval": item["requires_approval"],
+                    "approval_status": item["approval_status"],
+                },
+            })
+
+        return {"approvals": approvals}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting my pending approvals: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# Crew Document Summary & Checklists
+# =====================================================
+
+@router.get("/projects/{project_id}/crew-document-summary")
+async def get_crew_document_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get document completion summary for all crew in a project"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Use the crew_document_summary view if available, otherwise compute
+        # First, get all booked people for this project
+        booked_result = client.table("backlot_project_roles").select(
+            "user_id, title, type, department, profiles!user_id(id, full_name)"
+        ).eq("project_id", project_id).eq("status", "booked").not_.is_(
+            "user_id", "null"
+        ).execute()
+
+        if not booked_result.data:
+            return {"crew": []}
+
+        # Get clearance stats for each person
+        crew_summaries = []
+
+        for role in booked_result.data:
+            user_id = role.get("user_id")
+            profile = role.get("profiles", {})
+
+            if not user_id:
+                continue
+
+            # Get clearances for this person in this project
+            clearances_result = client.table("backlot_clearance_items").select(
+                "id, status, type"
+            ).eq("project_id", project_id).eq("related_person_id", user_id).execute()
+
+            clearances = clearances_result.data or []
+
+            total = len(clearances)
+            signed = len([c for c in clearances if c["status"] in ("signed", "approved")])
+            pending = len([c for c in clearances if c["status"] in ("requested", "pending")])
+            missing = total - signed - pending
+
+            completion_percentage = (signed / total * 100) if total > 0 else 0
+
+            crew_summaries.append({
+                "person_id": user_id,
+                "person_name": profile.get("full_name", "Unknown") if profile else "Unknown",
+                "role_title": role.get("title"),
+                "role_type": role.get("type"),
+                "department": role.get("department"),
+                "documents": {
+                    "required": total,
+                    "signed": signed,
+                    "pending": pending,
+                    "missing": missing,
+                },
+                "completion_percentage": round(completion_percentage),
+            })
+
+        return {"crew": crew_summaries}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting crew document summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/person-checklist/{person_id}")
+async def get_person_document_checklist(
+    project_id: str,
+    person_id: str,
+    authorization: str = Header(None)
+):
+    """Get detailed document checklist for a specific person"""
+    try:
+        user = await get_user_from_token(authorization)
+        client = get_client()
+
+        # Get person info
+        person_result = client.table("profiles").select(
+            "id, full_name, email"
+        ).eq("id", person_id).single().execute()
+
+        person_name = person_result.data.get("full_name", "Unknown") if person_result.data else "Unknown"
+
+        # Get all clearances for this person
+        clearances_result = client.table("backlot_clearance_items").select(
+            "id, title, type, status, due_date, signed_at, file_url"
+        ).eq("project_id", project_id).eq("related_person_id", person_id).order(
+            "created_at"
+        ).execute()
+
+        documents = []
+        for clearance in clearances_result.data or []:
+            documents.append({
+                "clearance_id": clearance["id"],
+                "title": clearance.get("title", "Untitled"),
+                "type": clearance.get("type", "other"),
+                "status": clearance.get("status", "not_started"),
+                "due_date": clearance.get("due_date"),
+                "signed_at": clearance.get("signed_at"),
+                "has_file": bool(clearance.get("file_url")),
+            })
+
+        # Calculate summary
+        total = len(documents)
+        signed = len([d for d in documents if d["status"] in ("signed", "approved")])
+        pending = len([d for d in documents if d["status"] in ("requested", "pending")])
+        missing = total - signed - pending
+        completion_percentage = (signed / total * 100) if total > 0 else 0
+
+        return {
+            "checklist": {
+                "person_id": person_id,
+                "person_name": person_name,
+                "documents": documents,
+                "summary": {
+                    "total": total,
+                    "signed": signed,
+                    "pending": pending,
+                    "missing": missing,
+                    "completion_percentage": round(completion_percentage),
+                },
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting person document checklist: {e}")
         raise HTTPException(status_code=500, detail=str(e))

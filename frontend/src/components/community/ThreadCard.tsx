@@ -1,14 +1,23 @@
 /**
  * ThreadCard - Individual thread preview in the topics list
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { CommunityThread } from '@/types/community';
-import { MessageSquare, Pin, Shield, Eye } from 'lucide-react';
+import { MessageSquare, Pin, Shield, Eye, Flag, MoreVertical } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import ReportDialog from './ReportDialog';
+import { useAuth } from '@/context/AuthContext';
 
 interface ThreadCardProps {
   thread: CommunityThread;
@@ -16,11 +25,14 @@ interface ThreadCardProps {
 }
 
 const ThreadCard: React.FC<ThreadCardProps> = ({ thread, onClick }) => {
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const { isAuthenticated } = useAuth();
   const authorName = thread.author?.display_name || thread.author?.full_name || thread.author?.username || 'Member';
   const authorInitials = authorName.slice(0, 1).toUpperCase();
   const authorUsername = thread.author?.username || 'member';
 
   return (
+    <>
     <div
       onClick={() => onClick?.(thread)}
       className={cn(
@@ -99,12 +111,43 @@ const ThreadCard: React.FC<ThreadCardProps> = ({ thread, onClick }) => {
           </div>
         </div>
 
-        {/* Quick View Icon */}
-        <div className="flex-shrink-0 self-center">
+        {/* Actions */}
+        <div className="flex-shrink-0 self-center flex items-center gap-1">
+          {isAuthenticated && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-gray/50 hover:text-white h-8 w-8 p-0"
+                >
+                  <MoreVertical className="w-4 h-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                <DropdownMenuItem
+                  onClick={() => setReportDialogOpen(true)}
+                  className="text-red-500 focus:text-red-500 focus:bg-red-500/10"
+                >
+                  <Flag className="h-4 w-4 mr-2" />
+                  Report Thread
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Eye className="w-4 h-4 text-muted-gray/50" />
         </div>
       </div>
     </div>
+
+    <ReportDialog
+      open={reportDialogOpen}
+      onOpenChange={setReportDialogOpen}
+      contentType="thread"
+      contentId={thread.id}
+      contentPreview={thread.title}
+    />
+    </>
   );
 };
 

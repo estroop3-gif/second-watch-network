@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Plus } from 'lucide-react';
+import { Plus, Ban, AlertTriangle } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ThreadList } from '@/components/backlot/ThreadList';
@@ -10,6 +10,9 @@ import { NewThreadModal } from '@/components/backlot/NewThreadModal';
 import { usePermissions } from '@/hooks/usePermissions';
 import { UpgradeGateButton } from '@/components/upgrade/UpgradeGate';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/context/AuthContext';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { format } from 'date-fns';
 import {
   Select,
   SelectContent,
@@ -27,13 +30,29 @@ const TheBacklot = () => {
   const [activeTab, setActiveTab] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const { /* roles, */ } = usePermissions();
+  const { isAuthenticated } = useAuth();
   const { data: categories, isLoading } = useQuery({
     queryKey: ['forum_categories'],
     queryFn: fetchCategories,
   });
+
+  // Check forum ban status for authenticated users
+  const { data: forumStatus } = useQuery({
+    queryKey: ['user-forum-status'],
+    queryFn: () => api.getUserForumStatus(),
+    enabled: isAuthenticated,
+  });
+
   const location = useLocation();
   const navigate = useNavigate();
   const headingRef = useState<HTMLHeadingElement | null>(null)[0] as unknown as React.MutableRefObject<HTMLHeadingElement | null>;
+
+  // Ban status helpers
+  const isBanned = forumStatus?.is_banned || false;
+  const banType = forumStatus?.restriction_type;
+  const isFullBlock = banType === 'full_block';
+  const isReadOnly = banType === 'read_only';
+  // shadow_restrict doesn't affect UI - backend handles filtering
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -80,6 +99,44 @@ const TheBacklot = () => {
     return match?.name || activeTab;
   })();
 
+  // Full block: Show restricted message instead of forum
+  if (isFullBlock) {
+    return (
+      <div className="container mx-auto px-4 md:px-8 py-8">
+        <div className="text-center mb-12">
+          <h1 id="backlot-heading" className="text-4xl md:text-6xl font-heading tracking-tighter mb-2 -rotate-1">
+            The <span className="font-spray text-accent-yellow">Backlot</span>
+          </h1>
+        </div>
+
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-red-900/20 border border-red-600/30 rounded-lg p-8 text-center">
+            <Ban className="w-16 h-16 text-red-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-heading text-bone-white mb-4">Forum Access Restricted</h2>
+            <p className="text-muted-gray mb-4">
+              Your access to The Backlot has been restricted.
+            </p>
+            {forumStatus?.reason && (
+              <p className="text-sm text-red-400 mb-4">
+                <strong>Reason:</strong> {forumStatus.reason}
+              </p>
+            )}
+            {forumStatus?.expires_at && (
+              <p className="text-sm text-muted-gray">
+                This restriction expires on {format(new Date(forumStatus.expires_at), 'PPP')}
+              </p>
+            )}
+            {!forumStatus?.expires_at && (
+              <p className="text-sm text-muted-gray">
+                If you believe this was in error, please contact support.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="container mx-auto px-4 md:px-8 py-8">
@@ -91,6 +148,23 @@ const TheBacklot = () => {
             Where independent voices come together.
           </p>
         </div>
+
+        {/* Read-only notice for restricted users */}
+        {isReadOnly && (
+          <Alert variant="destructive" className="mb-6 max-w-2xl mx-auto bg-yellow-900/20 border-yellow-600/30">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Posting Restricted</AlertTitle>
+            <AlertDescription>
+              You are currently in read-only mode and cannot create new threads or replies.
+              {forumStatus?.reason && <span className="block mt-1">Reason: {forumStatus.reason}</span>}
+              {forumStatus?.expires_at && (
+                <span className="block mt-1">
+                  Expires: {format(new Date(forumStatus.expires_at), 'PPP')}
+                </span>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
 
         {/* aria-live: announce section changes */}
         <div className="sr-only" aria-live="polite">{`Backlot — ${currentLabel}`}</div>
@@ -143,14 +217,17 @@ const TheBacklot = () => {
         </Tabs>
       </div>
 
-      <UpgradeGateButton requiredPerm="forum_post" onClickAllowed={() => setIsModalOpen(true)}>
-        <Button
-          className="fixed bottom-8 right-8 rounded-full h-16 w-16 bg-accent-yellow text-charcoal-black hover:bg-bone-white shadow-lg transform transition-transform hover:scale-110"
-        >
-          <Plus className="h-8 w-8" />
-          <span className="sr-only">Start a New Thread</span>
-        </Button>
-      </UpgradeGateButton>
+      {/* Hide post button for banned/read-only users */}
+      {!isBanned && !isReadOnly && (
+        <UpgradeGateButton requiredPerm="forum_post" onClickAllowed={() => setIsModalOpen(true)}>
+          <Button
+            className="fixed bottom-8 right-8 rounded-full h-16 w-16 bg-accent-yellow text-charcoal-black hover:bg-bone-white shadow-lg transform transition-transform hover:scale-110"
+          >
+            <Plus className="h-8 w-8" />
+            <span className="sr-only">Start a New Thread</span>
+          </Button>
+        </UpgradeGateButton>
+      )}
 
       <NewThreadModal isOpen={isModalOpen} onOpenChange={setIsModalOpen} />
     </>

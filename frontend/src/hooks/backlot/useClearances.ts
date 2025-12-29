@@ -11,6 +11,11 @@ import {
   ClearanceItemInput,
   ClearanceSummary,
   ClearanceBulkStatusResponse,
+  ClearanceHistoryEntry,
+  EORequirement,
+  EOSummary,
+  ExpiringClearance,
+  ClearanceDocumentVersion,
 } from '@/types/backlot';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -373,6 +378,40 @@ export function usePersonClearances(
   });
 }
 
+// Get detailed clearances for a person (with recipients)
+export function usePersonClearancesDetailed(
+  projectId: string | null,
+  personId: string | null
+) {
+  return useQuery({
+    queryKey: ['backlot-person-clearances-detailed', projectId, personId],
+    queryFn: async () => {
+      if (!projectId || !personId) return { clearances: [], summary: { total: 0, signed: 0, pending: 0, missing: 0 } };
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/person/${personId}/detailed`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch clearances' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return result as { clearances: BacklotClearanceItem[], summary: { total: number, signed: number, pending: number, missing: number } };
+    },
+    enabled: !!projectId && !!personId,
+  });
+}
+
 // Bulk check clearance status for call sheets
 export function useBulkClearanceStatus(
   projectId: string | null,
@@ -455,10 +494,551 @@ export function getClearanceStatusColor(status: BacklotClearanceStatus | 'missin
   const colors: Record<string, string> = {
     signed: 'green',
     requested: 'yellow',
+    pending: 'blue',
     not_started: 'gray',
     expired: 'orange',
     rejected: 'red',
     missing: 'slate',
   };
   return colors[status] || 'gray';
+}
+
+// =============================================================================
+// DOCUMENT UPLOAD HOOKS
+// =============================================================================
+
+interface UploadDocumentOptions {
+  clearanceId: string;
+  file: File;
+}
+
+export function useClearanceDocumentUpload() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ clearanceId, file }: UploadDocumentOptions) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      // Step 1: Get presigned upload URL
+      const urlResponse = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/upload-url`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            file_name: file.name,
+            content_type: file.type,
+            file_size: file.size,
+          }),
+        }
+      );
+
+      if (!urlResponse.ok) {
+        const error = await urlResponse.json().catch(() => ({ detail: 'Failed to get upload URL' }));
+        throw new Error(error.detail);
+      }
+
+      const { upload_url, file_url } = await urlResponse.json();
+
+      // Step 2: Upload file to S3
+      const uploadResponse = await fetch(upload_url, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': file.type,
+        },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload file to S3');
+      }
+
+      // Step 3: Update clearance with file info
+      const updateResponse = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/document`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            file_url,
+            file_name: file.name,
+          }),
+        }
+      );
+
+      if (!updateResponse.ok) {
+        const error = await updateResponse.json().catch(() => ({ detail: 'Failed to update clearance' }));
+        throw new Error(error.detail);
+      }
+
+      return { file_url, file_name: file.name };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-item'] });
+    },
+  });
+}
+
+export function useClearanceDocumentRemove() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (clearanceId: string) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/document`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove document' }));
+        throw new Error(error.detail);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-item'] });
+    },
+  });
+}
+
+// =============================================================================
+// WORKFLOW HOOKS (Assignment, Status with History)
+// =============================================================================
+
+interface AssignClearanceOptions {
+  clearanceId: string;
+  userId: string;
+  notes?: string;
+}
+
+export function useClearanceAssignment() {
+  const queryClient = useQueryClient();
+
+  const assign = useMutation({
+    mutationFn: async ({ clearanceId, userId, notes }: AssignClearanceOptions) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/assign`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ user_id: userId, notes }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to assign clearance' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-item'] });
+    },
+  });
+
+  const unassign = useMutation({
+    mutationFn: async (clearanceId: string) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/unassign`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to unassign clearance' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-item'] });
+    },
+  });
+
+  return { assign, unassign };
+}
+
+interface UpdateWorkflowStatusOptions {
+  clearanceId: string;
+  status: BacklotClearanceStatus;
+  rejectionReason?: string;
+  notes?: string;
+}
+
+export function useClearanceWorkflowStatus() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ clearanceId, status, rejectionReason, notes }: UpdateWorkflowStatusOptions) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/workflow-status`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            status,
+            rejection_reason: rejectionReason,
+            notes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update status' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-item'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-history'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-summary'] });
+    },
+  });
+}
+
+// =============================================================================
+// CLEARANCE HISTORY HOOK
+// =============================================================================
+
+export function useClearanceHistory(clearanceId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-clearance-history', clearanceId],
+    queryFn: async () => {
+      if (!clearanceId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/history`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch history' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.history || []) as ClearanceHistoryEntry[];
+    },
+    enabled: !!clearanceId,
+  });
+}
+
+// =============================================================================
+// E&O REQUIREMENTS HOOKS
+// =============================================================================
+
+export function useEORequirements(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-eo-requirements', projectId],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/eo-requirements`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch E&O requirements' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.requirements || []) as EORequirement[];
+    },
+    enabled: !!projectId,
+  });
+}
+
+export function useInitializeEORequirements() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (projectId: string) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/eo-requirements/initialize`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to initialize E&O requirements' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-eo-requirements', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-eo-summary', projectId] });
+    },
+  });
+}
+
+interface UpdateEORequirementOptions {
+  requirementId: string;
+  status?: string;
+  linkedClearanceId?: string | null;
+  waivedReason?: string;
+}
+
+export function useUpdateEORequirement() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ requirementId, status, linkedClearanceId, waivedReason }: UpdateEORequirementOptions) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/eo-requirements/${requirementId}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            status,
+            linked_clearance_id: linkedClearanceId,
+            waived_reason: waivedReason,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update E&O requirement' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-eo-requirements'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-eo-summary'] });
+    },
+  });
+}
+
+export function useEOSummary(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-eo-summary', projectId],
+    queryFn: async () => {
+      if (!projectId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/eo-summary`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch E&O summary' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.summary || null) as EOSummary | null;
+    },
+    enabled: !!projectId,
+  });
+}
+
+// =============================================================================
+// EXPIRING CLEARANCES HOOK
+// =============================================================================
+
+export function useExpiringClearances(projectId: string | null, days: number = 90) {
+  return useQuery({
+    queryKey: ['backlot-expiring-clearances', projectId, days],
+    queryFn: async () => {
+      if (!projectId) return [];
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/expiring?days=${days}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch expiring clearances' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      return (result.expiring_clearances || []) as ExpiringClearance[];
+    },
+    enabled: !!projectId,
+  });
+}
+
+// =============================================================================
+// BULK UPDATE HOOK
+// =============================================================================
+
+interface BulkUpdateOptions {
+  projectId: string;
+  clearanceIds: string[];
+  status: BacklotClearanceStatus;
+  notes?: string;
+}
+
+export function useBulkUpdateClearances() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ projectId, clearanceIds, status, notes }: BulkUpdateOptions) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/clearances/bulk-update`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            clearance_ids: clearanceIds,
+            status,
+            notes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to bulk update clearances' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearances'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-summary'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-eo-summary'] });
+    },
+  });
+}
+
+/**
+ * Hook to fetch document versions for a clearance
+ */
+export function useClearanceDocumentVersions(clearanceId: string | null) {
+  return useQuery<ClearanceDocumentVersion[]>({
+    queryKey: ['backlot-clearance-versions', clearanceId],
+    queryFn: async () => {
+      if (!clearanceId) return [];
+
+      const response = await api.fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/versions`
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch versions' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!clearanceId,
+  });
+}
+
+/**
+ * Hook to restore a document version
+ */
+export function useRestoreClearanceVersion() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      clearanceId,
+      versionId,
+    }: {
+      clearanceId: string;
+      versionId: string;
+    }) => {
+      const response = await api.fetch(
+        `${API_BASE}/api/v1/backlot/clearances/${clearanceId}/versions/${versionId}/restore`,
+        {
+          method: 'POST',
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to restore version' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-versions', variables.clearanceId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance', variables.clearanceId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-clearance-history', variables.clearanceId] });
+    },
+  });
 }

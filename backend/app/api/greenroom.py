@@ -583,23 +583,27 @@ async def create_cycle(
 
     client = get_client()
 
-    # Validate dates
-    if cycle.end_date <= cycle.start_date:
-        raise HTTPException(status_code=400, detail="End date must be after start date")
+    # Determine initial status
+    status = "draft"
 
-    # Determine status based on dates
-    now = datetime.utcnow()
-    if cycle.start_date > now:
-        status = "upcoming"
-    elif cycle.end_date < now:
-        status = "closed"
-    else:
-        status = "active"
+    cycle_data = {
+        "name": cycle.name,
+        "description": cycle.description,
+        "status": status,
+        "current_phase": "submission",
+        "max_submissions_per_user": cycle.max_submissions_per_user,
+        "tickets_per_user": cycle.tickets_per_user,
+    }
 
-    cycle_data = cycle.dict()
-    cycle_data["status"] = status
-    cycle_data["start_date"] = cycle.start_date.isoformat()
-    cycle_data["end_date"] = cycle.end_date.isoformat()
+    # Add optional date fields
+    if cycle.submission_start:
+        cycle_data["submission_start"] = cycle.submission_start.isoformat()
+    if cycle.submission_end:
+        cycle_data["submission_end"] = cycle.submission_end.isoformat()
+    if cycle.voting_start:
+        cycle_data["voting_start"] = cycle.voting_start.isoformat()
+    if cycle.voting_end:
+        cycle_data["voting_end"] = cycle.voting_end.isoformat()
 
     result = client.table("greenroom_cycles").insert(cycle_data).execute()
 
@@ -634,10 +638,15 @@ async def update_cycle(
     update_data = update.dict(exclude_unset=True)
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
-    if "start_date" in update_data:
-        update_data["start_date"] = update_data["start_date"].isoformat()
-    if "end_date" in update_data:
-        update_data["end_date"] = update_data["end_date"].isoformat()
+    # Convert datetime fields to ISO format
+    if "submission_start" in update_data and update_data["submission_start"]:
+        update_data["submission_start"] = update_data["submission_start"].isoformat()
+    if "submission_end" in update_data and update_data["submission_end"]:
+        update_data["submission_end"] = update_data["submission_end"].isoformat()
+    if "voting_start" in update_data and update_data["voting_start"]:
+        update_data["voting_start"] = update_data["voting_start"].isoformat()
+    if "voting_end" in update_data and update_data["voting_end"]:
+        update_data["voting_end"] = update_data["voting_end"].isoformat()
 
     result = client.table("greenroom_cycles").update(update_data).eq("id", cycle_id).execute()
 

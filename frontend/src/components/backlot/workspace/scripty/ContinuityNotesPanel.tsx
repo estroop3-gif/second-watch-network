@@ -36,6 +36,7 @@ import {
   Users,
   Mic,
   MoreHorizontal,
+  Search,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -83,6 +84,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
   const { toast } = useToast();
   const [showAddForm, setShowAddForm] = useState(false);
   const [filterCategory, setFilterCategory] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [editingNote, setEditingNote] = useState<ContinuityNote | null>(null);
   const [newNoteData, setNewNoteData] = useState({
     category: 'general',
@@ -133,10 +135,11 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
       setShowAddForm(false);
       setNewNoteData({ category: 'general', content: '', is_critical: false });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to add note';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to add note',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -156,10 +159,11 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
       toast({ title: 'Note updated' });
       setEditingNote(null);
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update note';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to update note',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -173,10 +177,11 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
       await deleteNote.mutateAsync({ id: noteId });
       toast({ title: 'Note deleted' });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete note';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to delete note',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -186,6 +191,18 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
   const getCategoryConfig = (category: string) => {
     return NOTE_CATEGORIES.find(c => c.value === category) || NOTE_CATEGORIES[0];
   };
+
+  // Filter notes by search query
+  const filteredNotes = notes.filter((note: ContinuityNote) => {
+    if (!searchQuery.trim()) return true;
+    const query = searchQuery.toLowerCase();
+    return (
+      note.content.toLowerCase().includes(query) ||
+      note.category.toLowerCase().includes(query) ||
+      note.created_by?.display_name?.toLowerCase().includes(query) ||
+      note.created_by?.full_name?.toLowerCase().includes(query)
+    );
+  });
 
   // No scene selected
   if (!sceneId) {
@@ -198,14 +215,14 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div data-testid="continuity-notes-panel" className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b border-muted-gray/20 shrink-0">
         <Select
           value={filterCategory}
           onValueChange={setFilterCategory}
         >
-          <SelectTrigger className="w-28 h-7 text-xs">
+          <SelectTrigger data-testid="notes-category-filter" className="w-28 h-7 text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -222,6 +239,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
         </Select>
         {canEdit && (
           <Button
+            data-testid="add-note-button"
             size="sm"
             variant={showAddForm ? 'secondary' : 'default'}
             className={cn(
@@ -245,14 +263,28 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
         )}
       </div>
 
+      {/* Search */}
+      <div className="px-3 py-2 border-b border-muted-gray/20 shrink-0">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-gray" />
+          <Input
+            data-testid="notes-search-input"
+            placeholder="Search notes..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-7 text-xs pl-7"
+          />
+        </div>
+      </div>
+
       {/* Add Note Form */}
       {showAddForm && canEdit && (
-        <div className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
+        <div data-testid="add-note-form" className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
           <Select
             value={newNoteData.category}
             onValueChange={(v) => setNewNoteData(d => ({ ...d, category: v }))}
           >
-            <SelectTrigger className="h-8 text-sm">
+            <SelectTrigger data-testid="note-category-select" className="h-8 text-sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -268,6 +300,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
           </Select>
 
           <Textarea
+            data-testid="note-content-input"
             placeholder="Note content..."
             value={newNoteData.content}
             onChange={(e) => setNewNoteData(d => ({ ...d, content: e.target.value }))}
@@ -277,6 +310,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
           <div className="flex items-center justify-between">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input
+                data-testid="note-critical-checkbox"
                 type="checkbox"
                 checked={newNoteData.is_critical}
                 onChange={(e) => setNewNoteData(d => ({ ...d, is_critical: e.target.checked }))}
@@ -286,6 +320,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
               <span className="text-muted-gray">Critical</span>
             </label>
             <Button
+              data-testid="submit-note-button"
               size="sm"
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
               onClick={handleCreateNote}
@@ -299,23 +334,24 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
 
       {/* Notes List */}
       <ScrollArea className="flex-1">
-        <div className="p-2 space-y-2">
+        <div data-testid="notes-list" className="p-2 space-y-2">
           {notesLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-16 bg-muted-gray/10" />
             ))
-          ) : notes.length === 0 ? (
+          ) : filteredNotes.length === 0 ? (
             <p className="text-sm text-muted-gray text-center py-4">
-              No notes yet
+              {searchQuery ? 'No notes match your search' : 'No notes yet'}
             </p>
           ) : (
-            notes.map((note: ContinuityNote) => {
+            filteredNotes.map((note: ContinuityNote, index: number) => {
               const catConfig = getCategoryConfig(note.category);
               const isEditing = editingNote?.id === note.id;
 
               return (
                 <div
                   key={note.id}
+                  data-testid={`note-item-${index}`}
                   className={cn(
                     'bg-soft-black border rounded-lg p-3',
                     note.is_critical ? 'border-red-500/30' : 'border-muted-gray/20',
@@ -397,6 +433,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
                         {canEdit && (
                           <div className="flex items-center gap-1">
                             <Button
+                              data-testid={`edit-note-${index}`}
                               variant="ghost"
                               size="icon"
                               className="h-5 w-5 text-muted-gray hover:text-bone-white"
@@ -405,6 +442,7 @@ const ContinuityNotesPanel: React.FC<ContinuityNotesPanelProps> = ({
                               <Edit className="w-3 h-3" />
                             </Button>
                             <Button
+                              data-testid={`delete-note-${index}`}
                               variant="ghost"
                               size="icon"
                               className="h-5 w-5 text-muted-gray hover:text-red-400"

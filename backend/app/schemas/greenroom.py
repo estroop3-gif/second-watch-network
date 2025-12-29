@@ -13,36 +13,49 @@ class CycleBase(BaseModel):
     """Base cycle schema"""
     name: str = Field(min_length=1, max_length=200)
     description: Optional[str] = None
-    start_date: datetime
-    end_date: datetime
-    max_tickets_per_user: int = Field(default=100, ge=1, le=1000)
-    ticket_price: float = Field(default=10.0, ge=0)
 
 
 class CycleCreate(CycleBase):
     """Create new cycle"""
-    pass
+    submission_start: Optional[datetime] = None
+    submission_end: Optional[datetime] = None
+    voting_start: Optional[datetime] = None
+    voting_end: Optional[datetime] = None
+    max_submissions_per_user: int = Field(default=1, ge=1, le=10)
+    tickets_per_user: int = Field(default=3, ge=1, le=100)
 
 
 class CycleUpdate(BaseModel):
     """Update existing cycle"""
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = None
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    max_tickets_per_user: Optional[int] = Field(None, ge=1, le=1000)
-    ticket_price: Optional[float] = Field(None, ge=0)
-    status: Optional[CycleStatus] = None
+    submission_start: Optional[datetime] = None
+    submission_end: Optional[datetime] = None
+    voting_start: Optional[datetime] = None
+    voting_end: Optional[datetime] = None
+    max_submissions_per_user: Optional[int] = Field(None, ge=1, le=10)
+    tickets_per_user: Optional[int] = Field(None, ge=1, le=100)
+    status: Optional[str] = None
+    current_phase: Optional[str] = None
 
 
-class CycleResponse(CycleBase):
+class CycleResponse(BaseModel):
     """Cycle response"""
     id: int
-    status: CycleStatus
+    name: str
+    description: Optional[str] = None
+    status: str
+    current_phase: Optional[str] = None
+    submission_start: Optional[datetime] = None
+    submission_end: Optional[datetime] = None
+    voting_start: Optional[datetime] = None
+    voting_end: Optional[datetime] = None
+    max_submissions_per_user: Optional[int] = 1
+    tickets_per_user: Optional[int] = 3
     created_at: datetime
     updated_at: datetime
-    project_count: Optional[int] = 0  # Total projects in cycle
-    total_votes: Optional[int] = 0  # Total votes cast
+    project_count: Optional[int] = 0
+    total_votes: Optional[int] = 0
 
     class Config:
         from_attributes = True

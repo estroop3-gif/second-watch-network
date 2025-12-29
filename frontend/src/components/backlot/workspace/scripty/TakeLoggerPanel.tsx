@@ -139,10 +139,11 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       await updateTake.mutateAsync({ id: takeId, status });
       toast({ title: `Take marked as ${status.toUpperCase()}` });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to update take';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to update take',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -197,15 +198,14 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       }));
       refetch();
       onTakeLogged?.();
-    } catch (err: any) {
-      // Log full error for debugging
-      console.error('[TakeLogger] Error creating take:', err);
-      console.error('[TakeLogger] Error type:', err?.constructor?.name);
-      console.error('[TakeLogger] Error message:', err?.message);
-      console.error('[TakeLogger] Error stack:', err?.stack);
-
+    } catch (err: unknown) {
       // Extract meaningful error message from backend
-      const errorMessage = err.response?.data?.detail || err.message || 'Failed to log take';
+      let errorMessage = 'Failed to log take';
+      if (err instanceof Error) {
+        // Check for response data from API errors
+        const errWithResponse = err as Error & { response?: { data?: { detail?: string } } };
+        errorMessage = errWithResponse.response?.data?.detail || err.message;
+      }
       toast({
         title: 'Failed to Log Take',
         description: errorMessage,
@@ -228,10 +228,11 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       toast({ title: 'Note added' });
       setNoteText('');
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to add note';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to add note',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -245,10 +246,11 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
       await deleteTake.mutateAsync({ id: takeId });
       toast({ title: 'Take deleted' });
       refetch();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to delete take';
       toast({
         title: 'Error',
-        description: err.message || 'Failed to delete take',
+        description: errorMessage,
         variant: 'destructive',
       });
     }
@@ -270,12 +272,13 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div data-testid="take-logger-panel" className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b border-muted-gray/20 shrink-0">
         <h4 className="text-sm font-medium text-bone-white">Takes</h4>
         {canEdit && (
           <Button
+            data-testid="new-take-button"
             size="sm"
             variant={showAddForm ? 'secondary' : 'default'}
             className={cn(
@@ -301,7 +304,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
 
       {/* Add Take Form */}
       {showAddForm && canEdit && (
-        <div className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
+        <div data-testid="new-take-form" className="p-3 border-b border-muted-gray/20 space-y-2 shrink-0">
           {/* Info banner when no production day selected */}
           {!productionDayId && (
             <Alert className="bg-blue-500/10 border-blue-500/30 py-2">
@@ -323,6 +326,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
           <div className="grid grid-cols-3 gap-2">
             <div>
               <Input
+                data-testid="take-number-input"
                 placeholder="Take #"
                 type="number"
                 value={newTakeData.take_number || nextTakeNumber}
@@ -332,6 +336,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
             </div>
             <div>
               <Input
+                data-testid="camera-label-input"
                 placeholder="Cam"
                 value={newTakeData.camera_label}
                 onChange={(e) => setNewTakeData(d => ({ ...d, camera_label: e.target.value }))}
@@ -340,6 +345,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
             </div>
             <div>
               <Input
+                data-testid="setup-label-input"
                 placeholder="Setup"
                 value={newTakeData.setup_label}
                 onChange={(e) => setNewTakeData(d => ({ ...d, setup_label: e.target.value }))}
@@ -349,10 +355,11 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
           </div>
 
           {/* Quick Status Buttons */}
-          <div className="flex flex-wrap gap-1">
+          <div data-testid="status-buttons" className="flex flex-wrap gap-1">
             {TAKE_STATUSES.filter(s => s.value !== 'false_start').map((status) => (
               <Button
                 key={status.value}
+                data-testid={`status-${status.value}`}
                 size="sm"
                 variant={newTakeData.status === status.value ? 'secondary' : 'ghost'}
                 className={cn(
@@ -369,6 +376,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
           </div>
 
           <Textarea
+            data-testid="take-notes-input"
             placeholder="Notes..."
             value={newTakeData.notes}
             onChange={(e) => setNewTakeData(d => ({ ...d, notes: e.target.value }))}
@@ -377,6 +385,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
           />
 
           <Button
+            data-testid="log-take-button"
             className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             onClick={handleCreateTake}
             disabled={createTake.isPending}
@@ -395,7 +404,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
 
       {/* Takes List */}
       <ScrollArea className="flex-1">
-        <div className="p-2 space-y-2">
+        <div data-testid="takes-list" className="p-2 space-y-2">
           {takesLoading ? (
             Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-16 bg-muted-gray/10" />
@@ -410,6 +419,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
               return (
                 <div
                   key={take.id}
+                  data-testid={`take-item-${take.take_number}`}
                   className={cn(
                     'bg-soft-black border border-muted-gray/20 rounded-lg p-3',
                     editingTake?.id === take.id && 'ring-2 ring-accent-yellow'
@@ -434,6 +444,7 @@ const TakeLoggerPanel: React.FC<TakeLoggerPanelProps> = ({
                     {canEdit && (
                       <div className="flex items-center gap-1">
                         <Button
+                          data-testid={`delete-take-${take.take_number}`}
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6 text-muted-gray hover:text-red-400"

@@ -16,8 +16,8 @@ const WEBSOCKET_URL = import.meta.env.VITE_WEBSOCKET_URL || '';
 const IS_DEV = import.meta.env.DEV;
 const LOCAL_SOCKET_URL = 'http://localhost:8000';
 
-// Debug: Log the connection mode
-console.log('[Socket] Mode:', IS_DEV ? 'Development (Socket.IO)' : 'Production (AWS WebSocket)');
+// Debug mode disabled to reduce console noise
+// console.log('[Socket] Mode:', IS_DEV ? 'Development (Socket.IO)' : 'Production (AWS WebSocket)');
 
 // Reconnection configuration
 const RECONNECT_INITIAL_DELAY = 1000;
@@ -68,7 +68,6 @@ const SocketIOProvider: React.FC<{ children: React.ReactNode }> = ({ children })
     }
 
     setIsConnecting(true);
-    console.log('[Socket.IO] Connecting to:', LOCAL_SOCKET_URL);
 
     const sio = io(LOCAL_SOCKET_URL, {
       auth: { token },
@@ -100,7 +99,10 @@ const SocketIOProvider: React.FC<{ children: React.ReactNode }> = ({ children })
     });
 
     sio.on('connect_error', (err) => {
-      console.error('[Socket.IO] Connection error:', err);
+      // Only log unexpected errors, not auth rejections
+      if (!err.message.includes('rejected')) {
+        console.warn('[Socket.IO] Connection error:', err.message);
+      }
       setError(new Error(err.message));
       setIsConnecting(false);
     });

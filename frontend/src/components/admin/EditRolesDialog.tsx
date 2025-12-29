@@ -14,7 +14,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePermissions } from '@/hooks/usePermissions';
-import { Shield, Crown, Users, Star, Film, Briefcase, Sparkles, Lock } from 'lucide-react';
+import { Shield, Crown, Users, Star, Film, Briefcase, Sparkles, Lock, FlaskConical } from 'lucide-react';
 
 interface User {
   id: string;
@@ -43,6 +43,7 @@ const ROLE_DEFINITIONS = [
   { id: 'partner', label: 'Partner', icon: Briefcase, description: 'Business/sponsor partner', requiresSuperadmin: false, color: 'text-green-500' },
   { id: 'filmmaker', label: 'Filmmaker', icon: Film, description: 'Content creator with verified profile', requiresSuperadmin: false, color: 'text-cyan-500' },
   { id: 'premium', label: 'Premium', icon: Star, description: 'Paid subscriber', requiresSuperadmin: false, color: 'text-amber-500' },
+  { id: 'alpha_tester', label: 'Alpha Tester', icon: FlaskConical, description: 'Can test new features and submit feedback', requiresSuperadmin: false, color: 'text-purple-500' },
 ];
 
 const ALL_ROLES = ROLE_DEFINITIONS.map(r => r.id);

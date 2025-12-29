@@ -19,11 +19,20 @@ import {
   MoreVertical,
   Edit,
   Trash2,
-  X
+  X,
+  Flag
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import ReportDialog from './ReportDialog';
+import { useAuth } from '@/context/AuthContext';
 
 interface ThreadViewProps {
   threadId: string;
@@ -34,10 +43,12 @@ interface ThreadViewProps {
 const ThreadView: React.FC<ThreadViewProps> = ({ threadId, onBack, onEdit }) => {
   const { data: thread, isLoading: threadLoading, error: threadError } = useThread(threadId);
   const { replies, isLoading: repliesLoading, createReply, deleteReply } = useReplies(threadId);
+  const { isAuthenticated } = useAuth();
 
   const [replyContent, setReplyContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   const handleSubmitReply = async () => {
     if (!replyContent.trim()) {
@@ -152,6 +163,30 @@ const ThreadView: React.FC<ThreadViewProps> = ({ threadId, onBack, onEdit }) => 
                 )}
               </div>
             </div>
+
+            {/* Report Button */}
+            {isAuthenticated && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-gray hover:text-white h-8 w-8 p-0"
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => setReportDialogOpen(true)}
+                    className="text-red-500 focus:text-red-500 focus:bg-red-500/10"
+                  >
+                    <Flag className="h-4 w-4 mr-2" />
+                    Report Thread
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
 
@@ -238,6 +273,17 @@ const ThreadView: React.FC<ThreadViewProps> = ({ threadId, onBack, onEdit }) => 
           <p className="text-muted-gray">No replies yet. Be the first to respond!</p>
         </div>
       )}
+
+      {/* Thread Report Dialog */}
+      {thread && (
+        <ReportDialog
+          open={reportDialogOpen}
+          onOpenChange={setReportDialogOpen}
+          contentType="thread"
+          contentId={thread.id}
+          contentPreview={thread.title}
+        />
+      )}
     </div>
   );
 };
@@ -250,11 +296,14 @@ interface ReplyCardProps {
 }
 
 const ReplyCard: React.FC<ReplyCardProps> = ({ reply, onReply, onDelete, depth = 0 }) => {
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const { isAuthenticated } = useAuth();
   const authorName = reply.author?.display_name || reply.author?.full_name || reply.author?.username || 'Member';
   const authorInitials = authorName.slice(0, 1).toUpperCase();
   const authorUsername = reply.author?.username || 'member';
 
   return (
+    <>
     <div className={cn('bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4', depth > 0 && 'ml-8')}>
       <div className="flex gap-3">
         <Link to={`/profile/${authorUsername}`} className="flex-shrink-0">
@@ -291,10 +340,28 @@ const ReplyCard: React.FC<ReplyCardProps> = ({ reply, onReply, onDelete, depth =
             >
               Reply
             </button>
+            {isAuthenticated && (
+              <button
+                onClick={() => setReportDialogOpen(true)}
+                className="hover:text-red-500 transition-colors flex items-center gap-1"
+              >
+                <Flag className="w-3 h-3" />
+                Report
+              </button>
+            )}
           </div>
         </div>
       </div>
     </div>
+
+    <ReportDialog
+      open={reportDialogOpen}
+      onOpenChange={setReportDialogOpen}
+      contentType="reply"
+      contentId={reply.id}
+      contentPreview={reply.content?.substring(0, 100)}
+    />
+    </>
   );
 };
 

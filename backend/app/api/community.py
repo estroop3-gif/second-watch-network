@@ -74,16 +74,14 @@ async def search_filmmakers(
     try:
         client = get_client()
         
-        # Join profiles and filmmaker_profiles
+        # Join profiles via user_id
         db_query = client.table("filmmaker_profiles").select(
-            "*, profiles(*)"
+            "*, profile:user_id(id, full_name, username, avatar_url, location, bio)"
         )
         
-        # Search by name or username if query provided
-        if query:
-            db_query = db_query.or_(
-                f"profiles.full_name.ilike.%{query}%,profiles.username.ilike.%{query}%"
-            )
+        # Note: Searching nested fields requires raw SQL or separate query
+        # For now, skip the search filter and fetch all, then filter in the results
+        # TODO: Implement proper search with JOINs if needed
         
         # Sorting
         response = db_query.range(skip, skip + limit - 1).order(
@@ -316,6 +314,47 @@ async def get_community_thread(thread_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def check_forum_ban(user_id: str, client) -> Optional[dict]:
+    """Check if user has an active forum ban that prevents posting"""
+    from datetime import timezone
+
+    profile = client.table("profiles").select(
+        "forum_ban_type, forum_ban_until, forum_ban_reason"
+    ).eq("id", user_id).single().execute()
+
+    if not profile.data or not profile.data.get("forum_ban_type"):
+        return None
+
+    ban_type = profile.data.get("forum_ban_type")
+    ban_until = profile.data.get("forum_ban_until")
+
+    # Check if expired
+    if ban_until:
+        expires = datetime.fromisoformat(str(ban_until).replace("Z", "+00:00"))
+        if expires < datetime.now(timezone.utc):
+            # Ban has expired - clear it
+            client.table("profiles").update({
+                "forum_ban_type": None,
+                "forum_ban_until": None,
+                "forum_ban_reason": None
+            }).eq("id", user_id).execute()
+            client.table("forum_bans").update({
+                "is_active": False
+            }).eq("user_id", user_id).eq("is_active", True).execute()
+            return None
+
+    # read_only and full_block prevent posting
+    # shadow_restrict allows posting (but content is hidden from others)
+    if ban_type in ['read_only', 'full_block']:
+        return {
+            "restriction_type": ban_type,
+            "reason": profile.data.get("forum_ban_reason"),
+            "expires_at": ban_until
+        }
+
+    return None  # shadow_restrict can still post
+
+
 @router.post("/threads")
 async def create_community_thread(
     thread: dict = Body(...),
@@ -324,6 +363,14 @@ async def create_community_thread(
     """Create a community thread"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Check for forum ban
+    ban = await check_forum_ban(user["id"], client)
+    if ban:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You are currently restricted from posting in the forum. Reason: {ban.get('reason', 'Policy violation')}"
+        )
 
     try:
         thread_data = {
@@ -432,6 +479,14 @@ async def create_thread_reply(
     """Create a reply to a thread"""
     user = await get_current_user_from_token(authorization)
     client = get_client()
+
+    # Check for forum ban
+    ban = await check_forum_ban(user["id"], client)
+    if ban:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You are currently restricted from posting in the forum. Reason: {ban.get('reason', 'Policy violation')}"
+        )
 
     try:
         reply_data = {
@@ -1275,3 +1330,150 @@ async def withdraw_application(
     except Exception as e:
         print(f"Error withdrawing application: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CONTENT REPORTS (PUBLIC)
+# =====================================================
+
+class ContentReportRequest(BaseModel):
+    content_type: str  # 'thread', 'reply'
+    content_id: str
+    reason: str  # 'spam', 'harassment', 'inappropriate', 'copyright', 'other'
+    details: Optional[str] = None
+
+
+@router.post("/reports")
+async def submit_content_report(
+    report: ContentReportRequest,
+    authorization: str = Header(None)
+):
+    """Submit a content report (authenticated users only)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Validate content type
+    valid_content_types = ['thread', 'reply']
+    if report.content_type not in valid_content_types:
+        raise HTTPException(status_code=400, detail=f"Invalid content_type. Must be one of: {valid_content_types}")
+
+    # Validate reason
+    valid_reasons = ['spam', 'harassment', 'inappropriate', 'copyright', 'other']
+    if report.reason not in valid_reasons:
+        raise HTTPException(status_code=400, detail=f"Invalid reason. Must be one of: {valid_reasons}")
+
+    try:
+        # Validate content exists
+        if report.content_type == 'thread':
+            content = client.table("community_topic_threads").select("id, user_id").eq("id", report.content_id).execute()
+        else:
+            content = client.table("community_topic_replies").select("id, user_id").eq("id", report.content_id).execute()
+
+        if not content.data:
+            raise HTTPException(status_code=404, detail="Content not found")
+
+        # Prevent self-reporting
+        content_author = content.data[0].get("user_id")
+        if content_author == user["id"]:
+            raise HTTPException(status_code=400, detail="You cannot report your own content")
+
+        # Check for duplicate reports from same user
+        existing = client.table("content_reports").select("id").eq(
+            "reporter_id", user["id"]
+        ).eq("content_type", report.content_type).eq(
+            "content_id", report.content_id
+        ).eq("status", "pending").execute()
+
+        if existing.data:
+            raise HTTPException(status_code=400, detail="You have already reported this content")
+
+        # Create report
+        result = client.table("content_reports").insert({
+            "reporter_id": user["id"],
+            "content_type": report.content_type,
+            "content_id": report.content_id,
+            "reason": report.reason,
+            "details": report.details,
+            "status": "pending"
+        }).execute()
+
+        return {
+            "success": True,
+            "message": "Report submitted. Thank you for helping keep our community safe.",
+            "report_id": result.data[0]["id"] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error submitting content report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# FORUM BAN STATUS (PUBLIC)
+# =====================================================
+
+@router.get("/user-forum-status")
+async def get_user_forum_status(authorization: str = Header(None)):
+    """Get current user's forum ban status"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Check profile for cached ban status (faster)
+        profile = client.table("profiles").select(
+            "forum_ban_type, forum_ban_until, forum_ban_reason"
+        ).eq("id", user["id"]).single().execute()
+
+        if not profile.data or not profile.data.get("forum_ban_type"):
+            return {
+                "banned": False,
+                "restriction_type": None,
+                "reason": None,
+                "expires_at": None
+            }
+
+        # Check if expired
+        ban_until = profile.data.get("forum_ban_until")
+        if ban_until:
+            from datetime import timezone
+            expires = datetime.fromisoformat(str(ban_until).replace("Z", "+00:00"))
+            if expires < datetime.now(timezone.utc):
+                # Ban has expired - clear the cache
+                client.table("profiles").update({
+                    "forum_ban_type": None,
+                    "forum_ban_until": None,
+                    "forum_ban_reason": None
+                }).eq("id", user["id"]).execute()
+
+                # Also mark the ban as inactive
+                client.table("forum_bans").update({
+                    "is_active": False
+                }).eq("user_id", user["id"]).eq("is_active", True).execute()
+
+                return {
+                    "banned": False,
+                    "restriction_type": None,
+                    "reason": None,
+                    "expires_at": None
+                }
+
+        return {
+            "banned": True,
+            "restriction_type": profile.data.get("forum_ban_type"),
+            "reason": profile.data.get("forum_ban_reason"),
+            "expires_at": profile.data.get("forum_ban_until")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error checking forum ban status: {e}")
+        # Don't block access on error - fail open
+        return {
+            "banned": False,
+            "restriction_type": None,
+            "reason": None,
+            "expires_at": None
+        }

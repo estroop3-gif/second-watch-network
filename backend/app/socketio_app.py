@@ -467,6 +467,62 @@ async def update_presence(sid: str, data: dict):
 
 
 # ============================================================================
+# PROJECT UPDATES (for unified inbox)
+# ============================================================================
+
+@sio.event
+async def join_project_updates(sid: str, data: dict):
+    """Join a project updates room for real-time inbox notifications."""
+    project_id = data.get('project_id')
+    if not project_id:
+        return
+
+    session = socket_sessions.get(sid)
+    if not session:
+        return
+
+    room_name = f"project_updates:{project_id}"
+    await sio.enter_room(sid, room_name)
+    logger.info(f"[Socket] {session['user_id']} joined project updates room {room_name}")
+
+
+@sio.event
+async def leave_project_updates(sid: str, data: dict):
+    """Leave a project updates room."""
+    project_id = data.get('project_id')
+    if not project_id:
+        return
+
+    session = socket_sessions.get(sid)
+    if not session:
+        return
+
+    room_name = f"project_updates:{project_id}"
+    await sio.leave_room(sid, room_name)
+    logger.info(f"[Socket] {session['user_id']} left project updates room {room_name}")
+
+
+async def broadcast_project_update(project_id: str, update: dict, exclude_user_id: str = None):
+    """
+    Broadcast a new project update to all members subscribed to the project.
+    Called from backlot.py when a new update is created.
+    """
+    room_name = f"project_updates:{project_id}"
+
+    # Find sids to exclude based on user_id
+    exclude_sids = []
+    if exclude_user_id and exclude_user_id in connected_users:
+        exclude_sids = list(connected_users[exclude_user_id])
+
+    await sio.emit('project_new_update', {
+        'project_id': project_id,
+        'update': update,
+    }, room=room_name, skip_sid=exclude_sids[0] if exclude_sids else None)
+
+    logger.info(f"[Socket] Broadcasted project update to room {room_name}")
+
+
+# ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
 
