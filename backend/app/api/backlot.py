@@ -13,10 +13,16 @@ from app.services.email_service import (
     generate_call_sheet_text
 )
 from app.services.pdf_service import generate_call_sheet_pdf as create_call_sheet_pdf
-from app.services.breakdown_pdf_service import (
-    generate_breakdown_pdf,
-    generate_project_breakdown_pdf,
-)
+
+# Breakdown PDF service is optional - requires WeasyPrint with native libraries
+try:
+    from app.services.breakdown_pdf_service import (
+        generate_breakdown_pdf,
+        generate_project_breakdown_pdf,
+    )
+except (ImportError, OSError):
+    generate_breakdown_pdf = None
+    generate_project_breakdown_pdf = None
 
 # Excel export is optional - only available if openpyxl is installed
 try:
