@@ -1186,5 +1186,8 @@ async def send_welcome_email(
         to_emails=[email],
         subject="Welcome to Second Watch Network - Your Account is Ready",
         html_content=html_content,
-        text_content=text_content
+        text_content=text_content,
+        email_type="welcome",
+        source_service="admin",
+        source_action="user_creation"
     )

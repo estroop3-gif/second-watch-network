@@ -515,6 +515,7 @@ class CognitoAuth:
                 'UserPoolId': COGNITO_USER_POOL_ID,
                 'Username': email,
                 'UserAttributes': user_attributes,
+                'MessageAction': 'SUPPRESS',  # Don't send Cognito's default email - we send our own
             }
 
             if temporary_password:
