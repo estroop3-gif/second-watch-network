@@ -931,10 +931,8 @@ def generate_welcome_email_html(
                 </div>
 
                 <div>
-                    <p style="color: #888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Temporary Password</p>
-                    <p style="color: {accent_yellow}; margin: 0; font-size: 20px; font-family: monospace; font-weight: bold; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px; letter-spacing: 2px;">
-                        {temp_password}
-                    </p>
+                    <p style="color: #888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Temporary Password <span style="font-size: 10px; font-weight: normal; color: #666;">(click to select)</span></p>
+                    <p style="color: {accent_yellow}; margin: 0; font-size: 20px; font-family: monospace; font-weight: bold; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px; letter-spacing: 2px; -webkit-user-select: all; -moz-user-select: all; -ms-user-select: all; user-select: all; cursor: pointer;">{temp_password}</p>
                 </div>
             </div>
 
