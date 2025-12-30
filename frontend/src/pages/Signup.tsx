@@ -4,14 +4,15 @@ import { useAuth } from '@/context/AuthContext';
 import { SignupForm } from '@/components/forms/SignupForm';
 
 const Signup = () => {
-  const { session } = useAuth();
+  const { session, loading } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (session) {
+    // Wait for auth check to complete before redirecting
+    if (!loading && session) {
       navigate('/dashboard');
     }
-  }, [session, navigate]);
+  }, [session, loading, navigate]);
 
   return (
     <div className="flex-grow flex items-center justify-center px-4">

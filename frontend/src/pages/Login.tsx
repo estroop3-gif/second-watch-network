@@ -4,14 +4,16 @@ import { useAuth } from '@/context/AuthContext';
 import LoginForm from '@/components/forms/LoginForm';
 
 const Login = () => {
-  const { session } = useAuth();
+  const { session, loading } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (session) {
+    // Wait for auth check to complete before redirecting
+    // This prevents false redirects from stale/invalid tokens
+    if (!loading && session) {
       navigate('/dashboard');
     }
-  }, [session, navigate]);
+  }, [session, loading, navigate]);
 
   return (
     <div className="flex-grow flex items-center justify-center px-4">
