@@ -191,18 +191,34 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         user: data.user as AuthUser,
       };
 
-      setSession(authSession);
-      setUser(data.user as AuthUser);
-
-      // Fetch profile
-      try {
-        const profileData = await api.getProfile();
-        setProfile(profileData);
-        if (profileData?.id) {
-          safeStorage.setItem('profile_id', profileData.id);
+      // Use profile data from response if available (like signIn does)
+      // This avoids a race condition where components start fetching before we're ready
+      if (data.user?.id && data.user?.role !== undefined) {
+        // Full profile data is included in the response
+        setSession(authSession);
+        setUser(data.user as AuthUser);
+        setProfile(data.user);
+        if (data.user.id) {
+          safeStorage.setItem('profile_id', data.user.id);
         }
-      } catch {
-        // Profile may not exist yet
+      } else {
+        // Fetch profile BEFORE setting user state to avoid race conditions
+        let profileData = null;
+        try {
+          profileData = await api.getProfile();
+        } catch {
+          // Profile may not exist yet
+        }
+
+        // Set all state together
+        setSession(authSession);
+        setUser(data.user as AuthUser);
+        if (profileData) {
+          setProfile(profileData);
+          if (profileData.id) {
+            safeStorage.setItem('profile_id', profileData.id);
+          }
+        }
       }
     } catch (error) {
       console.error('Complete new password error:', error);
