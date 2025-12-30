@@ -925,7 +925,7 @@ def generate_welcome_email_html(
 
                 <div style="margin-bottom: 16px;">
                     <p style="color: #888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Email</p>
-                    <p style="color: {accent_yellow}; margin: 0; font-size: 16px; font-family: monospace; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px;">
+                    <p style="color: #F9F5EF; margin: 0; font-size: 16px; font-family: monospace; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px;">
                         {email}
                     </p>
                 </div>
