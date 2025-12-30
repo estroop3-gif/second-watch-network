@@ -127,12 +127,6 @@ class APIClient {
     const token = this.getToken()
     const url = `${this.baseURL}${endpoint}`
 
-    // Debug logging for POST requests
-    if (options.method === 'POST' || options.method === 'PATCH') {
-      console.log(`[API] ${options.method} ${url}`)
-      console.log(`[API] Token present: ${!!token}`)
-    }
-
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
       ...options.headers,
