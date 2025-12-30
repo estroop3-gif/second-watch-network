@@ -1526,16 +1526,106 @@ class APIClient {
     status?: string;
     visibility?: string;
     search?: string;
+    ownership?: 'owner' | 'member' | 'all';
     limit?: number;
   }) {
     const params = new URLSearchParams();
     if (options?.status) params.append('status', options.status);
     if (options?.visibility) params.append('visibility', options.visibility);
     if (options?.search) params.append('search', options.search);
+    if (options?.ownership) params.append('ownership', options.ownership);
     if (options?.limit) params.append('limit', options.limit.toString());
 
     const queryString = params.toString();
     return this.request<any[]>(`/api/v1/backlot/projects${queryString ? `?${queryString}` : ''}`);
+  }
+
+  async listPublicBacklotProjects(options?: {
+    status?: string;
+    search?: string;
+    limit?: number;
+  }) {
+    const params = new URLSearchParams();
+    if (options?.status) params.append('status', options.status);
+    if (options?.search) params.append('search', options.search);
+    if (options?.limit) params.append('limit', options.limit.toString());
+
+    const queryString = params.toString();
+    return this.request<{ projects: any[] }>(`/api/v1/backlot/projects/public${queryString ? `?${queryString}` : ''}`);
+  }
+
+  // =====================================================
+  // Donation Methods
+  // =====================================================
+
+  async createDonationCheckout(projectId: string, data: {
+    amount_cents: number;
+    message?: string;
+    is_anonymous?: boolean;
+  }) {
+    return this.request<{ checkout_url: string; donation_id: string }>(`/api/v1/backlot/projects/${projectId}/donate`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getDonationSummary(projectId: string) {
+    return this.request<{
+      donations_enabled: boolean;
+      donation_message?: string;
+      total_raised_cents: number;
+      donor_count: number;
+      donation_count: number;
+      goal_cents?: number;
+      percent_of_goal?: number;
+      recent_donors: Array<{
+        name: string;
+        amount_cents: number;
+        created_at: string;
+      }>;
+    }>(`/api/v1/backlot/projects/${projectId}/donations/summary`);
+  }
+
+  async listProjectDonations(projectId: string, limit?: number) {
+    const params = new URLSearchParams();
+    if (limit) params.append('limit', limit.toString());
+    const queryString = params.toString();
+    return this.request<{
+      donations: Array<{
+        id: string;
+        amount_cents: number;
+        net_amount_cents?: number;
+        platform_fee_cents?: number;
+        currency: string;
+        status: string;
+        message?: string;
+        is_anonymous: boolean;
+        created_at: string;
+        donor?: {
+          id?: string;
+          name?: string;
+          email?: string;
+        };
+      }>;
+    }>(`/api/v1/backlot/projects/${projectId}/donations${queryString ? `?${queryString}` : ''}`);
+  }
+
+  async updateDonationSettings(projectId: string, data: {
+    donations_enabled?: boolean;
+    donation_goal_cents?: number;
+    donation_message?: string;
+  }) {
+    const params = new URLSearchParams();
+    if (data.donations_enabled !== undefined) params.append('donations_enabled', String(data.donations_enabled));
+    if (data.donation_goal_cents !== undefined) params.append('donation_goal_cents', String(data.donation_goal_cents));
+    if (data.donation_message !== undefined) params.append('donation_message', data.donation_message);
+    return this.request<{
+      donations_enabled: boolean;
+      donation_goal_cents?: number;
+      donation_message?: string;
+    }>(`/api/v1/backlot/projects/${projectId}/donation-settings?${params.toString()}`, {
+      method: 'PATCH',
+    });
   }
 
   async createBacklotProject(data: {
@@ -3375,6 +3465,491 @@ class APIClient {
       bytes_remaining_formatted: string
       percentage_used: number
     }>('/api/v1/backlot/storage/quota')
+  }
+
+  // =====================================
+  // Order of the Second Watch
+  // =====================================
+
+  // --- Craft Houses ---
+
+  async listCraftHouses(params?: { status?: string }) {
+    const query = new URLSearchParams()
+    if (params?.status) query.append('status', params.status)
+    const queryString = query.toString()
+    return this.request<{
+      craft_houses: Array<{
+        id: number
+        name: string
+        slug: string
+        description?: string
+        icon?: string
+        primary_tracks?: string[]
+        status: string
+        created_at: string
+        updated_at: string
+        member_count?: number
+        master_name?: string
+      }>
+      total: number
+    }>(`/api/v1/order/craft-houses${queryString ? `?${queryString}` : ''}`)
+  }
+
+  async getCraftHouse(craftHouseId: number) {
+    return this.request<{
+      id: number
+      name: string
+      slug: string
+      description?: string
+      icon?: string
+      primary_tracks?: string[]
+      status: string
+      created_at: string
+      updated_at: string
+      member_count?: number
+      master_name?: string
+    }>(`/api/v1/order/craft-houses/${craftHouseId}`)
+  }
+
+  async getCraftHouseMembers(craftHouseId: number, params?: { skip?: number; limit?: number }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    const queryString = query.toString()
+    return this.request<{
+      members: Array<{
+        user_id: string
+        user_name?: string
+        role: string
+        primary_track?: string
+        city?: string
+        joined_at: string
+      }>
+      total: number
+    }>(`/api/v1/order/craft-houses/${craftHouseId}/members${queryString ? `?${queryString}` : ''}`)
+  }
+
+  async joinCraftHouse(craftHouseId: number) {
+    return this.request<{
+      id: number
+      user_id: string
+      craft_house_id: number
+      role: string
+      joined_at: string
+      created_at: string
+      craft_house_name?: string
+    }>(`/api/v1/order/craft-houses/${craftHouseId}/join`, { method: 'POST' })
+  }
+
+  async leaveCraftHouse(craftHouseId: number) {
+    return this.request<{ message: string }>(`/api/v1/order/craft-houses/${craftHouseId}/leave`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getMyCraftHouseMemberships() {
+    return this.request<Array<{
+      id: number
+      user_id: string
+      craft_house_id: number
+      role: string
+      joined_at: string
+      created_at: string
+      craft_house_name?: string
+    }>>('/api/v1/order/craft-houses/my/memberships')
+  }
+
+  // --- Fellowships ---
+
+  async listFellowships(params?: { fellowship_type?: string }) {
+    const query = new URLSearchParams()
+    if (params?.fellowship_type) query.append('fellowship_type', params.fellowship_type)
+    const queryString = query.toString()
+    return this.request<{
+      fellowships: Array<{
+        id: number
+        name: string
+        slug: string
+        fellowship_type: string
+        description?: string
+        requirements?: string
+        is_opt_in: boolean
+        is_visible: boolean
+        status: string
+        created_at: string
+        updated_at: string
+        member_count?: number
+      }>
+      total: number
+    }>(`/api/v1/order/fellowships${queryString ? `?${queryString}` : ''}`)
+  }
+
+  async getFellowship(fellowshipId: number) {
+    return this.request<{
+      id: number
+      name: string
+      slug: string
+      fellowship_type: string
+      description?: string
+      requirements?: string
+      is_opt_in: boolean
+      is_visible: boolean
+      status: string
+      created_at: string
+      updated_at: string
+      member_count?: number
+    }>(`/api/v1/order/fellowships/${fellowshipId}`)
+  }
+
+  async joinFellowship(fellowshipId: number) {
+    return this.request<{
+      id: number
+      user_id: string
+      fellowship_id: number
+      role: string
+      joined_at: string
+      created_at: string
+      fellowship_name?: string
+    }>(`/api/v1/order/fellowships/${fellowshipId}/join`, { method: 'POST' })
+  }
+
+  async leaveFellowship(fellowshipId: number) {
+    return this.request<{ message: string }>(`/api/v1/order/fellowships/${fellowshipId}/leave`, {
+      method: 'DELETE',
+    })
+  }
+
+  async getMyFellowshipMemberships() {
+    return this.request<Array<{
+      id: number
+      user_id: string
+      fellowship_id: number
+      role: string
+      joined_at: string
+      created_at: string
+      fellowship_name?: string
+    }>>('/api/v1/order/fellowships/my/memberships')
+  }
+
+  // --- Governance ---
+
+  async listGovernancePositions(params?: {
+    position_type?: string
+    scope_type?: string
+    scope_id?: number
+    active_only?: boolean
+  }) {
+    const query = new URLSearchParams()
+    if (params?.position_type) query.append('position_type', params.position_type)
+    if (params?.scope_type) query.append('scope_type', params.scope_type)
+    if (params?.scope_id !== undefined) query.append('scope_id', params.scope_id.toString())
+    if (params?.active_only !== undefined) query.append('active_only', params.active_only.toString())
+    const queryString = query.toString()
+    return this.request<{
+      positions: Array<{
+        id: number
+        user_id: string
+        position_type: string
+        scope_type?: string
+        scope_id?: number
+        title: string
+        description?: string
+        started_at: string
+        ended_at?: string
+        is_active: boolean
+        appointed_by?: string
+        created_at: string
+        updated_at: string
+        user_name?: string
+        scope_name?: string
+      }>
+      total: number
+    }>(`/api/v1/order/governance/positions${queryString ? `?${queryString}` : ''}`)
+  }
+
+  async getHighCouncil() {
+    return this.request<{
+      grand_master?: {
+        id: number
+        user_id: string
+        position_type: string
+        title: string
+        started_at: string
+        is_active: boolean
+        user_name?: string
+      }
+      council_members: Array<{
+        id: number
+        user_id: string
+        position_type: string
+        title: string
+        started_at: string
+        is_active: boolean
+        user_name?: string
+      }>
+    }>('/api/v1/order/governance/high-council')
+  }
+
+  // --- Membership Tiers ---
+
+  async getMembershipTiers() {
+    return this.request<Array<{
+      tier: string
+      name: string
+      price_cents: number
+      description: string
+      benefits: string[]
+    }>>('/api/v1/order/membership/tiers')
+  }
+
+  async getMyMembershipStatus() {
+    return this.request<{
+      is_order_member: boolean
+      membership_status?: string
+      membership_tier?: string
+      tier_started_at?: string
+      dues_status?: string
+      next_billing_date?: string
+      stripe_customer_id?: string
+    }>('/api/v1/order/membership/me')
+  }
+
+  // --- Order Dashboard ---
+
+  async getOrderDashboardExtended() {
+    return this.request<{
+      is_order_member: boolean
+      membership_status?: string
+      membership_tier?: string
+      dues_status?: string
+      primary_track?: string
+      lodge_id?: number
+      lodge_name?: string
+      craft_houses: Array<{
+        id: number
+        user_id: string
+        craft_house_id: number
+        role: string
+        joined_at: string
+        created_at: string
+        craft_house_name?: string
+      }>
+      fellowships: Array<{
+        id: number
+        user_id: string
+        fellowship_id: number
+        role: string
+        joined_at: string
+        created_at: string
+        fellowship_name?: string
+      }>
+      joined_at?: string
+      pending_booking_requests: number
+      active_job_applications: number
+      governance_positions: Array<{
+        id: number
+        user_id: string
+        position_type: string
+        title: string
+        is_active: boolean
+      }>
+    }>('/api/v1/order/dashboard/extended')
+  }
+
+  // --- Order Lodges ---
+
+  async listOrderLodges(params?: { status?: string; city?: string }) {
+    const query = new URLSearchParams()
+    if (params?.status) query.append('status', params.status)
+    if (params?.city) query.append('city', params.city)
+    const queryString = query.toString()
+    return this.request<{
+      lodges: Array<{
+        id: number
+        name: string
+        slug: string
+        city: string
+        region?: string
+        status: string
+        description?: string
+        base_lodge_dues_cents: number
+        created_at: string
+        updated_at: string
+        member_count?: number
+      }>
+      total: number
+    }>(`/api/v1/order/lodges${queryString ? `?${queryString}` : ''}`)
+  }
+
+  async getOrderLodge(lodgeId: number) {
+    return this.request<{
+      id: number
+      name: string
+      slug: string
+      city: string
+      region?: string
+      status: string
+      description?: string
+      base_lodge_dues_cents: number
+      created_at: string
+      updated_at: string
+      member_count?: number
+    }>(`/api/v1/order/lodges/${lodgeId}`)
+  }
+
+  async joinOrderLodge(lodgeId: number) {
+    return this.request<{
+      id: number
+      user_id: string
+      lodge_id: number
+      status: string
+      is_officer: boolean
+      joined_at: string
+      lodge_name?: string
+      lodge_city?: string
+    }>(`/api/v1/order/lodges/${lodgeId}/join`, { method: 'POST' })
+  }
+
+  async getMyOrderLodgeMemberships() {
+    return this.request<Array<{
+      id: number
+      user_id: string
+      lodge_id: number
+      status: string
+      is_officer: boolean
+      officer_title?: string
+      joined_at?: string
+      lodge_name?: string
+      lodge_city?: string
+    }>>('/api/v1/order/lodges/my')
+  }
+
+  // --- Order Application ---
+
+  async submitOrderApplication(data: {
+    primary_track: string
+    city?: string
+    region?: string
+    portfolio_links?: string
+    statement?: string
+    years_experience?: number
+    current_role?: string
+  }) {
+    return this.request<{
+      id: number
+      user_id: string
+      primary_track: string
+      status: string
+      created_at: string
+    }>('/api/v1/order/applications', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getMyOrderApplication() {
+    return this.request<{
+      id: number
+      user_id: string
+      primary_track: string
+      city?: string
+      region?: string
+      portfolio_links?: string
+      statement?: string
+      years_experience?: number
+      current_role?: string
+      status: string
+      rejection_reason?: string
+      created_at: string
+      updated_at: string
+    } | null>('/api/v1/order/applications/me')
+  }
+
+  // --- Order Profile ---
+
+  async getMyOrderProfile() {
+    return this.request<{
+      id: number
+      user_id: string
+      primary_track: string
+      secondary_tracks?: string
+      city?: string
+      region?: string
+      portfolio_url?: string
+      imdb_url?: string
+      youtube_url?: string
+      vimeo_url?: string
+      website_url?: string
+      gear_summary?: string
+      bio?: string
+      years_experience?: number
+      availability_status?: string
+      lodge_id?: number
+      status: string
+      membership_tier: string
+      joined_at?: string
+      dues_status?: string
+      lodge_name?: string
+      lodge_city?: string
+    } | null>('/api/v1/order/profile/me')
+  }
+
+  async updateMyOrderProfile(data: {
+    primary_track?: string
+    secondary_tracks?: string
+    city?: string
+    region?: string
+    portfolio_url?: string
+    imdb_url?: string
+    youtube_url?: string
+    vimeo_url?: string
+    website_url?: string
+    gear_summary?: string
+    bio?: string
+    years_experience?: number
+    availability_status?: string
+  }) {
+    return this.request<{
+      id: number
+      user_id: string
+      primary_track: string
+      status: string
+      updated_at: string
+    }>('/api/v1/order/profile', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
+  // --- Order Directory ---
+
+  async getOrderDirectory(params?: {
+    track?: string
+    city?: string
+    lodge_id?: number
+    availability?: string
+    skip?: number
+    limit?: number
+  }) {
+    const query = new URLSearchParams()
+    if (params?.track) query.append('track', params.track)
+    if (params?.city) query.append('city', params.city)
+    if (params?.lodge_id !== undefined) query.append('lodge_id', params.lodge_id.toString())
+    if (params?.availability) query.append('availability', params.availability)
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    const queryString = query.toString()
+    return this.request<Array<{
+      user_id: string
+      user_name?: string
+      primary_track: string
+      city?: string
+      region?: string
+      lodge_name?: string
+      availability_status?: string
+      years_experience?: number
+      bio?: string
+    }>>(`/api/v1/order/directory${queryString ? `?${queryString}` : ''}`)
   }
 }
 

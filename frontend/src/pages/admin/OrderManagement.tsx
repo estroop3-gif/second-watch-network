@@ -1,10 +1,38 @@
-import React from 'react';
+/**
+ * Order Management Admin Page
+ * Comprehensive management of The Second Watch Order
+ */
+import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Users, Building, Briefcase, BarChart3, FileText, Crown } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Users,
+  Building,
+  Briefcase,
+  BarChart3,
+  FileText,
+  Crown,
+  Scale,
+  Hammer,
+  Heart,
+} from 'lucide-react';
+import { orderAPI } from '@/lib/api/order';
 
-const StatCard = ({ icon, title, value, delay }: { icon: React.ReactNode, title: string, value: string | number, delay: number }) => (
+// Tab Components
+import OrderApplicationsTab from '@/components/admin/OrderApplicationsTab';
+import {
+  OrderMembersTab,
+  OrderLodgesTab,
+  OrderGovernanceTab,
+  OrderCraftHousesTab,
+  OrderFellowshipsTab,
+  OrderJobsTab,
+  OrderStatsTab,
+} from '@/components/admin/order';
+
+const StatCard = ({ icon, title, value, delay }: { icon: React.ReactNode; title: string; value: string | number; delay: number }) => (
   <motion.div
     className="bg-charcoal-black border-2 border-muted-gray p-4 text-center transform hover:scale-105 transition-transform"
     initial={{ opacity: 0, y: 20 }}
@@ -18,6 +46,11 @@ const StatCard = ({ icon, title, value, delay }: { icon: React.ReactNode, title:
 );
 
 const OrderManagement = () => {
+  const { data: stats, isLoading: statsLoading } = useQuery({
+    queryKey: ['orderAdminStats'],
+    queryFn: () => orderAPI.getAdminStats(),
+  });
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -28,22 +61,33 @@ const OrderManagement = () => {
         <h1 className="text-4xl md:text-5xl font-heading tracking-tighter">
           The <span className="text-accent-yellow">Order</span>
         </h1>
-        <p className="text-muted-gray mt-1">Manage Second Watch Order members, lodges, and applications</p>
+        <p className="text-muted-gray mt-1">Manage Second Watch Order members, lodges, governance, and more</p>
       </motion.div>
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon={<Users className="h-8 w-8 text-accent-yellow" />} title="Members" value={0} delay={0} />
-        <StatCard icon={<Building className="h-8 w-8 text-accent-yellow" />} title="Lodges" value={0} delay={1} />
-        <StatCard icon={<FileText className="h-8 w-8 text-accent-yellow" />} title="Applications" value={0} delay={2} />
-        <StatCard icon={<Briefcase className="h-8 w-8 text-accent-yellow" />} title="Active Jobs" value={0} delay={3} />
+        {statsLoading ? (
+          <>
+            <Skeleton className="h-24" />
+            <Skeleton className="h-24" />
+            <Skeleton className="h-24" />
+            <Skeleton className="h-24" />
+          </>
+        ) : (
+          <>
+            <StatCard icon={<Users className="h-8 w-8 text-accent-yellow" />} title="Members" value={stats?.total_members || 0} delay={0} />
+            <StatCard icon={<Building className="h-8 w-8 text-accent-yellow" />} title="Lodges" value={stats?.total_lodges || 0} delay={1} />
+            <StatCard icon={<FileText className="h-8 w-8 text-accent-yellow" />} title="Pending Apps" value={stats?.pending_applications || 0} delay={2} />
+            <StatCard icon={<Briefcase className="h-8 w-8 text-accent-yellow" />} title="Active Jobs" value={stats?.active_jobs || 0} delay={3} />
+          </>
+        )}
       </div>
 
       <Tabs defaultValue="applications" className="w-full">
-        <TabsList className="grid w-full grid-cols-5 bg-charcoal-black border border-muted-gray">
+        <TabsList className="grid w-full grid-cols-4 lg:grid-cols-8 bg-charcoal-black border border-muted-gray">
           <TabsTrigger value="applications" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
             <FileText className="h-4 w-4" />
-            <span className="hidden sm:inline">Applications</span>
+            <span className="hidden sm:inline">Apps</span>
           </TabsTrigger>
           <TabsTrigger value="members" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
             <Users className="h-4 w-4" />
@@ -52,6 +96,18 @@ const OrderManagement = () => {
           <TabsTrigger value="lodges" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
             <Building className="h-4 w-4" />
             <span className="hidden sm:inline">Lodges</span>
+          </TabsTrigger>
+          <TabsTrigger value="governance" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
+            <Scale className="h-4 w-4" />
+            <span className="hidden sm:inline">Gov</span>
+          </TabsTrigger>
+          <TabsTrigger value="craft-houses" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
+            <Hammer className="h-4 w-4" />
+            <span className="hidden sm:inline">Crafts</span>
+          </TabsTrigger>
+          <TabsTrigger value="fellowships" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
+            <Heart className="h-4 w-4" />
+            <span className="hidden sm:inline">Fellows</span>
           </TabsTrigger>
           <TabsTrigger value="jobs" className="flex items-center gap-2 data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
             <Briefcase className="h-4 w-4" />
@@ -72,11 +128,7 @@ const OrderManagement = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12">
-                <Crown className="h-12 w-12 mx-auto text-muted-gray mb-4" />
-                <p className="text-muted-gray">Order membership applications will be displayed here</p>
-                <p className="text-sm text-muted-gray/70 mt-1">Pending applications require review and approval</p>
-              </div>
+              <OrderApplicationsTab />
             </CardContent>
           </Card>
         </TabsContent>
@@ -90,11 +142,7 @@ const OrderManagement = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12">
-                <Users className="h-12 w-12 mx-auto text-muted-gray mb-4" />
-                <p className="text-muted-gray">Active Order members management will be displayed here</p>
-                <p className="text-sm text-muted-gray/70 mt-1">View dues status, membership tier, and activity</p>
-              </div>
+              <OrderMembersTab />
             </CardContent>
           </Card>
         </TabsContent>
@@ -108,11 +156,39 @@ const OrderManagement = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12">
-                <Building className="h-12 w-12 mx-auto text-muted-gray mb-4" />
-                <p className="text-muted-gray">Lodge management will be displayed here</p>
-                <p className="text-sm text-muted-gray/70 mt-1">Create and manage local Order chapters</p>
-              </div>
+              <OrderLodgesTab />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="governance" className="mt-6">
+          <OrderGovernanceTab />
+        </TabsContent>
+
+        <TabsContent value="craft-houses" className="mt-6">
+          <Card className="bg-charcoal-black border-2 border-muted-gray">
+            <CardHeader>
+              <CardTitle className="text-bone-white flex items-center gap-2">
+                <Hammer className="h-5 w-5 text-accent-yellow" />
+                Craft Houses
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <OrderCraftHousesTab />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="fellowships" className="mt-6">
+          <Card className="bg-charcoal-black border-2 border-muted-gray">
+            <CardHeader>
+              <CardTitle className="text-bone-white flex items-center gap-2">
+                <Heart className="h-5 w-5 text-accent-yellow" />
+                Fellowships
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <OrderFellowshipsTab />
             </CardContent>
           </Card>
         </TabsContent>
@@ -126,31 +202,13 @@ const OrderManagement = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-center py-12">
-                <Briefcase className="h-12 w-12 mx-auto text-muted-gray mb-4" />
-                <p className="text-muted-gray">Job posting moderation will be displayed here</p>
-                <p className="text-sm text-muted-gray/70 mt-1">Review and moderate Order job board listings</p>
-              </div>
+              <OrderJobsTab />
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="stats" className="mt-6">
-          <Card className="bg-charcoal-black border-2 border-muted-gray">
-            <CardHeader>
-              <CardTitle className="text-bone-white flex items-center gap-2">
-                <BarChart3 className="h-5 w-5 text-accent-yellow" />
-                Order Statistics
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-12">
-                <BarChart3 className="h-12 w-12 mx-auto text-muted-gray mb-4" />
-                <p className="text-muted-gray">Order metrics and analytics will be displayed here</p>
-                <p className="text-sm text-muted-gray/70 mt-1">Member growth, dues revenue, and engagement</p>
-              </div>
-            </CardContent>
-          </Card>
+          <OrderStatsTab />
         </TabsContent>
       </Tabs>
     </div>

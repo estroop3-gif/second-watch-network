@@ -229,6 +229,20 @@ async def stripe_webhook(request: Request):
         product = subscription.get("metadata", {}).get("product", "premium")
         await _update_subscription_status(customer_id, subscription, product, is_active=False)
 
+    # Handle checkout session completed - for one-time donations
+    elif event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        metadata = session.get("metadata", {})
+
+        # Check if this is a project donation
+        if metadata.get("type") == "project_donation":
+            donation_id = metadata.get("donation_id")
+            project_id = metadata.get("project_id")
+            payment_intent_id = session.get("payment_intent")
+
+            if donation_id:
+                await _process_donation_success(donation_id, payment_intent_id)
+
     return {"received": True}
 
 
@@ -302,3 +316,63 @@ async def _update_subscription_status(
             "status": status,
             "period_end": period_end_dt,
         })
+
+
+async def _process_donation_success(donation_id: str, payment_intent_id: str):
+    """
+    Process a successful donation payment.
+    Updates donation status to 'succeeded' and stores payment intent ID.
+    """
+    from app.core.database import get_client
+
+    client = get_client()
+
+    # Update the donation record
+    result = client.table("project_donations").update({
+        "status": "succeeded",
+        "stripe_payment_intent_id": payment_intent_id,
+    }).eq("id", donation_id).execute()
+
+    if not result.data:
+        print(f"Warning: Could not update donation {donation_id}")
+        return
+
+    donation = result.data[0]
+    project_id = donation.get("project_id")
+    donor_name = donation.get("donor_name")
+    amount_cents = donation.get("amount_cents", 0)
+    is_anonymous = donation.get("is_anonymous", False)
+
+    # Create notification for project owner
+    if project_id:
+        # Get project owner
+        project_result = client.table("backlot_projects").select(
+            "owner_id, title"
+        ).eq("id", project_id).single().execute()
+
+        if project_result.data:
+            owner_id = project_result.data["owner_id"]
+            project_title = project_result.data.get("title", "your project")
+
+            # Format amount for display
+            amount_dollars = amount_cents / 100
+
+            # Build notification message
+            if is_anonymous:
+                message = f"Someone donated ${amount_dollars:.2f} to {project_title}!"
+            else:
+                donor_display = donor_name or "A supporter"
+                message = f"{donor_display} donated ${amount_dollars:.2f} to {project_title}!"
+
+            # Create notification
+            client.table("notifications").insert({
+                "user_id": owner_id,
+                "type": "donation_received",
+                "title": "New Donation Received!",
+                "message": message,
+                "link": f"/backlot/projects/{project_id}/overview",
+                "related_id": donation_id,
+                "related_type": "donation",
+            }).execute()
+
+    print(f"Donation {donation_id} processed successfully")

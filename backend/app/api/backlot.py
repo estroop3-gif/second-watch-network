@@ -237,11 +237,17 @@ async def list_my_projects(
     status: Optional[str] = None,
     visibility: Optional[str] = None,
     search: Optional[str] = None,
+    ownership: Optional[str] = None,  # 'owner', 'member', or 'all' (default)
     limit: int = 50,
     authorization: str = Header(None)
 ):
     """
-    List all projects for the current user (owned or member of).
+    List projects for the current user (owned or member of).
+
+    ownership param:
+    - 'owner': Only projects created by the user
+    - 'member': Only projects where user is a team member (not owner)
+    - 'all' or None: Both owned and member projects
     """
     user = await get_current_user_from_token(authorization)
     cognito_user_id = user["id"]
@@ -254,7 +260,7 @@ async def list_my_projects(
         if not profile_id:
             return []  # No profile = no projects
 
-        # Get projects where user is a member
+        # Get projects where user is a member (not owner)
         member_result = client.table("backlot_project_members").select(
             "project_id"
         ).eq("user_id", profile_id).execute()
@@ -265,14 +271,27 @@ async def list_my_projects(
         conditions = []
         params = {"profile_id": profile_id, "limit": limit}
 
-        # Base ownership/membership filter
-        if member_project_ids:
+        # Apply ownership filter
+        if ownership == "owner":
+            # Only projects the user owns
+            conditions.append("owner_id = :profile_id")
+        elif ownership == "member":
+            # Only projects where user is a member (not owner)
+            if not member_project_ids:
+                return []  # No memberships = no results for this filter
             placeholders = ",".join([f":id_{i}" for i in range(len(member_project_ids))])
             for i, pid in enumerate(member_project_ids):
                 params[f"id_{i}"] = pid
-            conditions.append(f"(owner_id = :profile_id OR id IN ({placeholders}))")
+            conditions.append(f"(id IN ({placeholders}) AND owner_id != :profile_id)")
         else:
-            conditions.append("owner_id = :profile_id")
+            # Default: all projects user has access to (owned OR member)
+            if member_project_ids:
+                placeholders = ",".join([f":id_{i}" for i in range(len(member_project_ids))])
+                for i, pid in enumerate(member_project_ids):
+                    params[f"id_{i}"] = pid
+                conditions.append(f"(owner_id = :profile_id OR id IN ({placeholders}))")
+            else:
+                conditions.append("owner_id = :profile_id")
 
         # Apply optional filters
         if status and status != "all":
@@ -313,6 +332,459 @@ async def list_my_projects(
     except Exception as e:
         print(f"Error listing projects: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# PUBLIC PROJECTS ENDPOINT (must come before /projects/{project_id})
+# =====================================================
+
+@router.get("/projects/public")
+async def list_public_projects(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 50,
+    authorization: str = Header(None)
+):
+    """
+    List ALL public visibility projects in the system.
+    Returns has_access flag indicating if current user is owner/member.
+    Auth is optional - anonymous users see all public projects without has_access info.
+    """
+    client = get_client()
+
+    # Try to get current user (optional auth)
+    profile_id = None
+    member_project_ids = []
+
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            token = authorization.replace("Bearer ", "")
+            from app.core.cognito import CognitoAuth
+            user = CognitoAuth.verify_token(token)
+            if user:
+                cognito_user_id = user.get("id")
+                profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+                if profile_id:
+                    # Get projects where user is a member
+                    member_result = client.table("backlot_project_members").select(
+                        "project_id"
+                    ).eq("user_id", profile_id).execute()
+                    member_project_ids = [m["project_id"] for m in (member_result.data or [])]
+        except Exception:
+            pass  # Anonymous access is fine
+
+    try:
+        # Build query for public projects
+        conditions = ["visibility = 'public'"]
+        params = {"limit": limit}
+
+        if status and status != "all":
+            conditions.append("status = :status")
+            params["status"] = status
+
+        if search:
+            conditions.append("title ILIKE :search")
+            params["search"] = f"%{search}%"
+
+        where_clause = " AND ".join(conditions)
+        projects = execute_query(
+            f"SELECT * FROM backlot_projects WHERE {where_clause} ORDER BY updated_at DESC LIMIT :limit",
+            params
+        )
+
+        if not projects:
+            return {"projects": []}
+
+        # Fetch owner profiles
+        owner_ids = list(set(p["owner_id"] for p in projects))
+        profiles_result = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, is_order_member"
+        ).in_("id", owner_ids).execute()
+
+        profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Build response with has_access flag
+        result = []
+        for project in projects:
+            project_data = serialize_project(project)
+            project_data["owner"] = profile_map.get(project["owner_id"])
+
+            # Determine if current user has access
+            if profile_id:
+                is_owner = project["owner_id"] == profile_id
+                is_member = project["id"] in member_project_ids
+                project_data["has_access"] = is_owner or is_member
+            else:
+                project_data["has_access"] = False
+
+            result.append(project_data)
+
+        return {"projects": result}
+
+    except Exception as e:
+        print(f"Error listing public projects: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# DONATION ENDPOINTS (must come before /projects/{project_id})
+# =====================================================
+
+# Platform fee for donations (5% by default)
+DONATION_PLATFORM_FEE_PERCENT = float(os.getenv("DONATION_PLATFORM_FEE_PERCENT", "5"))
+
+
+class DonationRequest(BaseModel):
+    amount_cents: int
+    message: Optional[str] = None
+    is_anonymous: bool = False
+
+
+@router.post("/projects/{project_id}/donate")
+async def create_donation_checkout(
+    project_id: str,
+    request: DonationRequest,
+    authorization: str = Header(None)
+):
+    """
+    Create a Stripe checkout session for a one-time donation to a project.
+    Returns a checkout URL that redirects the user to Stripe payment.
+    """
+    from app.core.config import settings
+    import stripe
+
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    # Validate amount
+    if request.amount_cents < 100:  # Minimum $1
+        raise HTTPException(status_code=400, detail="Minimum donation is $1.00")
+    if request.amount_cents > 100000000:  # Maximum $1,000,000
+        raise HTTPException(status_code=400, detail="Maximum donation is $1,000,000")
+
+    client = get_client()
+
+    # Get project and verify donations are enabled
+    project_result = client.table("backlot_projects").select(
+        "id, title, owner_id, visibility, donations_enabled"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = project_result.data
+
+    # Check if donations are enabled for this project
+    if not project.get("donations_enabled"):
+        raise HTTPException(status_code=400, detail="Donations are not enabled for this project")
+
+    # Get donor info (optional - can donate without logging in)
+    donor_profile_id = None
+    donor_email = None
+    donor_name = None
+
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            user = await get_user_from_token(authorization)
+            if user:
+                cognito_user_id = user.get("id")
+                donor_profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+                if donor_profile_id:
+                    profile_result = client.table("profiles").select(
+                        "id, email, full_name, display_name"
+                    ).eq("id", donor_profile_id).single().execute()
+                    if profile_result.data:
+                        donor_email = profile_result.data.get("email")
+                        donor_name = profile_result.data.get("display_name") or profile_result.data.get("full_name")
+        except Exception:
+            pass  # Anonymous donation is fine
+
+    # Create the donation record in pending state
+    donation_data = {
+        "project_id": project_id,
+        "donor_id": donor_profile_id,
+        "amount_cents": request.amount_cents,
+        "currency": "usd",
+        "status": "pending",
+        "message": request.message,
+        "is_anonymous": request.is_anonymous,
+        "donor_name": donor_name if not request.is_anonymous else None,
+        "donor_email": donor_email,
+    }
+
+    donation_result = client.table("project_donations").insert(donation_data).execute()
+    if not donation_result.data:
+        raise HTTPException(status_code=500, detail="Failed to create donation record")
+
+    donation = donation_result.data[0]
+    donation_id = donation["id"]
+
+    # Build URLs
+    base_url = settings.FRONTEND_URL
+    success_url = f"{base_url}/backlot/public?donation=success&project={project_id}"
+    cancel_url = f"{base_url}/backlot/public?donation=cancelled&project={project_id}"
+
+    # Create Stripe checkout session for one-time payment
+    try:
+        checkout_params = {
+            "payment_method_types": ["card"],
+            "line_items": [{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {
+                        "name": f"Donation to {project['title']}",
+                        "description": f"Support this project on Second Watch Network",
+                    },
+                    "unit_amount": request.amount_cents,
+                },
+                "quantity": 1,
+            }],
+            "mode": "payment",
+            "success_url": success_url,
+            "cancel_url": cancel_url,
+            "metadata": {
+                "donation_id": donation_id,
+                "project_id": project_id,
+                "type": "project_donation",
+            },
+        }
+
+        # Add customer email if available
+        if donor_email:
+            checkout_params["customer_email"] = donor_email
+
+        session = stripe.checkout.Session.create(**checkout_params)
+
+        # Update donation record with checkout session ID
+        client.table("project_donations").update({
+            "stripe_checkout_session_id": session.id
+        }).eq("id", donation_id).execute()
+
+        return {"checkout_url": session.url, "donation_id": donation_id}
+
+    except stripe.error.StripeError as e:
+        # Delete the pending donation record on Stripe error
+        client.table("project_donations").delete().eq("id", donation_id).execute()
+        raise HTTPException(status_code=500, detail=f"Stripe error: {str(e)}")
+
+
+@router.get("/projects/{project_id}/donations/summary")
+async def get_donation_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get donation summary for a project.
+    Public endpoint - anyone can see how much has been raised.
+    """
+    client = get_client()
+
+    # Verify project exists and is public or user has access
+    project_result = client.table("backlot_projects").select(
+        "id, title, visibility, donations_enabled, donation_goal_cents, donation_message, owner_id"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project = project_result.data
+
+    # Only allow access to public projects or projects user has access to
+    if project["visibility"] != "public":
+        if not authorization:
+            raise HTTPException(status_code=403, detail="Access denied")
+        try:
+            user = await get_user_from_token(authorization)
+            cognito_user_id = user.get("id")
+            profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+            is_owner = project["owner_id"] == profile_id
+            if not is_owner:
+                # Check if member
+                member_result = client.table("backlot_project_members").select(
+                    "id"
+                ).eq("project_id", project_id).eq("user_id", profile_id).execute()
+                if not member_result.data:
+                    raise HTTPException(status_code=403, detail="Access denied")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get donation stats - only succeeded donations count
+    stats = execute_single("""
+        SELECT
+            COALESCE(SUM(net_amount_cents), 0) as total_raised_cents,
+            COUNT(DISTINCT donor_id) as unique_donor_count,
+            COUNT(*) as donation_count
+        FROM project_donations
+        WHERE project_id = :project_id AND status = 'succeeded'
+    """, {"project_id": project_id})
+
+    total_raised = stats["total_raised_cents"] if stats else 0
+    donor_count = stats["unique_donor_count"] if stats else 0
+    donation_count = stats["donation_count"] if stats else 0
+
+    # Get recent donors (non-anonymous only, last 5)
+    recent_donors_result = client.table("project_donations").select(
+        "id, donor_name, amount_cents, created_at, is_anonymous"
+    ).eq("project_id", project_id).eq(
+        "status", "succeeded"
+    ).eq("is_anonymous", False).order(
+        "created_at", desc=True
+    ).limit(5).execute()
+
+    recent_donors = []
+    for d in (recent_donors_result.data or []):
+        if d.get("donor_name"):
+            recent_donors.append({
+                "name": d["donor_name"],
+                "amount_cents": d["amount_cents"],
+                "created_at": d["created_at"],
+            })
+
+    # Calculate goal progress if goal is set
+    goal_cents = project.get("donation_goal_cents")
+    percent_of_goal = None
+    if goal_cents and goal_cents > 0:
+        percent_of_goal = min(100, round(total_raised / goal_cents * 100, 1))
+
+    return {
+        "donations_enabled": project.get("donations_enabled", False),
+        "donation_message": project.get("donation_message"),
+        "total_raised_cents": total_raised,
+        "donor_count": donor_count,
+        "donation_count": donation_count,
+        "goal_cents": goal_cents,
+        "percent_of_goal": percent_of_goal,
+        "recent_donors": recent_donors,
+    }
+
+
+@router.get("/projects/{project_id}/donations")
+async def list_project_donations(
+    project_id: str,
+    limit: int = 50,
+    authorization: str = Header(None)
+):
+    """
+    List all donations for a project.
+    Owner-only endpoint - includes donor info for non-anonymous donations.
+    """
+    user = await get_user_from_token(authorization)
+    cognito_user_id = user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is project owner
+    project_result = client.table("backlot_projects").select(
+        "id, owner_id"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project_result.data["owner_id"] != profile_id:
+        raise HTTPException(status_code=403, detail="Only project owner can view donations")
+
+    # Get all donations for this project
+    donations_result = client.table("project_donations").select(
+        "id, amount_cents, net_amount_cents, platform_fee_cents, currency, status, message, is_anonymous, donor_name, donor_email, created_at, donor_id"
+    ).eq("project_id", project_id).order(
+        "created_at", desc=True
+    ).limit(limit).execute()
+
+    donations = []
+    for d in (donations_result.data or []):
+        donation_data = {
+            "id": d["id"],
+            "amount_cents": d["amount_cents"],
+            "net_amount_cents": d.get("net_amount_cents"),
+            "platform_fee_cents": d.get("platform_fee_cents"),
+            "currency": d["currency"],
+            "status": d["status"],
+            "message": d.get("message"),
+            "is_anonymous": d["is_anonymous"],
+            "created_at": d["created_at"],
+        }
+
+        # Include donor info if not anonymous
+        if not d["is_anonymous"]:
+            donation_data["donor"] = {
+                "id": d.get("donor_id"),
+                "name": d.get("donor_name"),
+                "email": d.get("donor_email"),
+            }
+
+        donations.append(donation_data)
+
+    return {"donations": donations}
+
+
+@router.patch("/projects/{project_id}/donation-settings")
+async def update_donation_settings(
+    project_id: str,
+    donations_enabled: Optional[bool] = None,
+    donation_goal_cents: Optional[int] = None,
+    donation_message: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """
+    Update donation settings for a project.
+    Owner-only endpoint.
+    """
+    user = await get_user_from_token(authorization)
+    cognito_user_id = user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is project owner
+    project_result = client.table("backlot_projects").select(
+        "id, owner_id"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project_result.data["owner_id"] != profile_id:
+        raise HTTPException(status_code=403, detail="Only project owner can update donation settings")
+
+    # Build update data
+    update_data = {}
+    if donations_enabled is not None:
+        update_data["donations_enabled"] = donations_enabled
+    if donation_goal_cents is not None:
+        if donation_goal_cents < 0:
+            raise HTTPException(status_code=400, detail="Goal cannot be negative")
+        update_data["donation_goal_cents"] = donation_goal_cents if donation_goal_cents > 0 else None
+    if donation_message is not None:
+        update_data["donation_message"] = donation_message if donation_message.strip() else None
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No settings to update")
+
+    # Update project
+    result = client.table("backlot_projects").update(update_data).eq("id", project_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+
+    return {
+        "donations_enabled": result.data[0].get("donations_enabled"),
+        "donation_goal_cents": result.data[0].get("donation_goal_cents"),
+        "donation_message": result.data[0].get("donation_message"),
+    }
 
 
 # =====================================================

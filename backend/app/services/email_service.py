@@ -11,6 +11,41 @@ from datetime import datetime
 from app.core.config import settings
 
 
+async def log_email_to_database(
+    message_id: str,
+    sender_email: str,
+    sender_name: Optional[str],
+    recipient_email: str,
+    subject: str,
+    email_type: Optional[str] = None,
+    source_service: str = "app",
+    source_action: Optional[str] = None,
+    source_user_id: Optional[str] = None,
+    source_reference_id: Optional[str] = None,
+) -> None:
+    """Log a sent email to the email_logs table for tracking"""
+    try:
+        from app.core.database import get_client
+        client = get_client()
+
+        client.table("email_logs").insert({
+            "message_id": message_id,
+            "sender_email": sender_email,
+            "sender_name": sender_name,
+            "recipient_email": recipient_email,
+            "subject": subject,
+            "email_type": email_type,
+            "status": "sent",
+            "source_service": source_service,
+            "source_action": source_action,
+            "source_user_id": source_user_id,
+            "source_reference_id": source_reference_id,
+            "sent_at": datetime.utcnow().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"Warning: Failed to log email to database: {e}")
+
+
 class EmailService:
     """Email sending service with support for multiple providers"""
 
@@ -20,7 +55,12 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: Optional[str] = None,
-        reply_to: Optional[str] = None
+        reply_to: Optional[str] = None,
+        email_type: Optional[str] = None,
+        source_service: str = "app",
+        source_action: Optional[str] = None,
+        source_user_id: Optional[str] = None,
+        source_reference_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Send an email to one or more recipients
@@ -31,14 +71,28 @@ class EmailService:
             html_content: HTML body content
             text_content: Plain text body content (optional, derived from HTML if not provided)
             reply_to: Reply-to email address (optional)
+            email_type: Type of email for tracking (e.g., 'welcome', 'call_sheet', 'clearance')
+            source_service: Service that triggered the email (e.g., 'app', 'backlot', 'admin')
+            source_action: Action that triggered the email (e.g., 'user_creation', 'call_sheet_send')
+            source_user_id: ID of user who triggered the email (if applicable)
+            source_reference_id: Reference to related entity (project_id, etc.)
 
         Returns:
             Dict with success status and details
         """
         provider = getattr(settings, 'EMAIL_PROVIDER', 'ses').lower()
 
+        # Create logging context to pass to provider functions
+        log_context = {
+            "email_type": email_type,
+            "source_service": source_service,
+            "source_action": source_action,
+            "source_user_id": source_user_id,
+            "source_reference_id": source_reference_id,
+        }
+
         if provider == "ses" or provider == "aws":
-            return await EmailService._send_via_ses(to_emails, subject, html_content, text_content, reply_to)
+            return await EmailService._send_via_ses(to_emails, subject, html_content, text_content, reply_to, log_context)
         elif provider == "resend":
             return await EmailService._send_via_resend(to_emails, subject, html_content, text_content, reply_to)
         elif provider == "sendgrid":
@@ -55,7 +109,8 @@ class EmailService:
         subject: str,
         html_content: str,
         text_content: Optional[str] = None,
-        reply_to: Optional[str] = None
+        reply_to: Optional[str] = None,
+        log_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Send email using AWS SES"""
         try:
@@ -115,11 +170,28 @@ class EmailService:
                 send_params['ReplyToAddresses'] = [reply_to]
 
             response = ses_client.send_email(**send_params)
+            message_id = response.get('MessageId')
+
+            # Log email to database for each recipient
+            if log_context and message_id:
+                for recipient in to_emails:
+                    await log_email_to_database(
+                        message_id=message_id,
+                        sender_email=from_address,
+                        sender_name=from_name,
+                        recipient_email=recipient,
+                        subject=subject,
+                        email_type=log_context.get("email_type"),
+                        source_service=log_context.get("source_service", "app"),
+                        source_action=log_context.get("source_action"),
+                        source_user_id=log_context.get("source_user_id"),
+                        source_reference_id=log_context.get("source_reference_id"),
+                    )
 
             return {
                 "success": True,
                 "provider": "ses",
-                "message_id": response.get('MessageId'),
+                "message_id": message_id,
                 "recipients": len(to_emails)
             }
 
@@ -784,7 +856,7 @@ def generate_welcome_email_html(
 ) -> str:
     """
     Generate HTML welcome email with temporary password.
-    Uses the same dark theme as other emails for consistency.
+    Full onboarding design with platform overview, feature highlights, and community guidelines.
     """
     html = f"""
 <!DOCTYPE html>
@@ -795,83 +867,183 @@ def generate_welcome_email_html(
     <title>Welcome to Second Watch Network</title>
 </head>
 <body style="margin: 0; padding: 0; background-color: #121212; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-    <div style="max-width: 600px; margin: 0 auto; padding: 24px;">
-        <!-- Header with Logo -->
-        <div style="text-align: center; padding: 32px 24px; background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%); border-radius: 12px 12px 0 0; border-bottom: 3px solid #d4af37;">
-            <h1 style="color: #d4af37; margin: 0 0 8px 0; font-size: 28px; letter-spacing: 1px;">SECOND WATCH</h1>
-            <p style="color: #f5f0e1; margin: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 2px;">NETWORK</p>
+    <div style="max-width: 640px; margin: 0 auto; padding: 24px;">
+
+        <!-- ============ HEADER ============ -->
+        <div style="text-align: center; padding: 40px 24px; background: linear-gradient(135deg, #1a1a1a 0%, #252525 50%, #1a1a1a 100%); border-radius: 12px 12px 0 0; border-bottom: 3px solid #d4af37; position: relative;">
+            <!-- Film strip accent -->
+            <div style="position: absolute; top: 0; left: 0; right: 0; height: 8px; background: repeating-linear-gradient(90deg, #d4af37 0px, #d4af37 20px, transparent 20px, transparent 30px);"></div>
+            <h1 style="color: #d4af37; margin: 0 0 8px 0; font-size: 32px; letter-spacing: 2px; font-weight: 700;">SECOND WATCH</h1>
+            <p style="color: #f5f0e1; margin: 0 0 16px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 3px;">NETWORK</p>
+            <p style="color: #d4af37; margin: 0; font-size: 20px; font-style: italic;">"Welcome to the Watch"</p>
         </div>
 
-        <!-- Main Content -->
-        <div style="background-color: #1a1a1a; padding: 32px 24px; border-radius: 0 0 12px 12px;">
+        <!-- ============ MAIN CONTENT ============ -->
+        <div style="background-color: #1a1a1a; padding: 32px 24px;">
+
             <!-- Welcome Message -->
-            <h2 style="color: #f5f0e1; margin: 0 0 16px 0; font-size: 24px;">
+            <h2 style="color: #f5f0e1; margin: 0 0 16px 0; font-size: 26px;">
                 Welcome, {name}!
             </h2>
 
-            <p style="color: #a0a0a0; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
-                Your account has been created on Second Watch Network, the premier platform for faith-driven filmmakers.
-                We're excited to have you join our community!
-            </p>
+            <!-- Platform Overview -->
+            <div style="background: linear-gradient(135deg, #252525 0%, #1f1f1f 100%); padding: 20px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #d4af37;">
+                <h3 style="color: #d4af37; margin: 0 0 12px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">What is Second Watch Network?</h3>
+                <p style="color: #a0a0a0; margin: 0; font-size: 15px; line-height: 1.7;">
+                    Second Watch Network is the <strong style="color: #f5f0e1;">premier platform for faith-driven filmmakers</strong>.
+                    We're a community of creators, producers, and industry professionals united by a shared mission:
+                    to create meaningful cinema that inspires and uplifts. From development to distribution,
+                    we provide the tools, connections, and resources you need to bring your vision to life.
+                </p>
+            </div>
 
             <!-- Credentials Box -->
-            <div style="background-color: #2a2a2a; padding: 24px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #d4af37;">
+            <div style="background-color: #2a2a2a; padding: 24px; border-radius: 8px; margin-bottom: 24px; border: 2px solid #d4af37;">
                 <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">
                     Your Login Credentials
                 </h3>
 
-                <div style="margin-bottom: 12px;">
+                <div style="margin-bottom: 16px;">
                     <p style="color: #666; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Email</p>
-                    <p style="color: #f5f0e1; margin: 0; font-size: 16px; font-family: monospace; background-color: #1a1a1a; padding: 8px 12px; border-radius: 4px;">
+                    <p style="color: #f5f0e1; margin: 0; font-size: 16px; font-family: monospace; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px;">
                         {email}
                     </p>
                 </div>
 
                 <div>
                     <p style="color: #666; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Temporary Password</p>
-                    <p style="color: #d4af37; margin: 0; font-size: 18px; font-family: monospace; font-weight: bold; background-color: #1a1a1a; padding: 8px 12px; border-radius: 4px; letter-spacing: 1px;">
+                    <p style="color: #d4af37; margin: 0; font-size: 20px; font-family: monospace; font-weight: bold; background-color: #1a1a1a; padding: 10px 14px; border-radius: 4px; letter-spacing: 2px;">
                         {temp_password}
                     </p>
                 </div>
             </div>
 
             <!-- Security Note -->
-            <div style="background-color: #3a3a2a; padding: 16px; border-radius: 8px; margin-bottom: 24px; border-left: 4px solid #fbbf24;">
+            <div style="background-color: #3a3a2a; padding: 16px; border-radius: 8px; margin-bottom: 32px; border-left: 4px solid #fbbf24;">
                 <p style="color: #fbbf24; margin: 0; font-size: 14px;">
-                    <strong>Important:</strong> You will be required to change your password when you first log in.
+                    <strong>Security Notice:</strong> You will be required to change your password when you first log in. Keep your credentials secure and do not share them.
                 </p>
             </div>
 
             <!-- CTA Button -->
             <div style="text-align: center; margin: 32px 0;">
-                <a href="{login_url}" style="display: inline-block; background-color: #d4af37; color: #121212; padding: 16px 48px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; letter-spacing: 0.5px;">
-                    Log In Now
+                <a href="{login_url}" style="display: inline-block; background: linear-gradient(135deg, #d4af37 0%, #c9a432 100%); color: #121212; padding: 18px 56px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 18px; letter-spacing: 1px; box-shadow: 0 4px 12px rgba(212, 175, 55, 0.3);">
+                    LOG IN NOW
                 </a>
             </div>
 
-            <!-- What's Next -->
-            <div style="border-top: 1px solid #333; padding-top: 24px; margin-top: 24px;">
-                <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px;">What You Can Do:</h3>
-                <ul style="color: #a0a0a0; margin: 0; padding-left: 20px; line-height: 1.8;">
-                    <li>Complete your filmmaker profile</li>
-                    <li>Connect with other filmmakers</li>
-                    <li>Access the Backlot production tools</li>
-                    <li>Submit your projects for consideration</li>
-                    <li>Join the community forums</li>
-                </ul>
+            <!-- ============ FEATURE HIGHLIGHTS ============ -->
+            <div style="border-top: 1px solid #333; padding-top: 32px; margin-top: 32px;">
+                <h3 style="color: #d4af37; margin: 0 0 24px 0; font-size: 18px; text-transform: uppercase; letter-spacing: 1px; text-align: center;">Explore the Platform</h3>
+
+                <!-- Feature Grid - 2x2 -->
+                <table style="width: 100%; border-collapse: separate; border-spacing: 12px;">
+                    <tr>
+                        <!-- Green Room -->
+                        <td style="width: 50%; vertical-align: top; background-color: #252525; padding: 20px; border-radius: 8px; border-top: 3px solid #4ade80;">
+                            <h4 style="color: #4ade80; margin: 0 0 8px 0; font-size: 16px;">The Green Room</h4>
+                            <p style="color: #a0a0a0; margin: 0; font-size: 13px; line-height: 1.5;">
+                                Develop your projects from concept to greenlight. Pitch ideas, find collaborators, and compete for funding and distribution opportunities.
+                            </p>
+                        </td>
+                        <!-- Backlot -->
+                        <td style="width: 50%; vertical-align: top; background-color: #252525; padding: 20px; border-radius: 8px; border-top: 3px solid #60a5fa;">
+                            <h4 style="color: #60a5fa; margin: 0 0 8px 0; font-size: 16px;">The Backlot</h4>
+                            <p style="color: #a0a0a0; margin: 0; font-size: 13px; line-height: 1.5;">
+                                Professional production management tools. Handle call sheets, clearances, budgets, casting, and crew coordination all in one place.
+                            </p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <!-- The Order -->
+                        <td style="width: 50%; vertical-align: top; background-color: #252525; padding: 20px; border-radius: 8px; border-top: 3px solid #d4af37;">
+                            <h4 style="color: #d4af37; margin: 0 0 8px 0; font-size: 16px;">The Order</h4>
+                            <p style="color: #a0a0a0; margin: 0; font-size: 13px; line-height: 1.5;">
+                                Join our professional guild. Connect with Craft Houses for your specialty, find mentorship, and build your career network.
+                            </p>
+                        </td>
+                        <!-- Community -->
+                        <td style="width: 50%; vertical-align: top; background-color: #252525; padding: 20px; border-radius: 8px; border-top: 3px solid #f472b6;">
+                            <h4 style="color: #f472b6; margin: 0 0 8px 0; font-size: 16px;">Community</h4>
+                            <p style="color: #a0a0a0; margin: 0; font-size: 13px; line-height: 1.5;">
+                                Engage with fellow filmmakers. Share knowledge, discuss craft, find collaborators, and be part of something bigger than yourself.
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <!-- ============ COMMUNITY GUIDELINES ============ -->
+            <div style="border-top: 1px solid #333; padding-top: 32px; margin-top: 32px;">
+                <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">Community Guidelines</h3>
+                <div style="background-color: #252525; padding: 20px; border-radius: 8px;">
+                    <ul style="color: #a0a0a0; margin: 0; padding-left: 20px; line-height: 1.8; font-size: 14px;">
+                        <li><strong style="color: #f5f0e1;">Respect & Integrity:</strong> Treat all members with dignity. We're a professional community.</li>
+                        <li><strong style="color: #f5f0e1;">Faith-Centered:</strong> Our work honors God. Content should reflect our shared values.</li>
+                        <li><strong style="color: #f5f0e1;">Collaboration:</strong> Share knowledge generously. We rise by lifting others.</li>
+                        <li><strong style="color: #f5f0e1;">Excellence:</strong> Pursue the highest standards in your craft and conduct.</li>
+                    </ul>
+                    <p style="color: #666; margin: 16px 0 0 0; font-size: 12px;">
+                        <a href="https://www.secondwatchnetwork.com/guidelines" style="color: #d4af37; text-decoration: none;">Read our full Community Guidelines &rarr;</a>
+                    </p>
+                </div>
+            </div>
+
+            <!-- ============ GETTING STARTED ============ -->
+            <div style="border-top: 1px solid #333; padding-top: 32px; margin-top: 32px;">
+                <h3 style="color: #d4af37; margin: 0 0 16px 0; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">Quick Start Guide</h3>
+                <table style="width: 100%;">
+                    <tr>
+                        <td style="padding: 8px 0; vertical-align: top; width: 30px;">
+                            <span style="display: inline-block; width: 24px; height: 24px; background-color: #d4af37; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">1</span>
+                        </td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Log in and change your password</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; vertical-align: top;">
+                            <span style="display: inline-block; width: 24px; height: 24px; background-color: #d4af37; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">2</span>
+                        </td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Complete your profile with bio, skills, and experience</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; vertical-align: top;">
+                            <span style="display: inline-block; width: 24px; height: 24px; background-color: #d4af37; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">3</span>
+                        </td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Explore the platform and connect with other filmmakers</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; vertical-align: top;">
+                            <span style="display: inline-block; width: 24px; height: 24px; background-color: #d4af37; color: #121212; border-radius: 50%; text-align: center; line-height: 24px; font-weight: bold; font-size: 12px;">4</span>
+                        </td>
+                        <td style="padding: 8px 0; color: #a0a0a0; font-size: 14px;">Start collaborating and bringing your vision to life!</td>
+                    </tr>
+                </table>
             </div>
         </div>
 
-        <!-- Footer -->
-        <div style="text-align: center; padding: 24px; color: #666;">
-            <p style="margin: 0 0 8px 0;">
-                <a href="https://www.secondwatchnetwork.com" style="color: #d4af37; text-decoration: none;">www.secondwatchnetwork.com</a>
+        <!-- ============ SUPPORT SECTION ============ -->
+        <div style="background-color: #252525; padding: 24px; border-radius: 0 0 12px 12px;">
+            <h3 style="color: #f5f0e1; margin: 0 0 12px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px;">Need Help?</h3>
+            <p style="color: #a0a0a0; margin: 0 0 8px 0; font-size: 14px;">
+                Our team is here to support you on your filmmaking journey.
             </p>
-            <p style="margin: 0 0 16px 0; font-size: 12px;">
-                If you did not request this account, please ignore this email.
+            <p style="margin: 0;">
+                <a href="mailto:support@secondwatch.network" style="color: #d4af37; text-decoration: none; font-size: 14px;">support@secondwatch.network</a>
             </p>
-            <p style="margin: 0; font-size: 12px; color: #444;">
-                Need help? Contact us at support@secondwatch.network
+        </div>
+
+        <!-- ============ FOOTER ============ -->
+        <div style="text-align: center; padding: 32px 24px; color: #666;">
+            <p style="margin: 0 0 12px 0;">
+                <a href="https://www.secondwatchnetwork.com" style="color: #d4af37; text-decoration: none; font-size: 14px;">www.secondwatchnetwork.com</a>
+            </p>
+            <p style="margin: 0 0 16px 0; font-size: 12px; line-height: 1.6;">
+                Second Watch Network - Faith-Driven Filmmaking<br>
+                Building the future of cinema, together.
+            </p>
+            <p style="margin: 0; font-size: 11px; color: #444;">
+                If you did not request this account, please ignore this email.<br>
+                This email was sent to {email}
             </p>
         </div>
     </div>
@@ -887,43 +1059,95 @@ def generate_welcome_email_text(
     temp_password: str,
     login_url: str = "https://www.secondwatchnetwork.com/login"
 ) -> str:
-    """Generate plain text version of welcome email"""
+    """Generate plain text version of welcome email with full onboarding content"""
     lines = [
-        "=" * 50,
-        "WELCOME TO SECOND WATCH NETWORK",
-        "=" * 50,
+        "=" * 60,
+        "       SECOND WATCH NETWORK",
+        "       \"Welcome to the Watch\"",
+        "=" * 60,
         "",
-        f"Hello {name}!",
+        f"Welcome, {name}!",
         "",
-        "Your account has been created on Second Watch Network,",
-        "the premier platform for faith-driven filmmakers.",
+        "-" * 60,
+        "WHAT IS SECOND WATCH NETWORK?",
+        "-" * 60,
         "",
-        "-" * 50,
+        "Second Watch Network is the premier platform for faith-driven",
+        "filmmakers. We're a community of creators, producers, and industry",
+        "professionals united by a shared mission: to create meaningful",
+        "cinema that inspires and uplifts.",
+        "",
+        "From development to distribution, we provide the tools,",
+        "connections, and resources you need to bring your vision to life.",
+        "",
+        "=" * 60,
         "YOUR LOGIN CREDENTIALS",
-        "-" * 50,
-        f"Email: {email}",
+        "=" * 60,
+        "",
+        f"Email:              {email}",
         f"Temporary Password: {temp_password}",
         "",
-        "IMPORTANT: You will be required to change your password",
-        "when you first log in.",
+        "*** SECURITY NOTICE ***",
+        "You will be required to change your password when you first",
+        "log in. Keep your credentials secure and do not share them.",
         "",
         f"Log in here: {login_url}",
         "",
-        "-" * 50,
-        "WHAT YOU CAN DO:",
-        "-" * 50,
-        "- Complete your filmmaker profile",
-        "- Connect with other filmmakers",
-        "- Access the Backlot production tools",
-        "- Submit your projects for consideration",
-        "- Join the community forums",
+        "-" * 60,
+        "EXPLORE THE PLATFORM",
+        "-" * 60,
         "",
-        "=" * 50,
+        "THE GREEN ROOM",
+        "  Develop your projects from concept to greenlight. Pitch ideas,",
+        "  find collaborators, and compete for funding opportunities.",
+        "",
+        "THE BACKLOT",
+        "  Professional production management tools. Handle call sheets,",
+        "  clearances, budgets, casting, and crew coordination.",
+        "",
+        "THE ORDER",
+        "  Join our professional guild. Connect with Craft Houses for",
+        "  your specialty, find mentorship, and build your network.",
+        "",
+        "COMMUNITY",
+        "  Engage with fellow filmmakers. Share knowledge, discuss craft,",
+        "  and be part of something bigger than yourself.",
+        "",
+        "-" * 60,
+        "COMMUNITY GUIDELINES",
+        "-" * 60,
+        "",
+        "* RESPECT & INTEGRITY: Treat all members with dignity.",
+        "* FAITH-CENTERED: Our work honors God and reflects our values.",
+        "* COLLABORATION: Share knowledge generously. We rise by lifting others.",
+        "* EXCELLENCE: Pursue the highest standards in craft and conduct.",
+        "",
+        "Full guidelines: https://www.secondwatchnetwork.com/guidelines",
+        "",
+        "-" * 60,
+        "QUICK START GUIDE",
+        "-" * 60,
+        "",
+        "1. Log in and change your password",
+        "2. Complete your profile with bio, skills, and experience",
+        "3. Explore the platform and connect with other filmmakers",
+        "4. Start collaborating and bringing your vision to life!",
+        "",
+        "-" * 60,
+        "NEED HELP?",
+        "-" * 60,
+        "",
+        "Our team is here to support you on your filmmaking journey.",
+        "Contact us: support@secondwatch.network",
+        "",
+        "=" * 60,
         "www.secondwatchnetwork.com",
+        "Second Watch Network - Faith-Driven Filmmaking",
+        "Building the future of cinema, together.",
         "",
         "If you did not request this account, please ignore this email.",
-        "Need help? Contact us at support@secondwatch.network",
-        "=" * 50,
+        f"This email was sent to {email}",
+        "=" * 60,
     ]
     return "\n".join(lines)
 

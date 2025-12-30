@@ -7,3 +7,8 @@ export { default as OrderJobs } from './OrderJobs';
 export { default as OrderJobDetail } from './OrderJobDetail';
 export { default as OrderLodges } from './OrderLodges';
 export { default as OrderLodgeDetail } from './OrderLodgeDetail';
+export { default as OrderCraftHouses } from './OrderCraftHouses';
+export { default as OrderCraftHouseDetail } from './OrderCraftHouseDetail';
+export { default as OrderFellowships } from './OrderFellowships';
+export { default as OrderFellowshipDetail } from './OrderFellowshipDetail';
+export { default as OrderGovernance } from './OrderGovernance';

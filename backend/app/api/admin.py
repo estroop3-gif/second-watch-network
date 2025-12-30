@@ -185,12 +185,77 @@ async def delete_user(user_id: str):
                 # Log but don't fail if Cognito deletion fails
                 print(f"Warning: Failed to delete user from Cognito: {cognito_error}")
 
-        # Delete user profile
-        client.table("profiles").delete().eq("id", user_id).execute()
+        # Delete all associated data BEFORE deleting profile
+        # Order matters due to foreign key constraints
+        # Use helper to safely delete from tables (ignores non-existent tables)
+        def safe_delete(table: str, column: str, value: str):
+            try:
+                client.table(table).delete().eq(column, value).execute()
+            except Exception as e:
+                # Ignore errors for non-existent tables or missing columns
+                print(f"Note: Could not delete from {table}: {e}")
 
-        # Delete associated data
-        client.table("filmmaker_profiles").delete().eq("user_id", user_id).execute()
-        client.table("submissions").delete().eq("user_id", user_id).execute()
+        # Backlot related - delete user-created content first
+        safe_delete("backlot_scripts", "created_by_user_id", user_id)
+        safe_delete("backlot_call_sheets", "created_by", user_id)
+        safe_delete("backlot_invoices", "created_by", user_id)
+        safe_delete("backlot_project_contacts", "user_id", user_id)
+        safe_delete("backlot_project_members", "user_id", user_id)
+        safe_delete("backlot_timecards", "user_id", user_id)
+        safe_delete("backlot_timecard_entries", "user_id", user_id)
+        safe_delete("backlot_receipts", "user_id", user_id)
+        safe_delete("backlot_mileage_entries", "user_id", user_id)
+        safe_delete("backlot_user_notes", "user_id", user_id)
+        safe_delete("backlot_user_bookmarks", "user_id", user_id)
+        safe_delete("backlot_checkins", "user_id", user_id)
+        safe_delete("backlot_desktop_keys", "user_id", user_id)
+        safe_delete("backlot_desktop_api_keys", "user_id", user_id)
+
+        # Delete projects created by user (will cascade to project-related tables)
+        safe_delete("backlot_projects", "created_by", user_id)
+
+        # Community/Forum related
+        safe_delete("community_replies", "user_id", user_id)
+        safe_delete("community_threads", "user_id", user_id)
+
+        # Craft House discussions
+        safe_delete("craft_house_replies", "user_id", user_id)
+        safe_delete("craft_house_threads", "user_id", user_id)
+        safe_delete("craft_house_topics", "created_by", user_id)
+
+        # Order related
+        safe_delete("order_craft_house_memberships", "user_id", user_id)
+        safe_delete("order_fellowship_memberships", "user_id", user_id)
+        safe_delete("order_member_profiles", "user_id", user_id)
+        safe_delete("order_applications", "user_id", user_id)
+        safe_delete("order_job_applications", "user_id", user_id)
+        safe_delete("order_booking_requests", "target_user_id", user_id)
+        safe_delete("order_event_rsvps", "user_id", user_id)
+
+        # Messages
+        safe_delete("messages", "sender_id", user_id)
+        safe_delete("conversation_participants", "user_id", user_id)
+
+        # Notifications
+        safe_delete("notifications", "user_id", user_id)
+
+        # Connections
+        safe_delete("connections", "from_user_id", user_id)
+        safe_delete("connections", "to_user_id", user_id)
+
+        # Green Room
+        safe_delete("greenroom_submissions", "user_id", user_id)
+        safe_delete("greenroom_votes", "user_id", user_id)
+
+        # Submissions
+        safe_delete("submissions", "user_id", user_id)
+
+        # Filmmaker profiles
+        safe_delete("filmmaker_profiles", "user_id", user_id)
+        safe_delete("filmmaker_applications", "user_id", user_id)
+
+        # Finally delete the profile
+        client.table("profiles").delete().eq("id", user_id).execute()
 
         return {"message": "User deleted successfully from database and Cognito"}
     except Exception as e:
@@ -1152,9 +1217,22 @@ async def update_user_roles(update: UserRolesUpdate):
         for role_name, column_name in ROLE_TO_COLUMN.items():
             update_data[column_name] = role_name in update.roles
 
-        # Also set the legacy "role" field to the primary (first) role
-        primary_role = update.roles[0] if update.roles else "free"
-        update_data["role"] = primary_role
+        # Set the legacy "role" field based on tier/premium status (not the role flags)
+        # The role field only accepts: 'user', 'member', 'filmmaker', 'partner', 'admin', 'superadmin', 'premium'
+        if "superadmin" in update.roles:
+            update_data["role"] = "superadmin"
+        elif "admin" in update.roles:
+            update_data["role"] = "admin"
+        elif "premium" in update.roles:
+            update_data["role"] = "premium"
+        elif "filmmaker" in update.roles:
+            update_data["role"] = "filmmaker"
+        elif "partner" in update.roles:
+            update_data["role"] = "partner"
+        elif "order_member" in update.roles or "lodge_officer" in update.roles:
+            update_data["role"] = "member"
+        else:
+            update_data["role"] = "user"
 
         # Handle alpha_tester_since timestamp
         if "alpha_tester" in update.roles:

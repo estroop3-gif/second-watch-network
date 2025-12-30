@@ -69,8 +69,8 @@ export const OrderJoinCTA: React.FC = () => {
               The Second Watch Order
             </h3>
             <p className="text-sm text-emerald-300/70">
-              A professional, God-centered guild for filmmakers and crew.
-              Join to connect with fellow Christian creatives.
+              A professional guild for filmmakers and crew.
+              Join to connect with fellow craftspeople who share your values.
             </p>
           </div>
           <Button

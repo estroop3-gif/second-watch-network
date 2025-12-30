@@ -15,7 +15,7 @@ from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
     admin, admin_community, admin_content, admin_backlot, admin_profiles,
-    admin_roles, admin_storage, admin_users,
+    admin_roles, admin_storage, admin_users, admin_emails, ses_webhook,
     availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses, camera_log,
@@ -131,6 +131,8 @@ app.include_router(admin_profiles.router, prefix=f"{settings.API_V1_PREFIX}/admi
 app.include_router(admin_roles.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Roles"])
 app.include_router(admin_storage.router, prefix=f"{settings.API_V1_PREFIX}/admin/storage", tags=["Admin Storage"])
 app.include_router(admin_users.router, prefix=f"{settings.API_V1_PREFIX}/admin/users", tags=["Admin Users"])
+app.include_router(admin_emails.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Emails"])
+app.include_router(ses_webhook.router, prefix=f"{settings.API_V1_PREFIX}", tags=["SES Webhook"])
 app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availability", tags=["Availability"])
 app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", tags=["Credits"])
 app.include_router(community.router, prefix=f"{settings.API_V1_PREFIX}/community", tags=["Community"])

@@ -70,8 +70,8 @@ export default function OrderLanding() {
         </div>
         <h1 className="text-4xl font-bold mb-4">The Second Watch Order</h1>
         <p className="text-xl text-muted-foreground max-w-2xl mx-auto mb-6">
-          A professional, God-centered guild of film industry craftspeople committed to excellence,
-          integrity, and serving the Kingdom through their work.
+          A professional guild of film industry craftspeople committed to excellence,
+          integrity, and purposeful work.
         </p>
 
         {!user ? (

@@ -74,6 +74,11 @@ import {
   OrderJobDetail,
   OrderLodges,
   OrderLodgeDetail,
+  OrderCraftHouses,
+  OrderCraftHouseDetail,
+  OrderFellowships,
+  OrderFellowshipDetail,
+  OrderGovernance,
 } from "./pages/order";
 
 // Admin Pages
@@ -97,6 +102,7 @@ import CommunityManagement from "./pages/admin/CommunityManagement";
 import AuditLog from "./pages/admin/AuditLog";
 import AdminDonations from "./pages/admin/Donations";
 import AlphaTesting from "./pages/admin/AlphaTesting";
+import EmailLogs from "./pages/admin/EmailLogs";
 
 // Partner Pages
 import PartnerLayout from "./pages/partner/Layout";
@@ -232,6 +238,11 @@ const App = () => (
                     <Route path="/order/jobs/:jobId" element={<OrderJobDetail />} />
                     <Route path="/order/lodges" element={<OrderLodges />} />
                     <Route path="/order/lodges/:lodgeId" element={<OrderLodgeDetail />} />
+                    <Route path="/order/craft-houses" element={<OrderCraftHouses />} />
+                    <Route path="/order/craft-houses/:slug" element={<OrderCraftHouseDetail />} />
+                    <Route path="/order/fellowships" element={<OrderFellowships />} />
+                    <Route path="/order/fellowships/:slug" element={<OrderFellowshipDetail />} />
+                    <Route path="/order/governance" element={<OrderGovernance />} />
 
                     {/* Filmmaker-only Routes (also accessible by admin) */}
                     <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin']} />}>
@@ -273,6 +284,7 @@ const App = () => (
                         <Route path="audit-log" element={<AuditLog />} />
                         <Route path="donations" element={<AdminDonations />} />
                         <Route path="alpha-testing" element={<AlphaTesting />} />
+                        <Route path="email-logs" element={<EmailLogs />} />
                         <Route path="settings" element={<SiteSettings />} />
                       </Route>
                     </Route>

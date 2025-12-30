@@ -77,7 +77,76 @@ class PrimaryTrack(str, Enum):
     MOTION_GRAPHICS = "motion_graphics"
     COLORIST = "colorist"
     PRODUCER = "producer"
+    ART_DEPARTMENT = "art_department"
+    WARDROBE = "wardrobe"
+    MAKEUP_HAIR = "makeup_hair"
     OTHER = "other"
+
+
+class MembershipTier(str, Enum):
+    """Order membership tier levels"""
+    BASE = "base"          # $50/month
+    STEWARD = "steward"    # $100/month
+    PATRON = "patron"      # $250+/month
+
+
+class CraftHouseStatus(str, Enum):
+    """Craft House status"""
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    FORMING = "forming"
+
+
+class CraftHouseRole(str, Enum):
+    """Rank within a Craft House (unified ladder)"""
+    APPRENTICE = "apprentice"  # Entry level / PA equivalent
+    ASSOCIATE = "associate"    # Developing craftsperson
+    MEMBER = "member"          # Full member status
+    STEWARD = "steward"        # Leadership role (guides training, standards)
+
+
+class FellowshipType(str, Enum):
+    """Type of Fellowship"""
+    ENTRY_LEVEL = "entry_level"
+    FAITH_BASED = "faith_based"
+    SPECIAL_INTEREST = "special_interest"
+    REGIONAL = "regional"
+
+
+class FellowshipRole(str, Enum):
+    """Role within a Fellowship"""
+    MEMBER = "member"
+    LEADER = "leader"
+    COORDINATOR = "coordinator"
+
+
+class GovernancePositionType(str, Enum):
+    """Types of governance positions"""
+    HIGH_COUNCIL = "high_council"
+    GRAND_MASTER = "grand_master"
+    LODGE_MASTER = "lodge_master"
+    LODGE_COUNCIL = "lodge_council"
+    CRAFT_MASTER = "craft_master"
+    CRAFT_DEPUTY = "craft_deputy"
+    FELLOWSHIP_LEADER = "fellowship_leader"
+    REGIONAL_DIRECTOR = "regional_director"
+
+
+class GovernanceScopeType(str, Enum):
+    """Scope of a governance position"""
+    ORDER = "order"
+    LODGE = "lodge"
+    CRAFT_HOUSE = "craft_house"
+    FELLOWSHIP = "fellowship"
+    REGION = "region"
+
+
+class DuesPaymentStatus(str, Enum):
+    """Dues payment status"""
+    PENDING = "pending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    REFUNDED = "refunded"
 
 
 # ============ Models ============
@@ -153,9 +222,14 @@ class OrderMemberProfile(SQLModel, table=True):
     joined_at: Optional[datetime] = None
     probation_ends_at: Optional[datetime] = None  # When probationary period ends
 
-    # Stripe subscription tracking (stub for now)
+    # Membership tier
+    membership_tier: MembershipTier = Field(default=MembershipTier.BASE, index=True)
+    tier_started_at: Optional[datetime] = None
+
+    # Stripe subscription tracking
     stripe_customer_id: Optional[str] = None
     stripe_subscription_id: Optional[str] = None
+    stripe_price_id: Optional[str] = Field(default=None, max_length=100)  # Current subscription price
     dues_status: Optional[str] = Field(default="pending", max_length=50)  # pending, active, past_due, cancelled
 
     # Metadata
@@ -341,3 +415,167 @@ class OrderBookingRequest(SQLModel, table=True):
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============ Craft House Models ============
+
+class CraftHouse(SQLModel, table=True):
+    """
+    Craft House represents a department-based professional group.
+    Members are grouped by their primary craft (Camera, Post, Audio, etc.)
+    """
+    __tablename__ = "order_craft_houses"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=200, index=True)
+    slug: str = Field(max_length=100, unique=True, index=True)
+    description: Optional[str] = None
+    icon: Optional[str] = Field(default=None, max_length=50)  # Lucide icon name
+    primary_tracks: Optional[str] = None  # JSON array of PrimaryTrack values
+    status: CraftHouseStatus = Field(default=CraftHouseStatus.ACTIVE, index=True)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    memberships: List["CraftHouseMembership"] = Relationship(back_populates="craft_house")
+
+
+class CraftHouseMembership(SQLModel, table=True):
+    """
+    Tracks a user's membership in a Craft House.
+    Members can belong to multiple Craft Houses but have one primary.
+    """
+    __tablename__ = "order_craft_house_memberships"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)  # FK to auth.users
+    craft_house_id: int = Field(foreign_key="order_craft_houses.id", index=True)
+
+    # Membership details
+    role: CraftHouseRole = Field(default=CraftHouseRole.MEMBER, index=True)
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    craft_house: CraftHouse = Relationship(back_populates="memberships")
+
+    class Config:
+        table_args = {
+            "unique_constraints": [("user_id", "craft_house_id")]
+        }
+
+
+# ============ Fellowship Models ============
+
+class Fellowship(SQLModel, table=True):
+    """
+    Fellowship is a cross-craft special interest group.
+    Examples: First Watch (entry-level), Kingdom Builders (faith-based)
+    """
+    __tablename__ = "order_fellowships"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=200, index=True)
+    slug: str = Field(max_length=100, unique=True, index=True)
+    fellowship_type: FellowshipType = Field(index=True)
+    description: Optional[str] = None
+    requirements: Optional[str] = None  # Description of membership requirements
+    is_opt_in: bool = Field(default=True)  # Whether members choose to join
+    is_visible: bool = Field(default=True)  # Whether shown publicly
+    status: CraftHouseStatus = Field(default=CraftHouseStatus.ACTIVE, index=True)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    memberships: List["FellowshipMembership"] = Relationship(back_populates="fellowship")
+
+
+class FellowshipMembership(SQLModel, table=True):
+    """
+    Tracks a user's membership in a Fellowship.
+    Members can belong to multiple Fellowships.
+    """
+    __tablename__ = "order_fellowship_memberships"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)  # FK to auth.users
+    fellowship_id: int = Field(foreign_key="order_fellowships.id", index=True)
+
+    # Membership details
+    role: FellowshipRole = Field(default=FellowshipRole.MEMBER)
+    joined_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    # Relationships
+    fellowship: Fellowship = Relationship(back_populates="memberships")
+
+    class Config:
+        table_args = {
+            "unique_constraints": [("user_id", "fellowship_id")]
+        }
+
+
+# ============ Governance Models ============
+
+class GovernancePosition(SQLModel, table=True):
+    """
+    Governance positions track leadership roles within the Order.
+    Includes High Council, Lodge Masters, Craft Masters, etc.
+    """
+    __tablename__ = "order_governance_positions"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)  # FK to auth.users
+
+    # Position details
+    position_type: GovernancePositionType = Field(index=True)
+    scope_type: Optional[GovernanceScopeType] = None  # order, lodge, craft_house, fellowship
+    scope_id: Optional[int] = None  # ID of lodge/craft_house/fellowship if applicable
+    title: str = Field(max_length=200)  # Display title
+    description: Optional[str] = None  # Role description
+
+    # Term
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    ended_at: Optional[datetime] = None  # NULL if currently active
+    is_active: bool = Field(default=True, index=True)
+    appointed_by: Optional[str] = None  # User who appointed them
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============ Dues Payment Model ============
+
+class DuesPayment(SQLModel, table=True):
+    """
+    Tracks membership dues payments history.
+    """
+    __tablename__ = "order_dues_payments"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)  # FK to auth.users
+
+    # Payment details
+    amount_cents: int
+    tier: MembershipTier
+    stripe_payment_intent_id: Optional[str] = Field(default=None, max_length=255)
+    stripe_invoice_id: Optional[str] = Field(default=None, max_length=255, index=True)
+    status: DuesPaymentStatus = Field(default=DuesPaymentStatus.PENDING, index=True)
+
+    # Billing period
+    period_start: Optional[datetime] = None
+    period_end: Optional[datetime] = None
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.utcnow)

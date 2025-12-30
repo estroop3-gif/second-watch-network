@@ -99,9 +99,12 @@ Routes defined in `src/App.tsx`. Vite proxies `/api` to backend at localhost:800
 
 ### Backend
 - Async/await throughout with FastAPI
-- Direct Supabase client calls (no ORM) - `from app.core.supabase import supabase`
+- Two database patterns:
+  - Supabase client for simple CRUD: `from app.core.database import get_client`
+  - Raw SQL via SQLAlchemy for complex queries: `from app.core.database import execute_query, execute_single`
 - Modular API routes organized by domain
 - JWT authentication via AWS Cognito
+- **Cognito ID → Profile ID**: Auth tokens contain Cognito user IDs, but the `profiles` table uses UUIDs. Use `get_profile_id_from_cognito_id()` helper to resolve (see `app/api/users.py`)
 
 ### Database Migrations
 Located in `backend/migrations/`. Run manually against Supabase:
@@ -127,3 +130,19 @@ PGPASSWORD='...' psql -h <host> -U swn_admin -d secondwatchnetwork -f migrations
 - Backend: AWS Lambda + SAM (`template.yaml`, `deploy.sh`)
 - Frontend: S3 + CloudFront (via GitHub Actions on push to master)
 - Production API: https://vnvvoelid6.execute-api.us-east-1.amazonaws.com
+
+### Deploy Commands
+```bash
+# Backend (AWS Lambda)
+cd backend && sam build && sam deploy
+
+# Frontend (S3 + CloudFront)
+cd frontend && VITE_API_URL=https://vnvvoelid6.execute-api.us-east-1.amazonaws.com npm run build
+aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
+aws cloudfront create-invalidation --distribution-id E2V5T2HN1P6FFI --paths "/*"
+```
+
+## Custom Claude Agents
+Located in `.claude/commands/`:
+- `/admin` - Admin panel specialist for planning, building, and debugging admin features
+- `/backlot_specialist` - Backlot production management expert for production features

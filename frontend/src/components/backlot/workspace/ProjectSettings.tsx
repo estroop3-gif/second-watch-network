@@ -1,13 +1,14 @@
 /**
- * ProjectSettings - Project configuration, visibility, and danger zone
+ * ProjectSettings - Project configuration, visibility, donations, and danger zone
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -39,6 +40,9 @@ import {
   HardDrive,
   Key,
   ArrowRight,
+  Heart,
+  DollarSign,
+  List,
 } from 'lucide-react';
 import { useProjects } from '@/hooks/backlot';
 import {
@@ -48,6 +52,9 @@ import {
   ProjectInput,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
+import DonationProgress from '@/components/backlot/DonationProgress';
+import DonationsListModal from '@/components/backlot/DonationsListModal';
 
 interface ProjectSettingsProps {
   project: BacklotProject;
@@ -130,7 +137,52 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
   const [isDeleting, setIsDeleting] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
+  // Donation settings state
+  const [donationSettings, setDonationSettings] = useState({
+    donations_enabled: false,
+    donation_goal_cents: null as number | null,
+    donation_message: '',
+  });
+  const [donationGoalInput, setDonationGoalInput] = useState(''); // Dollar input
+  const [isSavingDonations, setIsSavingDonations] = useState(false);
+  const [donationsSaved, setDonationsSaved] = useState(false);
+  const [showDonationsModal, setShowDonationsModal] = useState(false);
+  const [donationSummary, setDonationSummary] = useState<{
+    total_raised_cents: number;
+    donor_count: number;
+    donation_count: number;
+  } | null>(null);
+
   const publicUrl = `${window.location.origin}/projects/${project.slug}`;
+
+  // Fetch donation settings on mount
+  useEffect(() => {
+    const fetchDonationSettings = async () => {
+      try {
+        const summary = await api.getDonationSummary(project.id);
+        setDonationSettings({
+          donations_enabled: summary.donations_enabled,
+          donation_goal_cents: summary.goal_cents || null,
+          donation_message: summary.donation_message || '',
+        });
+        // Set dollar input from cents
+        if (summary.goal_cents) {
+          setDonationGoalInput((summary.goal_cents / 100).toString());
+        }
+        setDonationSummary({
+          total_raised_cents: summary.total_raised_cents,
+          donor_count: summary.donor_count,
+          donation_count: summary.donation_count,
+        });
+      } catch (err) {
+        console.error('Failed to fetch donation settings:', err);
+      }
+    };
+
+    if (formData.visibility === 'public' || formData.visibility === 'unlisted') {
+      fetchDonationSettings();
+    }
+  }, [project.id, formData.visibility]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -164,6 +216,44 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
     navigator.clipboard.writeText(publicUrl);
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 2000);
+  };
+
+  const handleSaveDonations = async () => {
+    setIsSavingDonations(true);
+    try {
+      // Convert dollar input to cents
+      const goalCents = donationGoalInput
+        ? Math.round(parseFloat(donationGoalInput) * 100)
+        : 0;
+
+      await api.updateDonationSettings(project.id, {
+        donations_enabled: donationSettings.donations_enabled,
+        donation_goal_cents: goalCents,
+        donation_message: donationSettings.donation_message,
+      });
+
+      // Update local state
+      setDonationSettings(prev => ({
+        ...prev,
+        donation_goal_cents: goalCents || null,
+      }));
+
+      setDonationsSaved(true);
+      setTimeout(() => setDonationsSaved(false), 2000);
+    } catch (err) {
+      console.error('Failed to save donation settings:', err);
+    } finally {
+      setIsSavingDonations(false);
+    }
+  };
+
+  const handleGoalInputChange = (value: string) => {
+    // Only allow numbers and one decimal point
+    const cleaned = value.replace(/[^0-9.]/g, '');
+    const parts = cleaned.split('.');
+    if (parts.length > 2) return;
+    if (parts[1]?.length > 2) return;
+    setDonationGoalInput(cleaned);
   };
 
   const hasChanges =
@@ -384,6 +474,165 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
         )}
       </section>
 
+      {/* Donation Settings - Only for public/unlisted projects */}
+      {(formData.visibility === 'public' || formData.visibility === 'unlisted') && (
+        <section className="space-y-4 border-t border-muted-gray/30 pt-8 mt-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+                <Heart className="w-5 h-5 text-primary-red" />
+                Donation Settings
+              </h3>
+              <p className="text-sm text-muted-gray">
+                Allow supporters to donate to your project
+              </p>
+            </div>
+          </div>
+
+          {/* Enable Donations Toggle */}
+          <div className="flex items-center justify-between py-3 px-4 bg-muted-gray/10 rounded-lg">
+            <div className="flex items-center gap-3">
+              <DollarSign className="w-5 h-5 text-accent-yellow" />
+              <div>
+                <Label className="text-bone-white font-medium">Accept Donations</Label>
+                <p className="text-sm text-muted-gray">
+                  Show a donate button on your public project page
+                </p>
+              </div>
+            </div>
+            <Switch
+              checked={donationSettings.donations_enabled}
+              onCheckedChange={(checked) =>
+                setDonationSettings(prev => ({ ...prev, donations_enabled: checked }))
+              }
+            />
+          </div>
+
+          {/* Donation Settings (when enabled) */}
+          {donationSettings.donations_enabled && (
+            <div className="space-y-4 pl-4 border-l-2 border-primary-red/30">
+              {/* Funding Goal */}
+              <div className="space-y-2">
+                <Label htmlFor="donation_goal">Funding Goal (optional)</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="donation_goal"
+                    type="text"
+                    placeholder="e.g., 5000"
+                    value={donationGoalInput}
+                    onChange={(e) => handleGoalInputChange(e.target.value)}
+                    className="pl-7"
+                  />
+                </div>
+                <p className="text-xs text-muted-gray">
+                  Leave empty for no specific goal. A progress bar will show when a goal is set.
+                </p>
+              </div>
+
+              {/* Donation Message */}
+              <div className="space-y-2">
+                <Label htmlFor="donation_message">Donation Message</Label>
+                <Textarea
+                  id="donation_message"
+                  placeholder="Help us bring this vision to life! Your support means..."
+                  value={donationSettings.donation_message}
+                  onChange={(e) =>
+                    setDonationSettings(prev => ({ ...prev, donation_message: e.target.value }))
+                  }
+                  rows={3}
+                />
+                <p className="text-xs text-muted-gray">
+                  This message is shown to visitors on your public project page.
+                </p>
+              </div>
+
+              {/* Current Progress (if any donations) */}
+              {donationSummary && donationSummary.donation_count > 0 && (
+                <div className="bg-muted-gray/10 rounded-lg p-4 space-y-3">
+                  <h4 className="text-sm font-medium text-bone-white">Current Progress</h4>
+                  <DonationProgress projectId={project.id} compact />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowDonationsModal(true)}
+                    className="w-full"
+                  >
+                    <List className="w-4 h-4 mr-2" />
+                    View All Donations ({donationSummary.donation_count})
+                  </Button>
+                </div>
+              )}
+
+              {/* No donations yet */}
+              {donationSummary && donationSummary.donation_count === 0 && (
+                <div className="bg-muted-gray/10 rounded-lg p-4 text-center">
+                  <Heart className="w-8 h-8 text-muted-gray/30 mx-auto mb-2" />
+                  <p className="text-sm text-muted-gray">
+                    No donations yet. Share your project to start receiving support!
+                  </p>
+                </div>
+              )}
+
+              {/* Save Donation Settings Button */}
+              <div className="flex items-center gap-3 pt-2">
+                <Button
+                  onClick={handleSaveDonations}
+                  disabled={isSavingDonations}
+                  className="bg-primary-red hover:bg-primary-red/90 text-bone-white"
+                >
+                  {isSavingDonations ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : donationsSaved ? (
+                    <>
+                      <Check className="w-4 h-4 mr-2" />
+                      Saved!
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 mr-2" />
+                      Save Donation Settings
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* Quick save when just toggling off */}
+          {!donationSettings.donations_enabled && (
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={handleSaveDonations}
+                disabled={isSavingDonations}
+                variant="outline"
+                size="sm"
+              >
+                {isSavingDonations ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : donationsSaved ? (
+                  <>
+                    <Check className="w-4 h-4 mr-2" />
+                    Saved!
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Donation Settings
+                  </>
+                )}
+              </Button>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Save Button */}
       <div className="flex items-center gap-3">
         <Button
@@ -497,6 +746,13 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
           </AlertDialog>
         </section>
       )}
+
+      {/* Donations List Modal */}
+      <DonationsListModal
+        projectId={project.id}
+        isOpen={showDonationsModal}
+        onClose={() => setShowDonationsModal(false)}
+      />
     </div>
   );
 };

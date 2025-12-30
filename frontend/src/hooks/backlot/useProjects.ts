@@ -18,15 +18,16 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 
 interface UseProjectsOptions extends ProjectFilters {
   limit?: number;
+  ownership?: 'owner' | 'member' | 'all';
 }
 
 // Fetch all projects for the current user
 export function useProjects(options: UseProjectsOptions = {}) {
-  const { status = 'all', visibility = 'all', search, limit = 50 } = options;
+  const { status = 'all', visibility = 'all', search, ownership = 'all', limit = 50 } = options;
   const queryClient = useQueryClient();
   const { user } = useAuth();
 
-  const queryKey = ['backlot-projects', { status, visibility, search, limit }];
+  const queryKey = ['backlot-projects', { status, visibility, search, ownership, limit }];
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey,
@@ -36,6 +37,7 @@ export function useProjects(options: UseProjectsOptions = {}) {
       const projects = await api.listBacklotProjects({
         status: status !== 'all' ? status : undefined,
         visibility: visibility !== 'all' ? visibility : undefined,
+        ownership: ownership !== 'all' ? ownership : undefined,
         search,
         limit,
       });
@@ -116,6 +118,44 @@ export function useProjects(options: UseProjectsOptions = {}) {
     createProject,
     updateProject,
     deleteProject,
+  };
+}
+
+// Public project with has_access flag and donation info
+export interface PublicBacklotProject extends BacklotProject {
+  has_access: boolean;
+  donations_enabled?: boolean;
+  donation_message?: string;
+  donation_goal_cents?: number;
+}
+
+// Fetch all public projects in the system
+export function usePublicProjects(options: { status?: string; search?: string; limit?: number } = {}) {
+  const { status = 'all', search, limit = 50 } = options;
+  const { user } = useAuth();
+
+  const queryKey = ['backlot-public-projects', { status, search, limit }];
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const response = await api.listPublicBacklotProjects({
+        status: status !== 'all' ? status : undefined,
+        search,
+        limit,
+      });
+
+      return response.projects as PublicBacklotProject[];
+    },
+    // Enable even without user - public projects are viewable by anyone
+    enabled: true,
+  });
+
+  return {
+    projects: data || [],
+    isLoading,
+    error,
+    refetch,
   };
 }
 

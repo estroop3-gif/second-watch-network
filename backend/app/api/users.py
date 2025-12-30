@@ -3,10 +3,33 @@ Users API Routes
 """
 from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
-from typing import Dict, Any, List
-from app.core.database import get_client
+from typing import Dict, Any, List, Optional
+from app.core.database import get_client, execute_query, execute_single
 
 router = APIRouter()
+
+
+def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
+    """Look up profile ID from Cognito user ID"""
+    uid_str = str(cognito_user_id)
+
+    # Try cognito_user_id first
+    result = execute_single(
+        "SELECT id FROM profiles WHERE cognito_user_id = :cuid LIMIT 1",
+        {"cuid": uid_str}
+    )
+    if result:
+        return str(result["id"])
+
+    # Fallback: try direct ID match
+    result = execute_single(
+        "SELECT id FROM profiles WHERE id::text = :uid LIMIT 1",
+        {"uid": uid_str}
+    )
+    if result:
+        return str(result["id"])
+
+    return None
 
 
 # All permission keys that can be set on roles
@@ -121,6 +144,97 @@ async def get_my_permissions(authorization: str = Header(None)):
         "permissions": merged_permissions,
         "profile_flags": profile_data
     }
+
+
+@router.get("/me/pending-documents")
+async def get_my_pending_documents(authorization: str = Header(None)):
+    """Get all pending documents (clearances) requiring the current user's signature"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization")
+
+    token = authorization.replace("Bearer ", "")
+    user = await get_current_user_from_token(token)
+    cognito_id = user.get("id") or user.get("sub")
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        return {"documents": []}
+
+    # Query pending clearance recipients for this user
+    # Note: backlot_clearance_items uses 'title' not 'name', and 'type' not 'clearance_type'
+    # Field names are mapped to match frontend PendingDocument interface
+    documents = execute_query("""
+        SELECT
+            r.id as recipient_id,
+            r.clearance_id,
+            r.signature_status,
+            r.requires_signature,
+            r.access_token,
+            r.created_at as sent_at,
+            r.viewed_at,
+            c.id as clearance_item_id,
+            c.title as clearance_title,
+            c.description as document_description,
+            c.type as clearance_type,
+            c.project_id,
+            c.file_url,
+            c.file_name,
+            c.expiration_date,
+            COALESCE(c.batch_sign_allowed, false) as batch_sign_allowed,
+            c.requested_date as due_date,
+            p.title as project_title
+        FROM backlot_clearance_recipients r
+        JOIN backlot_clearance_items c ON r.clearance_id = c.id
+        LEFT JOIN backlot_projects p ON c.project_id = p.id
+        WHERE r.project_member_user_id = :user_id
+          AND r.requires_signature = true
+          AND r.signature_status IN ('pending', 'requested', 'not_started', 'viewed')
+        ORDER BY r.created_at DESC
+    """, {"user_id": profile_id})
+
+    return {"documents": documents or []}
+
+
+@router.get("/me/clearances/history")
+async def get_my_clearance_history(authorization: str = Header(None)):
+    """Get history of signed clearances for the current user"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authorization")
+
+    token = authorization.replace("Bearer ", "")
+    user = await get_current_user_from_token(token)
+    cognito_id = user.get("id") or user.get("sub")
+
+    # Get profile ID from Cognito ID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        return {"documents": []}
+
+    # Query signed clearances for this user
+    # Note: backlot_clearance_items uses 'title' not 'name', and 'type' not 'clearance_type'
+    documents = execute_query("""
+        SELECT
+            r.id as recipient_id,
+            r.clearance_id,
+            r.signature_status,
+            r.signed_at,
+            r.viewed_at,
+            c.id as clearance_item_id,
+            c.title as document_name,
+            c.description as document_description,
+            c.type as clearance_type,
+            c.project_id,
+            p.title as project_title
+        FROM backlot_clearance_recipients r
+        JOIN backlot_clearance_items c ON r.clearance_id = c.id
+        LEFT JOIN backlot_projects p ON c.project_id = p.id
+        WHERE r.project_member_user_id = :user_id
+          AND r.signature_status = 'signed'
+        ORDER BY r.signed_at DESC
+    """, {"user_id": profile_id})
+
+    return {"documents": documents or []}
 
 
 class UserProfile(BaseModel):
