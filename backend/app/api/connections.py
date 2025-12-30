@@ -77,7 +77,7 @@ async def get_connection_relationship(peer_id: str, user_id: str):
     try:
         client = get_client()
         response = client.table("connections").select("*").or_(
-            f"and(requester_id.eq.{user_id},addressee_id.eq.{peer_id}),and(requester_id.eq.{peer_id},addressee_id.eq.{user_id})"
+            f"and(requester_id.eq.{user_id},recipient_id.eq.{peer_id}),and(requester_id.eq.{peer_id},recipient_id.eq.{user_id})"
         ).order("created_at", desc=True).limit(1).execute()
 
         return response.data[0] if response.data else None

@@ -203,3 +203,96 @@ export interface CollabFilters {
   compensationType: CompensationType | 'all';
   orderOnly: boolean;
 }
+
+// =====================================================
+// COMMUNITY FEED TYPES
+// =====================================================
+
+export type PostVisibility = 'public' | 'connections';
+
+export interface PostImage {
+  url: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+}
+
+export interface PostLinkPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  image?: string;
+  site_name?: string;
+}
+
+export interface PostAuthor {
+  id: string;
+  username: string | null;
+  full_name: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  role?: string | null;
+  is_order_member?: boolean;
+}
+
+export interface CommunityPost {
+  id: string;
+  user_id: string;
+  content: string;
+  images: PostImage[];
+  link_url?: string | null;
+  link_title?: string | null;
+  link_description?: string | null;
+  link_image?: string | null;
+  link_site_name?: string | null;
+  visibility: PostVisibility;
+  like_count: number;
+  comment_count: number;
+  is_hidden: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  author?: PostAuthor;
+  // User interaction state
+  is_liked?: boolean;
+}
+
+export interface PostComment {
+  id: string;
+  post_id: string;
+  user_id: string;
+  parent_comment_id?: string | null;
+  content: string;
+  is_hidden: boolean;
+  created_at: string;
+  updated_at: string;
+  // Joined data
+  author?: PostAuthor;
+}
+
+export interface FeedResponse {
+  posts: CommunityPost[];
+  next_cursor: string | null;
+}
+
+// Input types for creating/updating
+export interface PostInput {
+  content: string;
+  images?: PostImage[];
+  link_url?: string;
+  link_title?: string;
+  link_description?: string;
+  link_image?: string;
+  link_site_name?: string;
+  visibility: PostVisibility;
+}
+
+export interface PostUpdateInput {
+  content?: string;
+  visibility?: PostVisibility;
+}
+
+export interface CommentInput {
+  content: string;
+  parent_comment_id?: string;
+}

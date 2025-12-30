@@ -1513,6 +1513,113 @@ class APIClient {
   }
 
   // ============================================================================
+  // COMMUNITY FEED
+  // ============================================================================
+
+  async listPublicFeed(params?: { limit?: number; before?: string }) {
+    const searchParams = new URLSearchParams()
+    if (params?.limit) searchParams.set('limit', params.limit.toString())
+    if (params?.before) searchParams.set('before', params.before)
+    const query = searchParams.toString()
+    return this.request<{ posts: any[]; next_cursor: string | null }>(
+      `/api/v1/community/feed/public${query ? `?${query}` : ''}`
+    )
+  }
+
+  async listConnectionsFeed(params?: { limit?: number; before?: string }) {
+    const searchParams = new URLSearchParams()
+    if (params?.limit) searchParams.set('limit', params.limit.toString())
+    if (params?.before) searchParams.set('before', params.before)
+    const query = searchParams.toString()
+    return this.request<{ posts: any[]; next_cursor: string | null }>(
+      `/api/v1/community/feed/connections${query ? `?${query}` : ''}`
+    )
+  }
+
+  async getPost(postId: string) {
+    return this.request<any>(`/api/v1/community/posts/${postId}`)
+  }
+
+  async createPost(data: {
+    content: string;
+    images?: Array<{ url: string; alt?: string; width?: number; height?: number }>;
+    link_url?: string;
+    link_title?: string;
+    link_description?: string;
+    link_image?: string;
+    link_site_name?: string;
+    visibility: 'public' | 'connections';
+  }) {
+    return this.request<any>('/api/v1/community/posts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updatePost(postId: string, data: { content?: string; visibility?: 'public' | 'connections' }) {
+    return this.request<any>(`/api/v1/community/posts/${postId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deletePost(postId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/community/posts/${postId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async likePost(postId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/community/posts/${postId}/like`, {
+      method: 'POST',
+    })
+  }
+
+  async unlikePost(postId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/community/posts/${postId}/unlike`, {
+      method: 'DELETE',
+    })
+  }
+
+  async listPostComments(postId: string) {
+    return this.request<any[]>(`/api/v1/community/posts/${postId}/comments`)
+  }
+
+  async createPostComment(postId: string, data: { content: string; parent_comment_id?: string }) {
+    return this.request<any>(`/api/v1/community/posts/${postId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async updatePostComment(commentId: string, data: { content: string }) {
+    return this.request<any>(`/api/v1/community/comments/${commentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async deletePostComment(commentId: string) {
+    return this.request<{ success: boolean }>(`/api/v1/community/comments/${commentId}`, {
+      method: 'DELETE',
+    })
+  }
+
+  async fetchLinkPreview(url: string) {
+    return this.request<{
+      url: string;
+      title?: string;
+      description?: string;
+      image?: string;
+      site_name?: string;
+      error?: string;
+    }>('/api/v1/community/posts/link-preview', {
+      method: 'POST',
+      body: JSON.stringify({ url }),
+    })
+  }
+
+  // ============================================================================
   // BACKLOT PROJECTS
   // ============================================================================
 

@@ -73,6 +73,12 @@ class RolePermissions(BaseModel):
     community_directory: bool = False
     community_connections: bool = False
 
+    # Community Feed permissions
+    community_feed_view: bool = False
+    community_feed_post: bool = False
+    community_feed_comment: bool = False
+    community_feed_like: bool = False
+
     # Messaging permissions
     can_access_messages: bool = False
     messages_dm: bool = False

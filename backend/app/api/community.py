@@ -63,6 +63,56 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
+async def check_user_permission(user_id: str, permission: str) -> bool:
+    """Check if user has a specific permission via their roles"""
+    try:
+        client = get_client()
+
+        # Get user's role IDs first
+        roles_result = client.table("user_roles").select("role_id").eq("user_id", user_id).execute()
+
+        if not roles_result.data:
+            # No roles assigned - allow by default for now
+            return True
+
+        role_ids = [r["role_id"] for r in roles_result.data]
+
+        # Get the actual roles with permissions
+        custom_roles = client.table("custom_roles").select("*").in_("id", role_ids).execute()
+
+        if not custom_roles.data:
+            return True  # No role data found, allow by default
+
+        # Check if any role has the permission
+        for role in custom_roles.data:
+            if role.get(permission, False):
+                return True
+
+        # If the permission column doesn't exist yet, allow by default
+        # This handles the case where migration hasn't been run
+        first_role = custom_roles.data[0] if custom_roles.data else {}
+        if permission not in first_role:
+            print(f"Warning: Permission '{permission}' not found in custom_roles table")
+            return True
+
+        return False
+
+    except Exception as e:
+        print(f"Error checking permission '{permission}' for user {user_id}: {e}")
+        # Allow by default on error to not break existing functionality
+        return True
+
+
+async def require_permission(user_id: str, permission: str) -> None:
+    """Require user to have a specific permission, raise 403 if not"""
+    has_permission = await check_user_permission(user_id, permission)
+    if not has_permission:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You don't have permission to perform this action"
+        )
+
+
 @router.get("/filmmakers")
 async def search_filmmakers(
     query: Optional[str] = None,
@@ -1477,3 +1527,724 @@ async def get_user_forum_status(authorization: str = Header(None)):
             "reason": None,
             "expires_at": None
         }
+
+
+# =====================================================
+# COMMUNITY FEED - SCHEMAS
+# =====================================================
+
+class PostImageInput(BaseModel):
+    url: str
+    alt: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+
+
+class PostCreateInput(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
+    images: Optional[List[PostImageInput]] = None
+    link_url: Optional[str] = None
+    link_title: Optional[str] = None
+    link_description: Optional[str] = None
+    link_image: Optional[str] = None
+    link_site_name: Optional[str] = None
+    visibility: str = Field(default="public", pattern="^(public|connections)$")
+
+
+class PostUpdateInput(BaseModel):
+    content: Optional[str] = Field(None, min_length=1, max_length=5000)
+    visibility: Optional[str] = Field(None, pattern="^(public|connections)$")
+
+
+class CommentCreateInput(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+    parent_comment_id: Optional[str] = None
+
+
+class CommentUpdateInput(BaseModel):
+    content: str = Field(..., min_length=1, max_length=2000)
+
+
+class LinkPreviewInput(BaseModel):
+    url: str
+
+
+# =====================================================
+# COMMUNITY FEED - HELPER FUNCTIONS
+# =====================================================
+
+async def get_user_connections(user_id: str) -> List[str]:
+    """Get list of user IDs that the given user is connected with"""
+    client = get_client()
+
+    # Get accepted connections where user is either requester or recipient
+    result = client.table("connections").select(
+        "requester_id, recipient_id"
+    ).eq("status", "accepted").or_(
+        f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
+    ).execute()
+
+    connection_ids = set()
+    for conn in (result.data or []):
+        if conn["requester_id"] == user_id:
+            connection_ids.add(conn["recipient_id"])
+        else:
+            connection_ids.add(conn["requester_id"])
+
+    return list(connection_ids)
+
+
+async def enrich_posts_with_profiles(posts: List[Dict], current_user_id: Optional[str] = None) -> List[Dict]:
+    """Add author profiles and like status to posts"""
+    if not posts:
+        return []
+
+    client = get_client()
+
+    # Get unique user IDs
+    user_ids = list(set(p["user_id"] for p in posts))
+
+    # Fetch profiles
+    profiles_result = client.table("profiles").select(
+        "id, username, full_name, display_name, avatar_url, role, is_order_member"
+    ).in_("id", user_ids).execute()
+
+    profiles_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+    # Check which posts current user has liked
+    liked_post_ids = set()
+    if current_user_id:
+        post_ids = [p["id"] for p in posts]
+        likes_result = client.table("community_post_likes").select(
+            "post_id"
+        ).eq("user_id", current_user_id).in_("post_id", post_ids).execute()
+        liked_post_ids = set(l["post_id"] for l in (likes_result.data or []))
+
+    # Enrich posts
+    for post in posts:
+        post["author"] = profiles_map.get(post["user_id"])
+        post["is_liked"] = post["id"] in liked_post_ids
+
+    return posts
+
+
+async def enrich_comments_with_profiles(comments: List[Dict]) -> List[Dict]:
+    """Add author profiles to comments"""
+    if not comments:
+        return []
+
+    client = get_client()
+
+    # Get unique user IDs
+    user_ids = list(set(c["user_id"] for c in comments))
+
+    # Fetch profiles
+    profiles_result = client.table("profiles").select(
+        "id, username, full_name, display_name, avatar_url, is_order_member"
+    ).in_("id", user_ids).execute()
+
+    profiles_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+    # Enrich comments
+    for comment in comments:
+        comment["author"] = profiles_map.get(comment["user_id"])
+
+    return comments
+
+
+# =====================================================
+# COMMUNITY FEED - PUBLIC FEED
+# =====================================================
+
+@router.get("/feed/public")
+async def list_public_feed(
+    limit: int = Query(20, le=50),
+    before: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """List public posts with cursor pagination"""
+    client = get_client()
+
+    # Get current user if authenticated (for like status)
+    current_user_id = None
+    if authorization:
+        try:
+            user = await get_current_user_from_token(authorization)
+            current_user_id = user["id"]
+        except:
+            pass
+
+    try:
+        query = client.table("community_posts").select("*").eq(
+            "visibility", "public"
+        ).eq("is_hidden", False).order("created_at", desc=True).limit(limit)
+
+        if before:
+            query = query.lt("created_at", before)
+
+        result = query.execute()
+        posts = result.data or []
+
+        # Enrich with profiles and like status
+        posts = await enrich_posts_with_profiles(posts, current_user_id)
+
+        return {
+            "posts": posts,
+            "next_cursor": posts[-1]["created_at"] if posts else None
+        }
+
+    except Exception as e:
+        print(f"Error fetching public feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COMMUNITY FEED - CONNECTIONS FEED
+# =====================================================
+
+@router.get("/feed/connections")
+async def list_connections_feed(
+    limit: int = Query(20, le=50),
+    before: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """List posts from user's connections"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get connection IDs
+        connection_ids = await get_user_connections(user["id"])
+
+        if not connection_ids:
+            return {"posts": [], "next_cursor": None}
+
+        # Query posts from connections (both public and connections-only visibility)
+        query = client.table("community_posts").select("*").in_(
+            "user_id", connection_ids
+        ).eq("is_hidden", False).order("created_at", desc=True).limit(limit)
+
+        if before:
+            query = query.lt("created_at", before)
+
+        result = query.execute()
+        posts = result.data or []
+
+        # Enrich with profiles and like status
+        posts = await enrich_posts_with_profiles(posts, user["id"])
+
+        return {
+            "posts": posts,
+            "next_cursor": posts[-1]["created_at"] if posts else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching connections feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COMMUNITY FEED - POST CRUD
+# =====================================================
+
+@router.post("/posts")
+async def create_post(
+    data: PostCreateInput,
+    authorization: str = Header(None)
+):
+    """Create a new community post"""
+    user = await get_current_user_from_token(authorization)
+
+    # Check permission
+    await require_permission(user["id"], "community_feed_post")
+
+    client = get_client()
+
+    try:
+        post_data = {
+            "user_id": user["id"],
+            "content": data.content,
+            "images": [img.dict() for img in data.images] if data.images else [],
+            "visibility": data.visibility,
+        }
+
+        # Add link preview if provided
+        if data.link_url:
+            post_data["link_url"] = data.link_url
+            post_data["link_title"] = data.link_title
+            post_data["link_description"] = data.link_description
+            post_data["link_image"] = data.link_image
+            post_data["link_site_name"] = data.link_site_name
+
+        result = client.table("community_posts").insert(post_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create post")
+
+        post = result.data[0]
+
+        # Fetch author profile
+        posts = await enrich_posts_with_profiles([post], user["id"])
+
+        return posts[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/posts/{post_id}")
+async def get_post(
+    post_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single post by ID"""
+    client = get_client()
+
+    # Get current user if authenticated
+    current_user_id = None
+    if authorization:
+        try:
+            user = await get_current_user_from_token(authorization)
+            current_user_id = user["id"]
+        except:
+            pass
+
+    try:
+        result = client.table("community_posts").select("*").eq(
+            "id", post_id
+        ).eq("is_hidden", False).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        post = result.data
+
+        # Check visibility permissions
+        if post["visibility"] == "connections" and current_user_id:
+            # Check if viewer is connected to author
+            if current_user_id != post["user_id"]:
+                connection_ids = await get_user_connections(current_user_id)
+                if post["user_id"] not in connection_ids:
+                    raise HTTPException(status_code=403, detail="Post not accessible")
+        elif post["visibility"] == "connections" and not current_user_id:
+            raise HTTPException(status_code=403, detail="Post not accessible")
+
+        # Enrich with profile and like status
+        posts = await enrich_posts_with_profiles([post], current_user_id)
+
+        return posts[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/posts/{post_id}")
+async def update_post(
+    post_id: str,
+    data: PostUpdateInput,
+    authorization: str = Header(None)
+):
+    """Update a post (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("community_posts").select("user_id").eq(
+            "id", post_id
+        ).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        if existing.data["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to update this post")
+
+        # Build update data
+        update_data = {}
+        if data.content is not None:
+            update_data["content"] = data.content
+        if data.visibility is not None:
+            update_data["visibility"] = data.visibility
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = client.table("community_posts").update(update_data).eq(
+            "id", post_id
+        ).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update post")
+
+        # Return updated post with profile
+        posts = await enrich_posts_with_profiles(result.data, user["id"])
+
+        return posts[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/posts/{post_id}")
+async def delete_post(
+    post_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a post (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("community_posts").select("user_id").eq(
+            "id", post_id
+        ).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        if existing.data["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this post")
+
+        # Delete post (cascade will handle likes and comments)
+        client.table("community_posts").delete().eq("id", post_id).execute()
+
+        return {"success": True, "message": "Post deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COMMUNITY FEED - LIKES
+# =====================================================
+
+@router.post("/posts/{post_id}/like")
+async def like_post(
+    post_id: str,
+    authorization: str = Header(None)
+):
+    """Like a post"""
+    user = await get_current_user_from_token(authorization)
+
+    # Check permission
+    await require_permission(user["id"], "community_feed_like")
+
+    client = get_client()
+
+    try:
+        # Check post exists and is accessible
+        post = client.table("community_posts").select("id, visibility, user_id").eq(
+            "id", post_id
+        ).eq("is_hidden", False).single().execute()
+
+        if not post.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        # Check visibility permissions for connections-only posts
+        if post.data["visibility"] == "connections" and post.data["user_id"] != user["id"]:
+            connection_ids = await get_user_connections(user["id"])
+            if post.data["user_id"] not in connection_ids:
+                raise HTTPException(status_code=403, detail="Post not accessible")
+
+        # Create like (unique constraint will prevent duplicates)
+        client.table("community_post_likes").insert({
+            "post_id": post_id,
+            "user_id": user["id"]
+        }).execute()
+
+        return {"success": True, "message": "Post liked"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Handle duplicate like gracefully
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            return {"success": True, "message": "Already liked"}
+        print(f"Error liking post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/posts/{post_id}/unlike")
+async def unlike_post(
+    post_id: str,
+    authorization: str = Header(None)
+):
+    """Unlike a post"""
+    user = await get_current_user_from_token(authorization)
+
+    # Check permission
+    await require_permission(user["id"], "community_feed_like")
+
+    client = get_client()
+
+    try:
+        client.table("community_post_likes").delete().eq(
+            "post_id", post_id
+        ).eq("user_id", user["id"]).execute()
+
+        return {"success": True, "message": "Post unliked"}
+
+    except Exception as e:
+        print(f"Error unliking post: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COMMUNITY FEED - COMMENTS
+# =====================================================
+
+@router.get("/posts/{post_id}/comments")
+async def list_post_comments(
+    post_id: str,
+    authorization: str = Header(None)
+):
+    """List comments on a post"""
+    client = get_client()
+
+    # Get current user if authenticated
+    current_user_id = None
+    if authorization:
+        try:
+            user = await get_current_user_from_token(authorization)
+            current_user_id = user["id"]
+        except:
+            pass
+
+    try:
+        # Verify post exists and check visibility
+        post = client.table("community_posts").select("visibility, user_id").eq(
+            "id", post_id
+        ).eq("is_hidden", False).single().execute()
+
+        if not post.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        # Check visibility permissions
+        if post.data["visibility"] == "connections":
+            if not current_user_id:
+                raise HTTPException(status_code=403, detail="Post not accessible")
+            if current_user_id != post.data["user_id"]:
+                connection_ids = await get_user_connections(current_user_id)
+                if post.data["user_id"] not in connection_ids:
+                    raise HTTPException(status_code=403, detail="Post not accessible")
+
+        # Fetch comments
+        result = client.table("community_post_comments").select("*").eq(
+            "post_id", post_id
+        ).eq("is_hidden", False).order("created_at", desc=False).execute()
+
+        comments = result.data or []
+
+        # Enrich with profiles
+        comments = await enrich_comments_with_profiles(comments)
+
+        return comments
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching comments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/posts/{post_id}/comments")
+async def create_post_comment(
+    post_id: str,
+    data: CommentCreateInput,
+    authorization: str = Header(None)
+):
+    """Add a comment to a post"""
+    user = await get_current_user_from_token(authorization)
+
+    # Check permission
+    await require_permission(user["id"], "community_feed_comment")
+
+    client = get_client()
+
+    try:
+        # Verify post exists and check visibility
+        post = client.table("community_posts").select("visibility, user_id").eq(
+            "id", post_id
+        ).eq("is_hidden", False).single().execute()
+
+        if not post.data:
+            raise HTTPException(status_code=404, detail="Post not found")
+
+        # Check visibility permissions
+        if post.data["visibility"] == "connections" and post.data["user_id"] != user["id"]:
+            connection_ids = await get_user_connections(user["id"])
+            if post.data["user_id"] not in connection_ids:
+                raise HTTPException(status_code=403, detail="Post not accessible")
+
+        # Validate parent comment if provided
+        if data.parent_comment_id:
+            parent = client.table("community_post_comments").select("id").eq(
+                "id", data.parent_comment_id
+            ).eq("post_id", post_id).single().execute()
+
+            if not parent.data:
+                raise HTTPException(status_code=400, detail="Parent comment not found")
+
+        # Create comment
+        comment_data = {
+            "post_id": post_id,
+            "user_id": user["id"],
+            "content": data.content,
+        }
+
+        if data.parent_comment_id:
+            comment_data["parent_comment_id"] = data.parent_comment_id
+
+        result = client.table("community_post_comments").insert(comment_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create comment")
+
+        # Enrich with profile
+        comments = await enrich_comments_with_profiles(result.data)
+
+        return comments[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/comments/{comment_id}")
+async def update_comment(
+    comment_id: str,
+    data: CommentUpdateInput,
+    authorization: str = Header(None)
+):
+    """Update a comment (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("community_post_comments").select("user_id").eq(
+            "id", comment_id
+        ).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        if existing.data["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to update this comment")
+
+        result = client.table("community_post_comments").update({
+            "content": data.content
+        }).eq("id", comment_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update comment")
+
+        # Enrich with profile
+        comments = await enrich_comments_with_profiles(result.data)
+
+        return comments[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/comments/{comment_id}")
+async def delete_comment(
+    comment_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a comment (owner only)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify ownership
+        existing = client.table("community_post_comments").select("user_id").eq(
+            "id", comment_id
+        ).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        if existing.data["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Not authorized to delete this comment")
+
+        client.table("community_post_comments").delete().eq("id", comment_id).execute()
+
+        return {"success": True, "message": "Comment deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COMMUNITY FEED - LINK PREVIEW
+# =====================================================
+
+@router.post("/posts/link-preview")
+async def fetch_link_preview(
+    data: LinkPreviewInput,
+    authorization: str = Header(None)
+):
+    """Fetch Open Graph metadata for a URL"""
+    await get_current_user_from_token(authorization)
+
+    try:
+        import httpx
+        from bs4 import BeautifulSoup
+
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(data.url, headers={
+                "User-Agent": "Mozilla/5.0 (compatible; SecondWatchNetwork/1.0)"
+            })
+
+            if response.status_code != 200:
+                return {"error": "Failed to fetch URL"}
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # Extract Open Graph metadata
+            def get_meta(property_name: str) -> Optional[str]:
+                tag = soup.find("meta", property=property_name) or soup.find("meta", attrs={"name": property_name})
+                return tag.get("content") if tag else None
+
+            title = get_meta("og:title") or soup.title.string if soup.title else None
+            description = get_meta("og:description") or get_meta("description")
+            image = get_meta("og:image")
+            site_name = get_meta("og:site_name")
+
+            return {
+                "url": data.url,
+                "title": title,
+                "description": description,
+                "image": image,
+                "site_name": site_name
+            }
+
+    except Exception as e:
+        print(f"Error fetching link preview: {e}")
+        return {"error": "Failed to fetch link preview"}

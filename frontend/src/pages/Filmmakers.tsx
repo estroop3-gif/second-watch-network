@@ -14,6 +14,7 @@ import { ApplicationModal } from '@/components/applications';
 import TopicsBoard from '@/components/community/TopicsBoard';
 import ThreadForm from '@/components/community/ThreadForm';
 import ThreadView from '@/components/community/ThreadView';
+import { FeedBoard } from '@/components/community/feed';
 import { CommunityCollab, CommunityThread } from '@/types/community';
 import { useAuth } from '@/context/AuthContext';
 
@@ -128,6 +129,10 @@ const Filmmakers = () => {
       {/* Tab Content */}
       {activeTab === 'home' && (
         <CommunityHome onNavigate={handleNavigate} />
+      )}
+
+      {activeTab === 'feed' && (
+        <FeedBoard />
       )}
 
       {activeTab === 'people' && (

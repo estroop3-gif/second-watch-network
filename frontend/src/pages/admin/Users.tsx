@@ -149,6 +149,10 @@ const PERMISSION_CATEGORIES = {
       community_apply_collabs: 'Apply to Collabs',
       community_directory: 'Member Directory',
       community_connections: 'Connections',
+      community_feed_view: 'View Feed',
+      community_feed_post: 'Create Posts',
+      community_feed_comment: 'Comment on Posts',
+      community_feed_like: 'Like Posts',
     },
   },
   messages: {
