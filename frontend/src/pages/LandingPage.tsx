@@ -2,7 +2,10 @@ import HeroSection from "@/components/landing/HeroSection";
 import LiveStreamSection from "@/components/landing/LiveStreamSection";
 import TrendingNowSection from "@/components/landing/TrendingNowSection";
 import OriginalsSection from "@/components/landing/OriginalsSection";
+import GreenRoomSection from "@/components/landing/GreenRoomSection";
 import SubmitContentSection from "@/components/landing/SubmitContentSection";
+import BacklotSection from "@/components/landing/BacklotSection";
+import TheOrderSection from "@/components/landing/TheOrderSection";
 import PartnershipsSection from "@/components/landing/PartnershipsSection";
 import OurStorySection from "@/components/landing/OurStorySection";
 import SupportSection from "@/components/landing/SupportSection";
@@ -36,7 +39,10 @@ const LandingPage = () => {
       <LiveStreamSection />
       <TrendingNowSection />
       <OriginalsSection />
+      <GreenRoomSection />
       <SubmitContentSection />
+      <BacklotSection />
+      <TheOrderSection />
       <PartnershipsSection />
       <OurStorySection />
       <SupportSection />
