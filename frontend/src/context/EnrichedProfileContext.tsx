@@ -148,7 +148,9 @@ export function EnrichedProfileProvider({ children }: { children: React.ReactNod
   const isOrderMember = hasRole(enrichedProfile, 'order_member');
   const isLodgeOfficer = hasRole(enrichedProfile, 'lodge_officer');
 
-  const isLoading = profileLoading || filmmakerLoading || partnerLoading || orderLoading;
+  // Only block on profile loading - the enrichment queries (filmmaker, order) can
+  // complete in the background. We have enough data from base profile to render.
+  const isLoading = profileLoading;
 
   const refetch = () => {
     refetchProfile();

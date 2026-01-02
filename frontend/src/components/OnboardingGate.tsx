@@ -10,9 +10,9 @@ const OnboardingGate = () => {
   const { settings, isLoading: settingsLoading } = useSettings();
   const location = useLocation();
 
-  const isLoading = authLoading || profileLoading || settingsLoading;
-
-  if (isLoading) {
+  // Only block on auth loading - we need to know if user is authenticated
+  // Profile/settings loading can happen in the background while content renders
+  if (authLoading) {
     return (
       <div className="min-h-screen bg-charcoal-black flex items-center justify-center">
         <div className="space-y-4 p-8 w-full max-w-md">

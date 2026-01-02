@@ -34,12 +34,16 @@ export const SettingsProvider = ({ children }: { children: React.ReactNode }) =>
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading: queryLoading } = useQuery({
     queryKey: ['siteSettings'],
     queryFn: fetchSettings,
     staleTime: 1000 * 60 * 5, // Cache settings for 5 minutes
     enabled: isAdmin, // Only fetch if user is admin
   });
+
+  // Only show loading if we're actually fetching (admin users)
+  // For non-admins, the query is disabled so we're not loading
+  const isLoading = isAdmin ? queryLoading : false;
 
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
 
