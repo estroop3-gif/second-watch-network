@@ -44,6 +44,7 @@ from pypdf import PdfReader
 from app.core.database import get_client, execute_single, execute_query
 from app.core.config import settings
 from app.core.storage import upload_file, get_signed_url, generate_unique_filename, BACKLOT_FILES_BUCKET, download_from_s3_uri
+from app.socketio_app import get_user_from_token
 
 router = APIRouter()
 
@@ -183,6 +184,8 @@ def get_profile_id_from_cognito_id(cognito_user_id: str) -> str:
     Returns the profile ID or raises an exception if not found.
     """
     # Convert to string to ensure proper comparison
+    if not cognito_user_id:
+        return None
     uid_str = str(cognito_user_id)
     # First try to find by cognito_user_id (preferred)
     profile_row = execute_single(
@@ -1272,7 +1275,7 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         if not user:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        cognito_id = user.get("id")
+        cognito_id = user.get("user_id")  # get_user_from_token returns 'user_id' not 'id'
         email = user.get("email")
 
         # Convert Cognito ID to profile ID for database lookups
@@ -28915,10 +28918,10 @@ async def create_offload_manifest(
         if input.production_day_id:
             day_result = client.table("backlot_dailies_days").select("id").eq(
                 "production_day_id", input.production_day_id
-            ).maybe_single().execute()
+            ).limit(1).execute()
 
             if day_result.data:
-                dailies_day_id = day_result.data["id"]
+                dailies_day_id = day_result.data[0]["id"]
 
         # Create the manifest
         manifest_data = {
@@ -40053,3 +40056,538 @@ async def get_person_document_checklist(
     except Exception as e:
         print(f"Error getting person document checklist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# =============================================================================
+# DASHBOARD WIDGET AGGREGATION ENDPOINTS
+# These provide cross-project summaries for the dashboard widgets
+# =============================================================================
+
+@router.get("/my-schedule-summary")
+async def get_my_schedule_summary(
+    authorization: str = Header(None)
+):
+    """
+    Get schedule summary across all user's projects for dashboard widget.
+    Returns upcoming shoot days, today's shoot, and conflicts.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        user = await get_user_from_token(authorization)
+        logger.info(f"[ScheduleSummary] user from token: {user}")
+        if not user:
+            logger.warning("[ScheduleSummary] No user from token, returning empty")
+            return {
+                "upcoming_shoot_days": [],
+                "today_shoot": None,
+                "conflicts": [],
+                "next_7_days_count": 0
+            }
+        cognito_id = user.get("user_id")  # Note: get_user_from_token returns 'user_id' not 'id'
+        logger.info(f"[ScheduleSummary] cognito_id: {cognito_id}")
+        if not cognito_id:
+            logger.warning("[ScheduleSummary] No cognito_id, returning empty")
+            return {
+                "upcoming_shoot_days": [],
+                "today_shoot": None,
+                "conflicts": [],
+                "next_7_days_count": 0
+            }
+        # Convert Cognito ID to profile ID
+        user_id = get_profile_id_from_cognito_id(cognito_id)
+        logger.info(f"[ScheduleSummary] profile user_id: {user_id}")
+        if not user_id:
+            logger.warning(f"[ScheduleSummary] No profile found for cognito_id {cognito_id}, returning empty")
+            return {
+                "upcoming_shoot_days": [],
+                "today_shoot": None,
+                "conflicts": [],
+                "next_7_days_count": 0
+            }
+        client = get_client()
+        today = datetime.now().date()
+        next_week = today + timedelta(days=7)
+
+        # Get user's projects (owner or team member)
+        projects_result = client.table("backlot_projects").select(
+            "id, title, slug, status"
+        ).eq("owner_id", user_id).in_("status", ["pre_production", "production"]).execute()
+
+        project_ids = [p["id"] for p in (projects_result.data or [])]
+        logger.info(f"[ScheduleSummary] owned project_ids for user {user_id}: {project_ids}")
+
+        # Also check team membership even if no owned projects
+        team_result = client.table("backlot_project_members").select(
+            "project_id"
+        ).eq("user_id", user_id).execute()  # No status column - membership record = active member
+
+        team_project_ids = [t["project_id"] for t in (team_result.data or [])]
+        all_project_ids = list(set(project_ids + team_project_ids))
+        logger.info(f"[ScheduleSummary] all_project_ids (owned + team): {all_project_ids}")
+
+        if not all_project_ids:
+            logger.warning(f"[ScheduleSummary] No projects found for user {user_id}, returning empty")
+            return {
+                "upcoming_shoot_days": [],
+                "today_shoot": None,
+                "conflicts": [],
+                "next_7_days_count": 0
+            }
+
+        # Get project details for team projects too
+        if team_project_ids:
+            team_projects = client.table("backlot_projects").select(
+                "id, title, slug"
+            ).in_("id", team_project_ids).execute()
+            projects_result.data = (projects_result.data or []) + (team_projects.data or [])
+
+        # Get upcoming production days
+        days_result = client.table("backlot_production_days").select(
+            "id, project_id, date, day_number, title, general_call_time, is_completed, location_name"
+        ).in_("project_id", all_project_ids).gte(
+            "date", str(today)
+        ).lte(
+            "date", str(next_week)
+        ).order("date").execute()
+
+        production_days = days_result.data or []
+
+        # Get project info map
+        project_map = {p["id"]: {"title": p["title"], "slug": p.get("slug", p["id"])} for p in (projects_result.data or [])}
+
+        # Get scene counts for each production day
+        day_ids = [d["id"] for d in production_days]
+        scene_counts = {}
+        if day_ids:
+            scenes_result = client.table("backlot_scenes").select(
+                "scheduled_day_id"
+            ).in_("scheduled_day_id", day_ids).execute()
+            for scene in (scenes_result.data or []):
+                day_id = scene["scheduled_day_id"]
+                scene_counts[day_id] = scene_counts.get(day_id, 0) + 1
+
+        upcoming = []
+        today_shoot = None
+
+        for day in production_days:
+            shoot_date = day.get("date", "")[:10] if day.get("date") else ""
+            project_info = project_map.get(day["project_id"], {"title": "Unknown Project", "slug": day["project_id"]})
+            day_info = {
+                "id": day["id"],
+                "project_id": day["project_id"],
+                "project_name": project_info["title"],
+                "project_slug": project_info["slug"],
+                "date": shoot_date,
+                "day_number": day.get("day_number"),
+                "title": day.get("title"),
+                "general_call_time": day.get("general_call_time"),
+                "location": day.get("location_name"),
+                "scene_count": scene_counts.get(day["id"], 0)
+            }
+
+            if shoot_date == str(today):
+                today_shoot = day_info
+            else:
+                upcoming.append(day_info)
+
+        return {
+            "upcoming_shoot_days": upcoming[:5],
+            "today_shoot": today_shoot,
+            "conflicts": [],  # TODO: Add conflict detection
+            "next_7_days_count": len(production_days)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting schedule summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-dailies-summary")
+async def get_my_dailies_summary(
+    authorization: str = Header(None)
+):
+    """
+    Get dailies/footage summary across all user's projects for dashboard widget.
+    Returns recent uploads, processing status, and storage usage.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    try:
+        user = await get_user_from_token(authorization)
+        if not user:
+            return {
+                "recent_uploads": [],
+                "total_clips_this_week": 0,
+                "processing_count": 0,
+                "storage_used_gb": 0,
+                "storage_limit_gb": 100,
+                "circle_takes_count": 0
+            }
+        cognito_id = user.get("user_id")  # get_user_from_token returns 'user_id' not 'id'
+        if not cognito_id:
+            return {
+                "recent_uploads": [],
+                "total_clips_this_week": 0,
+                "processing_count": 0,
+                "storage_used_gb": 0,
+                "storage_limit_gb": 100,
+                "circle_takes_count": 0
+            }
+        # Convert Cognito ID to profile ID
+        user_id = get_profile_id_from_cognito_id(cognito_id)
+        if not user_id:
+            return {
+                "recent_uploads": [],
+                "total_clips_this_week": 0,
+                "processing_count": 0,
+                "storage_used_gb": 0,
+                "storage_limit_gb": 100,
+                "circle_takes_count": 0
+            }
+        client = get_client()
+        one_week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+
+        # Get user's projects (include slug for links)
+        projects_result = client.table("backlot_projects").select(
+            "id, title, slug"
+        ).eq("owner_id", user_id).execute()
+
+        project_ids = [p["id"] for p in (projects_result.data or [])]
+        project_map = {p["id"]: {"title": p["title"], "slug": p.get("slug", p["id"])} for p in (projects_result.data or [])}
+
+        if not project_ids:
+            return {
+                "recent_uploads": [],
+                "total_clips_this_week": 0,
+                "processing_count": 0,
+                "storage_used_gb": 0,
+                "storage_limit_gb": 100,
+                "circle_takes_count": 0
+            }
+
+        # Get recent dailies clips
+        clips_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, file_name, thumbnail_url, duration_seconds, scene_id, scene_number, created_at"
+        ).in_("project_id", project_ids).gte(
+            "created_at", one_week_ago
+        ).order("created_at", desc=True).limit(6).execute()
+
+        recent_uploads = []
+        for clip in (clips_result.data or []):
+            project_info = project_map.get(clip["project_id"], {"title": "Unknown", "slug": clip["project_id"]})
+            recent_uploads.append({
+                "id": clip["id"],
+                "project_id": clip["project_id"],
+                "project_slug": project_info["slug"],
+                "project_name": project_info["title"],
+                "clip_name": clip.get("file_name", "Untitled Clip"),  # Map file_name to clip_name for frontend
+                "thumbnail_url": clip.get("thumbnail_url"),
+                "duration_seconds": clip.get("duration_seconds"),
+                "scene_id": clip.get("scene_id"),
+                "scene_number": clip.get("scene_number"),
+                "created_at": clip.get("created_at")
+            })
+
+        # Get circle takes count
+        circle_result = client.table("backlot_dailies_clips").select(
+            "id", count="exact"
+        ).in_("project_id", project_ids).eq("is_circle_take", True).gte(
+            "created_at", one_week_ago
+        ).execute()
+
+        return {
+            "recent_uploads": recent_uploads,
+            "processing_count": 0,  # TODO: Query video_assets for processing status
+            "storage_used_gb": 0,  # TODO: Calculate actual storage
+            "storage_limit_gb": 100,
+            "circle_takes_count": circle_result.count or 0
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting dailies summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-casting-summary")
+async def get_my_casting_summary(
+    authorization: str = Header(None)
+):
+    """
+    Get casting summary across all user's projects for dashboard widget.
+    Returns open roles, pending applications, and upcoming auditions.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    try:
+        user = await get_user_from_token(authorization)
+        if not user:
+            return {
+                "open_roles_count": 0,
+                "pending_applications": 0,
+                "recent_applications": [],
+                "auditions_scheduled": [],
+                "roles_by_project": []
+            }
+        cognito_id = user.get("user_id")  # get_user_from_token returns 'user_id' not 'id'
+        if not cognito_id:
+            return {
+                "open_roles_count": 0,
+                "pending_applications": 0,
+                "recent_applications": [],
+                "auditions_scheduled": [],
+                "roles_by_project": []
+            }
+        # Convert Cognito ID to profile ID
+        user_id = get_profile_id_from_cognito_id(cognito_id)
+        if not user_id:
+            return {
+                "open_roles_count": 0,
+                "pending_applications": 0,
+                "recent_applications": [],
+                "auditions_scheduled": [],
+                "roles_by_project": []
+            }
+        client = get_client()
+
+        # Get user's projects (include slug for links)
+        projects_result = client.table("backlot_projects").select(
+            "id, title, slug"
+        ).eq("owner_id", user_id).execute()
+
+        project_ids = [p["id"] for p in (projects_result.data or [])]
+        project_map = {p["id"]: {"title": p["title"], "slug": p.get("slug", p["id"])} for p in (projects_result.data or [])}
+
+        if not project_ids:
+            return {
+                "open_roles_count": 0,
+                "pending_applications": 0,
+                "recent_applications": [],
+                "auditions_scheduled": [],
+                "roles_by_project": []
+            }
+
+        # Get open roles count
+        roles_result = client.table("backlot_project_roles").select(
+            "id, project_id, title, type, status"
+        ).in_("project_id", project_ids).eq("status", "open").execute()
+
+        open_roles = roles_result.data or []
+
+        # Count roles by project
+        roles_by_project = {}
+        for role in open_roles:
+            pid = role["project_id"]
+            if pid not in roles_by_project:
+                project_info = project_map.get(pid, {"title": "Unknown", "slug": pid})
+                roles_by_project[pid] = {"project_id": pid, "project_slug": project_info["slug"], "project_title": project_info["title"], "open_roles": 0}
+            roles_by_project[pid]["open_roles"] += 1
+
+        # Get pending applications - first get role IDs, then applications
+        role_ids = [r["id"] for r in open_roles]
+        recent_applications = []
+
+        if role_ids:
+            apps_result = client.table("backlot_project_role_applications").select(
+                "id, role_id, user_id, status, applied_at"
+            ).in_("role_id", role_ids).eq(
+                "status", "pending"
+            ).order("applied_at", desc=True).limit(10).execute()
+
+            # Build role lookup map
+            role_map = {r["id"]: r for r in open_roles}
+
+            for app in (apps_result.data or []):
+                role_data = role_map.get(app["role_id"], {})
+                project_id = role_data.get("project_id")
+                project_info = project_map.get(project_id, {"title": "Unknown", "slug": project_id})
+                # Get applicant info
+                applicant_result = client.table("profiles").select("full_name, avatar_url").eq("id", app["user_id"]).single().execute()
+                applicant_name = applicant_result.data.get("full_name", "Unknown") if applicant_result.data else "Unknown"
+                applicant_avatar = applicant_result.data.get("avatar_url") if applicant_result.data else None
+
+                recent_applications.append({
+                    "id": app["id"],
+                    "role_id": app["role_id"],
+                    "role_name": role_data.get("title", "Unknown Role"),
+                    "project_id": project_id,
+                    "project_slug": project_info["slug"],
+                    "project_name": project_info["title"],
+                    "applicant_name": applicant_name,
+                    "applicant_avatar": applicant_avatar,
+                    "status": app.get("status"),
+                    "applied_at": app.get("applied_at")
+                })
+
+        return {
+            "open_roles_count": len(open_roles),
+            "pending_applications": len(recent_applications),
+            "recent_applications": recent_applications[:5],
+            "auditions_scheduled": []  # TODO: Add audition tracking
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting casting summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/my-budget-summary")
+async def get_my_budget_summary(
+    authorization: str = Header(None)
+):
+    """
+    Get budget summary across all user's projects for dashboard widget.
+    Returns total budget, spend, pending approvals, and alerts.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    try:
+        user = await get_user_from_token(authorization)
+        if not user:
+            return {
+                "total_budget": 0,
+                "total_spent": 0,
+                "total_remaining": 0,
+                "percent_spent": 0,
+                "pending_invoices": 0,
+                "pending_invoices_amount": 0,
+                "pending_expenses": 0,
+                "pending_expenses_amount": 0,
+                "overdue_invoices": 0,
+                "alerts": [],
+                "by_project": []
+            }
+        cognito_id = user.get("user_id")  # get_user_from_token returns 'user_id' not 'id'
+        if not cognito_id:
+            return {
+                "total_budget": 0,
+                "total_spent": 0,
+                "total_remaining": 0,
+                "percent_spent": 0,
+                "pending_invoices": 0,
+                "pending_invoices_amount": 0,
+                "pending_expenses": 0,
+                "pending_expenses_amount": 0,
+                "overdue_invoices": 0,
+                "alerts": [],
+                "by_project": []
+            }
+        # Convert Cognito ID to profile ID
+        user_id = get_profile_id_from_cognito_id(cognito_id)
+        if not user_id:
+            return {
+                "total_budget": 0,
+                "total_spent": 0,
+                "total_remaining": 0,
+                "percent_spent": 0,
+                "pending_invoices": 0,
+                "pending_invoices_amount": 0,
+                "pending_expenses": 0,
+                "pending_expenses_amount": 0,
+                "overdue_invoices": 0,
+                "alerts": [],
+                "by_project": []
+            }
+        client = get_client()
+
+        # Get user's projects
+        projects_result = client.table("backlot_projects").select(
+            "id, title"
+        ).eq("owner_id", user_id).execute()
+
+        project_ids = [p["id"] for p in (projects_result.data or [])]
+        project_map = {p["id"]: p for p in (projects_result.data or [])}
+
+        if not project_ids:
+            return {
+                "total_budget": 0,
+                "total_spent": 0,
+                "pending_invoices": 0,
+                "pending_expenses": 0,
+                "alerts": []
+            }
+
+        # Get budgets for total budget amounts
+        budgets_result = client.table("backlot_budgets").select(
+            "estimated_total, actual_total"
+        ).in_("project_id", project_ids).eq("status", "active").execute()
+
+        total_budget = sum(float(b.get("estimated_total") or 0) for b in (budgets_result.data or []))
+        total_spent = sum(float(b.get("actual_total") or 0) for b in (budgets_result.data or []))
+
+        # Get pending budget actuals (expenses)
+        pending_expenses_result = client.table("backlot_budget_actuals").select(
+            "amount", count="exact"
+        ).in_("project_id", project_ids).execute()
+
+        pending_expenses_count = pending_expenses_result.count or 0
+
+        # Get pending invoices
+        pending_invoices_result = client.table("backlot_invoices").select(
+            "total_amount, status, due_date", count="exact"
+        ).in_("project_id", project_ids).in_("status", ["pending", "pending_approval", "sent", "draft"]).execute()
+
+        # Count overdue invoices
+        today = datetime.now().date()
+        overdue_count = 0
+        for inv in (pending_invoices_result.data or []):
+            due_date = inv.get("due_date")
+            if due_date and str(due_date) < str(today):
+                overdue_count += 1
+
+        # Build alerts
+        alerts = []
+        percent_spent = (total_spent / total_budget * 100) if total_budget > 0 else 0
+
+        if percent_spent > 100:
+            alerts.append({
+                "project_id": None,
+                "project_name": "All Projects",
+                "type": "over_budget",
+                "message": f"Total spending exceeds budget by ${total_spent - total_budget:,.0f}",
+                "severity": "error"
+            })
+        elif percent_spent > 90:
+            alerts.append({
+                "project_id": None,
+                "project_name": "All Projects",
+                "type": "over_budget",
+                "message": f"Budget is {percent_spent:.0f}% spent",
+                "severity": "warning"
+            })
+
+        if overdue_count > 0:
+            alerts.append({
+                "project_id": None,
+                "project_name": "All Projects",
+                "type": "invoice_overdue",
+                "message": f"{overdue_count} invoice(s) overdue",
+                "severity": "error"
+            })
+
+        if pending_expenses_count > 0:
+            alerts.append({
+                "project_id": None,
+                "project_name": "All Projects",
+                "type": "expense_pending",
+                "message": f"{pending_expenses_count} expense(s) tracked",
+                "severity": "warning"
+            })
+
+        return {
+            "total_budget": total_budget,
+            "total_spent": total_spent,
+            "pending_invoices": pending_invoices_result.count or 0,
+            "pending_expenses": pending_expenses_count,
+            "alerts": alerts
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting budget summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
