@@ -69,7 +69,7 @@ export const TheOrderSection: React.FC = () => {
           <p className="text-xl text-bone-white/80 max-w-2xl mx-auto">
             A Professional Guild for Purpose-Driven Filmmakers
           </p>
-          <p className="text-muted-gray mt-4 max-w-xl mx-auto">
+          <p className="text-gray-500 mt-4 max-w-xl mx-auto">
             Join a community of vetted industry professionals committed to excellence, integrity, and meaningful work.
           </p>
         </motion.div>
@@ -96,7 +96,7 @@ export const TheOrderSection: React.FC = () => {
                 </div>
 
                 {/* Subtitle badge */}
-                <span className="inline-block px-3 py-1 bg-muted-gray/20 rounded-full text-xs uppercase tracking-wider text-muted-gray mb-3">
+                <span className="inline-block px-3 py-1 bg-muted-gray/20 rounded-full text-xs uppercase tracking-wider text-gray-500 mb-3">
                   {benefit.subtitle}
                 </span>
 
@@ -106,7 +106,7 @@ export const TheOrderSection: React.FC = () => {
                 </h3>
 
                 {/* Description */}
-                <p className="text-muted-gray text-sm">
+                <p className="text-gray-500 text-sm">
                   {benefit.description}
                 </p>
               </motion.div>

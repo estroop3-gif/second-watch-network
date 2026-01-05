@@ -233,31 +233,34 @@ async def get_project(
 
 # ============ Authenticated User Endpoints ============
 
-@router.get("/tickets/my-tickets", response_model=VotingTicketResponse)
+@router.get("/tickets/my-tickets")
 async def get_my_tickets(
     user = Depends(get_current_user)
 ):
-    """Get user's voting tickets summary"""
+    """Get user's voting tickets by cycle"""
     client = get_client()
     user_id = get_user_id(user)
 
     result = client.table("greenroom_voting_tickets").select("*").eq("user_id", user_id).eq("payment_status", "completed").execute()
 
     if not result.data:
-        return VotingTicketResponse(
-            tickets_purchased=0,
-            tickets_used=0,
-            tickets_available=0
-        )
+        return []
 
-    total_purchased = sum(t.get("tickets_purchased", 0) for t in result.data)
-    total_used = sum(t.get("tickets_used", 0) for t in result.data)
+    # Return array of tickets with tickets_available calculated
+    tickets = []
+    for t in result.data:
+        tickets.append({
+            "id": t.get("id"),
+            "user_id": t.get("user_id"),
+            "cycle_id": t.get("cycle_id"),
+            "tickets_purchased": t.get("tickets_purchased", 0),
+            "tickets_used": t.get("tickets_used", 0),
+            "tickets_available": t.get("tickets_purchased", 0) - t.get("tickets_used", 0),
+            "payment_status": t.get("payment_status"),
+            "created_at": t.get("created_at")
+        })
 
-    return VotingTicketResponse(
-        tickets_purchased=total_purchased,
-        tickets_used=total_used,
-        tickets_available=total_purchased - total_used
-    )
+    return tickets
 
 
 @router.post("/tickets/purchase", response_model=TicketPurchaseResponse)

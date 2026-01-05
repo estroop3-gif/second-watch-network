@@ -83,3 +83,128 @@ async def get_connection_relationship(peer_id: str, user_id: str):
         return response.data[0] if response.data else None
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/activity")
+async def get_friends_activity(user_id: str, limit: int = 10):
+    """
+    Get activity from connected users (friends).
+    Returns recent watchlist additions, ratings, and watch history.
+    """
+    try:
+        client = get_client()
+
+        # Get list of connected user IDs (accepted connections)
+        connections_response = client.table("connections").select("requester_id, recipient_id").eq(
+            "status", "accepted"
+        ).or_(
+            f"requester_id.eq.{user_id},recipient_id.eq.{user_id}"
+        ).execute()
+
+        # Extract friend IDs
+        friend_ids = set()
+        for conn in connections_response.data:
+            if conn["requester_id"] == user_id:
+                friend_ids.add(conn["recipient_id"])
+            else:
+                friend_ids.add(conn["requester_id"])
+
+        if not friend_ids:
+            return {"activities": [], "total": 0}
+
+        friend_ids_list = list(friend_ids)
+        activities = []
+
+        # Get recent watchlist additions from friends
+        try:
+            watchlist_response = client.table("world_watchlist").select(
+                "user_id, world_id, created_at, worlds(id, title, slug, thumbnail_url)"
+            ).in_("user_id", friend_ids_list).order(
+                "created_at", desc=True
+            ).limit(limit).execute()
+
+            for item in watchlist_response.data:
+                if item.get("worlds"):
+                    activities.append({
+                        "type": "watchlist_add",
+                        "user_id": item["user_id"],
+                        "world_id": item["world_id"],
+                        "world_title": item["worlds"].get("title"),
+                        "world_slug": item["worlds"].get("slug"),
+                        "world_poster": item["worlds"].get("thumbnail_url"),
+                        "timestamp": item["created_at"],
+                    })
+        except Exception:
+            pass  # Watchlist table may not exist
+
+        # Get recent ratings from friends
+        try:
+            ratings_response = client.table("world_ratings").select(
+                "user_id, world_id, rating, review, created_at, worlds(id, title, slug, thumbnail_url)"
+            ).in_("user_id", friend_ids_list).order(
+                "created_at", desc=True
+            ).limit(limit).execute()
+
+            for item in ratings_response.data:
+                if item.get("worlds"):
+                    activities.append({
+                        "type": "rating",
+                        "user_id": item["user_id"],
+                        "world_id": item["world_id"],
+                        "world_title": item["worlds"].get("title"),
+                        "world_slug": item["worlds"].get("slug"),
+                        "world_poster": item["worlds"].get("thumbnail_url"),
+                        "rating": item["rating"],
+                        "review": item.get("review"),
+                        "timestamp": item["created_at"],
+                    })
+        except Exception:
+            pass  # Ratings table may not exist
+
+        # Get recent watch history from friends
+        try:
+            watch_response = client.table("watch_history").select(
+                "user_id, world_id, episode_id, progress_percent, updated_at, worlds(id, title, slug, thumbnail_url)"
+            ).in_("user_id", friend_ids_list).gte(
+                "progress_percent", 80  # Only show if mostly watched
+            ).order(
+                "updated_at", desc=True
+            ).limit(limit).execute()
+
+            for item in watch_response.data:
+                if item.get("worlds"):
+                    activities.append({
+                        "type": "watched",
+                        "user_id": item["user_id"],
+                        "world_id": item["world_id"],
+                        "world_title": item["worlds"].get("title"),
+                        "world_slug": item["worlds"].get("slug"),
+                        "world_poster": item["worlds"].get("thumbnail_url"),
+                        "episode_id": item.get("episode_id"),
+                        "progress_percent": item.get("progress_percent"),
+                        "timestamp": item["updated_at"],
+                    })
+        except Exception:
+            pass  # Watch history table may not exist
+
+        # Sort all activities by timestamp, most recent first
+        activities.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        activities = activities[:limit]
+
+        # Get user profiles for the friend IDs in the activities
+        activity_user_ids = list(set(a["user_id"] for a in activities))
+        if activity_user_ids:
+            profiles_response = client.table("profiles").select(
+                "id, full_name, display_name, avatar_url"
+            ).in_("id", activity_user_ids).execute()
+
+            profiles_by_id = {p["id"]: p for p in profiles_response.data}
+
+            for activity in activities:
+                profile = profiles_by_id.get(activity["user_id"], {})
+                activity["user_name"] = profile.get("display_name") or profile.get("full_name") or "Friend"
+                activity["user_avatar"] = profile.get("avatar_url")
+
+        return {"activities": activities, "total": len(activities)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

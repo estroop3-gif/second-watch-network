@@ -98,7 +98,7 @@ export default function ClearanceDocumentTab({
                   Uploaded
                 </Badge>
               ) : (
-                <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/30">
+                <Badge className="bg-gray-500/10 text-gray-500 border border-gray-500/30">
                   <FileX className="w-3 h-3 mr-1" />
                   Missing
                 </Badge>

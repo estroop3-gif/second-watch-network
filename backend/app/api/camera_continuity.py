@@ -17,6 +17,8 @@ router = APIRouter()
 
 def get_profile_id_from_cognito_id(cognito_user_id: str) -> Optional[str]:
     """Look up the profile ID from a Cognito user ID."""
+    if not cognito_user_id:
+        return None
     uid_str = str(cognito_user_id)
     # First try cognito_user_id (preferred, exact match)
     profile_row = execute_single(

@@ -132,7 +132,7 @@ const getStatusBadge = (status: BacklotBudgetStatus) => {
     pending_approval: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
     approved: 'bg-green-500/20 text-green-400 border-green-500/30',
     locked: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-    archived: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+    archived: 'bg-gray-500/20 text-gray-500 border-gray-500/30',
   };
   const labels: Record<BacklotBudgetStatus, string> = {
     draft: 'Draft',

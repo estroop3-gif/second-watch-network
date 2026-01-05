@@ -139,7 +139,7 @@ cd backend && sam build && sam deploy
 # Frontend (S3 + CloudFront)
 cd frontend && VITE_API_URL=https://vnvvoelid6.execute-api.us-east-1.amazonaws.com npm run build
 aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
-aws cloudfront create-invalidation --distribution-id E2V5T2HN1P6FFI --paths "/*"
+aws cloudfront create-invalidation --distribution-id EJRGRTMJFSXN2 --paths "/*"
 ```
 
 ## Custom Claude Agents

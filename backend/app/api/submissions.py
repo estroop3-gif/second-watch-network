@@ -20,12 +20,12 @@ async def get_my_submissions(user=Depends(get_current_user)):
         # Get profile to find profile_id for user_id matching
         profile = client.table("profiles").select("id").or_(
             f"cognito_user_id.eq.{user_id},id.eq.{user_id}"
-        ).maybe_single().execute()
+        ).limit(1).execute()
 
-        profile_id = profile.data.get("id") if profile.data else user_id
+        profile_id = profile.data[0].get("id") if profile.data else user_id
 
         response = client.table("submissions").select(
-            "id, project_title, status, project_type, created_at, name, email, logline, description, youtube_link, has_unread_user_messages"
+            "id, user_id, project_title, status, project_type, created_at, name, email, logline, description, youtube_link, has_unread_user_messages"
         ).or_(f"user_id.eq.{user_id},user_id.eq.{profile_id}").order(
             "created_at", desc=True
         ).execute()

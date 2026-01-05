@@ -72,7 +72,7 @@ interface ScriptNotesPanelProps {
 // Note type color helpers
 const getNoteTypeColor = (type: BacklotScriptPageNoteType): string => {
   const colors: Record<BacklotScriptPageNoteType, string> = {
-    general: "bg-gray-500/20 text-gray-400 border-gray-500/40",
+    general: "bg-gray-500/20 text-gray-500 border-gray-500/40",
     direction: "bg-purple-500/20 text-purple-400 border-purple-500/40",
     production: "bg-blue-500/20 text-blue-400 border-blue-500/40",
     character: "bg-red-500/20 text-red-400 border-red-500/40",

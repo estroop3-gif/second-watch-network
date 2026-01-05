@@ -2,15 +2,24 @@
 Second Watch Network - FastAPI Backend
 Main Application Entry Point
 """
-import logging
-import traceback
+import uuid
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from app.core.config import settings
 from app.core.startup import on_startup
+from app.core.logging import (
+    setup_logging,
+    get_logger,
+    set_request_context,
+    clear_request_context,
+    RequestTimer,
+    log_request_end,
+)
+from app.core.exceptions import register_exception_handlers
 from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
@@ -22,12 +31,28 @@ from app.api import (
     church_services, church_people, church_content, church_planning,
     church_resources, church_readiness, cast_crew, hot_set, invoices, coms,
     application_templates, cover_letter_templates, resumes, networks, productions,
-    companies, dm_adapter, uploads, feedback
+    companies, dm_adapter, uploads, feedback,
+    worlds, consumer_video, shorts, live_events,
+    dashboard_settings, themes, recommendations, engagement,
+    media, organizations, creator_earnings,
+    linear,  # Phase 2A: Linear channels
+    ads, partners,  # Phase 2B: Ad/partner stack
+    festivals, venues,  # Phase 2C: Festival lifecycle & venue distribution
+    community_threads, career, lodges,  # Phase 3: Community, careers, lodge programming
+    client_api,  # Phase 4A: Mobile/TV client APIs
+    moderation,  # Phase 4B: Content review and moderation
+    world_onboarding, i18n,  # Phase 4C: Creator UX and internationalization
+    distribution,  # Phase 5A: Third-party distribution and export
+    analytics,  # Phase 5B: Advanced analytics and insights
+    watch_parties, live_production,  # Phase 5C: Watch parties and live production
+    order_governance,  # Phase 6A: Order governance and funds
+    financing,  # Phase 6B: Creator financing and recoupment
+    ops,  # Phase 6C: Operational resilience and feature flags
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure structured logging
+setup_logging(level="INFO")
+logger = get_logger(__name__)
 
 
 class CORSPreflightMiddleware(BaseHTTPMiddleware):
@@ -41,12 +66,62 @@ class CORSPreflightMiddleware(BaseHTTPMiddleware):
                     headers={
                         "Access-Control-Allow-Origin": origin,
                         "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                        "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Origin, X-Requested-With",
+                        "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Origin, X-Requested-With, X-Request-ID",
                         "Access-Control-Allow-Credentials": "true",
                         "Access-Control-Max-Age": "600",
                     }
                 )
         return await call_next(request)
+
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to handle request context for logging and tracing.
+
+    - Generates or uses X-Request-ID header for request correlation
+    - Sets up logging context with request details
+    - Logs request duration on completion
+    """
+    async def dispatch(self, request: Request, call_next):
+        # Get or generate request ID
+        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+
+        # Set request context for logging
+        set_request_context(
+            request_id=request_id,
+            path=request.url.path,
+            method=request.method,
+        )
+
+        # Time the request
+        with RequestTimer() as timer:
+            try:
+                response = await call_next(request)
+            except Exception as e:
+                # Log and re-raise - exception handlers will format the response
+                log_request_end(
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=500,
+                    duration_ms=timer.duration_ms,
+                    error=str(e),
+                )
+                raise
+            finally:
+                clear_request_context()
+
+        # Add request ID to response headers
+        response.headers["X-Request-ID"] = request_id
+
+        # Log request completion
+        log_request_end(
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=timer.duration_ms,
+        )
+
+        return response
 
 
 @asynccontextmanager
@@ -65,35 +140,25 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS preflight handler (must be added first to handle OPTIONS before auth)
+# Middleware order matters - outermost first
+# 1. Request context (outermost) - sets up logging context and request ID
+app.add_middleware(RequestContextMiddleware)
+
+# 2. CORS preflight handler - handles OPTIONS before hitting routes
 app.add_middleware(CORSPreflightMiddleware)
 
-# Configure CORS - Allow all origins in development
+# 3. CORS middleware - handles CORS headers for all responses
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,  # Must be False when using allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],  # Allow frontend to access request ID
 )
 
-
-# Global exception handler to ensure CORS headers and logging
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Handle all unhandled exceptions with proper logging and CORS headers."""
-    print(f"[ERROR] Unhandled exception on {request.method} {request.url.path}: {str(exc)}", flush=True)
-    print(traceback.format_exc(), flush=True)
-
-    origin = request.headers.get("origin", "*")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc)},
-        headers={
-            "Access-Control-Allow-Origin": origin,
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
+# Register structured exception handlers
+register_exception_handlers(app)
 
 
 # Health check endpoint
@@ -169,6 +234,14 @@ app.include_router(dm_adapter.router, prefix=f"{settings.API_V1_PREFIX}/dm", tag
 app.include_router(uploads.router, prefix=f"{settings.API_V1_PREFIX}/uploads", tags=["Uploads"])
 app.include_router(feedback.router, prefix=f"{settings.API_V1_PREFIX}/feedback", tags=["Alpha Feedback"])
 
+# Consumer Streaming Platform
+app.include_router(worlds.router, prefix=f"{settings.API_V1_PREFIX}/worlds", tags=["Worlds"])
+app.include_router(consumer_video.router, prefix=f"{settings.API_V1_PREFIX}/video", tags=["Video Pipeline"])
+app.include_router(shorts.router, prefix=f"{settings.API_V1_PREFIX}/shorts", tags=["Shorts"])
+app.include_router(live_events.router, prefix=f"{settings.API_V1_PREFIX}/events", tags=["Live Events"])
+app.include_router(recommendations.router, prefix=f"{settings.API_V1_PREFIX}/recommendations", tags=["Recommendations"])
+app.include_router(engagement.router, prefix=f"{settings.API_V1_PREFIX}/engagement", tags=["Engagement"])
+
 # Church Production Tools
 app.include_router(church_services.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Services"])
 app.include_router(church_people.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church People"])
@@ -176,6 +249,64 @@ app.include_router(church_content.router, prefix=f"{settings.API_V1_PREFIX}/chur
 app.include_router(church_planning.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Planning"])
 app.include_router(church_resources.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Resources"])
 app.include_router(church_readiness.router, prefix=f"{settings.API_V1_PREFIX}/church", tags=["Church Readiness"])
+
+# Dashboard Customization & Themes
+app.include_router(dashboard_settings.router, prefix=f"{settings.API_V1_PREFIX}/dashboard-settings", tags=["Dashboard Settings"])
+app.include_router(themes.router, prefix=f"{settings.API_V1_PREFIX}/themes", tags=["Themes"])
+
+# Media Processing
+app.include_router(media.router, prefix=f"{settings.API_V1_PREFIX}/media", tags=["Media Processing"])
+
+# Creator Monetization & Organizations
+app.include_router(organizations.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organizations"])
+app.include_router(creator_earnings.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Creator Earnings"])
+
+# Phase 2A: Linear Channels
+app.include_router(linear.router, prefix=f"{settings.API_V1_PREFIX}/linear", tags=["Linear Channels"])
+
+# Phase 2B: Ad/Partner Stack
+app.include_router(ads.router, prefix=f"{settings.API_V1_PREFIX}/ads", tags=["Ads"])
+app.include_router(partners.router, prefix=f"{settings.API_V1_PREFIX}/partners", tags=["Partners"])
+
+# Phase 2C: Festival Lifecycle & Venue Distribution
+app.include_router(festivals.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Festivals"])
+app.include_router(venues.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Venues"])
+
+# Phase 3A: Community Scoping & Careers
+app.include_router(community_threads.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Community Threads"])
+app.include_router(career.router, prefix=f"{settings.API_V1_PREFIX}/career", tags=["Career & Filmography"])
+
+# Phase 3B: Lodge Programming
+app.include_router(lodges.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Lodge Programming"])
+
+# Phase 4A: Mobile/TV Client APIs
+app.include_router(client_api.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Client API"])
+
+# Phase 4B: Content Review and Moderation
+app.include_router(moderation.router, prefix=f"{settings.API_V1_PREFIX}/moderation", tags=["Moderation"])
+
+# Phase 4C: Creator UX and Internationalization
+app.include_router(world_onboarding.router, prefix=f"{settings.API_V1_PREFIX}", tags=["World Onboarding"])
+app.include_router(i18n.router, prefix=f"{settings.API_V1_PREFIX}/i18n", tags=["Internationalization"])
+
+# Phase 5A: Third-party Distribution and Export
+app.include_router(distribution.router, prefix=f"{settings.API_V1_PREFIX}/distribution", tags=["Distribution"])
+
+# Phase 5B: Advanced Analytics
+app.include_router(analytics.router, prefix=f"{settings.API_V1_PREFIX}/analytics", tags=["Analytics"])
+
+# Phase 5C: Watch Parties and Live Production
+app.include_router(watch_parties.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Watch Parties"])
+app.include_router(live_production.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Live Production"])
+
+# Phase 6A: Order Governance and Funds
+app.include_router(order_governance.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Order Governance"])
+
+# Phase 6B: Creator Financing and Recoupment
+app.include_router(financing.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Financing"])
+
+# Phase 6C: Operational Resilience and Feature Flags
+app.include_router(ops.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Ops"])
 
 # Mount Socket.IO for real-time communications
 try:

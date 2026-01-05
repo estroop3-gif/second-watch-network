@@ -698,7 +698,7 @@ const ListRow: React.FC<{
           variant="outline"
           className={cn(
             'text-[10px]',
-            task.status === 'todo' && 'text-gray-400',
+            task.status === 'todo' && 'text-gray-500',
             task.status === 'in_progress' && 'text-blue-400 border-blue-400/30',
             task.status === 'review' && 'text-amber-400 border-amber-400/30',
             task.status === 'completed' && 'text-green-400 border-green-400/30',

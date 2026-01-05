@@ -58,7 +58,7 @@ export default function CraftHouseMemberCard({
     try {
       setIsDMing(true);
       const conversation = await api.messages.createPrivateConversation(member.user_id);
-      navigate(`/messages/${conversation.id}`);
+      navigate(`/messages?open=${conversation.id}`);
     } catch (error: any) {
       toast.error(error.message || 'Failed to start conversation');
     } finally {

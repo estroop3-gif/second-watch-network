@@ -26,8 +26,11 @@ import { AuthProvider } from "./context/AuthContext";
 import { SettingsProvider } from "./context/SettingsContext";
 import { EnrichedProfileProvider } from "./context/EnrichedProfileContext";
 import { SocketProvider } from "./context/SocketContext";
+import { ThemeProvider } from "./context/ThemeContext";
+import { DashboardSettingsProvider } from "./context/DashboardSettingsContext";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
+import ThemeEditorPage from "./pages/ThemeEditorPage";
 import ConfirmEmail from "./pages/ConfirmEmail";
 import AuthenticatedLayout from "./components/AuthenticatedLayout";
 import PublicLayout from "./components/PublicLayout";
@@ -128,17 +131,33 @@ const ClearanceViewPage = React.lazy(() =>
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 
+// Watch/Streaming Pages
+import {
+  WatchHome,
+  WorldDetail,
+  ShortsPlayer,
+  EpisodePlayer,
+  BrowsePage,
+  SearchPage,
+  LiveEventsPage,
+  HistoryPage,
+  VideoLibrary,
+} from "./pages/watch";
+import { StreamLayout } from "./components/watch";
+
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <AuthProvider>
-      <SettingsProvider>
-        <EnrichedProfileProvider>
-          <SocketProvider>
-          <PlatformStatusGate>
-            <TooltipProvider>
+      <ThemeProvider>
+        <SettingsProvider>
+          <EnrichedProfileProvider>
+            <DashboardSettingsProvider>
+              <SocketProvider>
+                <PlatformStatusGate>
+                  <TooltipProvider>
             <Toaster />
             <Sonner />
             <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
@@ -194,7 +213,22 @@ const App = () => (
                 <Route path="/apply/filmmaker" element={<FilmmakerApplicationPage />} />
                 <Route path="/auth/callback" element={<AuthCallback />} />
                 <Route path="/billing/return" element={<BillingReturn />} />
-                
+
+                {/* Watch/Streaming Routes with StreamLayout */}
+                <Route path="/watch" element={<StreamLayout />}>
+                  <Route index element={<WatchHome />} />
+                  <Route path="worlds/:slug" element={<WorldDetail />} />
+                  <Route path="browse" element={<BrowsePage />} />
+                  <Route path="search" element={<SearchPage />} />
+                  <Route path="events" element={<LiveEventsPage />} />
+                  <Route path="history" element={<HistoryPage />} />
+                  <Route path="library" element={<VideoLibrary />} />
+                </Route>
+
+                {/* Immersive Watch Routes (no layout) */}
+                <Route path="/watch/episode/:episodeId" element={<EpisodePlayer />} />
+                <Route path="/watch/shorts" element={<ShortsPlayer />} />
+
                 {/* Authenticated Routes with AppHeader */}
                 <Route element={<OnboardingGate />}>
                   <Route element={<AuthenticatedLayout />}>
@@ -205,6 +239,7 @@ const App = () => (
                     <Route path="/account/billing" element={<SubscriptionSettingsPage />} />
                     {/* keep legacy path working */}
                     <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
+                    <Route path="/account/themes" element={<ThemeEditorPage />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/connections" element={<Connections />} />
                     <Route path="/my-applications" element={<MyApplications />} />
@@ -294,11 +329,13 @@ const App = () => (
                 <Route path="*" element={<NotFound />} />
               </Routes>
             </BrowserRouter>
-          </TooltipProvider>
-          </PlatformStatusGate>
-          </SocketProvider>
-        </EnrichedProfileProvider>
-      </SettingsProvider>
+                  </TooltipProvider>
+                </PlatformStatusGate>
+              </SocketProvider>
+            </DashboardSettingsProvider>
+          </EnrichedProfileProvider>
+        </SettingsProvider>
+      </ThemeProvider>
     </AuthProvider>
   </QueryClientProvider>
 );

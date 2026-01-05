@@ -1,9 +1,13 @@
 """
 Admin API Routes
+
+Protected with permission-based access control.
 """
-from fastapi import APIRouter, HTTPException
-from typing import List, Optional
+from fastapi import APIRouter, HTTPException, Depends
+from typing import List, Optional, Dict, Any
 from app.core.database import get_client
+from app.core.permissions import Permission, require_permissions
+from app.core.exceptions import NotFoundError, ForbiddenError
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -29,8 +33,14 @@ class UserRoleUpdate(BaseModel):
 
 
 @router.get("/dashboard/stats", response_model=DashboardStats)
-async def get_dashboard_stats():
-    """Get admin dashboard statistics"""
+async def get_dashboard_stats(
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_DASHBOARD))
+):
+    """
+    Get admin dashboard statistics.
+
+    Requires: ADMIN_DASHBOARD permission
+    """
     try:
         client = get_client()
         
@@ -58,8 +68,17 @@ async def get_dashboard_stats():
 
 
 @router.get("/users", response_model=List[dict])
-async def list_all_users(skip: int = 0, limit: int = 50, role: Optional[str] = None):
-    """List all users (admin only)"""
+async def list_all_users(
+    skip: int = 0,
+    limit: int = 50,
+    role: Optional[str] = None,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.ADMIN_USERS))
+):
+    """
+    List all users.
+
+    Requires: ADMIN_USERS permission
+    """
     try:
         client = get_client()
         query = client.table("profiles").select("*")
@@ -74,8 +93,15 @@ async def list_all_users(skip: int = 0, limit: int = 50, role: Optional[str] = N
 
 
 @router.post("/users/ban")
-async def ban_user(request: UserBanRequest):
-    """Ban or unban a user"""
+async def ban_user(
+    request: UserBanRequest,
+    profile: Dict[str, Any] = Depends(require_permissions(Permission.USER_BAN))
+):
+    """
+    Ban or unban a user.
+
+    Requires: USER_BAN permission
+    """
     try:
         client = get_client()
         

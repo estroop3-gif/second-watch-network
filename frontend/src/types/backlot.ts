@@ -6457,7 +6457,7 @@ export const INVOICE_STATUS_CONFIG: Record<InvoiceStatus, { label: string; color
   sent: { label: 'Sent', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   paid: { label: 'Paid', color: 'bg-green-500/20 text-green-400 border-green-500/30' },
   overdue: { label: 'Overdue', color: 'bg-red-500/20 text-red-400 border-red-500/30' },
-  cancelled: { label: 'Cancelled', color: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
+  cancelled: { label: 'Cancelled', color: 'bg-gray-500/20 text-gray-500 border-gray-500/30' },
 };
 
 export const PAYMENT_TERMS_OPTIONS = [

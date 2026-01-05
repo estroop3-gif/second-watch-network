@@ -73,7 +73,7 @@ const statusConfig: Record<ApplicationStatus, { label: string; color: string; bg
   offered: { label: 'Offered', color: 'text-green-400', bgColor: 'bg-green-600/20' },
   booked: { label: 'Booked', color: 'text-emerald-400', bgColor: 'bg-emerald-600/20' },
   rejected: { label: 'Rejected', color: 'text-red-400', bgColor: 'bg-red-600/20' },
-  withdrawn: { label: 'Withdrawn', color: 'text-gray-400', bgColor: 'bg-gray-600/20' },
+  withdrawn: { label: 'Withdrawn', color: 'text-gray-500', bgColor: 'bg-gray-600/20' },
 };
 
 const ApplicationDetailModal: React.FC<ApplicationDetailModalProps> = ({

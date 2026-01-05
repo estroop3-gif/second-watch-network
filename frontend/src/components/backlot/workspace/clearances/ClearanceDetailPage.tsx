@@ -53,11 +53,11 @@ function getStatusBadgeClass(status: string): string {
     signed: 'bg-green-500/10 text-green-400 border-green-500/30',
     requested: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30',
     pending: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-    not_started: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
+    not_started: 'bg-gray-500/10 text-gray-500 border-gray-500/30',
     expired: 'bg-orange-500/10 text-orange-400 border-orange-500/30',
     rejected: 'bg-red-500/10 text-red-400 border-red-500/30',
   };
-  return classes[status] || 'bg-gray-500/10 text-gray-400 border-gray-500/30';
+  return classes[status] || 'bg-gray-500/10 text-gray-500 border-gray-500/30';
 }
 
 function getTypeIcon(type: string) {
@@ -154,7 +154,7 @@ export default function ClearanceDetailPage({
                     Document
                   </Badge>
                 ) : (
-                  <Badge className="bg-gray-500/10 text-gray-400 border border-gray-500/30">
+                  <Badge className="bg-gray-500/10 text-gray-500 border border-gray-500/30">
                     <FileX className="w-3 h-3 mr-1" />
                     No Document
                   </Badge>

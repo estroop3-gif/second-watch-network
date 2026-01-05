@@ -797,7 +797,7 @@ const InvoicesSection: React.FC<{
         );
       case 'draft':
         return (
-          <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-400 border-gray-500/30">
+          <Badge variant="outline" className="text-xs bg-gray-500/10 text-gray-500 border-gray-500/30">
             Draft
           </Badge>
         );

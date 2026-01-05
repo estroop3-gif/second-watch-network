@@ -29,7 +29,7 @@ const SupportCard = ({
   >
     {icon}
     <h3 className="text-2xl font-heading">{title}</h3>
-    <p className="text-muted-gray font-sans normal-case flex-grow">{children}</p>
+    <p className="text-gray-500 font-sans normal-case flex-grow">{children}</p>
     {to ? (
       <Button
         asChild

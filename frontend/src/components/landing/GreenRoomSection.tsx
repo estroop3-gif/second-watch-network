@@ -73,13 +73,13 @@ export const GreenRoomSection: React.FC = () => {
 
                 {/* Project info */}
                 <h3 className="font-heading text-xl text-bone-white mb-1">Sample Project Title</h3>
-                <p className="text-muted-gray text-sm mb-4">by Independent Filmmaker</p>
+                <p className="text-gray-500 text-sm mb-4">by Independent Filmmaker</p>
 
                 {/* Vote progress bar */}
                 <div className="mb-3">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-emerald-400 font-semibold">847 Votes</span>
-                    <span className="text-muted-gray">Goal: 1,000</span>
+                    <span className="text-gray-500">Goal: 1,000</span>
                   </div>
                   <div className="h-3 bg-muted-gray/30 rounded-full overflow-hidden">
                     <motion.div
@@ -96,7 +96,7 @@ export const GreenRoomSection: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <span className="text-accent-yellow font-bold text-lg">$8,470</span>
-                    <span className="text-muted-gray text-sm ml-2">raised</span>
+                    <span className="text-gray-500 text-sm ml-2">raised</span>
                   </div>
                   <Button
                     size="sm"
@@ -150,7 +150,7 @@ export const GreenRoomSection: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="font-semibold text-bone-white mb-1">{step.title}</h3>
-                    <p className="text-muted-gray text-sm">{step.description}</p>
+                    <p className="text-gray-500 text-sm">{step.description}</p>
                   </div>
                 </motion.div>
               ))}

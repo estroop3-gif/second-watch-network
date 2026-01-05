@@ -14,7 +14,7 @@ const LiveStreamSection = () => {
           transition={{ duration: 0.5 }}
         >
           <h2 className="text-4xl md:text-6xl font-heading tracking-tighter mb-4 -rotate-1">Streaming Now</h2>
-          <p className="max-w-3xl text-muted-gray mb-12 font-sans normal-case">
+          <p className="max-w-3xl text-gray-500 mb-12 font-sans normal-case">
             Our 24/7 stream features a curated selection of the best indie content from creators around the world. Tune in anytime for something new and authentic.
           </p>
         </motion.div>

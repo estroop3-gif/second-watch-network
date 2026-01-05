@@ -1,5 +1,11 @@
 // This file is for sharing common type definitions across the application.
 
+// Dashboard customization
+export * from './dashboard';
+
+// Theme system
+export * from './theme';
+
 export type ForumThread = {
   id: string;
   title: string;

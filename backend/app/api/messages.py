@@ -18,11 +18,17 @@ async def list_conversations(user_id: str):
     """List user's conversations"""
     try:
         client = get_client()
-        
+
         # Call Supabase RPC function to get conversations
         response = client.rpc("get_user_conversations", {"user_id": user_id}).execute()
-        
-        return response.data if response.data else []
+
+        # Convert UUID objects to strings in participant_ids
+        conversations = response.data if response.data else []
+        for conv in conversations:
+            if "participant_ids" in conv and conv["participant_ids"]:
+                conv["participant_ids"] = [str(pid) for pid in conv["participant_ids"]]
+
+        return conversations
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

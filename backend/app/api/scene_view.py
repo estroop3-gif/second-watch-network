@@ -218,6 +218,8 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 
 def get_profile_id_from_cognito_id(client, cognito_user_id: str) -> str:
     """Look up the profile ID from a Cognito user ID."""
+    if not cognito_user_id:
+        return None
     uid_str = str(cognito_user_id)
     # Try cognito_user_id first
     result = client.table("profiles").select("id").eq("cognito_user_id", uid_str).limit(1).execute()

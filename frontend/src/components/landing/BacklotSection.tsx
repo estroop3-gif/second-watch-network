@@ -74,7 +74,7 @@ export const BacklotSection: React.FC = () => {
           <p className="text-xl text-bone-white/80 max-w-2xl mx-auto">
             Your All-in-One Production Hub
           </p>
-          <p className="text-muted-gray mt-4 max-w-xl mx-auto">
+          <p className="text-gray-500 mt-4 max-w-xl mx-auto">
             Forget spreadsheet chaos. Professional tools for call sheets, budgets, casting, clearances — all in one place.
           </p>
         </motion.div>
@@ -101,7 +101,7 @@ export const BacklotSection: React.FC = () => {
                 <h3 className="font-heading text-xl font-bold text-bone-white mb-2">
                   {feature.title}
                 </h3>
-                <p className="text-muted-gray text-sm">
+                <p className="text-gray-500 text-sm">
                   {feature.description}
                 </p>
               </motion.div>

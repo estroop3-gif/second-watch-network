@@ -102,7 +102,7 @@ export function PendingDocumentUpload({
     if (fileName.toLowerCase().endsWith('.pdf')) {
       return { icon: FileText, color: 'text-red-400', bg: 'bg-red-500/20' };
     }
-    return { icon: FileText, color: 'text-gray-400', bg: 'bg-gray-500/20' };
+    return { icon: FileText, color: 'text-gray-500', bg: 'bg-gray-500/20' };
   };
 
   // If we have a file, show file info with remove option

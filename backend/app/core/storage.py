@@ -24,12 +24,16 @@ AWS_REGION = getattr(settings, 'AWS_REGION', None) or os.getenv('AWS_REGION', 'u
 AVATARS_BUCKET = os.getenv('AWS_S3_AVATARS_BUCKET', 'swn-avatars-517220555400')
 BACKLOT_BUCKET = os.getenv('AWS_S3_BACKLOT_BUCKET', 'swn-backlot-517220555400')
 BACKLOT_FILES_BUCKET = os.getenv('AWS_S3_BACKLOT_FILES_BUCKET', 'swn-backlot-files-517220555400')
+VIDEO_MASTERS_BUCKET = os.getenv('AWS_S3_VIDEO_MASTERS_BUCKET', 'swn-video-masters-517220555400')
+VIDEO_PUBLISH_BUCKET = os.getenv('AWS_S3_VIDEO_PUBLISH_BUCKET', 'swn-video-publish-517220555400')
 
 # Bucket mapping (matches Supabase bucket names)
 BUCKET_MAPPING = {
     'avatars': AVATARS_BUCKET,
     'backlot': BACKLOT_BUCKET,
     'backlot-files': BACKLOT_FILES_BUCKET,
+    'video-masters': VIDEO_MASTERS_BUCKET,
+    'video-publish': VIDEO_PUBLISH_BUCKET,
 }
 
 # S3 Client configuration
@@ -369,3 +373,268 @@ def generate_unique_filename(original_filename: str) -> str:
     """
     ext = os.path.splitext(original_filename)[1] if original_filename else ''
     return f"{uuid.uuid4()}{ext}"
+
+
+# =============================================================================
+# S3 Path Builder
+# =============================================================================
+
+class S3PathBuilder:
+    """
+    Generates consistent S3 paths across the platform.
+
+    This ensures all media files follow predictable naming conventions
+    for easier management, CDN caching, and debugging.
+
+    Path Patterns:
+    - Avatars: avatars/{user_id}/{filename}
+    - Backlot Dailies: backlot/{project_id}/dailies/{shoot_day_id}/{clip_id}/{filename}
+    - Backlot Assets: backlot/{project_id}/assets/{asset_type}/{asset_id}/{filename}
+    - World Episodes: worlds/{world_id}/episodes/{episode_id}/{quality}/{filename}
+    - Shorts: shorts/{short_id}/{quality}/{filename}
+    - Thumbnails: thumbnails/{content_type}/{content_id}/{filename}
+    """
+
+    # Bucket assignments by content type
+    BUCKET_MAP = {
+        'avatar': AVATARS_BUCKET,
+        'backlot_daily': BACKLOT_BUCKET,
+        'backlot_asset': BACKLOT_FILES_BUCKET,
+        'world_master': VIDEO_MASTERS_BUCKET,
+        'world_publish': VIDEO_PUBLISH_BUCKET,
+        'short_master': VIDEO_MASTERS_BUCKET,
+        'short_publish': VIDEO_PUBLISH_BUCKET,
+    }
+
+    @classmethod
+    def avatar(cls, user_id: str, filename: str) -> tuple[str, str]:
+        """
+        Generate path for user avatar.
+
+        Returns: (bucket, key)
+        """
+        key = f"avatars/{user_id}/{filename}"
+        return (AVATARS_BUCKET, key)
+
+    @classmethod
+    def backlot_daily(
+        cls,
+        project_id: str,
+        shoot_day_id: str,
+        clip_id: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for a dailies clip.
+
+        Returns: (bucket, key)
+        """
+        key = f"projects/{project_id}/dailies/{shoot_day_id}/{clip_id}/{filename}"
+        return (BACKLOT_BUCKET, key)
+
+    @classmethod
+    def backlot_daily_proxy(
+        cls,
+        project_id: str,
+        shoot_day_id: str,
+        clip_id: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for a dailies proxy file.
+
+        Returns: (bucket, key)
+        """
+        key = f"projects/{project_id}/dailies/{shoot_day_id}/{clip_id}/proxy.mp4"
+        return (BACKLOT_BUCKET, key)
+
+    @classmethod
+    def backlot_daily_thumbnail(
+        cls,
+        project_id: str,
+        shoot_day_id: str,
+        clip_id: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for a dailies thumbnail.
+
+        Returns: (bucket, key)
+        """
+        key = f"projects/{project_id}/dailies/{shoot_day_id}/{clip_id}/thumbnail.jpg"
+        return (BACKLOT_BUCKET, key)
+
+    @classmethod
+    def backlot_asset(
+        cls,
+        project_id: str,
+        asset_type: str,
+        asset_id: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for a backlot asset file.
+
+        asset_type: 'documents', 'images', 'audio', etc.
+
+        Returns: (bucket, key)
+        """
+        key = f"projects/{project_id}/assets/{asset_type}/{asset_id}/{filename}"
+        return (BACKLOT_FILES_BUCKET, key)
+
+    @classmethod
+    def world_master(
+        cls,
+        world_id: str,
+        episode_id: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for an episode master file (original upload).
+
+        Returns: (bucket, key)
+        """
+        key = f"worlds/{world_id}/episodes/{episode_id}/master/{filename}"
+        return (VIDEO_MASTERS_BUCKET, key)
+
+    @classmethod
+    def world_hls(
+        cls,
+        world_id: str,
+        episode_id: str,
+        quality: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for HLS transcoded output.
+
+        quality: '1080p', '720p', '480p', 'audio'
+        filename: 'playlist.m3u8', 'segment_001.ts', etc.
+
+        Returns: (bucket, key)
+        """
+        key = f"worlds/{world_id}/episodes/{episode_id}/hls/{quality}/{filename}"
+        return (VIDEO_PUBLISH_BUCKET, key)
+
+    @classmethod
+    def world_thumbnail(
+        cls,
+        world_id: str,
+        episode_id: str,
+        filename: str = "thumbnail.jpg"
+    ) -> tuple[str, str]:
+        """
+        Generate path for episode thumbnail.
+
+        Returns: (bucket, key)
+        """
+        key = f"worlds/{world_id}/episodes/{episode_id}/thumbnails/{filename}"
+        return (VIDEO_PUBLISH_BUCKET, key)
+
+    @classmethod
+    def short_master(
+        cls,
+        short_id: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for a Short's master file.
+
+        Returns: (bucket, key)
+        """
+        key = f"shorts/{short_id}/master/{filename}"
+        return (VIDEO_MASTERS_BUCKET, key)
+
+    @classmethod
+    def short_hls(
+        cls,
+        short_id: str,
+        quality: str,
+        filename: str
+    ) -> tuple[str, str]:
+        """
+        Generate path for Short's HLS output.
+
+        Returns: (bucket, key)
+        """
+        key = f"shorts/{short_id}/hls/{quality}/{filename}"
+        return (VIDEO_PUBLISH_BUCKET, key)
+
+    @classmethod
+    def short_thumbnail(
+        cls,
+        short_id: str,
+        filename: str = "thumbnail.jpg"
+    ) -> tuple[str, str]:
+        """
+        Generate path for Short's thumbnail.
+
+        Returns: (bucket, key)
+        """
+        key = f"shorts/{short_id}/thumbnails/{filename}"
+        return (VIDEO_PUBLISH_BUCKET, key)
+
+    @classmethod
+    def live_event_thumbnail(
+        cls,
+        event_id: str,
+        filename: str = "thumbnail.jpg"
+    ) -> tuple[str, str]:
+        """
+        Generate path for live event thumbnail.
+
+        Returns: (bucket, key)
+        """
+        key = f"events/{event_id}/thumbnails/{filename}"
+        return (VIDEO_PUBLISH_BUCKET, key)
+
+    @classmethod
+    def parse_s3_uri(cls, s3_uri: str) -> tuple[str, str]:
+        """
+        Parse an S3 URI into bucket and key.
+
+        Args:
+            s3_uri: s3://bucket-name/path/to/file
+
+        Returns: (bucket, key)
+        """
+        if not s3_uri.startswith('s3://'):
+            raise ValueError(f"Invalid S3 URI: {s3_uri}")
+
+        uri_without_prefix = s3_uri[5:]
+        parts = uri_without_prefix.split('/', 1)
+
+        if len(parts) < 2:
+            raise ValueError(f"Invalid S3 URI format: {s3_uri}")
+
+        return (parts[0], parts[1])
+
+    @classmethod
+    def to_s3_uri(cls, bucket: str, key: str) -> str:
+        """
+        Convert bucket and key to S3 URI.
+
+        Returns: s3://bucket/key
+        """
+        return f"s3://{bucket}/{key}"
+
+    @classmethod
+    def to_cloudfront_url(
+        cls,
+        key: str,
+        distribution_domain: str = None
+    ) -> str:
+        """
+        Convert S3 key to CloudFront URL.
+
+        Args:
+            key: S3 object key
+            distribution_domain: CloudFront domain (uses default if not provided)
+
+        Returns: https://domain/key
+        """
+        if not distribution_domain:
+            # Default CloudFront distribution for video publish bucket
+            distribution_domain = os.getenv(
+                'CLOUDFRONT_VIDEO_DOMAIN',
+                'd1234567890.cloudfront.net'  # Placeholder - configure in settings
+            )
+        return f"https://{distribution_domain}/{key}"

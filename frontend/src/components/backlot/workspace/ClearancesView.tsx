@@ -118,7 +118,7 @@ const STATUS_ICONS: Record<BacklotClearanceStatus | 'missing', React.ElementType
 };
 
 const STATUS_CONFIG: Record<BacklotClearanceStatus, { label: string; color: string }> = {
-  not_started: { label: 'Not Started', color: 'bg-gray-500/20 text-gray-400 border-gray-500/30' },
+  not_started: { label: 'Not Started', color: 'bg-gray-500/20 text-gray-500 border-gray-500/30' },
   requested: { label: 'Requested', color: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30' },
   pending: { label: 'Pending', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
   signed: { label: 'Signed', color: 'bg-green-500/20 text-green-400 border-green-500/30' },
@@ -186,7 +186,7 @@ const ClearanceCard: React.FC<{
                 Doc
               </Badge>
             ) : (
-              <Badge className="text-xs bg-gray-500/10 text-gray-400 border border-gray-500/30">
+              <Badge className="text-xs bg-gray-500/10 text-gray-500 border border-gray-500/30">
                 <FileText className="w-3 h-3 mr-1" />
                 No Doc
               </Badge>
@@ -298,7 +298,7 @@ const ClearanceStats: React.FC<{ projectId: string }> = ({ projectId }) => {
     { label: 'Total', value: summary.total, color: 'text-bone-white' },
     { label: 'Signed', value: summary.by_status.signed || 0, color: 'text-green-400' },
     { label: 'Requested', value: summary.by_status.requested || 0, color: 'text-yellow-400' },
-    { label: 'Not Started', value: summary.by_status.not_started || 0, color: 'text-gray-400' },
+    { label: 'Not Started', value: summary.by_status.not_started || 0, color: 'text-gray-500' },
     { label: 'Expiring Soon', value: summary.expiring_soon, color: 'text-orange-400' },
   ];
 

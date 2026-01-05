@@ -61,7 +61,7 @@ const OriginalsSection = () => {
                 </div>
                 <div className="mt-6 text-center flex-grow flex flex-col justify-center">
                   <h3 className="text-2xl font-heading uppercase">{show.title}</h3>
-                  <p className="text-muted-gray font-typewriter normal-case text-sm mt-1">"{show.tagline}"</p>
+                  <p className="text-gray-500 font-typewriter normal-case text-sm mt-1">"{show.tagline}"</p>
                 </div>
               </motion.div>
             </Link>

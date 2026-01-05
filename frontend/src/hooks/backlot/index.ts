@@ -1124,3 +1124,23 @@ export {
   useCrewDocumentSummary,
   usePersonDocumentChecklist,
 } from './useCrewDocuments';
+
+// Dashboard Summary Widgets (Cross-project aggregation)
+export {
+  useScheduleSummary,
+  useDailiesSummaryWidget,
+  useCastingSummary,
+  useBudgetSummaryWidget,
+} from './useDashboardSummaries';
+export type {
+  ScheduleConflict,
+  ScheduleShootDay,
+  ScheduleSummary,
+  DailiesRecentUpload,
+  DailiesSummaryWidget,
+  CastingApplication,
+  ScheduledAudition,
+  CastingSummary,
+  BudgetAlert,
+  BudgetSummaryWidget,
+} from './useDashboardSummaries';

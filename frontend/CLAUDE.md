@@ -16,7 +16,7 @@ npm run preview      # Preview production build
 ## Architecture
 
 ### API Client (`src/lib/api.ts`)
-Centralized 120KB+ API client with:
+Centralized API client with:
 - `APIClient` class with automatic token management
 - Domain-specific API modules exported as `api.admin`, `api.backlot`, etc.
 - Sub-clients in `src/lib/api/` for Order, community features
@@ -28,26 +28,51 @@ await api.admin.getStats();
 ```
 
 ### Context Providers (`src/context/`)
-- `AuthContext` - Authentication state, login/logout
+- `AuthContext` - Authentication state, login/logout, profile
 - `EnrichedProfileContext` - User profile with badges, permissions, Order membership
+- `DashboardSettingsContext` - Dashboard customization state
 - `SettingsContext` - User preferences
 - `SocketContext` - Real-time WebSocket connections
 
+### Dashboard System (`src/components/dashboard/`)
+Role-based adaptive dashboard with lazy-loaded widgets:
+
+**Configuration** (`config/`):
+- `dashboardConfig.ts` - Section definitions, role visibility, priorities
+- `sectionRegistry.ts` - Lazy-loaded component mappings
+
+**Role Groups**:
+- `ALL_ROLES` - Everyone including free users
+- `AUTHENTICATED_ROLES` - Logged-in users (excludes free)
+- `CREATOR_ROLES` - Filmmakers, partners, staff
+- `ORDER_ROLES` - Guild members, lodge officers, staff
+- `STAFF_ROLES` - Superadmin, admin, moderator
+
+**Adding a new widget**:
+1. Create component in `sections/<category>/`
+2. Add ID to `DashboardSectionId` type in `dashboardConfig.ts`
+3. Add section config to `DASHBOARD_SECTIONS` array
+4. Add lazy import to `sectionRegistry.ts`
+5. Add to `dataMap` in `AdaptiveDashboard.tsx`
+
 ### Component Organization (`src/components/`)
 - `ui/` - shadcn/ui base components (auto-generated, avoid direct edits)
+- `dashboard/` - Adaptive dashboard and widgets
 - `backlot/workspace/` - Production management UI (largest feature area)
 - `admin/` - Admin panel components
 - `order/` - Order (guild) components
 
 ### Hooks (`src/hooks/`)
-- `backlot/` - 50+ production management hooks (useClearances, useCastingCrew, useInvoices, etc.)
+- `backlot/` - 50+ production management hooks
+- `watch/` - Streaming hooks (useWorlds, useContinueWatching, useEvents, useShorts)
 - General hooks for profiles, notifications, permissions
 
 ### Page Organization (`src/pages/`)
 - Root level: General pages (Dashboard, Account, Messages)
 - `admin/` - Admin panel pages
-- `backlot/` - Production workspace
+- `backlot/` - Production workspace (20+ sub-routes)
 - `order/` - Order guild pages
+- `watch/` - Streaming/player pages
 
 ### Routes
 All routes defined in `src/App.tsx`. Uses React Router with:

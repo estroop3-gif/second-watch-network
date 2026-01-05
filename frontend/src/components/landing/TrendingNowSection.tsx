@@ -92,7 +92,7 @@ const TrendingNowSection = () => {
                     </div>
                     <div className="mt-6 text-left">
                       <h3 className="text-2xl font-heading uppercase text-bone-white">{item.title}</h3>
-                      <p className="text-muted-gray font-sans normal-case text-sm mt-1 mb-4">{item.description}</p>
+                      <p className="text-gray-500 font-sans normal-case text-sm mt-1 mb-4">{item.description}</p>
                       <Button size="sm" className="bg-accent-yellow text-charcoal-black hover:bg-bone-white hover:text-charcoal-black font-bold rounded-[4px] uppercase transform transition-transform hover:scale-105 hover:-rotate-2" tabIndex={-1}>
                         Watch Now
                       </Button>

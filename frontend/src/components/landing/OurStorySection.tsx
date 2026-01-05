@@ -14,7 +14,7 @@ const OurStorySection = () => {
             transition={{ duration: 0.6 }}
           >
             <h2 className="text-4xl md:text-6xl font-heading tracking-tighter mb-4">Built from <span className="text-accent-yellow">Scratch.</span></h2>
-            <p className="text-muted-gray leading-relaxed font-sans normal-case text-lg">
+            <p className="text-gray-500 leading-relaxed font-sans normal-case text-lg">
               <span className="font-spray">Second Watch</span> Network wasn't born in a boardroom. It was built in a garage by a filmmaker who was tired of the gatekeepers. We believe in the power of raw, unfiltered storytelling and the creators who are brave enough to tell those stories. This is more than a network; it's a movement.
             </p>
           </motion.div>

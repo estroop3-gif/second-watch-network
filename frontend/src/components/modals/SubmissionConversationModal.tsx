@@ -29,7 +29,7 @@ const statusColorClasses: Record<string, string> = {
   considered: 'bg-purple-400/20 text-purple-300 border-purple-400/30',
   approved: 'bg-green-400/20 text-green-300 border-green-400/30',
   rejected: 'bg-red-400/20 text-red-300 border-red-400/30',
-  archived: 'bg-gray-400/20 text-gray-300 border-gray-400/30',
+  archived: 'bg-gray-400/20 text-gray-500 border-gray-400/30',
 };
 
 export const SubmissionConversationModal = ({ isOpen, onOpenChange, submission }: SubmissionConversationModalProps) => {

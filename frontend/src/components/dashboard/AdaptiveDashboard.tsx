@@ -178,7 +178,7 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
             <h1 className="text-3xl md:text-4xl font-heading tracking-tighter mb-2">
               Your Space on <span className="font-spray">Second Watch</span>
             </h1>
-            <p className="text-muted-gray font-sans normal-case text-base">
+            <p className="text-gray-500 font-sans normal-case text-base">
               Built for rebels, creators, and story-finders.
             </p>
           </div>
@@ -201,7 +201,7 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
                 variant="ghost"
                 size="sm"
                 onClick={enterEditMode}
-                className="text-muted-gray hover:text-bone-white gap-1.5"
+                className="text-gray-500 hover:text-bone-white gap-1.5"
               >
                 <Settings2 className="h-4 w-4" />
                 <span className="hidden sm:inline">Customize</span>
@@ -269,10 +269,10 @@ export function AdaptiveDashboard({ className = '' }: AdaptiveDashboardProps) {
       {/* Empty state for unauthenticated users */}
       {!isAuthenticated && visibleSections.length === 0 && (
         <motion.div variants={itemVariants} className="text-center py-16">
-          <p className="text-muted-gray text-lg mb-4">
+          <p className="text-gray-500 text-lg mb-4">
             Welcome to Second Watch Network
           </p>
-          <p className="text-muted-gray/70">
+          <p className="text-gray-500/70">
             Sign in to unlock your personalized dashboard.
           </p>
         </motion.div>

@@ -272,12 +272,12 @@ const LocationCard: React.FC<{
                   : releaseStatus === 'requested'
                   ? 'border-yellow-500/30 text-yellow-400 bg-yellow-500/10'
                   : releaseStatus === 'not_started'
-                  ? 'border-gray-500/30 text-gray-400'
+                  ? 'border-gray-500/30 text-gray-500'
                   : releaseStatus === 'expired'
                   ? 'border-orange-500/30 text-orange-400 bg-orange-500/10'
                   : releaseStatus === 'rejected'
                   ? 'border-red-500/30 text-red-400 bg-red-500/10'
-                  : 'border-gray-500/30 text-gray-400'
+                  : 'border-gray-500/30 text-gray-500'
               }`}
             >
               <FileCheck className="w-3 h-3 mr-1" />

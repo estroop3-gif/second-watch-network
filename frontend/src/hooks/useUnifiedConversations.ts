@@ -49,7 +49,7 @@ export function useUnifiedConversations() {
     queryKey: ['unified-conversations', user?.id],
     queryFn: async () => {
       if (!user?.id) return [];
-      const response = await api.get(`/dm/unified/conversations?user_id=${user.id}`);
+      const response = await api.get(`/api/v1/dm/unified/conversations?user_id=${user.id}`);
       return response.data || [];
     },
     enabled: !!user?.id,
@@ -65,7 +65,7 @@ export function useUnifiedMessages(conversationId: string | null) {
     queryKey: ['unified-messages', conversationId],
     queryFn: async () => {
       if (!conversationId) return [];
-      const response = await api.get(`/dm/unified/conversations/${conversationId}/messages`);
+      const response = await api.get(`/api/v1/dm/unified/conversations/${conversationId}/messages`);
       return response.data || [];
     },
     enabled: !!conversationId,
@@ -91,7 +91,7 @@ export function useSendUnifiedMessage() {
     }) => {
       if (!user?.id) throw new Error('Not authenticated');
 
-      const response = await api.post(`/dm/unified/messages?sender_id=${user.id}`, {
+      const response = await api.post(`/api/v1/dm/unified/messages?sender_id=${user.id}`, {
         conversation_id: conversationId,
         recipient_id: recipientId,
         content,
@@ -119,7 +119,7 @@ export function useMarkUnifiedConversationRead() {
       if (!user?.id) throw new Error('Not authenticated');
 
       const response = await api.post(
-        `/dm/unified/conversations/${conversationId}/mark-read?user_id=${user.id}`
+        `/api/v1/dm/unified/conversations/${conversationId}/mark-read?user_id=${user.id}`
       );
 
       return response.data;
@@ -144,7 +144,7 @@ export function useCreateUnifiedConversation() {
       if (!user?.id) throw new Error('Not authenticated');
 
       const response = await api.post(
-        `/dm/unified/conversations/create?user_id=${user.id}&other_user_id=${otherUserId}`
+        `/api/v1/dm/unified/conversations/create?user_id=${user.id}&other_user_id=${otherUserId}`
       );
 
       return response.data;

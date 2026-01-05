@@ -59,6 +59,7 @@
     "embla-carousel-react": "^8.3.0",
     "framer-motion": "^12.23.12",
     "fuse.js": "^7.1.0",
+    "hls.js": "^1.6.15",
     "input-otp": "^1.2.4",
     "jspdf": "^3.0.4",
     "jspdf-autotable": "^5.0.2",

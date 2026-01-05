@@ -455,7 +455,7 @@ function ApplicationCard({
                 {star <= (application.rating || 0) ? (
                   <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                 ) : (
-                  <StarOff className="w-3 h-3 text-gray-300" />
+                  <StarOff className="w-3 h-3 text-gray-500" />
                 )}
               </button>
             ))}

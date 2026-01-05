@@ -889,6 +889,72 @@ async def get_community_activity(limit: int = 20):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/trending")
+async def get_trending_discussions(timeframe: str = "7d", limit: int = 5):
+    """
+    Get trending community discussions based on engagement.
+    Timeframe: 24h, 7d, 30d
+    """
+    try:
+        client = get_client()
+
+        # Calculate date threshold
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        if timeframe == "24h":
+            threshold = now - timedelta(hours=24)
+        elif timeframe == "30d":
+            threshold = now - timedelta(days=30)
+        else:  # default 7d
+            threshold = now - timedelta(days=7)
+
+        threshold_str = threshold.isoformat()
+
+        # Fetch threads with activity in the timeframe, sorted by reply count
+        threads_result = client.table("community_topic_threads").select(
+            "id, title, created_at, user_id, reply_count, view_count, "
+            "topic:community_topics(id, name, slug)"
+        ).gte("created_at", threshold_str).order(
+            "reply_count", desc=True
+        ).limit(limit).execute()
+
+        threads = threads_result.data or []
+
+        # Collect user IDs and fetch profiles
+        user_ids = list(set(t["user_id"] for t in threads if t.get("user_id")))
+        profile_map = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, display_name, full_name, avatar_url"
+            ).in_("id", user_ids).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Build response
+        trending = []
+        for thread in threads:
+            topic = thread.get("topic") or {}
+            profile = profile_map.get(thread.get("user_id"), {})
+            trending.append({
+                "id": thread["id"],
+                "title": thread["title"],
+                "topic_name": topic.get("name"),
+                "topic_slug": topic.get("slug"),
+                "reply_count": thread.get("reply_count", 0),
+                "view_count": thread.get("view_count", 0),
+                "created_at": thread["created_at"],
+                "user_id": thread.get("user_id"),
+                "user_name": profile.get("display_name") or profile.get("full_name") or profile.get("username"),
+                "user_avatar": profile.get("avatar_url"),
+                "is_hot": thread.get("reply_count", 0) > 5,
+            })
+
+        return {"threads": trending, "total": len(trending), "timeframe": timeframe}
+
+    except Exception as e:
+        print(f"Error getting trending discussions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # COLLAB APPLICATIONS
 # =====================================================

@@ -56,7 +56,7 @@
             <!-- Fixed header within sidebar -->
             <div class="p-4 md:p-6 pb-2 md:pb-4 border-b border-muted-gray">
                 <h2 class="text-2xl font-bold text-accent-yellow">Admin Console</h2>
-                <p class="text-xs text-gray-400 mt-1">This header stays visible</p>
+                <p class="text-xs text-gray-500 mt-1">This header stays visible</p>
             </div>
 
             <!-- Scrollable nav -->
@@ -114,7 +114,7 @@
                 </a>
             </nav>
 
-            <div class="p-4 border-t border-muted-gray text-xs text-gray-400">
+            <div class="p-4 border-t border-muted-gray text-xs text-gray-500">
                 Sidebar is: <span class="text-accent-yellow font-bold">FIXED</span>
             </div>
         </aside>
@@ -143,7 +143,7 @@
                             <code class="text-sm bg-red-900/30 border border-red-700 px-3 py-2 rounded block">
                                 md:sticky md:top-0
                             </code>
-                            <p class="text-sm mt-2 text-gray-400">
+                            <p class="text-sm mt-2 text-gray-500">
                                 Problem: Sidebar would scroll with the page content
                             </p>
                         </div>
@@ -152,7 +152,7 @@
                             <code class="text-sm bg-green-900/30 border border-green-700 px-3 py-2 rounded block">
                                 md:fixed md:top-20 md:left-0 md:z-40
                             </code>
-                            <p class="text-sm mt-2 text-gray-400">
+                            <p class="text-sm mt-2 text-gray-500">
                                 Solution: Sidebar stays fixed below navbar (80px from top)
                             </p>
                         </div>
@@ -161,7 +161,7 @@
                             <code class="text-sm bg-green-900/30 border border-green-700 px-3 py-2 rounded block">
                                 md:ml-64
                             </code>
-                            <p class="text-sm mt-2 text-gray-400">
+                            <p class="text-sm mt-2 text-gray-500">
                                 Added left margin (256px) to prevent content hiding behind sidebar
                             </p>
                         </div>
@@ -172,7 +172,7 @@
                 <div class="space-y-6">
                     <div class="bg-gray-900 border border-muted-gray rounded-lg p-6">
                         <h2 class="text-xl font-bold mb-3">Scroll Test Section 1</h2>
-                        <p class="text-gray-300 leading-relaxed">
+                        <p class="text-gray-500 leading-relaxed">
                             This content area is intentionally tall to demonstrate the scrolling behavior.
                             As you scroll down, pay attention to the sidebar on the left. It should remain
                             fixed in place, always visible, with the "Admin Console" header at the top.
@@ -184,7 +184,7 @@
 
                     <div class="bg-gray-900 border border-muted-gray rounded-lg p-6">
                         <h2 class="text-xl font-bold mb-3">Scroll Test Section 2</h2>
-                        <p class="text-gray-300 leading-relaxed">
+                        <p class="text-gray-500 leading-relaxed">
                             Notice that as you scroll, the main content moves up and down, but the sidebar
                             stays perfectly aligned at the left edge of your viewport, starting 80px below
                             the top (to account for the fixed navbar).
@@ -196,7 +196,7 @@
 
                     <div class="bg-gray-900 border border-muted-gray rounded-lg p-6">
                         <h2 class="text-xl font-bold mb-3">Scroll Test Section 3</h2>
-                        <p class="text-gray-300 leading-relaxed">
+                        <p class="text-gray-500 leading-relaxed">
                             The fix uses CSS position: fixed with top: 80px (5rem / top-20 in Tailwind).
                             This makes the sidebar position relative to the viewport, not the scrolling
                             content. The main content has margin-left: 256px (ml-64) to create space.
@@ -208,7 +208,7 @@
 
                     <div class="bg-gray-900 border border-muted-gray rounded-lg p-6">
                         <h2 class="text-xl font-bold mb-3">Scroll Test Section 4</h2>
-                        <p class="text-gray-300 leading-relaxed">
+                        <p class="text-gray-500 leading-relaxed">
                             If you've scrolled this far down and the sidebar is still visible on the left
                             with the "Admin Console" header at the top, then the fix is working correctly!
                         </p>
@@ -219,14 +219,14 @@
 
                     <div class="bg-gray-900 border border-accent-yellow rounded-lg p-6">
                         <h2 class="text-xl font-bold mb-3 text-accent-yellow">Conclusion</h2>
-                        <p class="text-gray-300 leading-relaxed">
+                        <p class="text-gray-500 leading-relaxed">
                             You've reached the bottom of the test content. If the sidebar remained visible
                             throughout your entire scroll journey, the fix is working as intended. The sidebar
                             now provides persistent navigation access in the admin panel.
                         </p>
                         <div class="mt-4 p-4 bg-green-900/20 border border-green-700 rounded">
                             <p class="font-bold text-green-400">Test Passed!</p>
-                            <p class="text-sm text-gray-300 mt-2">
+                            <p class="text-sm text-gray-500 mt-2">
                                 The sidebar correctly uses fixed positioning and stays visible during scroll.
                             </p>
                         </div>

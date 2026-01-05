@@ -266,6 +266,65 @@ async def require_greenroom_voter(profile: Dict[str, Any] = Depends(get_user_pro
     return profile
 
 
+async def require_premium_content_access(
+    profile: Dict[str, Any] = Depends(get_user_profile)
+) -> Dict[str, Any]:
+    """
+    Require access to premium streaming content.
+
+    Premium content access is granted to:
+    - All Order members (BASE tier and above)
+    - Staff members (admin, moderator, superadmin)
+    - Premium subscribers
+
+    This is used to gate access to premium World episodes.
+
+    Raises:
+        HTTPException: If user doesn't have premium content access
+    """
+    # Order members get premium access (any tier)
+    if profile.get("is_order_member"):
+        return profile
+
+    # Staff always have access
+    if is_staff(profile):
+        return profile
+
+    # Premium subscribers have access
+    if has_role(profile, RoleType.PREMIUM):
+        return profile
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Order membership or premium subscription required for this content"
+    )
+
+
+async def require_premium_content_access_optional(
+    profile: Optional[Dict[str, Any]] = Depends(get_user_profile_optional)
+) -> Optional[Dict[str, Any]]:
+    """
+    Check premium content access without requiring authentication.
+
+    Returns the profile if user has access, None otherwise.
+    Useful for showing different UI based on access level.
+    """
+    if not profile:
+        return None
+
+    # Check same conditions as require_premium_content_access
+    if profile.get("is_order_member"):
+        return profile
+
+    if is_staff(profile):
+        return profile
+
+    if has_role(profile, RoleType.PREMIUM):
+        return profile
+
+    return None
+
+
 # ============================================================================
 # Flexible Role Requirement Factory
 # ============================================================================

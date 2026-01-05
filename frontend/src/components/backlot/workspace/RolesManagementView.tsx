@@ -127,7 +127,7 @@ const BACKLOT_ROLE_COLORS: Record<string, string> = {
   dp: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
   editor: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
   department_head: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
-  crew: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  crew: 'bg-gray-500/20 text-gray-500 border-gray-500/30',
 };
 
 // Permission Toggle Component

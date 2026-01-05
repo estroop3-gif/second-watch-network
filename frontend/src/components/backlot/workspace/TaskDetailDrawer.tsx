@@ -79,7 +79,7 @@ interface TaskDetailDrawerProps {
 // =====================================================
 const StatusIcon: React.FC<{ status: BacklotTaskStatus; className?: string }> = ({ status, className }) => {
   const icons: Record<BacklotTaskStatus, React.ReactNode> = {
-    todo: <Circle className={cn("w-4 h-4 text-gray-400", className)} />,
+    todo: <Circle className={cn("w-4 h-4 text-gray-500", className)} />,
     in_progress: <PlayCircle className={cn("w-4 h-4 text-blue-400", className)} />,
     review: <PauseCircle className={cn("w-4 h-4 text-amber-400", className)} />,
     completed: <CheckCircle2 className={cn("w-4 h-4 text-green-400", className)} />,

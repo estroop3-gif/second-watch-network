@@ -655,7 +655,7 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           {/* Add new line button at end of page content */}
           {isEditing && page.pageNumber === totalPages && (
             <div
-              className="absolute text-gray-400 cursor-pointer hover:text-gray-600"
+              className="absolute text-gray-500 cursor-pointer hover:text-gray-600"
               style={{
                 fontSize: `${(12 * zoom) / 100}px`,
                 top: `${page.lines.length * (12 * zoom / 100) * 1.5 + 8}px`,
