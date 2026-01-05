@@ -253,7 +253,7 @@ async def list_my_projects(
     - 'all' or None: Both owned and member projects
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -885,7 +885,7 @@ async def quick_create_project(
     Creates with visibility='unlisted' and status='pre_production'.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -946,7 +946,7 @@ async def create_project(
     Create a new Backlot project.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -1033,7 +1033,7 @@ async def get_project(
     Get a single project by ID.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -1069,7 +1069,7 @@ async def get_my_project_role(
     Returns role info including whether user can edit.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -1142,7 +1142,7 @@ async def update_project(
     Update a project.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -1193,7 +1193,7 @@ async def delete_project(
     Delete a project (owner only).
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -1265,6 +1265,7 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
     Returns the profile ID (not Cognito ID) for database lookups.
     """
     if not authorization or not authorization.startswith("Bearer "):
+        print("[AUTH] Missing or invalid authorization header")
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
 
     token = authorization.replace("Bearer ", "")
@@ -1273,20 +1274,29 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
         from app.core.cognito import CognitoAuth
         user = CognitoAuth.verify_token(token)
         if not user:
+            print("[AUTH] Token verification returned None")
             raise HTTPException(status_code=401, detail="Invalid token")
 
-        cognito_id = user.get("user_id")  # get_user_from_token returns 'user_id' not 'id'
+        # Try 'user_id', 'sub', and 'id' as Cognito might return any of these
+        cognito_id = user.get("user_id") or user.get("sub") or user.get("id")
         email = user.get("email")
+
+        if not cognito_id:
+            print(f"[AUTH] No cognito_id found in user object: {list(user.keys())}")
+            raise HTTPException(status_code=401, detail="No user ID in token")
 
         # Convert Cognito ID to profile ID for database lookups
         profile_id = get_profile_id_from_cognito_id(cognito_id)
         if not profile_id:
+            print(f"[AUTH] No profile found for cognito_id: {cognito_id}")
             raise HTTPException(status_code=401, detail="User profile not found")
 
-        return {"id": profile_id, "cognito_id": cognito_id, "email": email}
+        # Return both 'id' and 'user_id' to handle both access patterns
+        return {"id": profile_id, "user_id": profile_id, "cognito_id": cognito_id, "email": email}
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[AUTH] Authentication exception: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
 
 
@@ -9648,7 +9658,7 @@ async def create_project_location(
     and automatically attached to the project.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID
@@ -9750,7 +9760,7 @@ async def attach_location_to_project(
     Attach an existing location from the global library to a project.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID
@@ -10620,7 +10630,7 @@ async def get_project_scripts(
 ):
     """Get all scripts for a project"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -10669,7 +10679,7 @@ async def create_script(
 ):
     """Create a new script for a project"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -10714,7 +10724,7 @@ async def import_script(
 ):
     """Import a script file (PDF or FDX) and parse scenes"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -10908,7 +10918,7 @@ async def get_script(
 ):
     """Get a single script with scene count"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -11008,7 +11018,7 @@ async def delete_script(
 ):
     """Delete a script and all its scenes"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -11068,7 +11078,7 @@ async def get_script_version_history(
 ):
     """Get the version history for a script"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -11659,7 +11669,7 @@ async def get_project_scenes(
 ):
     """Get all scenes for a project, optionally filtered by script"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -11846,7 +11856,7 @@ async def update_scene(
 ):
     """Update a scene"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID for permission checks
@@ -12300,7 +12310,7 @@ async def get_location_needs(
 ):
     """Get location needs grouped by location hint"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito user ID to profile ID
@@ -12920,7 +12930,7 @@ async def get_script_page_notes(
 ):
     """Get all notes for a script, optionally filtered by page, type, or resolved status"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -12974,7 +12984,7 @@ async def get_script_notes_summary(
 ):
     """Get summary of notes per page for a script"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13040,7 +13050,7 @@ async def create_script_page_note(
 ):
     """Create a new note on a script page"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13118,7 +13128,7 @@ async def update_script_page_note(
 ):
     """Update a script page note"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13209,7 +13219,7 @@ async def delete_script_page_note(
 ):
     """Delete a script page note"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13273,7 +13283,7 @@ async def toggle_note_resolved(
 ):
     """Toggle the resolved status of a note"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13361,7 +13371,7 @@ async def get_script_highlights(
 ):
     """Get highlights for a script with optional filtering"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13413,7 +13423,7 @@ async def get_script_highlight_summary(
 ):
     """Get summary of highlights by category"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13483,7 +13493,7 @@ async def create_script_highlight(
 ):
     """Create a new highlight (text selection for breakdown)"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13830,7 +13840,7 @@ async def update_script_highlight(
 ):
     """Update a highlight"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13893,7 +13903,7 @@ async def confirm_script_highlight(
 ):
     """Confirm a highlight and optionally create a breakdown item from it"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -13967,7 +13977,7 @@ async def reject_script_highlight(
 ):
     """Reject/dismiss a highlight"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -14015,7 +14025,7 @@ async def delete_script_highlight(
 ):
     """Delete a highlight and its associated breakdown item"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -14082,7 +14092,7 @@ async def get_highlight_notes(
 ):
     """Get all notes for a highlight"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -14129,7 +14139,7 @@ async def create_highlight_note(
 ):
     """Create a note on a highlight"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -14190,7 +14200,7 @@ async def delete_highlight_note(
 ):
     """Delete a highlight note (only author or admin can delete)"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -14248,7 +14258,7 @@ async def export_script_with_highlights(
     - Addendum page(s) listing all notes with page references
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -21118,7 +21128,7 @@ async def get_project_dashboard(
     This endpoint replaces multiple separate API calls for better performance.
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     try:
@@ -26059,7 +26069,7 @@ async def get_project_script_notes(
     - group_by: How to group results (page, scene, type, author)
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID
@@ -26175,7 +26185,7 @@ async def get_project_notes_summary(
 ):
     """Get notes summary stats for a project"""
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID
@@ -26280,7 +26290,7 @@ async def export_project_notes_pdf(
     - group_by: How to group notes in PDF (page, scene, type, author)
     """
     user = await get_current_user_from_token(authorization)
-    cognito_user_id = user["id"]
+    cognito_user_id = user.get("user_id") or user.get("id")
     client = get_client()
 
     # Convert Cognito ID to profile ID
