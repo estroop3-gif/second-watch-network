@@ -8,18 +8,35 @@ import { PenSquare, Loader2, Image, Link as LinkIcon } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 import { useFeed } from '@/hooks/useFeed';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import FeedSubTabs, { type FeedSubTab } from './FeedSubTabs';
 import PostCard from './PostCard';
 import PostForm from './PostForm';
+import AvailabilityQuickToggle from './AvailabilityQuickToggle';
 import type { CommunityPost, PostInput } from '@/types/community';
 
 const FeedBoard: React.FC = () => {
-  const { user } = useAuth();
+  const { user, profileId } = useAuth();
   const isAuthenticated = !!user;
   const { profile } = useEnrichedProfile();
   const [activeTab, setActiveTab] = useState<FeedSubTab>('public');
   const [postFormOpen, setPostFormOpen] = useState(false);
   const [editingPost, setEditingPost] = useState<CommunityPost | null>(null);
+
+  // Fetch filmmaker profile for availability status
+  const { data: filmmakerProfile } = useQuery({
+    queryKey: ['filmmaker-profile', profileId],
+    queryFn: async () => {
+      if (!profileId) return null;
+      try {
+        return await api.getFilmmakerProfile(profileId);
+      } catch {
+        return null;
+      }
+    },
+    enabled: isAuthenticated && !!profileId,
+  });
 
   // Get user display info for the composer
   const userName = profile?.display_name || profile?.full_name || profile?.username || 'You';
@@ -76,6 +93,14 @@ const FeedBoard: React.FC = () => {
         onTabChange={setActiveTab}
         isAuthenticated={isAuthenticated}
       />
+
+      {/* Quick Availability Toggle - shows for authenticated users with filmmaker profile */}
+      {isAuthenticated && filmmakerProfile && (
+        <AvailabilityQuickToggle
+          initialAcceptingWork={filmmakerProfile.accepting_work || false}
+          initialStatusMessage={profile?.status_message || ''}
+        />
+      )}
 
       {/* Inline Post Composer - shows for authenticated users */}
       {isAuthenticated && (

@@ -9,6 +9,7 @@ See `/home/estro/second-watch-network/CLAUDE.md` for full project overview inclu
 ```bash
 npm run dev          # Start dev server on port 8080
 npm run build        # Production build
+npm run build:dev    # Development build (unminified)
 npm run lint         # ESLint
 npm run preview      # Preview production build
 ```
@@ -16,8 +17,9 @@ npm run preview      # Preview production build
 ## Architecture
 
 ### API Client (`src/lib/api.ts`)
-Centralized API client with:
+Centralized API client (~4100 lines) with:
 - `APIClient` class with automatic token management
+- JWT token decoding for Cognito user ID extraction
 - Domain-specific API modules exported as `api.admin`, `api.backlot`, etc.
 - Sub-clients in `src/lib/api/` for Order, community features
 
@@ -26,6 +28,12 @@ import { api } from '@/lib/api';
 await api.get('/users/me');
 await api.admin.getStats();
 ```
+
+### Performance Metrics (`src/lib/performanceMetrics.ts`)
+Client-side timing instrumentation for diagnosing cold start and load issues:
+- Tracks bundle load, app mount, auth check, first API call
+- Sends metrics to `/api/v1/client-metrics/initial-load` and `/api/v1/client-metrics/login`
+- Logs summaries to browser console with `[PerfMetrics]` prefix
 
 ### Context Providers (`src/context/`)
 - `AuthContext` - Authentication state, login/logout, profile
@@ -117,4 +125,15 @@ import { api } from '@/lib/api';
 
 - Dev server: Port 8080
 - API proxy: `/api` routes to `localhost:8000` in development
-- Production: Uses `VITE_API_URL` environment variable
+- Production: Uses `VITE_API_URL` environment variable (https://vnvvoelid6.execute-api.us-east-1.amazonaws.com)
+
+## Deployment
+
+```bash
+# Build for production
+VITE_API_URL=https://vnvvoelid6.execute-api.us-east-1.amazonaws.com npm run build
+
+# Deploy to S3 + invalidate CloudFront
+aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
+aws cloudfront create-invalidation --distribution-id EJRGRTMJFSXN2 --paths "/*"
+```

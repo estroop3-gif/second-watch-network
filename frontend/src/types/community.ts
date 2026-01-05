@@ -249,6 +249,7 @@ export interface CommunityPost {
   like_count: number;
   comment_count: number;
   is_hidden: boolean;
+  is_profile_update?: boolean;
   created_at: string;
   updated_at: string;
   // Joined data
@@ -285,6 +286,7 @@ export interface PostInput {
   link_image?: string;
   link_site_name?: string;
   visibility: PostVisibility;
+  is_profile_update?: boolean;
 }
 
 export interface PostUpdateInput {

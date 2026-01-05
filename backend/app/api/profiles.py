@@ -326,9 +326,10 @@ async def get_filmmaker_profile_by_username(username: str):
     try:
         client = get_client()
 
-        # First get the base profile by username
+        # First get the base profile by username (including Order membership fields)
         profile_result = client.table("profiles").select(
-            "id, username, email, avatar_url, full_name, display_name, location_visible"
+            "id, username, email, avatar_url, full_name, display_name, location_visible, "
+            "is_order_member, show_order_membership, status_message"
         ).eq("username", username).execute()
 
         if not profile_result.data:
@@ -347,10 +348,46 @@ async def get_filmmaker_profile_by_username(username: str):
 
         filmmaker = filmmaker_result.data[0]
 
-        # Get credits with production details
+        # Get credits with production details (including featured flag)
         credits_result = client.table("credits").select(
             "*, productions(id, title)"
         ).eq("user_id", user_id).order("created_at", desc=True).execute()
+
+        # Get Order membership info if member and showing publicly
+        order_info = None
+        if base_profile.get("is_order_member") and base_profile.get("show_order_membership", True):
+            try:
+                # Get order member profile with lodge info
+                order_result = client.table("order_member_profiles").select(
+                    "*, order_lodges(id, name, city, state)"
+                ).eq("user_id", user_id).execute()
+
+                if order_result.data:
+                    order_member = order_result.data[0]
+                    lodge = order_member.get("order_lodges")
+
+                    # Check if lodge officer
+                    officer_title = None
+                    if lodge:
+                        officer_result = client.table("lodge_officers").select(
+                            "title"
+                        ).eq("user_id", user_id).eq("lodge_id", lodge.get("id")).execute()
+                        if officer_result.data:
+                            officer_title = officer_result.data[0].get("title")
+
+                    order_info = {
+                        "is_member": True,
+                        "tier": order_member.get("tier"),
+                        "lodge": {
+                            "id": lodge.get("id"),
+                            "name": lodge.get("name"),
+                            "city": lodge.get("city"),
+                            "state": lodge.get("state"),
+                        } if lodge else None,
+                        "officer_title": officer_title,
+                    }
+            except Exception as e:
+                print(f"Error fetching Order info: {e}")
 
         # Combine data in the format expected by the frontend
         return {
@@ -373,6 +410,8 @@ async def get_filmmaker_profile_by_username(username: str):
             "contact_method": filmmaker.get("contact_method"),
             "show_email": filmmaker.get("show_email", False),
             "credits": credits_result.data or [],
+            "status_message": base_profile.get("status_message"),
+            "order_info": order_info,
         }
     except HTTPException:
         raise
@@ -620,6 +659,180 @@ async def create_status_update(
         ).eq("id", update_id).single().execute()
 
         return full_update.data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =====================================================
+# PROFILE UPDATES (Posts synced to profile)
+# =====================================================
+
+@router.get("/profile-updates/{user_id}")
+async def get_profile_updates(user_id: str, limit: int = 20, offset: int = 0):
+    """
+    Get posts marked as profile updates for a user.
+    These are community posts that also appear on the user's public profile Updates tab.
+    """
+    try:
+        client = get_client()
+
+        # Fetch posts where is_profile_update = true for this user
+        response = client.table("community_posts").select(
+            "*, profiles:user_id(id, username, avatar_url, full_name, display_name)"
+        ).eq("user_id", user_id).eq("is_profile_update", True).eq(
+            "is_hidden", False
+        ).order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+
+        posts = response.data or []
+
+        # Get reactions and comments counts for each post
+        for post in posts:
+            # Get reactions count
+            reactions_response = client.table("community_post_reactions").select(
+                "reaction_type", count="exact"
+            ).eq("post_id", post["id"]).execute()
+            post["reactions_count"] = reactions_response.count or 0
+
+            # Get comments count
+            comments_response = client.table("community_post_comments").select(
+                "id", count="exact"
+            ).eq("post_id", post["id"]).eq("is_hidden", False).execute()
+            post["comments_count"] = comments_response.count or 0
+
+        return posts
+    except Exception as e:
+        print(f"Profile updates error: {e}")
+        return []
+
+
+# =====================================================
+# ACTIVE BACKLOT PROJECTS
+# =====================================================
+
+@router.get("/active-projects/{user_id}")
+async def get_active_projects(user_id: str):
+    """
+    Get public active Backlot projects for a user.
+    Returns projects where user is owner or team member with active status.
+    """
+    try:
+        client = get_client()
+
+        # Get projects where user is owner and project is public & active
+        owner_projects = client.table("backlot_projects").select(
+            "id, title, status, is_public"
+        ).eq("owner_id", user_id).eq("is_public", True).in_(
+            "status", ["pre-production", "production", "post-production"]
+        ).execute()
+
+        owner_project_ids = [p["id"] for p in (owner_projects.data or [])]
+        projects = []
+
+        for p in (owner_projects.data or []):
+            projects.append({
+                "id": p["id"],
+                "title": p["title"],
+                "status": p["status"],
+                "role": "Owner / Producer",
+            })
+
+        # Get projects where user is a team member (cast or crew)
+        # Check crew members
+        crew_projects = client.table("backlot_crew_members").select(
+            "project_id, role_title, backlot_projects(id, title, status, is_public)"
+        ).eq("user_id", user_id).execute()
+
+        for cm in (crew_projects.data or []):
+            project = cm.get("backlot_projects")
+            if project and project.get("is_public") and project.get("id") not in owner_project_ids:
+                if project.get("status") in ["pre-production", "production", "post-production"]:
+                    projects.append({
+                        "id": project["id"],
+                        "title": project["title"],
+                        "status": project["status"],
+                        "role": cm.get("role_title") or "Crew",
+                    })
+
+        # Check cast members
+        cast_projects = client.table("backlot_cast_members").select(
+            "project_id, character_name, backlot_projects(id, title, status, is_public)"
+        ).eq("user_id", user_id).execute()
+
+        seen_ids = [p["id"] for p in projects]
+        for cast in (cast_projects.data or []):
+            project = cast.get("backlot_projects")
+            if project and project.get("is_public") and project.get("id") not in seen_ids:
+                if project.get("status") in ["pre-production", "production", "post-production"]:
+                    projects.append({
+                        "id": project["id"],
+                        "title": project["title"],
+                        "status": project["status"],
+                        "role": f"Cast - {cast.get('character_name')}" if cast.get('character_name') else "Cast",
+                    })
+
+        return projects
+    except Exception as e:
+        print(f"Active projects error: {e}")
+        return []
+
+
+# =====================================================
+# QUICK AVAILABILITY UPDATE
+# =====================================================
+
+class AvailabilityUpdate(BaseModel):
+    accepting_work: bool
+    status_message: Optional[str] = None
+
+
+@router.patch("/availability")
+async def update_availability(
+    data: AvailabilityUpdate,
+    authorization: str = Header(None)
+):
+    """
+    Quick update for availability status and status message.
+    Updates the filmmaker_profiles table.
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    try:
+        client = get_client()
+
+        # Check if filmmaker profile exists
+        existing = client.table("filmmaker_profiles").select("id").eq("user_id", user_id).execute()
+
+        update_data = {
+            "accepting_work": data.accepting_work,
+        }
+
+        # Also update status_message in profiles table if provided
+        if data.status_message is not None:
+            # Update profiles table status
+            client.table("profiles").update({
+                "status_message": data.status_message,
+                "status_updated_at": "now()",
+            }).eq("id", user_id).execute()
+
+        if not existing.data:
+            # Create a filmmaker profile if it doesn't exist
+            update_data["user_id"] = user_id
+            response = client.table("filmmaker_profiles").insert(update_data).execute()
+        else:
+            # Update existing profile
+            response = client.table("filmmaker_profiles").update(update_data).eq("user_id", user_id).execute()
+
+        if not response.data:
+            raise HTTPException(status_code=400, detail="Failed to update availability")
+
+        return {
+            "message": "Availability updated successfully",
+            "accepting_work": data.accepting_work,
+            "status_message": data.status_message,
+        }
     except HTTPException:
         raise
     except Exception as e:

@@ -17,6 +17,7 @@ Usage:
 """
 import json
 import logging
+import os
 import sys
 import time
 import traceback
@@ -25,6 +26,31 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.core.config import settings
+
+
+# ============================================================================
+# Cold Start Detection
+# ============================================================================
+
+# Module-level cold start tracking - set once per Lambda container
+_cold_start_flag: bool = True
+_process_start_time: float = time.time()
+
+
+def is_cold_start() -> bool:
+    """Check if this is a cold start (first request in this process)."""
+    return _cold_start_flag
+
+
+def mark_warm() -> None:
+    """Mark this process as warm (called after first request completes)."""
+    global _cold_start_flag
+    _cold_start_flag = False
+
+
+def get_process_age_ms() -> float:
+    """Get time since process started in milliseconds."""
+    return (time.time() - _process_start_time) * 1000
 
 
 # Context variable to store request-scoped data
@@ -307,8 +333,19 @@ def log_request_end(
     status_code: int,
     duration_ms: float,
     error: Optional[str] = None,
+    cold_start: Optional[bool] = None,
 ) -> None:
-    """Log the completion of a request."""
+    """
+    Log the completion of a request with timing and cold start info.
+
+    Args:
+        method: HTTP method
+        path: Request path
+        status_code: Response status code
+        duration_ms: Request duration in milliseconds
+        error: Optional error message
+        cold_start: Whether this was a cold start request (auto-detected if None)
+    """
     logger = get_logger("request")
 
     level = logging.INFO
@@ -317,15 +354,22 @@ def log_request_end(
     elif status_code >= 400:
         level = logging.WARNING
 
+    # Auto-detect cold start if not provided
+    if cold_start is None:
+        cold_start = is_cold_start()
+
     extra = {
         "event": "request_end",
         "method": method,
         "path": path,
         "status_code": status_code,
         "duration_ms": round(duration_ms, 2),
+        "cold_start": cold_start,
+        "process_age_ms": round(get_process_age_ms(), 2),
     }
 
     if error:
         extra["error"] = error
 
-    logger.log(level, f"{method} {path} -> {status_code} ({duration_ms:.0f}ms)", extra=extra)
+    cold_marker = " [COLD]" if cold_start else ""
+    logger.log(level, f"{method} {path} -> {status_code} ({duration_ms:.0f}ms){cold_marker}", extra=extra)

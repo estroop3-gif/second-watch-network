@@ -18,6 +18,8 @@ from app.core.logging import (
     clear_request_context,
     RequestTimer,
     log_request_end,
+    is_cold_start,
+    mark_warm,
 )
 from app.core.exceptions import register_exception_handlers
 from app.api import (
@@ -49,6 +51,7 @@ from app.api import (
     financing,  # Phase 6B: Creator financing and recoupment
     ops,  # Phase 6C: Operational resilience and feature flags
     geocoding,  # Nominatim geocoding integration
+    client_metrics,  # Performance diagnostics - client-side timing
 )
 
 # Configure structured logging
@@ -82,8 +85,12 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
     - Generates or uses X-Request-ID header for request correlation
     - Sets up logging context with request details
     - Logs request duration on completion
+    - Tracks cold start status for Lambda performance monitoring
     """
     async def dispatch(self, request: Request, call_next):
+        # Capture cold start status at start of request
+        cold_start = is_cold_start()
+
         # Get or generate request ID
         request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
@@ -106,7 +113,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                     status_code=500,
                     duration_ms=timer.duration_ms,
                     error=str(e),
+                    cold_start=cold_start,
                 )
+                # Mark warm after first request (even if it failed)
+                if cold_start:
+                    mark_warm()
                 raise
             finally:
                 clear_request_context()
@@ -114,13 +125,18 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         # Add request ID to response headers
         response.headers["X-Request-ID"] = request_id
 
-        # Log request completion
+        # Log request completion with cold start info
         log_request_end(
             method=request.method,
             path=request.url.path,
             status_code=response.status_code,
             duration_ms=timer.duration_ms,
+            cold_start=cold_start,
         )
+
+        # Mark warm after first successful request
+        if cold_start:
+            mark_warm()
 
         return response
 
@@ -309,6 +325,9 @@ app.include_router(financing.router, prefix=f"{settings.API_V1_PREFIX}", tags=["
 
 # Phase 6C: Operational Resilience and Feature Flags
 app.include_router(ops.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Ops"])
+
+# Performance Diagnostics - Client-side timing metrics
+app.include_router(client_metrics.router, prefix=f"{settings.API_V1_PREFIX}/client-metrics", tags=["Client Metrics"])
 
 # Mount Socket.IO for real-time communications
 try:

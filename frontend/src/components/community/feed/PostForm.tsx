@@ -13,13 +13,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Globe,
   Users,
-  Image as ImageIcon,
   Link as LinkIcon,
   X,
   Loader2,
+  UserCircle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useLinkPreview } from '@/hooks/useFeed';
@@ -38,6 +39,7 @@ interface PostFormProps {
     link_image?: string;
     link_site_name?: string;
     visibility: PostVisibility;
+    is_profile_update?: boolean;
   }) => Promise<void>;
   editingPost?: CommunityPost | null;
   isSubmitting?: boolean;
@@ -52,6 +54,7 @@ const PostForm: React.FC<PostFormProps> = ({
 }) => {
   const [content, setContent] = useState('');
   const [visibility, setVisibility] = useState<PostVisibility>('public');
+  const [isProfileUpdate, setIsProfileUpdate] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkPreview, setLinkPreview] = useState<{
@@ -69,6 +72,7 @@ const PostForm: React.FC<PostFormProps> = ({
       if (editingPost) {
         setContent(editingPost.content);
         setVisibility(editingPost.visibility);
+        setIsProfileUpdate(editingPost.is_profile_update || false);
         if (editingPost.link_url) {
           setLinkUrl(editingPost.link_url);
           setShowLinkInput(true);
@@ -82,6 +86,7 @@ const PostForm: React.FC<PostFormProps> = ({
       } else {
         setContent('');
         setVisibility('public');
+        setIsProfileUpdate(false);
         setLinkUrl('');
         setShowLinkInput(false);
         setLinkPreview(null);
@@ -120,6 +125,7 @@ const PostForm: React.FC<PostFormProps> = ({
     await onSubmit({
       content: content.trim(),
       visibility,
+      is_profile_update: isProfileUpdate,
       ...(linkUrl && linkPreview
         ? {
             link_url: linkUrl,
@@ -250,6 +256,25 @@ const PostForm: React.FC<PostFormProps> = ({
                 </Label>
               </div>
             </RadioGroup>
+          </div>
+
+          {/* Share to Profile */}
+          <div className="flex items-center space-x-2 py-2 px-3 bg-charcoal-black/30 rounded-md border border-muted-gray/20">
+            <Checkbox
+              id="profile-update"
+              checked={isProfileUpdate}
+              onCheckedChange={(checked) => setIsProfileUpdate(checked === true)}
+            />
+            <Label
+              htmlFor="profile-update"
+              className="flex items-center gap-2 text-bone-white cursor-pointer text-sm"
+            >
+              <UserCircle className="w-4 h-4 text-accent-yellow" />
+              Share to my profile
+            </Label>
+            <span className="text-xs text-muted-gray ml-auto">
+              Shows on your Updates tab
+            </span>
           </div>
 
           {/* Actions */}

@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { performanceMetrics } from "@/lib/performanceMetrics";
 import Index from "./pages/Index";
 import LandingPage from "./pages/LandingPage";
 import NotFound from "./pages/NotFound";
@@ -148,8 +150,25 @@ import { StreamLayout } from "./components/watch";
 
 const queryClient = new QueryClient();
 
+// Performance metrics: mark app mounted
+const AppMountTracker = ({ children }: { children: React.ReactNode }) => {
+  useEffect(() => {
+    performanceMetrics.markAppMounted();
+
+    // Fallback: send initial load metrics after 5s if no API call triggers it
+    const fallbackTimer = setTimeout(() => {
+      performanceMetrics.sendInitialLoadMetricsFallback();
+    }, 5000);
+
+    return () => clearTimeout(fallbackTimer);
+  }, []);
+
+  return <>{children}</>;
+};
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
+    <AppMountTracker>
     <AuthProvider>
       <ThemeProvider>
         <SettingsProvider>
@@ -337,6 +356,7 @@ const App = () => (
         </SettingsProvider>
       </ThemeProvider>
     </AuthProvider>
+    </AppMountTracker>
   </QueryClientProvider>
 );
 

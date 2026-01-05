@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect, useContext, ReactNode, useRef } from 'react';
 import { api, safeStorage } from '@/lib/api';
+import { performanceMetrics } from '@/lib/performanceMetrics';
 
 // Custom types to replace Supabase types
 interface AuthUser {
@@ -56,13 +57,29 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   // Check for existing session on mount
   useEffect(() => {
     const checkSession = async () => {
+      // Performance: mark auth check started
+      performanceMetrics.markAuthCheckStarted();
+
       setLoading(true);
       const token = safeStorage.getItem('access_token');
+      const hadToken = !!token;
 
       if (token) {
         api.setToken(token);
         try {
+          // Performance: track first API call timing
+          const apiCallStart = performanceMetrics.now();
           const userData = await api.getCurrentUser();
+          const apiCallEnd = performanceMetrics.now();
+
+          // Report first API call metrics
+          performanceMetrics.markFirstApiCall(
+            '/api/v1/auth/me',
+            apiCallStart,
+            apiCallEnd,
+            200
+          );
+
           const refreshToken = safeStorage.getItem('refresh_token') || '';
 
           // Create a session object
@@ -87,6 +104,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           } catch {
             // Profile may not exist yet
           }
+
+          // Performance: mark auth check completed (had token, valid)
+          performanceMetrics.markAuthCheckCompleted(hadToken, true);
         } catch (error) {
           // Token is invalid, clear it
           safeStorage.removeItem('access_token');
@@ -96,7 +116,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           setSession(null);
           setUser(null);
           setProfile(null);
+
+          // Performance: mark auth check completed (had token, invalid)
+          performanceMetrics.markAuthCheckCompleted(hadToken, false);
         }
+      } else {
+        // Performance: mark auth check completed (no token)
+        performanceMetrics.markAuthCheckCompleted(false, false);
       }
 
       setLoading(false);
@@ -107,8 +133,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signIn = async (email: string, password: string): Promise<SignInResult> => {
+    // Performance: mark Cognito request started
+    performanceMetrics.markCognitoStarted();
+
     try {
       const data = await api.signIn(email, password);
+
+      // Performance: mark Cognito response received
+      performanceMetrics.markCognitoCompleted(true);
 
       // Check if there's a challenge (e.g., NEW_PASSWORD_REQUIRED)
       if (data.challenge) {
@@ -127,6 +159,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (data.refresh_token) {
         safeStorage.setItem('refresh_token', data.refresh_token);
       }
+      // Performance: mark token stored
+      performanceMetrics.markTokenStored();
 
       api.setToken(data.access_token!);
 
@@ -141,6 +175,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       setSession(authSession);
       setUser(data.user as AuthUser);
+
+      // Performance: mark bootstrap started
+      performanceMetrics.markBootstrapStarted();
 
       // Use profile data from signin response if available (optimization)
       // The signin endpoint now returns full profile data
@@ -163,8 +200,16 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         }
       }
 
+      // Performance: mark bootstrap completed (success)
+      performanceMetrics.markBootstrapCompleted(true);
+
       return { success: true };
     } catch (error) {
+      // Performance: mark Cognito completed with error
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      performanceMetrics.markCognitoCompleted(false, errorMessage);
+      performanceMetrics.markBootstrapCompleted(false, errorMessage);
+
       console.error('Sign in error:', error);
       throw error;
     }

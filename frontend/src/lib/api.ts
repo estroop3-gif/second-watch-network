@@ -380,6 +380,21 @@ class APIClient {
     return this.request<any>(`/api/v1/profiles/filmmaker/username/${username}`)
   }
 
+  async getProfileUpdates(userId: string, limit: number = 20, offset: number = 0) {
+    return this.request<any>(`/api/v1/profiles/profile-updates/${userId}?limit=${limit}&offset=${offset}`)
+  }
+
+  async getActiveProjects(userId: string) {
+    return this.request<any>(`/api/v1/profiles/active-projects/${userId}`)
+  }
+
+  async updateAvailability(data: { accepting_work: boolean; status_message?: string }) {
+    return this.request<any>('/api/v1/profiles/availability', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    })
+  }
+
   async createFilmmakerProfile(data: any) {
     return this.request<any>('/api/v1/profiles/filmmaker', {
       method: 'POST',
@@ -1587,6 +1602,7 @@ class APIClient {
     link_image?: string;
     link_site_name?: string;
     visibility: 'public' | 'connections';
+    is_profile_update?: boolean;
   }) {
     return this.request<any>('/api/v1/community/posts', {
       method: 'POST',

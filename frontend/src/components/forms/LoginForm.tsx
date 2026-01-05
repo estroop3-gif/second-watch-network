@@ -20,6 +20,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@/context/AuthContext";
+import { performanceMetrics } from "@/lib/performanceMetrics";
 
 const schema = z.object({
   email: z.string().email("Please enter a valid email address."),
@@ -119,8 +120,12 @@ const LoginForm = () => {
     const limited = checkRateLimitNow();
     if (limited) {
       toast.error("Too many attempts. Please wait a moment.");
+      performanceMetrics.incrementRetry();
       return;
     }
+
+    // Performance: mark login button clicked (starts login timing)
+    performanceMetrics.markLoginClicked();
 
     setLoading(true);
     ariaLiveRef.current = "Signing you in…";
@@ -142,6 +147,7 @@ const LoginForm = () => {
       navigate(returnTo || "/dashboard", { replace: true });
     } catch (error: any) {
       setLoading(false);
+      performanceMetrics.incrementRetry();
       const msg = (error.message || "").toLowerCase();
 
       if (msg.includes("invalid login credentials") || msg.includes("invalid") || msg.includes("credentials")) {

@@ -3,7 +3,7 @@
  * Role-aware profile page for the currently logged-in user.
  * Shows different experiences for free, premium, filmmaker, partner, and Order/Lodge users.
  */
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
@@ -11,6 +11,8 @@ import { useMyProfileData, type CreditDB } from '@/hooks/useMyProfileData';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { BadgeDisplay } from '@/components/UserBadge';
 import {
   Loader2,
@@ -35,6 +37,11 @@ import {
   MessageSquare,
   Bell,
   Landmark,
+  Eye,
+  EyeOff,
+  Star,
+  Link as LinkIcon,
+  Building,
 } from 'lucide-react';
 import { type BadgeConfig, getBadgeConfig } from '@/lib/badges';
 import { OrderSection, OrderJoinCTA } from '@/components/profile/OrderSection';
@@ -53,6 +60,9 @@ interface ProfileHeaderProps {
   roleSummary: string;
   editButtonLabel: string;
   editRoute: string;
+  viewMode?: 'self' | 'public';
+  onToggleViewMode?: () => void;
+  hasFilmmakerProfile?: boolean;
 }
 
 const ProfileHeader: React.FC<ProfileHeaderProps> = ({
@@ -67,6 +77,9 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   roleSummary,
   editButtonLabel,
   editRoute,
+  viewMode = 'self',
+  onToggleViewMode,
+  hasFilmmakerProfile = false,
 }) => {
   return (
     <Card className="bg-charcoal-black/50 border-muted-gray">
@@ -120,13 +133,34 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
                 )}
               </div>
 
-              {/* Edit Button */}
-              <Button asChild variant="outline" className="border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black flex-shrink-0">
-                <Link to={editRoute}>
-                  <Edit className="h-4 w-4 mr-2" />
-                  {editButtonLabel}
-                </Link>
-              </Button>
+              {/* Action Buttons */}
+              <div className="flex gap-2 flex-shrink-0">
+                {hasFilmmakerProfile && onToggleViewMode && (
+                  <Button
+                    variant="outline"
+                    onClick={onToggleViewMode}
+                    className="border-muted-gray text-bone-white hover:bg-muted-gray/50"
+                  >
+                    {viewMode === 'self' ? (
+                      <>
+                        <Eye className="h-4 w-4 mr-2" />
+                        View as Public
+                      </>
+                    ) : (
+                      <>
+                        <EyeOff className="h-4 w-4 mr-2" />
+                        Exit Preview
+                      </>
+                    )}
+                  </Button>
+                )}
+                <Button asChild variant="outline" className="border-accent-yellow text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black">
+                  <Link to={editRoute}>
+                    <Edit className="h-4 w-4 mr-2" />
+                    {editButtonLabel}
+                  </Link>
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -799,9 +833,241 @@ const RolesUpgradesPanel: React.FC<{
   );
 };
 
+// Public Profile Preview Component - Shows how others see your profile
+interface PublicProfilePreviewProps {
+  profile: ReturnType<typeof useMyProfileData>['profile'];
+  filmmakerProfile: ReturnType<typeof useMyProfileData>['filmmakerProfile'];
+  credits: CreditDB[];
+  username?: string;
+}
+
+const PublicProfilePreview: React.FC<PublicProfilePreviewProps> = ({
+  profile,
+  filmmakerProfile,
+  credits,
+  username,
+}) => {
+  if (!filmmakerProfile) {
+    return (
+      <Card className="bg-charcoal-black/50 border-muted-gray">
+        <CardContent className="p-8 text-center">
+          <User className="h-12 w-12 mx-auto text-muted-gray mb-4" />
+          <p className="text-bone-white">No public filmmaker profile to preview.</p>
+          <p className="text-muted-gray text-sm mt-2">
+            Complete your filmmaker profile to see how others will view it.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const displayUsername = username || profile?.username || 'user';
+
+  return (
+    <div className="space-y-6">
+      {/* Preview Banner */}
+      <div className="bg-accent-yellow/20 border border-accent-yellow/50 rounded-lg p-4 flex items-center gap-3">
+        <Eye className="h-5 w-5 text-accent-yellow" />
+        <div className="flex-1">
+          <p className="text-bone-white font-medium">Public Profile Preview</p>
+          <p className="text-muted-gray text-sm">This is how others see your profile at /filmmaker/{displayUsername}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        {/* Left Sidebar */}
+        <div className="md:col-span-1 space-y-6">
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
+            <CardContent className="pt-6 flex flex-col items-center text-center">
+              <Avatar className="w-32 h-32 mb-4 border-4 border-muted-gray">
+                <AvatarImage src={filmmakerProfile.profile_image_url || profile?.avatar_url || undefined} />
+                <AvatarFallback className="bg-muted-gray"><User className="w-16 h-16 text-bone-white" /></AvatarFallback>
+              </Avatar>
+              <h1 className="text-2xl font-bold font-heading">{filmmakerProfile.full_name || profile?.full_name}</h1>
+              {(profile as any)?.display_name && (
+                <p className="text-lg text-accent-yellow -mt-1">{(profile as any).display_name}</p>
+              )}
+              <p className="text-muted-gray">@{displayUsername}</p>
+              {filmmakerProfile.accepting_work && (
+                <Badge variant="secondary" className="mt-2 bg-green-500/20 text-green-300 border-green-500/50">
+                  Accepting Work
+                </Badge>
+              )}
+              <div className="w-full mt-4">
+                <Button variant="outline" className="w-full" disabled>
+                  <Mail className="mr-2 h-4 w-4" /> Connect
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
+            <CardHeader><CardTitle className="text-lg font-heading">Contact & Links</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              {filmmakerProfile.show_email && profile?.email && (
+                <Button variant="outline" className="w-full" disabled>
+                  <Mail className="mr-2 h-4 w-4" /> Contact via Email
+                </Button>
+              )}
+              {!filmmakerProfile.show_email && (
+                <p className="text-muted-gray text-sm text-center">Email hidden from public</p>
+              )}
+              {filmmakerProfile.portfolio_website && (
+                <Button variant="outline" className="w-full" disabled>
+                  <LinkIcon className="mr-2 h-4 w-4" /> Portfolio
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="bg-charcoal-black/50 border-muted-gray/20">
+            <CardHeader><CardTitle className="text-lg font-heading">Details</CardTitle></CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {filmmakerProfile.location && (
+                <p className="flex items-center gap-2"><MapPin className="h-4 w-4 text-muted-gray" /> {filmmakerProfile.location}</p>
+              )}
+              {filmmakerProfile.department && (
+                <p className="flex items-center gap-2"><Briefcase className="h-4 w-4 text-muted-gray" /> {filmmakerProfile.department}</p>
+              )}
+              {filmmakerProfile.experience_level && (
+                <p className="flex items-center gap-2"><Star className="h-4 w-4 text-muted-gray" /> {filmmakerProfile.experience_level}</p>
+              )}
+              {filmmakerProfile.contact_method && (
+                <p className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-muted-gray" /> Prefers: {filmmakerProfile.contact_method}</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Main Content */}
+        <div className="md:col-span-2">
+          <Tabs defaultValue="overview" className="w-full">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="updates">Updates</TabsTrigger>
+              <TabsTrigger value="projects">Projects</TabsTrigger>
+              <TabsTrigger value="availability">Availability</TabsTrigger>
+            </TabsList>
+            <TabsContent value="overview" className="mt-6 space-y-8">
+              {filmmakerProfile.bio && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                  <CardHeader><CardTitle className="text-lg font-heading">About Me</CardTitle></CardHeader>
+                  <CardContent className="prose prose-invert prose-sm max-w-none"><p>{filmmakerProfile.bio}</p></CardContent>
+                </Card>
+              )}
+              {filmmakerProfile.skills && filmmakerProfile.skills.length > 0 && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                  <CardHeader><CardTitle className="text-lg font-heading">Skills</CardTitle></CardHeader>
+                  <CardContent className="flex flex-wrap gap-2">
+                    {filmmakerProfile.skills.map((skill: string) => <Badge key={skill} variant="secondary">{skill}</Badge>)}
+                  </CardContent>
+                </Card>
+              )}
+              {filmmakerProfile.reel_links && filmmakerProfile.reel_links.length > 0 && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                  <CardHeader><CardTitle className="text-lg font-heading">Reels</CardTitle></CardHeader>
+                  <CardContent className="space-y-2">
+                    {filmmakerProfile.reel_links.map((link: string, index: number) => (
+                      <p key={index} className="flex items-center gap-2 text-accent-yellow text-sm">
+                        <Film className="h-4 w-4" /> {link}
+                      </p>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+              {credits && credits.length > 0 && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                  <CardHeader><CardTitle className="text-lg font-heading">Credits</CardTitle></CardHeader>
+                  <CardContent>
+                    <ul className="space-y-4">
+                      {credits.slice(0, 5).map((credit) => (
+                        <li key={credit.id}>
+                          <p className="font-semibold">{credit.role}</p>
+                          <p className="text-sm text-muted-gray flex items-center gap-2">
+                            <Building className="h-4 w-4" />
+                            {credit.title}
+                            {credit.year && ` (${credit.year})`}
+                          </p>
+                        </li>
+                      ))}
+                      {credits.length > 5 && (
+                        <p className="text-muted-gray text-sm">And {credits.length - 5} more...</p>
+                      )}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+            </TabsContent>
+            <TabsContent value="updates" className="mt-6">
+              <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                <CardContent className="p-8 text-center text-muted-gray">
+                  Status updates will appear here
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="projects" className="mt-6">
+              <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                <CardContent className="p-8 text-center text-muted-gray">
+                  Featured projects will appear here
+                </CardContent>
+              </Card>
+            </TabsContent>
+            <TabsContent value="availability" className="mt-6">
+              <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-4">
+                    {filmmakerProfile.accepting_work ? (
+                      <>
+                        <CheckCircle className="h-6 w-6 text-green-500" />
+                        <div>
+                          <p className="text-green-400 font-semibold">Accepting New Work</p>
+                          <p className="text-muted-gray text-sm">Open to new projects and collaborations</p>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <XCircle className="h-6 w-6 text-muted-gray" />
+                        <div>
+                          <p className="text-muted-gray font-semibold">Not Currently Accepting Work</p>
+                          <p className="text-muted-gray/70 text-sm">Not available for new projects at this time</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  {filmmakerProfile.available_for && filmmakerProfile.available_for.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-semibold text-muted-gray uppercase mb-2">Available For</p>
+                      <div className="flex flex-wrap gap-2">
+                        {filmmakerProfile.available_for.map((item: string, idx: number) => (
+                          <Badge key={idx} variant="secondary" className="bg-accent-yellow/20 text-accent-yellow">{item}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {filmmakerProfile.preferred_locations && filmmakerProfile.preferred_locations.length > 0 && (
+                    <div className="mt-4">
+                      <p className="text-sm font-semibold text-muted-gray uppercase mb-2">Preferred Locations</p>
+                      <div className="flex flex-wrap gap-2">
+                        {filmmakerProfile.preferred_locations.map((loc: string, idx: number) => (
+                          <Badge key={idx} variant="outline" className="text-blue-300 border-blue-500/50">{loc}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Main MyProfile Page Component
 const MyProfile: React.FC = () => {
   const { user } = useAuth();
+  const [viewMode, setViewMode] = useState<'self' | 'public'>('self');
 
   // Use enriched profile for badges (consistent with nav bar)
   const enrichedProfile = useEnrichedProfile();
@@ -911,8 +1177,21 @@ const MyProfile: React.FC = () => {
             roleSummary={roleSummary}
             editButtonLabel={editButtonLabel}
             editRoute={editRoute}
+            viewMode={viewMode}
+            onToggleViewMode={() => setViewMode(viewMode === 'self' ? 'public' : 'self')}
+            hasFilmmakerProfile={hasFilmmakerProfile}
           />
 
+          {/* Public Profile Preview */}
+          {viewMode === 'public' ? (
+            <PublicProfilePreview
+              profile={profile}
+              filmmakerProfile={filmmakerProfile}
+              credits={credits}
+              username={profile?.username}
+            />
+          ) : (
+            <>
           {/* Order Section */}
           {hasOrderProfile ? (
             <OrderSection
@@ -969,6 +1248,8 @@ const MyProfile: React.FC = () => {
             ) : (
               <NoPartnerProfileCTA isPartner={isPartner} />
             )
+          )}
+            </>
           )}
         </div>
 

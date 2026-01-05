@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Loader2, User, Mail, Link as LinkIcon, MapPin, Briefcase, Star, Film, Building, UserPlus } from 'lucide-react';
+import { Loader2, User, Mail, Link as LinkIcon, MapPin, Briefcase, Star, Film, Building, UserPlus, MessageSquare, Shield, Clapperboard } from 'lucide-react';
 import { FilmmakerProfileData } from '@/types';
 import ProfileProjects from '@/components/profile/ProfileProjects';
 import ProfileStatus from '@/components/profile/ProfileStatus';
@@ -15,6 +15,13 @@ import ProfileStatusUpdates from '@/components/profile/ProfileStatusUpdates';
 import ProfileAvailability from '@/components/profile/ProfileAvailability';
 import ProfileHeaderConnect from '@/components/profile/ProfileHeaderConnect';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+interface ActiveProject {
+  id: string;
+  title: string;
+  status: string;
+  role: string;
+}
 
 const FilmmakerProfile = () => {
   const { username } = useParams<{ username: string }>();
@@ -36,6 +43,20 @@ const FilmmakerProfile = () => {
       }
     },
     enabled: !!username,
+  });
+
+  // Fetch active projects
+  const { data: activeProjects } = useQuery<ActiveProject[]>({
+    queryKey: ['active-projects', profile?.user_id],
+    queryFn: async () => {
+      if (!profile?.user_id) return [];
+      try {
+        return await api.getActiveProjects(profile.user_id);
+      } catch {
+        return [];
+      }
+    },
+    enabled: !!profile?.user_id,
   });
 
   const error = queryError ? (queryError as Error).message : null;
@@ -147,6 +168,9 @@ const FilmmakerProfile = () => {
               )}
               <p className="flex items-center gap-2"><Briefcase className="h-4 w-4 text-muted-gray" /> {profile.department}</p>
               <p className="flex items-center gap-2"><Star className="h-4 w-4 text-muted-gray" /> {profile.experience_level}</p>
+              {profile.contact_method && (
+                <p className="flex items-center gap-2"><MessageSquare className="h-4 w-4 text-muted-gray" /> Prefers: {profile.contact_method}</p>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -161,6 +185,69 @@ const FilmmakerProfile = () => {
               <TabsTrigger value="availability">Availability</TabsTrigger>
             </TabsList>
             <TabsContent value="overview" className="mt-6 space-y-8">
+              {/* Order Membership */}
+              {(profile as any).order_info && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20 border-l-4 border-l-accent-yellow">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-lg font-heading flex items-center gap-2">
+                      <Shield className="h-5 w-5 text-accent-yellow" />
+                      Order Membership
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <p className="text-bone-white">Member of The Second Watch Order</p>
+                    {(profile as any).order_info.lodge && (
+                      <p className="text-muted-gray text-sm flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        {(profile as any).order_info.lodge.name} Lodge
+                        {(profile as any).order_info.lodge.city && ` - ${(profile as any).order_info.lodge.city}, ${(profile as any).order_info.lodge.state}`}
+                      </p>
+                    )}
+                    {(profile as any).order_info.officer_title && (
+                      <Badge variant="outline" className="border-accent-yellow text-accent-yellow">
+                        {(profile as any).order_info.officer_title}
+                      </Badge>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Currently Working On */}
+              {activeProjects && activeProjects.length > 0 && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20">
+                  <CardHeader>
+                    <CardTitle className="text-lg font-heading flex items-center gap-2">
+                      <Clapperboard className="h-5 w-5 text-accent-yellow" />
+                      Currently Working On
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="space-y-3">
+                      {activeProjects.map((project) => (
+                        <li key={project.id} className="flex items-center justify-between">
+                          <div>
+                            <p className="font-semibold text-bone-white">{project.title}</p>
+                            <p className="text-sm text-muted-gray">{project.role}</p>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className={
+                              project.status === 'production'
+                                ? 'border-green-500/50 text-green-400'
+                                : project.status === 'pre-production'
+                                ? 'border-blue-500/50 text-blue-400'
+                                : 'border-purple-500/50 text-purple-400'
+                            }
+                          >
+                            {project.status.replace('-', ' ')}
+                          </Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
               {profile.bio && (
                 <Card className="bg-charcoal-black/50 border-muted-gray/20">
                   <CardHeader><CardTitle className="text-lg font-heading">About Me</CardTitle></CardHeader>
@@ -185,12 +272,40 @@ const FilmmakerProfile = () => {
                   </CardContent>
                 </Card>
               )}
+
+              {/* Featured Credits */}
+              {profile.credits?.filter((c: any) => c.is_featured).length > 0 && (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20 border-l-4 border-l-primary-red">
+                  <CardHeader>
+                    <CardTitle className="text-lg font-heading flex items-center gap-2">
+                      <Star className="h-5 w-5 text-primary-red fill-primary-red" />
+                      Featured Work
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="space-y-4">
+                      {profile.credits.filter((c: any) => c.is_featured).map((credit: any) => (
+                        <li key={credit.id}>
+                          <p className="font-semibold">{credit.position}</p>
+                          <p className="text-sm text-muted-gray flex items-center gap-2">
+                            <Building className="h-4 w-4" />
+                            {credit.productions.title}
+                            {credit.production_date && ` (${new Date(credit.production_date).getFullYear()})`}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* All Credits */}
               {profile.credits?.length > 0 && (
                 <Card className="bg-charcoal-black/50 border-muted-gray/20">
                   <CardHeader><CardTitle className="text-lg font-heading">Credits</CardTitle></CardHeader>
                   <CardContent>
                     <ul className="space-y-4">
-                      {profile.credits.map(credit => (
+                      {profile.credits.map((credit: any) => (
                         <li key={credit.id}>
                           <p className="font-semibold">{credit.position}</p>
                           <p className="text-sm text-muted-gray flex items-center gap-2">

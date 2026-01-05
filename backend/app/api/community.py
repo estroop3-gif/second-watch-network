@@ -1615,6 +1615,7 @@ class PostCreateInput(BaseModel):
     link_image: Optional[str] = None
     link_site_name: Optional[str] = None
     visibility: str = Field(default="public", pattern="^(public|connections)$")
+    is_profile_update: bool = False  # When true, post also appears on user's profile Updates tab
 
 
 class PostUpdateInput(BaseModel):
@@ -1834,6 +1835,7 @@ async def create_post(
             "content": data.content,
             "images": [img.dict() for img in data.images] if data.images else [],
             "visibility": data.visibility,
+            "is_profile_update": data.is_profile_update,
         }
 
         # Add link preview if provided
