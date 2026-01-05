@@ -191,7 +191,18 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    """
+    Lightweight health check endpoint.
+    Used by keep-warm scheduler and load balancers.
+    Does NOT perform any database queries to minimize latency.
+    """
+    from app.core.logging import is_cold_start, get_process_age_ms
+
+    return {
+        "status": "healthy",
+        "cold_start": is_cold_start(),
+        "process_age_ms": round(get_process_age_ms(), 2),
+    }
 
 
 # Include routers

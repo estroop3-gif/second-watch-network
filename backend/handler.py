@@ -34,6 +34,19 @@ def handler(event, context):
     request_start = time.time()
     cold_start = is_cold_start()
 
+    # Check if this is a scheduled warm-up ping from EventBridge
+    # EventBridge scheduled events have 'source': 'aws.events'
+    source = event.get('source', '')
+    if source == 'aws.events' or event.get('detail-type') == 'Scheduled Event':
+        # This is a keep-warm ping - respond quickly without full request processing
+        print(json.dumps({
+            "event": "warmup_ping",
+            "cold_start": cold_start,
+            "process_age_ms": round(get_process_age_ms(), 2),
+            "request_id": context.aws_request_id if context else 'local',
+        }), flush=True)
+        return {"statusCode": 200, "body": '{"status": "warm"}'}
+
     try:
         # Extract request info
         path = event.get('rawPath', event.get('path', 'N/A'))

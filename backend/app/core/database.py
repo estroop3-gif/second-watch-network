@@ -2,40 +2,78 @@
 AWS RDS PostgreSQL Database Connection Module
 
 Replaces Supabase client with SQLAlchemy for direct PostgreSQL access.
+
+Uses lazy initialization to reduce Lambda cold start time.
 """
 
 import os
 import json
-from typing import Generator
-from sqlalchemy import create_engine, text
+from typing import Generator, Optional
+from sqlalchemy import create_engine, text, Engine
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import QueuePool, NullPool
 from contextlib import contextmanager
 
 from app.core.config import settings
 
 
 # Database URL from settings - check both DATABASE_URL and DatabaseUrl (Lambda naming convention)
-DATABASE_URL = (
-    getattr(settings, 'DATABASE_URL', None) or
-    os.getenv('DATABASE_URL') or
-    os.getenv('DatabaseUrl') or
-    f"postgresql://{os.getenv('DB_USER', 'swn_admin')}:{os.getenv('DB_PASSWORD', '')}@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'secondwatchnetwork')}"
-)
+def _get_database_url() -> str:
+    return (
+        getattr(settings, 'DATABASE_URL', None) or
+        os.getenv('DATABASE_URL') or
+        os.getenv('DatabaseUrl') or
+        f"postgresql://{os.getenv('DB_USER', 'swn_admin')}:{os.getenv('DB_PASSWORD', '')}@{os.getenv('DB_HOST', 'localhost')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'secondwatchnetwork')}"
+    )
 
-# Create SQLAlchemy engine with connection pooling
-engine = create_engine(
-    DATABASE_URL,
-    poolclass=QueuePool,
-    pool_size=5,
-    max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=1800,
-    echo=os.getenv('DEBUG', 'false').lower() == 'true'
-)
 
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Lazy-initialized engine and session factory
+# This reduces Lambda cold start time by deferring DB connection until first use
+_engine: Optional[Engine] = None
+_SessionLocal: Optional[sessionmaker] = None
+
+
+def _get_engine() -> Engine:
+    """Get or create the SQLAlchemy engine (lazy initialization)."""
+    global _engine
+    if _engine is None:
+        is_lambda = os.getenv('AWS_LAMBDA_FUNCTION_NAME') is not None
+
+        # Use NullPool for Lambda (no persistent connections between invocations)
+        # Use QueuePool for local development (connection reuse)
+        pool_class = NullPool if is_lambda else QueuePool
+
+        engine_kwargs = {
+            "poolclass": pool_class,
+            "echo": os.getenv('DEBUG', 'false').lower() == 'true',
+        }
+
+        # Only add pool settings for QueuePool
+        if pool_class == QueuePool:
+            engine_kwargs.update({
+                "pool_size": 5,
+                "max_overflow": 10,
+                "pool_timeout": 30,
+                "pool_recycle": 1800,
+            })
+
+        _engine = create_engine(_get_database_url(), **engine_kwargs)
+
+    return _engine
+
+
+def _get_session_local() -> sessionmaker:
+    """Get or create the session factory (lazy initialization)."""
+    global _SessionLocal
+    if _SessionLocal is None:
+        _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=_get_engine())
+    return _SessionLocal
+
+
+# For direct access
+def get_engine() -> Engine:
+    """Get the SQLAlchemy engine (lazy-initialized)."""
+    return _get_engine()
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -43,6 +81,7 @@ def get_db() -> Generator[Session, None, None]:
     Dependency that provides a database session.
     Use with FastAPI's Depends().
     """
+    SessionLocal = _get_session_local()
     db = SessionLocal()
     try:
         yield db
@@ -56,6 +95,7 @@ def get_db_session() -> Generator[Session, None, None]:
     Context manager for database sessions.
     Use in non-FastAPI contexts.
     """
+    SessionLocal = _get_session_local()
     db = SessionLocal()
     try:
         yield db

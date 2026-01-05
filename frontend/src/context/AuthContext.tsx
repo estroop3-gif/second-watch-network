@@ -38,11 +38,13 @@ interface AuthContextType {
   profile: any | null;
   profileId: string | null;
   loading: boolean;
+  bootstrapError: string | null;
   signIn: (email: string, password: string) => Promise<SignInResult>;
   completeNewPassword: (email: string, newPassword: string, session: string) => Promise<void>;
   signUp: (email: string, password: string, fullName?: string) => Promise<SignUpResult>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
+  retryBootstrap: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -52,9 +54,122 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [profile, setProfile] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const initialCheckComplete = useRef(false);
+  const retryCount = useRef(0);
 
-  // Check for existing session on mount
+  /**
+   * Check if an error is transient (network/timeout/5xx) vs auth error (401/403)
+   */
+  const isTransientError = (error: any): boolean => {
+    const message = error?.message?.toLowerCase() || '';
+    // Network errors, timeouts, or server errors are transient
+    if (message.includes('network') || message.includes('timeout') || message.includes('fetch')) {
+      return true;
+    }
+    // 5xx errors are transient
+    if (message.includes('500') || message.includes('502') || message.includes('503') || message.includes('504')) {
+      return true;
+    }
+    // Auth errors (401, 403, "invalid", "unauthorized") are NOT transient
+    if (message.includes('401') || message.includes('403') || message.includes('invalid') || message.includes('unauthorized')) {
+      return false;
+    }
+    // Default to transient for unknown errors (be optimistic)
+    return true;
+  };
+
+  /**
+   * Validate session with retry logic for transient errors
+   */
+  const validateSession = async (token: string, isRetry: boolean = false): Promise<boolean> => {
+    api.setToken(token);
+
+    try {
+      // Performance: track first API call timing
+      const apiCallStart = performanceMetrics.now();
+      const userData = await api.getCurrentUser();
+      const apiCallEnd = performanceMetrics.now();
+
+      // Report first API call metrics (only on first attempt)
+      if (!isRetry) {
+        performanceMetrics.markFirstApiCall(
+          '/api/v1/auth/me',
+          apiCallStart,
+          apiCallEnd,
+          200
+        );
+      }
+
+      const refreshToken = safeStorage.getItem('refresh_token') || '';
+
+      // Create a session object
+      const authSession: AuthSession = {
+        access_token: token,
+        refresh_token: refreshToken,
+        expires_in: 3600,
+        token_type: 'bearer',
+        user: userData as AuthUser,
+      };
+
+      setSession(authSession);
+      setUser(userData as AuthUser);
+      setBootstrapError(null);
+
+      // Try to load profile (non-blocking)
+      try {
+        const profileData = await api.getProfile();
+        setProfile(profileData);
+        if (profileData?.id) {
+          safeStorage.setItem('profile_id', profileData.id);
+        }
+      } catch {
+        // Profile may not exist yet - not a fatal error
+      }
+
+      return true;
+    } catch (error: any) {
+      // Check if this is a transient error (network/timeout/5xx)
+      if (isTransientError(error)) {
+        // For transient errors, keep the token and allow retry
+        console.warn('[Auth] Transient error during session validation, will retry:', error.message);
+        setBootstrapError('Connection issue - tap to retry');
+        return false;
+      } else {
+        // For auth errors (401/403/invalid), clear the token
+        console.warn('[Auth] Auth error, clearing session:', error.message);
+        safeStorage.removeItem('access_token');
+        safeStorage.removeItem('refresh_token');
+        safeStorage.removeItem('profile_id');
+        api.setToken(null);
+        setSession(null);
+        setUser(null);
+        setProfile(null);
+        setBootstrapError(null);
+        return false;
+      }
+    }
+  };
+
+  /**
+   * Retry session validation - can be called by UI components
+   */
+  const retryBootstrap = async () => {
+    const token = safeStorage.getItem('access_token');
+    if (!token) return false;
+
+    setLoading(true);
+    setBootstrapError(null);
+    retryCount.current += 1;
+    performanceMetrics.incrementRetry();
+
+    const success = await validateSession(token, true);
+
+    setLoading(false);
+    return success;
+  };
+
+  // Check for existing session on mount with auto-retry
   useEffect(() => {
     const checkSession = async () => {
       // Performance: mark auth check started
@@ -65,61 +180,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const hadToken = !!token;
 
       if (token) {
-        api.setToken(token);
-        try {
-          // Performance: track first API call timing
-          const apiCallStart = performanceMetrics.now();
-          const userData = await api.getCurrentUser();
-          const apiCallEnd = performanceMetrics.now();
+        let success = await validateSession(token);
 
-          // Report first API call metrics
-          performanceMetrics.markFirstApiCall(
-            '/api/v1/auth/me',
-            apiCallStart,
-            apiCallEnd,
-            200
-          );
-
-          const refreshToken = safeStorage.getItem('refresh_token') || '';
-
-          // Create a session object
-          const authSession: AuthSession = {
-            access_token: token,
-            refresh_token: refreshToken,
-            expires_in: 3600,
-            token_type: 'bearer',
-            user: userData as AuthUser,
-          };
-
-          setSession(authSession);
-          setUser(userData as AuthUser);
-
-          // Try to load profile
-          try {
-            const profileData = await api.getProfile();
-            setProfile(profileData);
-            if (profileData?.id) {
-              safeStorage.setItem('profile_id', profileData.id);
-            }
-          } catch {
-            // Profile may not exist yet
-          }
-
-          // Performance: mark auth check completed (had token, valid)
-          performanceMetrics.markAuthCheckCompleted(hadToken, true);
-        } catch (error) {
-          // Token is invalid, clear it
-          safeStorage.removeItem('access_token');
-          safeStorage.removeItem('refresh_token');
-          safeStorage.removeItem('profile_id');
-          api.setToken(null);
-          setSession(null);
-          setUser(null);
-          setProfile(null);
-
-          // Performance: mark auth check completed (had token, invalid)
-          performanceMetrics.markAuthCheckCompleted(hadToken, false);
+        // Auto-retry once on transient error (helps with cold starts)
+        if (!success && bootstrapError && retryCount.current === 0) {
+          console.log('[Auth] Auto-retrying after transient error...');
+          await new Promise(resolve => setTimeout(resolve, 1500)); // Wait 1.5s
+          retryCount.current = 1;
+          success = await validateSession(token, true);
         }
+
+        // Performance: mark auth check completed
+        performanceMetrics.markAuthCheckCompleted(hadToken, success);
       } else {
         // Performance: mark auth check completed (no token)
         performanceMetrics.markAuthCheckCompleted(false, false);
@@ -346,11 +418,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       profile,
       profileId,
       loading,
+      bootstrapError,
       signIn,
       completeNewPassword,
       signUp,
       confirmSignUp,
-      signOut
+      signOut,
+      retryBootstrap,
     }}>
       {children}
     </AuthContext.Provider>

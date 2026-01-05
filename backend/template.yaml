@@ -60,6 +60,9 @@ Parameters:
     Description: DynamoDB table for WebSocket connections
 
 Resources:
+  # ============================================================================
+  # Main API Lambda
+  # ============================================================================
   SecondWatchApi:
     Type: AWS::Serverless::Function
     Properties:
@@ -93,6 +96,13 @@ Resources:
           Properties:
             Path: /{proxy+}
             Method: ANY
+        # Keep-warm: EventBridge pings /health every 5 minutes
+        KeepWarm:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Description: Keep Lambda warm to reduce cold start latency
+            Input: '{"httpMethod": "GET", "path": "/health", "requestContext": {"http": {"method": "GET", "path": "/health"}}, "headers": {"X-Warmup-Ping": "true"}, "isBase64Encoded": false}'
       Policies:
         - S3CrudPolicy:
             BucketName: !Ref S3AvatarsBucket
