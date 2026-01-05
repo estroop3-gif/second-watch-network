@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     AI_MODEL: str = os.getenv("AI_MODEL", "claude-sonnet-4-20250514")  # Default to Claude
 
+    # Geocoding (Nominatim)
+    # Default to public OSM Nominatim - for production, use self-hosted instance
+    NOMINATIM_URL: str = os.getenv("NOMINATIM_URL", "https://nominatim.openstreetmap.org")
+    GEOCODING_CACHE_TTL_HOURS: int = int(os.getenv("GEOCODING_CACHE_TTL_HOURS", "168"))  # 7 days
+
     # Email Configuration (Resend, SendGrid, or SMTP)
     EMAIL_PROVIDER: str = os.getenv("EMAIL_PROVIDER", "resend")  # resend, sendgrid, smtp
     RESEND_API_KEY: str = os.getenv("RESEND_API_KEY", "")

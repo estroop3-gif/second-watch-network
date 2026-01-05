@@ -20,7 +20,9 @@ class ProfileCreate(ProfileBase):
 
 
 class ProfileUpdate(ProfileBase):
-    pass
+    """Schema for profile updates - includes all editable fields"""
+    display_name: Optional[str] = None
+    location_visible: Optional[bool] = None
 
 
 class Profile(ProfileBase):
@@ -46,14 +48,21 @@ class Profile(ProfileBase):
 
 
 class FilmmakerProfileBase(BaseModel):
+    full_name: Optional[str] = None
     bio: Optional[str] = None
     skills: Optional[list[str]] = None
     experience_level: Optional[str] = None
     department: Optional[str] = None
     portfolio_url: Optional[str] = None
+    portfolio_website: Optional[str] = None
     reel_url: Optional[str] = None
+    reel_links: Optional[list[str]] = None
     location: Optional[str] = None
-    accepting_work: bool = True
+    accepting_work: Optional[bool] = None
+    available_for: Optional[list[str]] = None
+    preferred_locations: Optional[list[str]] = None
+    contact_method: Optional[str] = None
+    show_email: Optional[bool] = None
     status_message: Optional[str] = None
 
 
@@ -62,6 +71,7 @@ class FilmmakerProfileCreate(FilmmakerProfileBase):
 
 
 class FilmmakerProfileUpdate(FilmmakerProfileBase):
+    """Schema for filmmaker profile updates - includes all editable fields"""
     pass
 
 

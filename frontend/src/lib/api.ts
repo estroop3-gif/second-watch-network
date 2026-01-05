@@ -1370,6 +1370,44 @@ class APIClient {
     }>(`/api/v1/community/profiles?${searchParams}`)
   }
 
+  // User Directory - The Network tab
+  async getUserDirectory(params?: {
+    search?: string;
+    role?: string;
+    is_order_member?: boolean;
+    is_partner?: boolean;
+    location?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const searchParams = new URLSearchParams()
+    if (params?.search) searchParams.append('search', params.search)
+    if (params?.role) searchParams.append('role', params.role)
+    if (params?.is_order_member !== undefined) searchParams.append('is_order_member', params.is_order_member.toString())
+    if (params?.is_partner !== undefined) searchParams.append('is_partner', params.is_partner.toString())
+    if (params?.location) searchParams.append('location', params.location)
+    if (params?.page) searchParams.append('page', params.page.toString())
+    if (params?.limit) searchParams.append('limit', params.limit.toString())
+
+    return this.request<{
+      users: Array<{
+        id: string;
+        username: string | null;
+        full_name: string | null;
+        display_name: string | null;
+        avatar_url: string | null;
+        role: string | null;
+        location: string | null;
+        is_order_member: boolean;
+        is_partner: boolean;
+        connection_status: 'none' | 'pending_sent' | 'pending_received' | 'connected';
+      }>;
+      total: number;
+      page: number;
+      pages: number;
+    }>(`/api/v1/community/users/directory?${searchParams}`)
+  }
+
   // Community Topics
   async listCommunityTopics() {
     return this.request<any[]>('/api/v1/community/topics')

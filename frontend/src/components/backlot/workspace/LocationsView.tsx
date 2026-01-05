@@ -75,6 +75,7 @@ import {
   CLEARANCE_STATUS_LABELS,
 } from '@/types/backlot';
 import { LocationDetailModal } from './LocationDetailModal';
+import { LocationAutocomplete, LocationData } from '@/components/ui/location-autocomplete';
 import { toast } from 'sonner';
 
 interface LocationsViewProps {
@@ -503,7 +504,7 @@ const CreateLocationModal: React.FC<{
   editingLocation?: BacklotLocation | null;
 }> = ({ isOpen, onClose, onSubmit, editingLocation }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formData, setFormData] = useState<BacklotLocationInput>({
+  const [formData, setFormData] = useState<BacklotLocationInput & { latitude?: number; longitude?: number }>({
     name: '',
     description: '',
     scene_description: '',
@@ -511,6 +512,8 @@ const CreateLocationModal: React.FC<{
     city: '',
     state: '',
     zip: '',
+    latitude: undefined,
+    longitude: undefined,
     contact_name: '',
     contact_phone: '',
     contact_email: '',
@@ -538,6 +541,8 @@ const CreateLocationModal: React.FC<{
         city: editingLocation.city || '',
         state: editingLocation.state || '',
         zip: editingLocation.zip || '',
+        latitude: editingLocation.latitude || undefined,
+        longitude: editingLocation.longitude || undefined,
         contact_name: editingLocation.contact_name || '',
         contact_phone: editingLocation.contact_phone || '',
         contact_email: editingLocation.contact_email || '',
@@ -562,6 +567,8 @@ const CreateLocationModal: React.FC<{
         city: '',
         state: '',
         zip: '',
+        latitude: undefined,
+        longitude: undefined,
         contact_name: '',
         contact_phone: '',
         contact_email: '',
@@ -726,13 +733,35 @@ const CreateLocationModal: React.FC<{
 
           <div className="space-y-2">
             <Label htmlFor="address">Address</Label>
-            <Input
+            <LocationAutocomplete
               id="address"
-              placeholder="Street address"
-              value={formData.address || ''}
-              onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+              value={{
+                displayName: formData.address || '',
+                address: formData.address,
+                city: formData.city,
+                state: formData.state,
+                zip: formData.zip,
+                latitude: formData.latitude,
+                longitude: formData.longitude,
+              }}
+              onChange={(locationData: LocationData) => {
+                setFormData({
+                  ...formData,
+                  address: locationData.address || locationData.displayName,
+                  city: locationData.city || formData.city,
+                  state: locationData.stateCode || locationData.state || formData.state,
+                  zip: locationData.zip || formData.zip,
+                  latitude: locationData.latitude,
+                  longitude: locationData.longitude,
+                });
+              }}
+              showUseMyLocation={true}
+              placeholder="Start typing an address or use GPS..."
               disabled={isSubmitting}
             />
+            <p className="text-xs text-muted-gray">
+              Select from suggestions or use "Use My Location" to capture GPS coordinates
+            </p>
           </div>
 
           <div className="grid grid-cols-3 gap-2">
@@ -774,6 +803,34 @@ const CreateLocationModal: React.FC<{
               />
             </div>
           </div>
+
+          {/* Coordinates (auto-filled from GPS or address selection) */}
+          {(formData.latitude || formData.longitude) && (
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-2">
+                <Label htmlFor="latitude">Latitude</Label>
+                <Input
+                  id="latitude"
+                  type="number"
+                  step="any"
+                  value={formData.latitude || ''}
+                  onChange={(e) => setFormData({ ...formData, latitude: e.target.value ? parseFloat(e.target.value) : undefined })}
+                  disabled={isSubmitting}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="longitude">Longitude</Label>
+                <Input
+                  id="longitude"
+                  type="number"
+                  step="any"
+                  value={formData.longitude || ''}
+                  onChange={(e) => setFormData({ ...formData, longitude: e.target.value ? parseFloat(e.target.value) : undefined })}
+                  disabled={isSubmitting}
+                />
+              </div>
+            </div>
+          )}
 
           <div className="space-y-2">
             <Label htmlFor="description">Description</Label>

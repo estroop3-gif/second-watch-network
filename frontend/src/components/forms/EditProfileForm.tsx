@@ -23,6 +23,7 @@ import { AccountSection } from '@/components/account/AccountSection';
 import { AvatarUploader } from '@/components/account/AvatarUploader';
 import ManageCredits from '@/components/profile/ManageCredits';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { LocationAutocomplete, LocationData } from '@/components/ui/location-autocomplete';
 
 import { departments, filmmakerSkills, experienceLevels, availableForOptions, contactMethods } from '@/data/filmmaker-options';
 
@@ -316,7 +317,18 @@ const EditProfileForm: React.FC<EditProfileFormProps> = ({ profile, onProfileUpd
             <FormField control={form.control} name="location" render={({ field }) => (
               <FormItem>
                 <FormLabel>City & State</FormLabel>
-                <FormControl><Input {...field} /></FormControl>
+                <FormControl>
+                  <LocationAutocomplete
+                    value={field.value || ''}
+                    onChange={(locationData: LocationData) => {
+                      // In city mode, displayName is already "City, State" format
+                      field.onChange(locationData.displayName);
+                    }}
+                    showUseMyLocation={true}
+                    placeholder="Start typing a city..."
+                    mode="city"
+                  />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )} />

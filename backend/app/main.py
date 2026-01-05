@@ -48,6 +48,7 @@ from app.api import (
     order_governance,  # Phase 6A: Order governance and funds
     financing,  # Phase 6B: Creator financing and recoupment
     ops,  # Phase 6C: Operational resilience and feature flags
+    geocoding,  # Nominatim geocoding integration
 )
 
 # Configure structured logging
@@ -221,6 +222,7 @@ app.include_router(expenses.router, prefix=f"{settings.API_V1_PREFIX}/backlot", 
 app.include_router(project_access.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Project Access"])
 app.include_router(cast_crew.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Cast & Crew"])
 app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory", tags=["Directory"])
+app.include_router(geocoding.router, prefix=f"{settings.API_V1_PREFIX}/geocoding", tags=["Geocoding"])
 
 # Camera & Continuity and Utilities
 app.include_router(camera_continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Camera & Continuity"])

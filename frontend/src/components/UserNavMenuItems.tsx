@@ -137,7 +137,7 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
       </MenuItem>
       <MenuItem to="/connections" onClick={onLinkClick}>
         <Handshake className="mr-3 h-5 w-5" />
-        <span>Connections</span>
+        <span>My Connections</span>
       </MenuItem>
       <MenuItem
         to="/account/membership"

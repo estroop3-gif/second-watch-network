@@ -446,7 +446,7 @@ const Connections = () => {
       <div className="mb-8">
         <h1 className="text-3xl font-heading tracking-tight text-bone-white mb-2">
           <Users className="inline h-8 w-8 mr-3 text-accent-yellow" />
-          Connections
+          My Connections
         </h1>
         <p className="text-muted-gray">Manage your network of filmmakers and collaborators.</p>
       </div>

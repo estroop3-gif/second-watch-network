@@ -2314,3 +2314,197 @@ async def fetch_link_preview(
     except Exception as e:
         print(f"Error fetching link preview: {e}")
         return {"error": "Failed to fetch link preview"}
+
+
+# =====================================================
+# USER DIRECTORY - THE NETWORK TAB
+# =====================================================
+
+class DirectoryUserResponse(BaseModel):
+    """User data for directory listing"""
+    id: str
+    username: Optional[str] = None
+    full_name: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    role: Optional[str] = None
+    location: Optional[str] = None
+    is_order_member: bool = False
+    is_partner: bool = False
+    connection_status: str = "none"  # none, pending_sent, pending_received, connected
+
+
+class DirectoryResponse(BaseModel):
+    """Paginated directory response"""
+    users: List[DirectoryUserResponse]
+    total: int
+    page: int
+    pages: int
+
+
+@router.get("/users/directory", response_model=DirectoryResponse)
+async def get_user_directory(
+    search: Optional[str] = Query(None, description="Search by name or username"),
+    role: Optional[str] = Query(None, description="Filter by role (filmmaker, editor, actor, etc.)"),
+    is_order_member: Optional[bool] = Query(None, description="Filter by Order membership"),
+    is_partner: Optional[bool] = Query(None, description="Filter by partner status"),
+    location: Optional[str] = Query(None, description="Filter by location"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(20, ge=1, le=100, description="Results per page"),
+    authorization: str = Header(None)
+):
+    """
+    Get paginated list of all users on the platform for The Network tab.
+
+    Returns users with their connection status relative to the current user:
+    - 'none': No connection
+    - 'pending_sent': Current user sent a request
+    - 'pending_received': Current user received a request
+    - 'connected': Already connected
+    """
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Build base query for profiles with filmmaker_profiles join for location
+        query = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url, role, "
+            "is_order_member, is_partner, filmmaker_profile:filmmaker_profiles(location)"
+        ).neq("id", current_user_id)  # Exclude current user
+
+        # Apply search filter
+        if search and search.strip():
+            search_term = search.strip()
+            query = query.or_(
+                f"full_name.ilike.%{search_term}%,username.ilike.%{search_term}%,display_name.ilike.%{search_term}%"
+            )
+
+        # Apply role filter
+        if role:
+            query = query.eq("role", role)
+
+        # Apply Order member filter
+        if is_order_member is not None:
+            query = query.eq("is_order_member", is_order_member)
+
+        # Apply partner filter
+        if is_partner is not None:
+            query = query.eq("is_partner", is_partner)
+
+        # Note: Location filter requires post-query filtering since it's in filmmaker_profiles
+        # We'll handle this after fetching the data
+
+        # Get total count first (without location filter for now)
+        count_query = client.table("profiles").select("id", count="exact").neq("id", current_user_id)
+        if search and search.strip():
+            search_term = search.strip()
+            count_query = count_query.or_(
+                f"full_name.ilike.%{search_term}%,username.ilike.%{search_term}%,display_name.ilike.%{search_term}%"
+            )
+        if role:
+            count_query = count_query.eq("role", role)
+        if is_order_member is not None:
+            count_query = count_query.eq("is_order_member", is_order_member)
+        if is_partner is not None:
+            count_query = count_query.eq("is_partner", is_partner)
+
+        count_result = count_query.execute()
+        total = count_result.count if hasattr(count_result, 'count') and count_result.count else len(count_result.data or [])
+
+        # Apply pagination and ordering
+        offset = (page - 1) * limit
+        query = query.order("full_name", desc=False).range(offset, offset + limit - 1)
+
+        result = query.execute()
+        profiles = result.data or []
+
+        if not profiles:
+            return DirectoryResponse(
+                users=[],
+                total=total,
+                page=page,
+                pages=max(1, (total + limit - 1) // limit)
+            )
+
+        # Get connection statuses for all returned profiles
+        profile_ids = [p["id"] for p in profiles]
+
+        # Query connections where current user is requester
+        sent_connections = client.table("connections").select(
+            "recipient_id, status"
+        ).eq("requester_id", current_user_id).in_("recipient_id", profile_ids).execute()
+
+        # Query connections where current user is recipient
+        received_connections = client.table("connections").select(
+            "requester_id, status"
+        ).eq("recipient_id", current_user_id).in_("requester_id", profile_ids).execute()
+
+        # Build connection status map
+        connection_map: Dict[str, str] = {}
+
+        for conn in (sent_connections.data or []):
+            user_id = conn["recipient_id"]
+            if conn["status"] == "accepted":
+                connection_map[user_id] = "connected"
+            elif conn["status"] == "pending":
+                connection_map[user_id] = "pending_sent"
+
+        for conn in (received_connections.data or []):
+            user_id = conn["requester_id"]
+            if conn["status"] == "accepted":
+                connection_map[user_id] = "connected"
+            elif conn["status"] == "pending":
+                # Only set to pending_received if not already connected
+                if user_id not in connection_map or connection_map[user_id] != "connected":
+                    connection_map[user_id] = "pending_received"
+
+        # Build response - extract location from filmmaker_profile join
+        users = []
+        for profile in profiles:
+            # Extract location from filmmaker_profile join
+            filmmaker_profile = profile.get("filmmaker_profile")
+            profile_location = None
+            if filmmaker_profile:
+                # Could be a dict or list depending on the join
+                if isinstance(filmmaker_profile, dict):
+                    profile_location = filmmaker_profile.get("location")
+                elif isinstance(filmmaker_profile, list) and len(filmmaker_profile) > 0:
+                    profile_location = filmmaker_profile[0].get("location")
+
+            # Apply location filter (post-query filtering)
+            if location and location.strip():
+                if not profile_location or location.strip().lower() not in profile_location.lower():
+                    continue
+
+            users.append(DirectoryUserResponse(
+                id=profile["id"],
+                username=profile.get("username"),
+                full_name=profile.get("full_name"),
+                display_name=profile.get("display_name"),
+                avatar_url=profile.get("avatar_url"),
+                role=profile.get("role"),
+                location=profile_location,
+                is_order_member=profile.get("is_order_member", False),
+                is_partner=profile.get("is_partner", False),
+                connection_status=connection_map.get(profile["id"], "none")
+            ))
+
+        # Adjust total if location filter was applied
+        if location and location.strip():
+            total = len(users)
+
+        pages = max(1, (total + limit - 1) // limit)
+
+        return DirectoryResponse(
+            users=users,
+            total=total,
+            page=page,
+            pages=pages
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching user directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

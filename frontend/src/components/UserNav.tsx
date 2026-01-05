@@ -235,7 +235,7 @@ export const UserNav = () => {
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">
           <Link to="/connections">
             <Handshake className="mr-2 h-4 w-4" />
-            <span>Connections</span>
+            <span>My Connections</span>
           </Link>
         </DropdownMenuItem>
         <DropdownMenuItem asChild className="cursor-pointer focus:bg-muted-gray/50">

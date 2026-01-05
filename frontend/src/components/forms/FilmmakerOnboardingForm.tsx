@@ -36,6 +36,7 @@ import { Checkbox } from "../ui/checkbox";
 import { TagInput } from "../ui/tag-input";
 import { AvatarUploader } from '../account/AvatarUploader';
 import { useQueryClient } from "@tanstack/react-query";
+import { LocationAutocomplete, LocationData } from '@/components/ui/location-autocomplete';
 
 const creditSchema = z.object({
   position: z.string().min(1, "Position is required."),
@@ -197,7 +198,22 @@ const FilmmakerOnboardingForm = () => {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <FormField control={form.control} name="location" render={({ field }) => (
-                  <FormItem><FormLabel>City & State</FormLabel><FormControl><Input placeholder="e.g. Los Angeles, CA" {...field} /></FormControl><FormMessage /></FormItem>
+                  <FormItem>
+                    <FormLabel>City & State</FormLabel>
+                    <FormControl>
+                      <LocationAutocomplete
+                        value={field.value || ''}
+                        onChange={(locationData: LocationData) => {
+                          // In city mode, displayName is already "City, State" format
+                          field.onChange(locationData.displayName);
+                        }}
+                        showUseMyLocation={true}
+                        placeholder="Start typing a city..."
+                        mode="city"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
               )} />
               <FormField control={form.control} name="location_visible" render={({ field }) => (
                   <FormItem className="flex flex-row items-center justify-between rounded-lg border border-muted-gray/20 p-4">

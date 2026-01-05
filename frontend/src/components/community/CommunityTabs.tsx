@@ -16,7 +16,7 @@ interface Tab {
 const tabs: Tab[] = [
   { id: 'home', label: 'Home', icon: <Home className="w-4 h-4" /> },
   { id: 'feed', label: 'Feed', icon: <Newspaper className="w-4 h-4" /> },
-  { id: 'people', label: 'People', icon: <Users className="w-4 h-4" /> },
+  { id: 'people', label: 'The Network', icon: <Users className="w-4 h-4" /> },
   { id: 'collabs', label: 'Collabs', icon: <Handshake className="w-4 h-4" /> },
   { id: 'topics', label: 'Topics', icon: <MessageSquare className="w-4 h-4" /> },
 ];

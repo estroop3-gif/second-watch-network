@@ -1,0 +1,65 @@
+# Nominatim Geocoding Service
+# Deploy on EC2 t3.xlarge or larger (16GB+ RAM recommended)
+#
+# Usage:
+#   docker-compose up -d
+#
+# First run will download and import US OSM data (~8GB download, ~30GB disk)
+# Import takes 2-4 hours depending on instance size.
+
+version: '3.8'
+
+services:
+  nominatim:
+    image: mediagis/nominatim:4.4
+    container_name: nominatim
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      # US-only data from Geofabrik (faster import, smaller size)
+      - PBF_URL=https://download.geofabrik.de/north-america/us-latest.osm.pbf
+      - REPLICATION_URL=https://download.geofabrik.de/north-america/us-updates/
+      # Database password (change in production!)
+      - NOMINATIM_PASSWORD=${NOMINATIM_PASSWORD:-nominatim_secret}
+      # Import US postcodes for better ZIP code search
+      - IMPORT_US_POSTCODES=true
+      # Skip Wikipedia data (not needed for geocoding)
+      - IMPORT_WIKIPEDIA=false
+      # Performance tuning
+      - THREADS=4
+    volumes:
+      # Persistent data storage
+      - nominatim-data:/var/lib/postgresql/14/main
+      - nominatim-flatnode:/nominatim/flatnode
+    # Required for PostgreSQL
+    shm_size: '1gb'
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s  # 5 minutes for initial startup
+    # Resource limits (adjust based on instance size)
+    deploy:
+      resources:
+        limits:
+          memory: 14G
+        reservations:
+          memory: 8G
+
+volumes:
+  nominatim-data:
+    driver: local
+  nominatim-flatnode:
+    driver: local
+
+# Network configuration for production
+# Uncomment to restrict to private network
+# networks:
+#   default:
+#     driver: bridge
+#     ipam:
+#       config:
+#         - subnet: 172.28.0.0/16
