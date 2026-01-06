@@ -53,6 +53,7 @@ from app.api import (
     geocoding,  # Nominatim geocoding integration
     client_metrics,  # Performance diagnostics - client-side timing
 )
+from app.api.gear import router as gear_router  # Gear House - Equipment management
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -339,6 +340,9 @@ app.include_router(ops.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Ops"])
 
 # Performance Diagnostics - Client-side timing metrics
 app.include_router(client_metrics.router, prefix=f"{settings.API_V1_PREFIX}/client-metrics", tags=["Client Metrics"])
+
+# Gear House - Equipment Management
+app.include_router(gear_router, prefix=f"{settings.API_V1_PREFIX}/gear", tags=["Gear House"])
 
 # Mount Socket.IO for real-time communications
 try:
