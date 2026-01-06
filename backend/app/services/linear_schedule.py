@@ -115,7 +115,10 @@ class LinearScheduleService:
                 lc.accent_color,
                 lc.status,
                 lc.current_viewers,
-                lc.stream_type
+                lc.stream_type,
+                COALESCE(lc.is_free, true) as is_free,
+                COALESCE(lc.has_ads, true) as has_ads,
+                lc.midroll_interval_seconds
             FROM linear_channels lc
             WHERE lc.status IN ('live', 'scheduled')
               AND lc.archived_at IS NULL
@@ -430,12 +433,33 @@ class LinearScheduleService:
             current_item, item_position
         )
 
+        # Calculate ad break status for FAST channels
+        has_ads = channel.get('has_ads', True)
+        midroll_interval = channel.get('midroll_interval_seconds', 1800)
+        ad_break_due = False
+        next_ad_break_in_seconds = None
+
+        if has_ads and midroll_interval and midroll_interval > 0:
+            # Check if a midroll ad break is due based on block position
+            # Midroll triggers when block_elapsed crosses a multiple of midroll_interval
+            if block_elapsed > 0:
+                current_interval = int(block_elapsed // midroll_interval)
+                next_midroll_at = (current_interval + 1) * midroll_interval
+                next_ad_break_in_seconds = int(next_midroll_at - block_elapsed)
+
+                # Ad break is due if we're within 30 seconds of a midroll boundary
+                time_since_last_midroll = block_elapsed % midroll_interval
+                ad_break_due = time_since_last_midroll < 30 and block_elapsed >= midroll_interval
+
         return {
             'channel': {
                 'id': channel['id'],
                 'slug': channel['slug'],
                 'name': channel['name'],
-                'logo_url': channel.get('logo_url')
+                'logo_url': channel.get('logo_url'),
+                'is_free': channel.get('is_free', True),
+                'has_ads': has_ads,
+                'midroll_interval_seconds': midroll_interval
             },
             'status': 'playing',
             'block': {
@@ -453,7 +477,8 @@ class LinearScheduleService:
                 'world_id': current_item.get('world_id'),
                 'world_title': current_item.get('world_title'),
                 'thumbnail_url': current_item.get('thumbnail_url'),
-                'duration_seconds': current_item['effective_duration_seconds']
+                'duration_seconds': current_item['effective_duration_seconds'],
+                'episode_id': current_item.get('item_id') if current_item['item_type'] == 'world_episode' else None
             },
             'position_seconds': int(item_position),
             'remaining_seconds': int(current_item['effective_duration_seconds'] - item_position),
@@ -463,7 +488,9 @@ class LinearScheduleService:
                 'world_title': next_item.get('world_title'),
                 'starts_in_seconds': int(current_item['effective_duration_seconds'] - item_position)
             } if next_item else None,
-            'playback_asset': playback_asset
+            'playback_asset': playback_asset,
+            'ad_break_due': ad_break_due,
+            'next_ad_break_in_seconds': next_ad_break_in_seconds
         }
 
     @staticmethod
@@ -769,11 +796,30 @@ class LinearScheduleService:
     @staticmethod
     async def heartbeat_viewer_session(
         session_id: str,
-        current_block_id: Optional[str] = None
+        current_block_id: Optional[str] = None,
+        episode_id: Optional[str] = None,
+        world_id: Optional[str] = None,
+        watch_seconds: int = 0,
+        viewer_id: Optional[str] = None
     ) -> None:
-        """Update heartbeat for an active viewer session."""
+        """
+        Update heartbeat for an active viewer session.
+
+        Extended to track per-episode watch time within linear sessions.
+        This creates/updates playback_sessions records that flow into
+        the watch aggregation pipeline for creator earnings.
+
+        Args:
+            session_id: The linear viewer session ID
+            current_block_id: Current block being viewed
+            episode_id: Current episode being watched (for per-content tracking)
+            world_id: World of current content
+            watch_seconds: Seconds watched since last heartbeat (typically 30s)
+            viewer_id: User profile ID (for linking playback sessions)
+        """
         from app.core.database import execute_update
 
+        # Update the linear viewer session
         execute_update("""
             UPDATE channel_viewer_sessions
             SET
@@ -787,4 +833,89 @@ class LinearScheduleService:
         """, {
             "session_id": session_id,
             "block_id": current_block_id
+        })
+
+        # If we have episode/world info, track watch time in playback_sessions
+        # This integrates linear viewing with the watch aggregation pipeline
+        if episode_id and watch_seconds > 0:
+            await LinearScheduleService._track_linear_episode_watch(
+                session_id=session_id,
+                block_id=current_block_id,
+                episode_id=episode_id,
+                world_id=world_id,
+                watch_seconds=watch_seconds,
+                viewer_id=viewer_id
+            )
+
+    @staticmethod
+    async def _track_linear_episode_watch(
+        session_id: str,
+        block_id: Optional[str],
+        episode_id: str,
+        world_id: Optional[str],
+        watch_seconds: int,
+        viewer_id: Optional[str]
+    ) -> None:
+        """
+        Track per-episode watch time from linear viewing.
+
+        Creates or updates a playback_sessions record for the episode,
+        linked to the linear channel and block. This flows into the
+        watch aggregation pipeline for creator earnings calculation.
+        """
+        from app.core.database import execute_single
+
+        # Get channel_id from the viewer session
+        session_info = execute_single("""
+            SELECT channel_id FROM channel_viewer_sessions WHERE id = :session_id
+        """, {"session_id": session_id})
+
+        if not session_info:
+            logger.warning("linear_session_not_found", session_id=session_id)
+            return
+
+        channel_id = session_info.get('channel_id')
+
+        # Upsert a playback session for this episode within the linear viewing context
+        # We use channel_id + episode_id + viewer_id as the logical key
+        # If the same viewer watches the same episode on the same channel, we accumulate time
+        execute_single("""
+            INSERT INTO playback_sessions (
+                user_id,
+                episode_id,
+                world_id,
+                channel_id,
+                block_id,
+                session_token,
+                started_at,
+                duration_watched_seconds,
+                last_heartbeat_at,
+                device_type,
+                status
+            ) VALUES (
+                :viewer_id,
+                :episode_id,
+                :world_id,
+                :channel_id,
+                :block_id,
+                :session_token,
+                NOW(),
+                :watch_seconds,
+                NOW(),
+                'linear',
+                'active'
+            )
+            ON CONFLICT (session_token) DO UPDATE SET
+                duration_watched_seconds = playback_sessions.duration_watched_seconds + :watch_seconds,
+                last_heartbeat_at = NOW(),
+                block_id = COALESCE(:block_id, playback_sessions.block_id)
+            RETURNING id
+        """, {
+            "viewer_id": viewer_id,
+            "episode_id": episode_id,
+            "world_id": world_id,
+            "channel_id": channel_id,
+            "block_id": block_id,
+            "session_token": f"linear:{session_id}:{episode_id}",
+            "watch_seconds": watch_seconds
         })

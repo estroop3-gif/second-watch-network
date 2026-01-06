@@ -54,6 +54,10 @@ class ChannelSummary(BaseModel):
     status: str
     current_viewers: int = 0
     stream_type: str = "vod_simulation"
+    # FAST/Ad-supported fields
+    is_free: bool = True
+    has_ads: bool = True
+    midroll_interval_seconds: Optional[int] = None
 
 
 class ChannelDetail(ChannelSummary):
@@ -124,6 +128,9 @@ class NowPlayingResponse(BaseModel):
     next_item: Optional[dict] = None
     playback_asset: Optional[PlaybackAsset] = None
     offline_slate_url: Optional[str] = None
+    # Ad break indicators for FAST channels
+    ad_break_due: bool = False
+    next_ad_break_in_seconds: Optional[int] = None
 
 
 class ViewerSessionStart(BaseModel):
@@ -140,6 +147,9 @@ class HeartbeatRequest(BaseModel):
     session_id: str
     current_block_id: Optional[str] = None
     watch_seconds: int = 0
+    # Per-episode tracking for creator earnings
+    episode_id: Optional[str] = None
+    world_id: Optional[str] = None
 
 
 # =============================================================================
@@ -384,11 +394,28 @@ async def heartbeat(
     Send heartbeat to keep session alive and track watch time.
 
     Should be called every 30-60 seconds while actively watching.
-    Updates last_heartbeat_at and optionally tracks which blocks were viewed.
+    Updates last_heartbeat_at, tracks which blocks were viewed,
+    and records per-episode watch time for creator earnings.
+
+    Include episode_id, world_id, and watch_seconds to track
+    watch time that flows into the creator earnings pipeline.
     """
+    # Get viewer_id from the session for playback_sessions linking
+    viewer_id = None
+    session_info = execute_single(
+        "SELECT viewer_id FROM channel_viewer_sessions WHERE id = :session_id",
+        {"session_id": body.session_id}
+    )
+    if session_info:
+        viewer_id = str(session_info['viewer_id']) if session_info.get('viewer_id') else None
+
     await LinearScheduleService.heartbeat_viewer_session(
         session_id=body.session_id,
-        current_block_id=body.current_block_id
+        current_block_id=body.current_block_id,
+        episode_id=body.episode_id,
+        world_id=body.world_id,
+        watch_seconds=body.watch_seconds,
+        viewer_id=viewer_id
     )
 
     return {"status": "ok"}
