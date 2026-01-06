@@ -2,7 +2,8 @@
  * KitRentalDetailContent - Read-only kit rental detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO, differenceInDays } from 'date-fns';
+import { differenceInDays, format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { Briefcase, User, Calendar, DollarSign, CalendarRange, Tag } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -59,8 +60,8 @@ export default function KitRentalDetailContent({ projectId, kitRentalId }: KitRe
   const rentalTypeLabel = RENTAL_TYPE_LABELS[kitRental.rental_type as keyof typeof RENTAL_TYPE_LABELS] || kitRental.rental_type;
 
   // Calculate days
-  const startDate = parseISO(kitRental.start_date);
-  const endDate = kitRental.end_date ? parseISO(kitRental.end_date) : new Date();
+  const startDate = parseLocalDate(kitRental.start_date);
+  const endDate = kitRental.end_date ? parseLocalDate(kitRental.end_date) : new Date();
   const daysUsed = kitRental.days_used || differenceInDays(endDate, startDate) + 1;
 
   return (

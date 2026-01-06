@@ -158,8 +158,9 @@ def execute_insert(query: str, params: dict = None) -> dict:
     """
     with get_db_session() as db:
         result = db.execute(text(query), params or {})
-        db.commit()
+        # Fetch BEFORE commit - psycopg2 can close cursor after commit
         row = result.fetchone()
+        db.commit()
         return _convert_row(dict(row._mapping)) if row else None
 
 
@@ -169,8 +170,10 @@ def execute_update(query: str, params: dict = None) -> int:
     """
     with get_db_session() as db:
         result = db.execute(text(query), params or {})
+        # Get rowcount BEFORE commit - psycopg2 can close cursor after commit
+        count = result.rowcount
         db.commit()
-        return result.rowcount
+        return count
 
 
 def execute_delete(query: str, params: dict = None) -> int:
@@ -179,8 +182,10 @@ def execute_delete(query: str, params: dict = None) -> int:
     """
     with get_db_session() as db:
         result = db.execute(text(query), params or {})
+        # Get rowcount BEFORE commit - psycopg2 can close cursor after commit
+        count = result.rowcount
         db.commit()
-        return result.rowcount
+        return count
 
 
 def test_connection() -> bool:
@@ -663,8 +668,9 @@ class DatabaseUpdateBuilder:
 
         with get_db_session() as db:
             result = db.execute(text(query), params)
-            db.commit()
+            # Fetch BEFORE commit - psycopg2 can close cursor after commit
             rows = [_convert_row(dict(row._mapping)) for row in result.fetchall()]
+            db.commit()
             return type('Response', (), {'data': rows, 'error': None})()
 
 

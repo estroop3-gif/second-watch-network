@@ -71,7 +71,7 @@ import {
   Upload,
   PenLine,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 
 interface CrewRatesTabProps {
   projectId: string;
@@ -198,9 +198,9 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
 
   const formatDateRange = (start: string | null, end: string | null) => {
     if (!start && !end) return 'No dates set';
-    if (start && !end) return `From ${format(parseISO(start), 'MMM d, yyyy')}`;
-    if (!start && end) return `Until ${format(parseISO(end), 'MMM d, yyyy')}`;
-    return `${format(parseISO(start!), 'MMM d')} - ${format(parseISO(end!), 'MMM d, yyyy')}`;
+    if (start && !end) return `From ${formatDate(start)}`;
+    if (!start && end) return `Until ${formatDate(end)}`;
+    return `${formatDate(start!, 'MMM d')} - ${formatDate(end!)}`;
   };
 
   // Stats

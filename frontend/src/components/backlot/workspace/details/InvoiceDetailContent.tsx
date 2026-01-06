@@ -2,7 +2,7 @@
  * InvoiceDetailContent - Read-only invoice detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { formatDate, formatDateTime } from '@/lib/dateUtils';
 import { FileText, User, Building2, Calendar, DollarSign, Clock, Mail, Phone, MapPin } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -127,7 +127,7 @@ export default function InvoiceDetailContent({ projectId, invoiceId }: InvoiceDe
           <p className="text-xs text-muted-gray">Invoice Date</p>
           <p className="text-sm text-bone-white flex items-center gap-1">
             <Calendar className="w-3 h-3" />
-            {format(parseISO(invoice.invoice_date), 'MMM d, yyyy')}
+            {formatDate(invoice.invoice_date)}
           </p>
         </div>
         {invoice.due_date && (
@@ -135,7 +135,7 @@ export default function InvoiceDetailContent({ projectId, invoiceId }: InvoiceDe
             <p className="text-xs text-muted-gray">Due Date</p>
             <p className="text-sm text-bone-white flex items-center gap-1">
               <Clock className="w-3 h-3" />
-              {format(parseISO(invoice.due_date), 'MMM d, yyyy')}
+              {formatDate(invoice.due_date)}
             </p>
           </div>
         )}
@@ -221,7 +221,7 @@ export default function InvoiceDetailContent({ projectId, invoiceId }: InvoiceDe
           <p className="text-sm text-bone-white whitespace-pre-wrap">{invoice.approval_notes}</p>
           {invoice.approved_at && (
             <p className="text-xs text-muted-gray mt-2">
-              Approved on {format(parseISO(invoice.approved_at), 'MMM d, yyyy h:mm a')}
+              Approved on {formatDateTime(invoice.approved_at)}
             </p>
           )}
         </div>
@@ -234,7 +234,7 @@ export default function InvoiceDetailContent({ projectId, invoiceId }: InvoiceDe
           <p className="text-sm text-bone-white whitespace-pre-wrap">{invoice.change_request_reason}</p>
           {invoice.changes_requested_at && (
             <p className="text-xs text-muted-gray mt-2">
-              Requested on {format(parseISO(invoice.changes_requested_at), 'MMM d, yyyy h:mm a')}
+              Requested on {formatDateTime(invoice.changes_requested_at)}
             </p>
           )}
         </div>
@@ -247,7 +247,7 @@ export default function InvoiceDetailContent({ projectId, invoiceId }: InvoiceDe
           <p className="text-sm text-bone-white whitespace-pre-wrap">{invoice.denial_reason}</p>
           {invoice.denied_at && (
             <p className="text-xs text-muted-gray mt-2">
-              Denied on {format(parseISO(invoice.denied_at), 'MMM d, yyyy h:mm a')}
+              Denied on {formatDateTime(invoice.denied_at)}
             </p>
           )}
         </div>

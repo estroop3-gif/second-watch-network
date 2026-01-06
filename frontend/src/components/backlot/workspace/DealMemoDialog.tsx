@@ -42,7 +42,7 @@ import {
   FileText,
   Send,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format } from 'date-fns';
 
 interface DealMemoDialogProps {
   open: boolean;

@@ -23,7 +23,8 @@ import {
   Users,
   Send,
 } from 'lucide-react';
-import { format, differenceInDays, isPast, parseISO } from 'date-fns';
+import { differenceInDays, isPast } from 'date-fns';
+import { formatDate, parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import {
   BacklotClearanceItem,
@@ -94,7 +95,7 @@ export default function ClearanceDetailPage({
   const versionCount = versions?.length || 0;
 
   // Calculate days until expiry
-  const expirationDate = clearance.expiration_date ? parseISO(clearance.expiration_date) : null;
+  const expirationDate = clearance.expiration_date ? parseLocalDate(clearance.expiration_date) : null;
   const daysUntilExpiry = expirationDate ? differenceInDays(expirationDate, new Date()) : null;
   const isExpired = expirationDate ? isPast(expirationDate) : false;
   const isExpiringSoon = daysUntilExpiry !== null && daysUntilExpiry > 0 && daysUntilExpiry <= 30;
@@ -197,7 +198,7 @@ export default function ClearanceDetailPage({
             </div>
             {clearance.signed_date && (
               <div className="text-xs text-muted-foreground mt-1">
-                Signed {format(parseISO(clearance.signed_date), 'MMM d, yyyy')}
+                Signed {formatDate(clearance.signed_date)}
               </div>
             )}
           </CardContent>

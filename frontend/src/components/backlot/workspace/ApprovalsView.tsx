@@ -44,7 +44,7 @@ import {
   Utensils,
   Lightbulb,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import {
   useExpenseSummary,
@@ -674,7 +674,7 @@ export default function ApprovalsView({
                           </span>
                           <span className="text-xs text-muted-gray flex items-center gap-1">
                             <Calendar className="w-3 h-3" />
-                            {format(parseISO(item.date), 'MMM d, yyyy')}
+                            {formatDate(item.date)}
                           </span>
                         </div>
                       </div>

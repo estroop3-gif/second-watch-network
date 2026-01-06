@@ -40,7 +40,8 @@ import {
 import { useCallSheetShares, CallSheetShare } from '@/hooks/backlot';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
-import { format, formatDistanceToNow, isPast, parseISO } from 'date-fns';
+import { formatDistanceToNow, isPast } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface CallSheetShareModalProps {
   callSheetId: string;
@@ -66,7 +67,7 @@ const ShareLinkRow: React.FC<ShareLinkRowProps> = ({
   isRevoking,
 }) => {
   const [copied, setCopied] = useState(false);
-  const isExpired = isPast(parseISO(share.expires_at));
+  const isExpired = isPast(parseLocalDate(share.expires_at));
   const isActive = share.is_active && !isExpired;
 
   const handleCopy = async () => {
@@ -119,8 +120,8 @@ const ShareLinkRow: React.FC<ShareLinkRowProps> = ({
             <span className="flex items-center gap-1">
               <Clock className="w-3 h-3" />
               {isExpired
-                ? `Expired ${formatDistanceToNow(parseISO(share.expires_at))} ago`
-                : `Expires ${formatDistanceToNow(parseISO(share.expires_at), { addSuffix: true })}`
+                ? `Expired ${formatDistanceToNow(parseLocalDate(share.expires_at))} ago`
+                : `Expires ${formatDistanceToNow(parseLocalDate(share.expires_at), { addSuffix: true })}`
               }
             </span>
           </div>
@@ -275,8 +276,8 @@ const CallSheetShareModal: React.FC<CallSheetShareModalProps> = ({
     }
   };
 
-  const activeShares = shares.filter(s => s.is_active && !isPast(parseISO(s.expires_at)));
-  const inactiveShares = shares.filter(s => !s.is_active || isPast(parseISO(s.expires_at)));
+  const activeShares = shares.filter(s => s.is_active && !isPast(parseLocalDate(s.expires_at)));
+  const inactiveShares = shares.filter(s => !s.is_active || isPast(parseLocalDate(s.expires_at)));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

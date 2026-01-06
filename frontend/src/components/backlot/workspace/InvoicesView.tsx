@@ -113,6 +113,24 @@ interface InvoicesViewProps {
   canReview?: boolean;
 }
 
+// Helper function to calculate due date based on payment terms
+const calculateDueDate = (invoiceDate: string, paymentTerms: string): string => {
+  if (!invoiceDate || !paymentTerms || paymentTerms === 'custom') return '';
+
+  const baseDate = new Date(invoiceDate);
+  const daysMap: Record<string, number> = {
+    'due_on_receipt': 0,
+    'net_15': 15,
+    'net_30': 30,
+    'net_45': 45,
+    'net_60': 60,
+  };
+
+  const days = daysMap[paymentTerms] ?? 30;
+  baseDate.setDate(baseDate.getDate() + days);
+  return baseDate.toISOString().split('T')[0];
+};
+
 const InvoicesView: React.FC<InvoicesViewProps> = ({
   projectId,
   canEdit,
@@ -203,9 +221,12 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
 
   // Reset form when dialog opens
   const handleOpenCreateDialog = () => {
+    const invoiceDate = new Date().toISOString().split('T')[0];
+    const defaultTerms = 'net_30';
     setFormData({
       invoice_number: nextNumber?.invoice_number || '',
-      invoice_date: new Date().toISOString().split('T')[0],
+      invoice_date: invoiceDate,
+      due_date: calculateDueDate(invoiceDate, defaultTerms),
       invoicer_name: prefillData?.invoicer_name || '',
       invoicer_email: prefillData?.invoicer_email || '',
       invoicer_phone: prefillData?.invoicer_phone || '',
@@ -213,7 +234,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
       bill_to_name: prefillData?.bill_to_name || '',
       production_title: prefillData?.production_title || '',
       position_role: prefillData?.position_role || '',
-      payment_terms: 'net_30',
+      payment_terms: defaultTerms,
       tax_rate: 0,
     });
     setShowCreateDialog(true);
@@ -857,7 +878,10 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
               <Label>Payment Terms</Label>
               <Select
                 value={formData.payment_terms || 'net_30'}
-                onValueChange={(v) => setFormData({ ...formData, payment_terms: v as any })}
+                onValueChange={(v) => {
+                  const newDueDate = calculateDueDate(formData.invoice_date || '', v);
+                  setFormData({ ...formData, payment_terms: v as any, due_date: newDueDate || formData.due_date });
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -868,6 +892,15 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                   ))}
                 </SelectContent>
               </Select>
+            </div>
+            <div>
+              <Label>Due Date</Label>
+              <Input
+                type="date"
+                value={formData.due_date || ''}
+                onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+              />
+              <p className="text-xs text-muted-gray mt-1">Auto-set from payment terms, but can be overridden</p>
             </div>
             <div>
               <Label>Tax Rate (%)</Label>
@@ -1256,6 +1289,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                           setFormData({
                             invoice_number: selectedInvoice.invoice_number,
                             invoice_date: selectedInvoice.invoice_date,
+                            due_date: selectedInvoice.due_date || '',
                             invoicer_name: selectedInvoice.invoicer_name,
                             invoicer_email: selectedInvoice.invoicer_email || '',
                             invoicer_phone: selectedInvoice.invoicer_phone || '',
@@ -1477,7 +1511,10 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                 <Label>Payment Terms</Label>
                 <Select
                   value={formData.payment_terms || 'net_30'}
-                  onValueChange={(v) => setFormData({ ...formData, payment_terms: v as any })}
+                  onValueChange={(v) => {
+                    const newDueDate = calculateDueDate(formData.invoice_date || '', v);
+                    setFormData({ ...formData, payment_terms: v as any, due_date: newDueDate || formData.due_date });
+                  }}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -1488,6 +1525,15 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+              <div>
+                <Label>Due Date</Label>
+                <Input
+                  type="date"
+                  value={formData.due_date || ''}
+                  onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+                />
+                <p className="text-xs text-muted-gray mt-1">Auto-set from payment terms, but can be overridden</p>
               </div>
               <div>
                 <Label>Tax Rate (%)</Label>

@@ -42,9 +42,9 @@ import {
   isToday,
   addMonths,
   subMonths,
-  parseISO,
   isSameDay,
 } from 'date-fns';
+import { parseLocalDate, formatDate } from '@/lib/dateUtils';
 
 interface AvailabilityCalendarProps {
   projectId: string;
@@ -218,8 +218,8 @@ export function AvailabilityCalendar({
                             const isRoleDate =
                               person.start_date &&
                               person.end_date &&
-                              day >= parseISO(person.start_date) &&
-                              day <= parseISO(person.end_date);
+                              day >= parseLocalDate(person.start_date) &&
+                              day <= parseLocalDate(person.end_date);
 
                             return (
                               <div
@@ -258,8 +258,8 @@ export function AvailabilityCalendar({
                               const isRoleDate =
                                 person.start_date &&
                                 person.end_date &&
-                                day >= parseISO(person.start_date) &&
-                                day <= parseISO(person.end_date);
+                                day >= parseLocalDate(person.start_date) &&
+                                day <= parseLocalDate(person.end_date);
                               return (
                                 <div
                                   key={person.user_id}
@@ -330,9 +330,9 @@ function PersonAvailabilityCard({ person }: PersonAvailabilityCardProps) {
             {person.start_date && (
               <div className="flex items-center gap-1 mt-2 text-xs text-muted-foreground">
                 <Calendar className="w-3 h-3" />
-                {format(parseISO(person.start_date), 'MMM d')}
+                {formatDate(person.start_date, 'MMM d')}
                 {person.end_date && (
-                  <> - {format(parseISO(person.end_date), 'MMM d')}</>
+                  <> - {formatDate(person.end_date, 'MMM d')}</>
                 )}
               </div>
             )}

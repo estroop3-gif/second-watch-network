@@ -2,7 +2,7 @@
  * MileageDetailContent - Read-only mileage entry detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { Car, User, Calendar, DollarSign, MapPin, Route, ArrowRightLeft } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -85,7 +85,7 @@ export default function MileageDetailContent({ projectId, mileageId }: MileageDe
           <p className="text-xs text-muted-gray mb-1">Date</p>
           <p className="text-lg text-bone-white flex items-center gap-2">
             <Calendar className="w-4 h-4" />
-            {format(parseISO(mileage.date), 'MMMM d, yyyy')}
+            {formatDate(mileage.date, 'MMMM d, yyyy')}
           </p>
         </div>
       </div>

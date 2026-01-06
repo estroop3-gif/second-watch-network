@@ -35,7 +35,7 @@ import {
   Mail,
   Building,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { usePersonClearancesDetailed } from '@/hooks/backlot';
 import { BacklotBookedPerson, CLEARANCE_TYPE_LABELS, ClearanceRecipient } from '@/types/backlot';
 import { cn } from '@/lib/utils';
@@ -197,12 +197,12 @@ function ClearanceRow({ clearance, onView, onSend }: ClearanceRowProps) {
                 {recipient.requires_signature && getSignatureStatusBadge(recipient.signature_status)}
                 {recipient.signed_at && (
                   <span className="text-xs text-muted-foreground">
-                    {format(parseISO(recipient.signed_at), 'MMM d, yyyy')}
+                    {formatDate(recipient.signed_at)}
                   </span>
                 )}
                 {recipient.last_email_sent_at && !recipient.signed_at && (
                   <span className="text-xs text-muted-foreground">
-                    Sent {format(parseISO(recipient.last_email_sent_at), 'MMM d')}
+                    Sent {formatDate(recipient.last_email_sent_at, 'MMM d')}
                   </span>
                 )}
               </div>

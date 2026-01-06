@@ -20,7 +20,7 @@ import {
   X,
   RotateCcw,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate, formatDateTime } from '@/lib/dateUtils';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -286,7 +286,7 @@ export default function ClearanceViewPage() {
                   </p>
                   <p className="text-sm text-muted-foreground">
                     {isSigned && recipient.signed_at
-                      ? `Signed on ${format(parseISO(recipient.signed_at), 'PPP')}`
+                      ? `Signed on ${formatDate(recipient.signed_at, 'PPP')}`
                       : needsSignature
                       ? 'Please review and sign below'
                       : 'View the document below'}
@@ -297,7 +297,7 @@ export default function ClearanceViewPage() {
               {clearance.expiration_date && (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Calendar className="h-4 w-4" />
-                  Expires {format(parseISO(clearance.expiration_date), 'PPP')}
+                  Expires {formatDate(clearance.expiration_date, 'PPP')}
                 </div>
               )}
             </div>
@@ -447,7 +447,7 @@ export default function ClearanceViewPage() {
                 This document has been signed successfully.
                 {recipient.signed_at && (
                   <span className="block mt-1">
-                    Signed on {format(parseISO(recipient.signed_at), 'PPP \'at\' p')}
+                    Signed on {formatDateTime(recipient.signed_at, "PPP 'at' p")}
                   </span>
                 )}
               </p>

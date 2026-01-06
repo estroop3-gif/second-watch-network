@@ -2,7 +2,7 @@
  * PurchaseOrderDetailContent - Read-only purchase order detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { formatDate, formatDateTime } from '@/lib/dateUtils';
 import { ShoppingCart, User, Calendar, DollarSign, Building2, Tag, FileText } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -85,7 +85,7 @@ export default function PurchaseOrderDetailContent({ poId }: PurchaseOrderDetail
           <p className="text-xs text-muted-gray mb-1">Request Date</p>
           <p className="text-lg text-bone-white flex items-center gap-2">
             <Calendar className="w-4 h-4" />
-            {format(parseISO(po.created_at), 'MMM d, yyyy')}
+            {formatDate(po.created_at)}
           </p>
         </div>
       </div>
@@ -142,7 +142,7 @@ export default function PurchaseOrderDetailContent({ poId }: PurchaseOrderDetail
         <div className="bg-green-500/5 rounded-lg p-4 border border-green-500/20">
           <h4 className="text-sm font-medium text-green-400 mb-2">Approved</h4>
           <p className="text-sm text-bone-white">
-            By {po.approver_name} on {format(parseISO(po.approved_at), 'MMMM d, yyyy')}
+            By {po.approver_name} on {formatDate(po.approved_at, 'MMMM d, yyyy')}
           </p>
         </div>
       )}
@@ -165,7 +165,7 @@ export default function PurchaseOrderDetailContent({ poId }: PurchaseOrderDetail
           <p className="text-sm text-bone-white whitespace-pre-wrap">{po.denial_reason}</p>
           {po.denied_at && (
             <p className="text-xs text-muted-gray mt-2">
-              Denied on {format(parseISO(po.denied_at), 'MMMM d, yyyy')}
+              Denied on {formatDate(po.denied_at, 'MMMM d, yyyy')}
             </p>
           )}
           <p className="text-xs text-muted-gray mt-1">

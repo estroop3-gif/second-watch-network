@@ -54,7 +54,7 @@ import {
   Trash2,
   Edit2,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import {
   usePurchaseOrders,
@@ -282,7 +282,7 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
                 )}
                 <span className="flex items-center gap-1">
                   <Calendar className="w-3.5 h-3.5" />
-                  {format(parseISO(po.created_at), 'MMM d, yyyy')}
+                  {formatDate(po.created_at)}
                 </span>
               </div>
               {po.notes && (

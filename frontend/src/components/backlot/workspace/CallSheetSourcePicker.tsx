@@ -20,7 +20,7 @@ import {
   Trash2,
   Loader2,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import { BacklotCallSheet } from '@/types/backlot';
 import { BacklotSavedCallSheetTemplate, useCallSheetTemplates } from '@/hooks/backlot';
@@ -159,7 +159,7 @@ export function CallSheetSourcePicker({
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             <Calendar className="w-3 h-3" />
                             <span>
-                              {cs.date ? format(parseISO(cs.date), 'MMM d, yyyy') : 'No date'}
+                              {cs.date ? formatDate(cs.date) : 'No date'}
                             </span>
                             {cs.general_call_time && (
                               <>

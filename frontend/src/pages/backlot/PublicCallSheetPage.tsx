@@ -38,7 +38,7 @@ import {
   Sunset,
 } from 'lucide-react';
 import { usePublicCallSheet } from '@/hooks/backlot';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -205,7 +205,7 @@ const PublicCallSheetPage: React.FC = () => {
 
   // Format date
   const shootDate = call_sheet.shoot_date
-    ? format(parseISO(call_sheet.shoot_date), 'EEEE, MMMM d, yyyy')
+    ? formatDate(call_sheet.shoot_date, 'EEEE, MMMM d, yyyy')
     : 'TBD';
 
   return (

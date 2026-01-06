@@ -86,7 +86,7 @@ import {
   DAILIES_STORAGE_MODE_LABELS,
   DAILIES_RATING_LABELS,
 } from '@/types/backlot';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import ClipDetailView from './ClipDetailView';
 import LocalBrowser from './LocalBrowser';
@@ -502,7 +502,7 @@ const DaySection: React.FC<{
               <span className="font-medium text-bone-white">{day.label}</span>
             </div>
             <span className="text-sm text-muted-gray">
-              {format(parseISO(day.shoot_date), 'MMMM d, yyyy')}
+              {formatDate(day.shoot_date, 'MMMM d, yyyy')}
             </span>
             {day.unit && (
               <Badge variant="outline" className="border-muted-gray/30 text-muted-gray">
@@ -1327,7 +1327,7 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
                             Day {day.day_number}
                           </span>
                           <span className="text-sm text-muted-gray">
-                            {format(parseISO(day.date), 'MMM d, yyyy')}
+                            {formatDate(day.date)}
                           </span>
                           {day.is_completed && (
                             <Badge className="bg-green-500/20 text-green-400 text-xs">

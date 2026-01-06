@@ -88,10 +88,19 @@ def get_user_profile(user_id: str) -> dict:
 
 
 def check_project_access(project_id: str, user_id: str) -> bool:
-    """Check if user has access to project."""
+    """Check if user has access to project (member or owner)."""
+    # Check if user is a project member
     result = execute_single(
         """SELECT 1 FROM backlot_project_members
            WHERE project_id = :project_id AND user_id = :user_id""",
+        {"project_id": project_id, "user_id": user_id}
+    )
+    if result:
+        return True
+    # Also check if they own the project
+    result = execute_single(
+        """SELECT 1 FROM backlot_projects
+           WHERE id = :project_id AND owner_id = :user_id""",
         {"project_id": project_id, "user_id": user_id}
     )
     return result is not None

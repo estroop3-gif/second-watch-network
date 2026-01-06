@@ -2,7 +2,7 @@
  * ReceiptDetailContent - Read-only receipt detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { Receipt, User, Calendar, DollarSign, Building2, FileImage, CreditCard, Tag } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -121,7 +121,7 @@ export default function ReceiptDetailContent({ projectId, receiptId }: ReceiptDe
             <p className="text-xs text-muted-gray mb-1">Purchase Date</p>
             <p className="text-lg text-bone-white flex items-center gap-2">
               <Calendar className="w-4 h-4" />
-              {format(parseISO(receipt.purchase_date), 'MMMM d, yyyy')}
+              {formatDate(receipt.purchase_date, 'MMMM d, yyyy')}
             </p>
           </div>
         )}

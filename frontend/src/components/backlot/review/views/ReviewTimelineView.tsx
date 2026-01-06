@@ -22,7 +22,8 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, isWithinInterval, parseISO, isSameDay } from 'date-fns';
+import { format, startOfWeek, endOfWeek, addWeeks, subWeeks, isWithinInterval, isSameDay } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 // Status configuration
 const STATUS_CONFIG: Record<ReviewAssetStatus, { label: string; color: string; bgColor: string }> = {
@@ -202,7 +203,7 @@ export const ReviewTimelineView: React.FC<ReviewTimelineViewProps> = ({
       const enhanced = asset as ReviewAssetEnhanced;
       // Use due_date if available, otherwise fall back to updated_at
       const dateStr = enhanced.due_date || asset.updated_at;
-      const date = parseISO(dateStr);
+      const date = parseLocalDate(dateStr);
 
       // Only include if within current week
       if (isWithinInterval(date, { start: currentWeekStart, end: weekEnd })) {
@@ -222,7 +223,7 @@ export const ReviewTimelineView: React.FC<ReviewTimelineViewProps> = ({
     return assets.filter((asset) => {
       const enhanced = asset as ReviewAssetEnhanced;
       const dateStr = enhanced.due_date || asset.updated_at;
-      const date = parseISO(dateStr);
+      const date = parseLocalDate(dateStr);
       return !isWithinInterval(date, { start: currentWeekStart, end: weekEnd });
     }).length;
   }, [assets, currentWeekStart, weekEnd]);

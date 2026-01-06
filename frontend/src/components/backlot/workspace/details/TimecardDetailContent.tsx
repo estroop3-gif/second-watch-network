@@ -2,7 +2,7 @@
  * TimecardDetailContent - Read-only timecard detail view for approval dialog
  */
 import React from 'react';
-import { format, parseISO } from 'date-fns';
+import { formatDate, formatTime } from '@/lib/dateUtils';
 import { Clock, User, Calendar, Timer, AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -125,7 +125,7 @@ export default function TimecardDetailContent({ projectId, timecardId }: Timecar
           Week Period
         </h4>
         <p className="text-sm text-bone-white">
-          Week starting {format(parseISO(timecard.week_start_date), 'MMMM d, yyyy')}
+          Week starting {formatDate(timecard.week_start_date, 'MMMM d, yyyy')}
         </p>
       </div>
 
@@ -150,7 +150,7 @@ export default function TimecardDetailContent({ projectId, timecardId }: Timecar
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium text-bone-white">{dayName}</p>
                           <p className="text-xs text-muted-gray">
-                            {format(parseISO(date), 'MMM d')}
+                            {formatDate(date, 'MMM d')}
                           </p>
                           {entry.is_travel_day && (
                             <Badge variant="outline" className="text-xs py-0 px-1 border-blue-500/30 text-blue-400">
@@ -175,10 +175,10 @@ export default function TimecardDetailContent({ projectId, timecardId }: Timecar
                         </div>
                         <div className="flex items-center gap-4 mt-1 text-xs text-muted-gray">
                           {entry.call_time && (
-                            <span>Call: {format(parseISO(entry.call_time), 'h:mm a')}</span>
+                            <span>Call: {formatTime(entry.call_time)}</span>
                           )}
                           {entry.wrap_time && (
-                            <span>Wrap: {format(parseISO(entry.wrap_time), 'h:mm a')}</span>
+                            <span>Wrap: {formatTime(entry.wrap_time)}</span>
                           )}
                           {entry.location_name && (
                             <span>@ {entry.location_name}</span>

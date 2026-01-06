@@ -13,7 +13,7 @@ import {
   AlertCircle,
   Info,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { formatDate } from '@/lib/dateUtils';
 import { BacklotClearanceItem, getClearanceFileType, getClearanceFileTypeLabel } from '@/types/backlot';
 import { useClearanceDocumentVersions } from '@/hooks/backlot/useClearances';
 import { ClearanceDocumentViewer } from './ClearanceDocumentViewer';
@@ -133,7 +133,7 @@ export default function ClearanceDocumentTab({
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-muted-foreground">Uploaded</span>
                       <span className="text-sm text-bone-white">
-                        {format(parseISO(currentVersion.created_at), 'MMM d, yyyy')}
+                        {formatDate(currentVersion.created_at)}
                       </span>
                     </div>
 
