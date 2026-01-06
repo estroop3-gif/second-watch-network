@@ -133,6 +133,10 @@ const ClearanceViewPage = React.lazy(() =>
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 
+// Gear House Pages
+import GearHousePage from "./pages/gear/GearHousePage";
+import GearWorkspacePage from "./pages/gear/GearWorkspacePage";
+
 // Watch/Streaming Pages
 import {
   WatchHome,
@@ -276,6 +280,10 @@ const App = () => (
                     {/* Church Production Tools Routes */}
                     <Route path="/church" element={<ChurchToolsHome />} />
                     <Route path="/church/:tool" element={<ChurchToolPage />} />
+
+                    {/* Gear House Routes */}
+                    <Route path="/gear" element={<GearHousePage />} />
+                    <Route path="/gear/:orgId" element={<GearWorkspacePage />} />
 
                     {/* Green Room Routes */}
                     <Route path="/greenroom" element={<GreenRoom />} />
