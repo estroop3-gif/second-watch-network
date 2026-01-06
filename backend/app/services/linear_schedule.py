@@ -347,11 +347,11 @@ class LinearScheduleService:
 
         channel = await LinearScheduleService.get_channel_by_id(channel_id)
         if not channel:
-            logger.warning("channel_not_found", channel_id=channel_id)
+            logger.warning(f"channel_not_found: channel_id={channel_id}")
             return None
 
         if channel.get('status') != 'live':
-            logger.info("channel_not_live", channel_id=channel_id, status=channel.get('status'))
+            logger.info(f"channel_not_live: channel_id={channel_id}, status={channel.get('status')}")
             return {
                 'channel': channel,
                 'status': 'offline',
@@ -370,7 +370,7 @@ class LinearScheduleService:
             # No schedule, use default block if 24/7
             if channel.get('is_24_7') and channel.get('default_block_id'):
                 # This shouldn't happen if _generate_24_7_schedule works correctly
-                logger.warning("empty_schedule_for_24_7_channel", channel_id=channel_id)
+                logger.warning(f"empty_schedule_for_24_7_channel: channel_id={channel_id}")
 
             return {
                 'channel': channel,
@@ -624,7 +624,7 @@ class LinearScheduleService:
 
         video_asset_id = item.get('video_asset_id')
         if not video_asset_id:
-            logger.warning("no_video_asset_for_item", item_id=item['id'], item_type=item['item_type'])
+            logger.warning(f"no_video_asset_for_item: item_id={item['id']}, item_type={item['item_type']}")
             return None
 
         # Fetch the HLS manifest for this video asset
@@ -643,7 +643,7 @@ class LinearScheduleService:
         """, {"video_asset_id": video_asset_id})
 
         if not manifest:
-            logger.warning("no_hls_manifest_for_asset", video_asset_id=video_asset_id)
+            logger.warning(f"no_hls_manifest_for_asset: video_asset_id={video_asset_id}")
             return None
 
         manifest = dict(manifest)
@@ -871,7 +871,7 @@ class LinearScheduleService:
         """, {"session_id": session_id})
 
         if not session_info:
-            logger.warning("linear_session_not_found", session_id=session_id)
+            logger.warning(f"linear_session_not_found: session_id={session_id}")
             return
 
         channel_id = session_info.get('channel_id')
