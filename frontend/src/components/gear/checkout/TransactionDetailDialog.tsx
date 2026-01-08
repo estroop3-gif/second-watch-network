@@ -67,6 +67,11 @@ const STATUS_CONFIG: Record<TransactionStatus, { label: string; color: string; i
     color: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
     icon: <ArrowRightLeft className="w-3 h-3" />,
   },
+  checked_out: {
+    label: 'Checked Out',
+    color: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+    icon: <ArrowRightLeft className="w-3 h-3" />,
+  },
   completed: {
     label: 'Completed',
     color: 'bg-green-500/20 text-green-400 border-green-500/30',
@@ -109,10 +114,10 @@ export function TransactionDetailDialog({
   const { transaction, isLoading } = useGearTransaction(isOpen ? transactionId : null);
   const [isPrinting, setIsPrinting] = useState(false);
 
-  // Determine if check-in is available
+  // Determine if check-in is available (gear is out and can be returned)
   const canStartCheckin = transaction &&
     onStartCheckin &&
-    transaction.status === 'completed' &&
+    transaction.status === 'checked_out' &&
     !transaction.returned_at &&
     (transaction.transaction_type === 'internal_checkout' ||
      transaction.transaction_type === 'rental_pickup');

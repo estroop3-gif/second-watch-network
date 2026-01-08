@@ -396,7 +396,7 @@ async def list_overdue(
         WHERE t.organization_id = :org_id
           AND t.expected_return_at < NOW()
           AND t.returned_at IS NULL
-          AND t.status != 'completed'
+          AND t.status IN ('pending', 'in_progress', 'checked_out')
         ORDER BY t.expected_return_at ASC
         """,
         {"org_id": org_id}
@@ -442,7 +442,7 @@ async def list_outgoing_transactions(
         LEFT JOIN profiles p ON p.id = t.primary_custodian_user_id
         LEFT JOIN gear_rental_orders ro ON ro.id = t.rental_order_id
         WHERE t.organization_id = :org_id
-          AND t.status IN ('in_progress', 'pending')
+          AND t.status IN ('in_progress', 'pending', 'checked_out')
           AND t.transaction_type IN ('internal_checkout', 'rental_pickup')
           AND t.returned_at IS NULL
         ORDER BY t.created_at DESC
@@ -458,7 +458,7 @@ async def list_outgoing_transactions(
         SELECT COUNT(*) as total
         FROM gear_transactions t
         WHERE t.organization_id = :org_id
-          AND t.status IN ('in_progress', 'pending')
+          AND t.status IN ('in_progress', 'pending', 'checked_out')
           AND t.transaction_type IN ('internal_checkout', 'rental_pickup')
           AND t.returned_at IS NULL
         """,
@@ -505,7 +505,7 @@ async def list_incoming_transactions(
         LEFT JOIN backlot_projects bp ON bp.id = t.backlot_project_id
         WHERE t.renter_org_id = :org_id
           AND t.is_marketplace_rental = TRUE
-          AND t.status IN ('in_progress', 'pending')
+          AND t.status IN ('in_progress', 'pending', 'checked_out')
           AND t.returned_at IS NULL
         ORDER BY t.created_at DESC
         LIMIT :limit OFFSET :offset
@@ -521,7 +521,7 @@ async def list_incoming_transactions(
         FROM gear_transactions t
         WHERE t.renter_org_id = :org_id
           AND t.is_marketplace_rental = TRUE
-          AND t.status IN ('in_progress', 'pending')
+          AND t.status IN ('in_progress', 'pending', 'checked_out')
           AND t.returned_at IS NULL
         """,
         {"org_id": org_id}
@@ -702,9 +702,7 @@ async def list_history(
             ro.rental_end_date,
             ro.total_amount as rental_total,
             bp.title as project_name,
-            (SELECT COUNT(*) FROM gear_transaction_items WHERE transaction_id = t.id) as item_count,
-            t.late_days,
-            t.late_fee_amount
+            (SELECT COUNT(*) FROM gear_transaction_items WHERE transaction_id = t.id) as item_count
         FROM gear_transactions t
         LEFT JOIN organizations renter_org ON renter_org.id = t.renter_org_id
         LEFT JOIN organizations rental_house_org ON rental_house_org.id = t.rental_house_org_id
@@ -712,7 +710,7 @@ async def list_history(
         LEFT JOIN gear_rental_orders ro ON ro.id = t.rental_order_id
         LEFT JOIN backlot_projects bp ON bp.id = t.backlot_project_id
         WHERE {where_clause}
-        ORDER BY t.completed_at DESC NULLS LAST, t.returned_at DESC NULLS LAST
+        ORDER BY t.returned_at DESC NULLS LAST, t.updated_at DESC NULLS LAST
         LIMIT :limit OFFSET :offset
         """,
         params

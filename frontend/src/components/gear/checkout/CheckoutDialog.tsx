@@ -61,6 +61,9 @@ export interface SelectedItem {
   dailyRate?: number;
   weeklyRate?: number;
   monthlyRate?: number;
+  // Kit tracking - if this item was added as part of a kit
+  fromKitId?: string;
+  fromKitName?: string;
 }
 
 export interface ItemPricing {

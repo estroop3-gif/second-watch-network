@@ -1,9 +1,9 @@
 /**
  * Damage Report Modal
- * Capture damage tier, description, and photos
+ * Capture damage tier, description, and photos with S3 upload
  */
-import React, { useState } from 'react';
-import { AlertTriangle, Camera, Upload, X } from 'lucide-react';
+import React, { useState, useCallback } from 'react';
+import { AlertTriangle, Camera, X, Loader2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { cn } from '@/lib/utils';
 
+import { useUploadIncidentPhoto } from '@/hooks/gear/useGearCheckin';
 import type { CheckinDamageTier } from '@/types/gear';
 
 const DAMAGE_TIERS: {
@@ -30,95 +31,125 @@ const DAMAGE_TIERS: {
     value: 'cosmetic',
     label: 'Cosmetic',
     description: 'Scratches, scuffs, or visual issues. Item still functions normally.',
-    color: 'border-yellow-500 bg-yellow-500/10',
+    color: 'border-accent-yellow/50 bg-accent-yellow/10',
   },
   {
     value: 'functional',
     label: 'Functional',
     description: 'Item has reduced functionality or intermittent issues.',
-    color: 'border-orange-500 bg-orange-500/10',
+    color: 'border-orange-500/50 bg-orange-500/10',
   },
   {
     value: 'unsafe',
     label: 'Unsafe / Non-functional',
     description: 'Item is dangerous to use or completely non-functional.',
-    color: 'border-red-500 bg-red-500/10',
+    color: 'border-red-500/50 bg-red-500/10',
   },
 ];
+
+interface UploadedPhoto {
+  s3_key: string;
+  url: string;
+  filename: string;
+}
 
 interface DamageReportModalProps {
   isOpen: boolean;
   onClose: () => void;
+  orgId: string;
   assetId: string;
   assetName: string;
-  onSubmit: (tier: CheckinDamageTier, description: string, photos: string[]) => void;
+  onSubmit: (tier: CheckinDamageTier, description: string, photoKeys: string[]) => void;
 }
 
 export function DamageReportModal({
   isOpen,
   onClose,
+  orgId,
   assetId,
   assetName,
   onSubmit,
 }: DamageReportModalProps) {
   const [tier, setTier] = useState<CheckinDamageTier | ''>('');
   const [description, setDescription] = useState('');
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const { uploadPhoto } = useUploadIncidentPhoto(orgId);
 
   const handleSubmit = () => {
-    if (!tier || !description.trim()) return;
-    onSubmit(tier, description.trim(), photos);
+    if (!tier || !description.trim() || uploadedPhotos.length === 0) return;
+    const photoKeys = uploadedPhotos.map((p) => p.s3_key);
+    onSubmit(tier, description.trim(), photoKeys);
     handleClose();
   };
 
   const handleClose = () => {
     setTier('');
     setDescription('');
-    setPhotos([]);
+    setUploadedPhotos([]);
     onClose();
   };
 
-  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files) return;
+  const handlePhotoUpload = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
 
-    // For now, just convert to base64 - in production, upload to S3
-    for (const file of Array.from(files)) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64 = reader.result as string;
-        setPhotos((prev) => [...prev, base64]);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+      setIsUploading(true);
+
+      try {
+        for (const file of Array.from(files)) {
+          // Upload to S3
+          const result = await uploadPhoto({ assetId, file });
+          setUploadedPhotos((prev) => [
+            ...prev,
+            {
+              s3_key: result.s3_key,
+              url: result.url,
+              filename: result.filename,
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error('Photo upload failed:', error);
+      } finally {
+        setIsUploading(false);
+        // Reset input so same file can be selected again
+        e.target.value = '';
+      }
+    },
+    [assetId, uploadPhoto]
+  );
 
   const removePhoto = (index: number) => {
-    setPhotos((prev) => prev.filter((_, i) => i !== index));
+    setUploadedPhotos((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const canSubmit = tier && description.trim().length > 0;
+  // Photos are REQUIRED for damage reports
+  const canSubmit =
+    tier && description.trim().length > 0 && uploadedPhotos.length > 0 && !isUploading;
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5 text-destructive" />
+          <DialogTitle className="flex items-center gap-2 text-bone-white">
+            <AlertTriangle className="h-5 w-5 text-red-500" />
             Report Damage
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">
           {/* Asset Info */}
-          <div className="bg-muted/50 rounded-lg p-3">
-            <p className="text-sm text-muted-foreground">Asset</p>
-            <p className="font-medium">{assetName}</p>
+          <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3">
+            <p className="text-sm text-muted-gray">Asset</p>
+            <p className="font-medium text-bone-white">{assetName}</p>
           </div>
 
           {/* Damage Tier Selection */}
           <div className="space-y-2">
-            <Label>Damage Severity *</Label>
+            <Label className="text-bone-white">Damage Severity *</Label>
             <RadioGroup
               value={tier}
               onValueChange={(v) => setTier(v as CheckinDamageTier)}
@@ -129,13 +160,15 @@ export function DamageReportModal({
                   key={t.value}
                   className={cn(
                     'flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-                    tier === t.value ? t.color : 'hover:bg-muted/50'
+                    tier === t.value
+                      ? t.color
+                      : 'border-muted-gray/30 hover:border-muted-gray/50 bg-charcoal-black/30'
                   )}
                 >
                   <RadioGroupItem value={t.value} className="mt-1" />
                   <div>
-                    <p className="font-medium">{t.label}</p>
-                    <p className="text-sm text-muted-foreground">{t.description}</p>
+                    <p className="font-medium text-bone-white">{t.label}</p>
+                    <p className="text-sm text-muted-gray">{t.description}</p>
                   </div>
                 </label>
               ))}
@@ -144,29 +177,32 @@ export function DamageReportModal({
 
           {/* Description */}
           <div className="space-y-2">
-            <Label>Description *</Label>
+            <Label className="text-bone-white">Description *</Label>
             <Textarea
               placeholder="Describe the damage in detail..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
+              className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray/50"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-muted-gray">
               Be specific about what is damaged and how it affects the item.
             </p>
           </div>
 
-          {/* Photo Upload */}
+          {/* Photo Upload - REQUIRED */}
           <div className="space-y-2">
-            <Label>Photos</Label>
+            <Label className="text-bone-white">
+              Photos * <span className="text-muted-gray font-normal">(at least 1 required)</span>
+            </Label>
             <div className="flex flex-wrap gap-2">
-              {photos.map((photo, idx) => (
+              {uploadedPhotos.map((photo, idx) => (
                 <div
-                  key={idx}
-                  className="relative w-20 h-20 rounded overflow-hidden border"
+                  key={photo.s3_key}
+                  className="relative w-20 h-20 rounded overflow-hidden border border-muted-gray/30"
                 >
                   <img
-                    src={photo}
+                    src={photo.url}
                     alt={`Damage photo ${idx + 1}`}
                     className="w-full h-full object-cover"
                   />
@@ -180,33 +216,49 @@ export function DamageReportModal({
                 </div>
               ))}
 
-              <label className="w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed rounded cursor-pointer hover:border-primary hover:bg-muted/50 transition-colors">
-                <Camera className="h-5 w-5 text-muted-foreground" />
-                <span className="text-xs text-muted-foreground mt-1">Add</span>
+              <label
+                className={cn(
+                  'w-20 h-20 flex flex-col items-center justify-center border-2 border-dashed rounded cursor-pointer transition-colors',
+                  isUploading
+                    ? 'border-muted-gray/30 bg-muted-gray/10 cursor-wait'
+                    : 'border-muted-gray/30 hover:border-accent-yellow/50 hover:bg-charcoal-black/50'
+                )}
+              >
+                {isUploading ? (
+                  <Loader2 className="h-5 w-5 text-muted-gray animate-spin" />
+                ) : (
+                  <>
+                    <Camera className="h-5 w-5 text-muted-gray" />
+                    <span className="text-xs text-muted-gray mt-1">Add</span>
+                  </>
+                )}
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/jpeg,image/png,image/webp,image/heic"
                   multiple
                   onChange={handlePhotoUpload}
+                  disabled={isUploading}
                   className="hidden"
                 />
               </label>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Add photos to document the damage (recommended)
-            </p>
+            {uploadedPhotos.length === 0 && (
+              <p className="text-xs text-red-400">
+                At least one photo is required to document the damage
+              </p>
+            )}
           </div>
 
           {/* Action Info */}
           {tier && (
-            <div className="bg-muted/50 rounded-lg p-3 text-sm">
-              <p className="font-medium mb-1">What happens next:</p>
+            <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 text-sm">
+              <p className="font-medium text-bone-white mb-1">What happens next:</p>
               {tier === 'cosmetic' ? (
-                <p className="text-muted-foreground">
+                <p className="text-muted-gray">
                   An incident will be logged. The item will remain available for checkout.
                 </p>
               ) : (
-                <p className="text-muted-foreground">
+                <p className="text-muted-gray">
                   An incident and repair ticket will be created. The item will be marked for
                   repair and unavailable for checkout until fixed.
                 </p>
@@ -215,13 +267,30 @@ export function DamageReportModal({
           )}
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button variant="outline" onClick={handleClose}>
+        <DialogFooter className="gap-2 sm:gap-0 border-t border-muted-gray/20 pt-4">
+          <Button
+            variant="outline"
+            onClick={handleClose}
+            className="border-muted-gray/30 text-muted-gray hover:text-bone-white"
+          >
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={!canSubmit} variant="destructive">
-            <AlertTriangle className="h-4 w-4 mr-2" />
-            Report Damage
+          <Button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="bg-red-600 hover:bg-red-700 text-white"
+          >
+            {isUploading ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Uploading...
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="h-4 w-4 mr-2" />
+                Report Damage
+              </>
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

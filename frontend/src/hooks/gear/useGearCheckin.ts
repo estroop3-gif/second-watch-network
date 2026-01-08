@@ -150,6 +150,78 @@ export function useScanToCheckin(orgId: string | null) {
 }
 
 // ============================================================================
+// PHOTO UPLOAD HOOKS
+// ============================================================================
+
+export interface IncidentPhotoUploadResult {
+  s3_key: string;
+  url: string;
+  filename: string;
+  size: number;
+  content_type: string;
+}
+
+/**
+ * Upload a photo for an incident/damage report
+ * Returns the S3 key to include in the incident creation
+ */
+export function useUploadIncidentPhoto(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  const mutation = useMutation({
+    mutationFn: async ({
+      assetId,
+      file,
+    }: {
+      assetId: string;
+      file: File;
+    }): Promise<IncidentPhotoUploadResult> => {
+      if (!token || !orgId) {
+        throw new Error('Not authenticated or missing organization');
+      }
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('asset_id', assetId);
+
+      const fullUrl = `${API_BASE}/api/v1/gear/incidents/${orgId}/upload-photo`;
+      console.log(`[Gear Checkin API] POST ${fullUrl} (photo upload)`);
+
+      const response = await fetch(fullUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // Note: Don't set Content-Type - browser will set it with boundary for FormData
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorDetail = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorDetail = errorJson.detail || errorJson.message || errorDetail;
+        } catch {
+          if (errorText) errorDetail += ` - ${errorText}`;
+        }
+        throw new Error(errorDetail);
+      }
+
+      return response.json();
+    },
+  });
+
+  return {
+    uploadPhoto: mutation.mutateAsync,
+    isUploading: mutation.isPending,
+    error: mutation.error,
+    reset: mutation.reset,
+  };
+}
+
+// ============================================================================
 // DAMAGE REPORTING HOOKS
 // ============================================================================
 

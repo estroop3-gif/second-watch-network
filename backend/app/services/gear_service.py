@@ -959,7 +959,7 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
     execute_update(
         """
         UPDATE gear_transactions
-        SET handed_off_at = NOW(), status = 'completed'
+        SET handed_off_at = NOW(), status = 'checked_out'
         WHERE id = :tx_id
         """,
         {"tx_id": transaction_id}
@@ -1133,19 +1133,34 @@ def create_incident(
     reported_by: str,
     **kwargs
 ) -> Dict[str, Any]:
-    """Create an incident."""
+    """
+    Create an incident.
+
+    Args:
+        org_id: Organization ID
+        incident_type: Type of incident (damage, missing_item, late_return, etc.)
+        reported_by: User ID who reported the incident
+        **kwargs: Additional fields including:
+            - asset_id: Asset involved
+            - transaction_id: Related transaction
+            - damage_tier: For damage incidents (cosmetic, functional, unsafe, out_of_service)
+            - damage_description: Description of damage
+            - photos: List of S3 keys for photos
+            - responsible_party_user_id: The renter/custodian responsible for the item
+            - notes: Additional notes
+    """
     incident = execute_insert(
         """
         INSERT INTO gear_incidents (
             organization_id, incident_type, transaction_id, condition_report_id,
             asset_id, kit_instance_id, damage_tier, damage_description,
             last_seen_transaction_id, last_custodian_user_id, last_seen_at,
-            reported_by_user_id, photos, notes
+            reported_by_user_id, responsible_party_user_id, photos, notes
         ) VALUES (
             :org_id, :type, :tx_id, :report_id,
             :asset_id, :kit_id, :damage_tier, :damage_desc,
             :last_tx_id, :last_custodian, :last_seen,
-            :reported_by, :photos, :notes
+            :reported_by, :responsible_party, :photos, :notes
         )
         RETURNING *
         """,
@@ -1162,6 +1177,7 @@ def create_incident(
             "last_custodian": kwargs.get("last_custodian_user_id"),
             "last_seen": kwargs.get("last_seen_at"),
             "reported_by": reported_by,
+            "responsible_party": kwargs.get("responsible_party_user_id"),
             "photos": json.dumps(kwargs.get("photos", [])),
             "notes": kwargs.get("notes")
         }
@@ -2364,13 +2380,18 @@ def process_damage_on_checkin(
     description: str,
     photos: List[str],
     reported_by: str,
-    transaction_id: str
+    transaction_id: str,
+    responsible_party_user_id: str = None
 ) -> Dict[str, Any]:
     """
     Process damage found during check-in.
     - Creates incident
     - Creates repair ticket for functional/unsafe
     - Updates asset status based on tier
+
+    Args:
+        responsible_party_user_id: The custodian/renter responsible for the damage
+
     Returns: {incident, repair_ticket, asset_status}
     """
     result = {
@@ -2413,11 +2434,11 @@ def process_damage_on_checkin(
         """
         INSERT INTO gear_incidents (
             organization_id, asset_id, transaction_id, incident_type,
-            reported_by_user_id, status, description, severity,
+            reported_by_user_id, responsible_party_user_id, status, description, severity,
             damage_tier, photos
         ) VALUES (
             :org_id, :asset_id, :tx_id, 'damage',
-            :reported_by, 'open', :description, :severity,
+            :reported_by, :responsible_party, 'open', :description, :severity,
             :damage_tier, :photos
         )
         RETURNING *
@@ -2427,6 +2448,7 @@ def process_damage_on_checkin(
             "asset_id": asset_id,
             "tx_id": transaction_id,
             "reported_by": reported_by,
+            "responsible_party": responsible_party_user_id,
             "description": description,
             "severity": severity,
             "damage_tier": damage_tier,
@@ -2494,17 +2516,24 @@ def complete_checkin_with_condition(
 ) -> Dict[str, Any]:
     """
     Complete check-in with condition assessment for each item.
-    Handles partial returns, late fees, and damage routing.
+    Handles partial returns, late fees, damage reporting, and missing item incidents.
 
     Args:
         items_to_return: List of asset_ids being returned
-        condition_reports: List of {asset_id, condition_grade, damage_tier?, damage_description?, photos?}
+        condition_reports: List of {asset_id, condition_grade, damage_tier?, damage_description?, damage_photo_keys?}
         location_id: Override return location (defaults to asset home location)
         notes: Check-in notes
+
+    Returns:
+        Dict with transaction, items_returned, items_not_returned, late_fee, late_incident,
+        damage_reports, incidents_created, repairs_created, partial_return
     """
     tx = get_transaction_for_checkin(org_id, transaction_id)
     if not tx:
         return {"error": "Transaction not found"}
+
+    # Get custodian for responsibility tracking
+    custodian_user_id = tx.get("primary_custodian_user_id")
 
     result = {
         "transaction": None,
@@ -2513,6 +2542,8 @@ def complete_checkin_with_condition(
         "late_fee": None,
         "late_incident": None,
         "damage_reports": [],
+        "incidents_created": [],
+        "repairs_created": [],
         "partial_return": False
     }
 
@@ -2556,20 +2587,29 @@ def complete_checkin_with_condition(
 
         # Process damage if reported
         if condition.get("damage_tier"):
+            # Support both 'damage_photo_keys' (new) and 'photos' (legacy) field names
+            photos = condition.get("damage_photo_keys") or condition.get("photos", [])
             damage_result = process_damage_on_checkin(
                 org_id=org_id,
                 asset_id=asset_id,
                 damage_tier=condition["damage_tier"],
                 description=condition.get("damage_description", ""),
-                photos=condition.get("photos", []),
+                photos=photos,
                 reported_by=user_id,
-                transaction_id=transaction_id
+                transaction_id=transaction_id,
+                responsible_party_user_id=custodian_user_id
             )
             result["damage_reports"].append({
                 "asset_id": asset_id,
                 **damage_result
             })
             new_status = damage_result["asset_status"]
+
+            # Track created incidents/repairs
+            if damage_result.get("incident"):
+                result["incidents_created"].append(damage_result["incident"]["id"])
+            if damage_result.get("repair_ticket"):
+                result["repairs_created"].append(damage_result["repair_ticket"]["id"])
         else:
             new_status = "available"
 
@@ -2605,6 +2645,42 @@ def complete_checkin_with_condition(
             )
 
         result["items_returned"].append(asset_id)
+
+    # Create missing_item incidents for items not returned
+    if is_partial and result["items_not_returned"]:
+        # Get asset names for missing items
+        missing_items_info = tx.get("items_pending_return", [])
+        for missing_asset_id in result["items_not_returned"]:
+            # Find the asset info from the transaction items
+            asset_info = next(
+                (i for i in missing_items_info if i.get("asset_id") == missing_asset_id),
+                {}
+            )
+            asset_name = asset_info.get("asset_name", "Unknown Asset")
+
+            # Create missing_item incident
+            missing_incident = create_incident(
+                org_id,
+                "missing_item",
+                user_id,
+                asset_id=missing_asset_id,
+                transaction_id=transaction_id,
+                responsible_party_user_id=custodian_user_id,
+                damage_description=f"Item '{asset_name}' not returned during check-in",
+                notes=f"Item was part of transaction {transaction_id} but was not checked in"
+            )
+            if missing_incident:
+                result["incidents_created"].append(missing_incident["id"])
+
+                # Update asset status to reflect it's missing
+                execute_update(
+                    """
+                    UPDATE gear_assets
+                    SET status = 'lost', updated_at = NOW()
+                    WHERE id = :asset_id
+                    """,
+                    {"asset_id": missing_asset_id}
+                )
 
     # Update transaction
     update_fields = {

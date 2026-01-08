@@ -2,7 +2,7 @@
  * Items Section
  * Barcode scanner + browse functionality for checkout
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   Barcode,
   Package,
@@ -23,9 +23,67 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 
-import { useGearAssets, useGearKitInstances, useGearScanLookup } from '@/hooks/gear';
+import { useGearAssets, useGearKitInstances, useGearKitInstance, useGearScanLookup } from '@/hooks/gear';
 import type { GearAsset, GearKitInstance } from '@/types/gear';
 import type { SelectedItem } from './CheckoutDialog';
+
+// Component to browse and select a kit - fetches full data on click
+function KitBrowseCard({
+  kit,
+  onSelect,
+  orgId,
+}: {
+  kit: GearKitInstance;
+  onSelect: (kit: GearKitInstance) => void;
+  orgId: string;
+}) {
+  const [selectedKitId, setSelectedKitId] = useState<string | null>(null);
+  const { kit: fullKit, isLoading } = useGearKitInstance(selectedKitId);
+
+  // When full kit loads, call onSelect
+  useEffect(() => {
+    if (fullKit && selectedKitId) {
+      onSelect(fullKit);
+      setSelectedKitId(null);
+    }
+  }, [fullKit, selectedKitId, onSelect]);
+
+  const handleClick = () => {
+    setSelectedKitId(kit.id);
+  };
+
+  // Use asset_count from list response, fallback to contents length
+  const itemCount = (kit as any).asset_count ?? kit.contents?.length ?? 0;
+
+  return (
+    <Card
+      className={cn(
+        'bg-charcoal-black/30 border-muted-gray/30 transition-colors',
+        isLoading ? 'opacity-50 cursor-wait' : 'cursor-pointer hover:border-accent-yellow/50'
+      )}
+      onClick={isLoading ? undefined : handleClick}
+    >
+      <CardContent className="p-3">
+        <div className="flex items-center gap-3">
+          {isLoading ? (
+            <Loader2 className="w-5 h-5 text-purple-400 flex-shrink-0 animate-spin" />
+          ) : (
+            <Layers className="w-5 h-5 text-purple-400 flex-shrink-0" />
+          )}
+          <div className="flex-1 min-w-0">
+            <p className="font-medium truncate">{kit.name}</p>
+            <p className="text-xs text-muted-gray">
+              {itemCount} {itemCount === 1 ? 'item' : 'items'}
+            </p>
+          </div>
+          <Badge variant="outline" className="text-xs flex-shrink-0">
+            Add All
+          </Badge>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 interface ItemsSectionProps {
   orgId: string;
@@ -132,7 +190,7 @@ export function ItemsSection({
     });
   };
 
-  // Add kit (adds all kit contents)
+  // Add kit (adds all kit contents with kit tracking)
   const handleAddKit = (kit: GearKitInstance) => {
     const kitContents = kit.contents || [];
     kitContents.forEach((content) => {
@@ -143,6 +201,8 @@ export function ItemsSection({
           name: content.asset_name || 'Unknown',
           internalId: content.asset_internal_id || '',
           status: 'available',
+          fromKitId: kit.id,
+          fromKitName: kit.name,
         });
       }
     });
@@ -298,26 +358,12 @@ export function ItemsSection({
             ) : (
               <div className="p-2 space-y-2">
                 {kits.map((kit) => (
-                  <Card
+                  <KitBrowseCard
                     key={kit.id}
-                    className="bg-charcoal-black/30 border-muted-gray/30 cursor-pointer hover:border-accent-yellow/50 transition-colors"
-                    onClick={() => handleAddKit(kit)}
-                  >
-                    <CardContent className="p-3">
-                      <div className="flex items-center gap-3">
-                        <Layers className="w-5 h-5 text-purple-400 flex-shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{kit.name}</p>
-                          <p className="text-xs text-muted-gray">
-                            {kit.contents?.length || 0} items
-                          </p>
-                        </div>
-                        <Badge variant="outline" className="text-xs flex-shrink-0">
-                          Add All
-                        </Badge>
-                      </div>
-                    </CardContent>
-                  </Card>
+                    kit={kit}
+                    onSelect={handleAddKit}
+                    orgId={orgId}
+                  />
                 ))}
               </div>
             )}
@@ -340,6 +386,11 @@ export function ItemsSection({
               >
                 <Package className="w-3 h-3 mr-1" />
                 <span className="truncate max-w-[150px]">{item.name}</span>
+                {item.fromKitName && (
+                  <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-purple-500/20 text-purple-400 rounded">
+                    {item.fromKitName}
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={() => onRemoveItem(item.id)}

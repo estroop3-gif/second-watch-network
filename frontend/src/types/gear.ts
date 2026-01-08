@@ -38,7 +38,7 @@ export type TransactionType =
   | 'inventory_adjustment'
   | 'initial_intake';
 
-export type TransactionStatus = 'draft' | 'pending' | 'in_progress' | 'completed' | 'cancelled';
+export type TransactionStatus = 'draft' | 'pending' | 'in_progress' | 'checked_out' | 'completed' | 'cancelled';
 
 export type IncidentType =
   | 'damage'
@@ -1149,7 +1149,7 @@ export interface CheckinConditionReport {
   has_damage: boolean;
   damage_tier?: CheckinDamageTier;
   damage_description?: string;
-  damage_photos?: string[];
+  damage_photo_keys?: string[];  // S3 keys for damage photos
   notes?: string;
 }
 

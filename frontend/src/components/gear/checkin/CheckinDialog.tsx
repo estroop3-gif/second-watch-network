@@ -112,15 +112,11 @@ export function CheckinDialog({
     }
   }, [isOpen, transactionId, startCheckin]);
 
-  // Initialize selected items from transaction
+  // Initialize with empty selection - user must manually check items to return
   useEffect(() => {
     if (checkinData?.transaction?.items) {
-      const assetIds = new Set(
-        checkinData.transaction.items
-          .filter((item) => item.asset_id)
-          .map((item) => item.asset_id!)
-      );
-      setSelectedItems(assetIds);
+      // Start with all items unchecked - user selects what they're returning
+      setSelectedItems(new Set());
     }
   }, [checkinData]);
 
@@ -148,7 +144,7 @@ export function CheckinDialog({
           has_damage: existing?.has_damage ?? false,
           damage_tier: existing?.damage_tier,
           damage_description: existing?.damage_description,
-          damage_photos: existing?.damage_photos,
+          damage_photo_keys: existing?.damage_photo_keys,
           notes,
         });
         return next;
@@ -158,7 +154,7 @@ export function CheckinDialog({
   );
 
   const handleDamageReport = useCallback(
-    (assetId: string, tier: CheckinDamageTier, description: string, photos: string[]) => {
+    (assetId: string, tier: CheckinDamageTier, description: string, photoKeys: string[]) => {
       setConditionReports((prev) => {
         const next = new Map(prev);
         const existing = next.get(assetId);
@@ -168,7 +164,7 @@ export function CheckinDialog({
           has_damage: true,
           damage_tier: tier,
           damage_description: description,
-          damage_photos: photos,
+          damage_photo_keys: photoKeys,
           notes: existing?.notes,
         });
         return next;
@@ -241,10 +237,10 @@ export function CheckinDialog({
   if (isStarting) {
     return (
       <Dialog open={isOpen} onOpenChange={handleClose}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-2xl bg-charcoal-black border-muted-gray/30">
           <div className="flex flex-col items-center justify-center py-12">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-4" />
-            <p className="text-muted-foreground">Loading check-in details...</p>
+            <Loader2 className="h-8 w-8 animate-spin text-muted-gray mb-4" />
+            <p className="text-muted-gray">Loading check-in details...</p>
           </div>
         </DialogContent>
       </Dialog>
@@ -261,26 +257,26 @@ export function CheckinDialog({
 
     return (
       <Dialog open={isOpen} onOpenChange={handleClose}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md bg-charcoal-black border-muted-gray/30">
           <div className="flex flex-col items-center justify-center py-8">
-            <AlertCircle className="h-12 w-12 text-destructive mb-4" />
-            <p className="text-lg font-medium mb-2">Unable to start check-in</p>
-            <p className="text-sm text-muted-foreground text-center mb-4">
+            <AlertCircle className="h-12 w-12 text-red-500 mb-4" />
+            <p className="text-lg font-medium text-bone-white mb-2">Unable to start check-in</p>
+            <p className="text-sm text-muted-gray text-center mb-4">
               {cleanMessage}
             </p>
             {hasDetails && (
               <details className="w-full mb-4">
-                <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                <summary className="text-xs text-muted-gray cursor-pointer hover:text-bone-white">
                   Show technical details
                 </summary>
-                <div className="mt-2 max-h-40 overflow-y-auto bg-muted/50 rounded p-2">
-                  <pre className="text-xs text-muted-foreground whitespace-pre-wrap break-all">
+                <div className="mt-2 max-h-40 overflow-y-auto bg-charcoal-black/50 rounded p-2 border border-muted-gray/20">
+                  <pre className="text-xs text-muted-gray whitespace-pre-wrap break-all">
                     {rawMessage}
                   </pre>
                 </div>
               </details>
             )}
-            <Button variant="outline" onClick={handleClose}>
+            <Button variant="outline" onClick={handleClose} className="border-muted-gray/30">
               Close
             </Button>
           </div>
@@ -292,25 +288,25 @@ export function CheckinDialog({
   return (
     <>
       <Dialog open={isOpen && !showReceipt} onOpenChange={handleClose}>
-        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto bg-charcoal-black border-muted-gray/30">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Package className="h-5 w-5" />
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <Package className="h-5 w-5 text-accent-yellow" />
               Check-in Items
             </DialogTitle>
           </DialogHeader>
 
           {/* Late Warning Banner */}
           {lateInfo?.is_late && (
-            <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
+            <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3">
               <div className="flex items-start gap-3">
-                <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+                <AlertTriangle className="h-5 w-5 text-orange-400 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-destructive">
+                  <p className="font-medium text-orange-400">
                     Return is {lateInfo.late_days} day{lateInfo.late_days !== 1 ? 's' : ''} late
                   </p>
                   {lateInfo.late_fee_amount > 0 && (
-                    <p className="text-sm text-muted-foreground">
+                    <p className="text-sm text-muted-gray">
                       Late fee: ${lateInfo.late_fee_amount.toFixed(2)}
                     </p>
                   )}
@@ -327,16 +323,16 @@ export function CheckinDialog({
             className="space-y-2"
           >
             {/* Items Section */}
-            <AccordionItem value="items" className="border rounded-lg">
-              <AccordionTrigger className="px-4 hover:no-underline">
+            <AccordionItem value="items" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
+              <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
                 <div className="flex items-center gap-2">
-                  <Package className="h-4 w-4" />
+                  <Package className="h-4 w-4 text-accent-yellow" />
                   <span>Items to Return</span>
-                  <Badge variant="secondary" className="ml-2">
+                  <Badge variant="secondary" className="ml-2 bg-muted-gray/20 text-bone-white">
                     {returningItems}/{totalItems}
                   </Badge>
                   {isPartialReturn && (
-                    <Badge variant="outline" className="border-yellow-500 text-yellow-600">
+                    <Badge variant="outline" className="border-accent-yellow/50 text-accent-yellow">
                       Partial
                     </Badge>
                   )}
@@ -348,23 +344,29 @@ export function CheckinDialog({
                     item.asset_id ? (
                       <div
                         key={item.id}
-                        className="flex items-center gap-3 p-2 rounded border"
+                        className={cn(
+                          "flex items-center gap-3 p-3 rounded-lg border transition-colors",
+                          selectedItems.has(item.asset_id)
+                            ? "bg-green-500/10 border-green-500/30"
+                            : "bg-charcoal-black/30 border-muted-gray/20 hover:border-muted-gray/40"
+                        )}
                       >
                         <Checkbox
                           checked={selectedItems.has(item.asset_id)}
                           onCheckedChange={(checked) =>
                             handleItemToggle(item.asset_id!, !!checked)
                           }
+                          className="border-muted-gray/50 data-[state=checked]:bg-green-500 data-[state=checked]:border-green-500"
                         />
                         <div className="flex-1 min-w-0">
-                          <p className="font-medium truncate">{item.asset_name}</p>
-                          <p className="text-sm text-muted-foreground">
+                          <p className="font-medium truncate text-bone-white">{item.asset_name}</p>
+                          <p className="text-sm text-muted-gray">
                             {item.asset_internal_id}
                             {item.barcode && ` • ${item.barcode}`}
                           </p>
                         </div>
                         {item.category_name && (
-                          <Badge variant="outline" className="shrink-0">
+                          <Badge variant="outline" className="shrink-0 border-muted-gray/30 text-muted-gray">
                             {item.category_name}
                           </Badge>
                         )}
@@ -377,14 +379,18 @@ export function CheckinDialog({
 
             {/* Condition Section */}
             {conditionRequired && selectedItems.size > 0 && (
-              <AccordionItem value="condition" className="border rounded-lg">
-                <AccordionTrigger className="px-4 hover:no-underline">
+              <AccordionItem value="condition" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
+                <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
                   <div className="flex items-center gap-2">
-                    <CheckCircle className="h-4 w-4" />
+                    <CheckCircle className="h-4 w-4 text-green-400" />
                     <span>Condition Assessment</span>
                     <Badge
-                      variant={missingConditions.length > 0 ? 'destructive' : 'secondary'}
-                      className="ml-2"
+                      className={cn(
+                        "ml-2",
+                        missingConditions.length > 0
+                          ? "bg-red-500/20 text-red-400 border-red-500/30"
+                          : "bg-muted-gray/20 text-bone-white"
+                      )}
                     >
                       {conditionReports.size}/{selectedItems.size}
                     </Badge>
@@ -415,77 +421,99 @@ export function CheckinDialog({
             )}
 
             {/* Location & Notes Section */}
-            <AccordionItem value="details" className="border rounded-lg">
-              <AccordionTrigger className="px-4 hover:no-underline">
+            <AccordionItem value="details" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
+              <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
                 <div className="flex items-center gap-2">
-                  <MapPin className="h-4 w-4" />
+                  <MapPin className="h-4 w-4 text-blue-400" />
                   <span>Return Location & Notes</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4 space-y-4">
                 <div className="space-y-2">
-                  <Label>Return Location</Label>
+                  <Label className="text-bone-white">Return Location</Label>
                   <Select value={returnLocationId} onValueChange={setReturnLocationId}>
-                    <SelectTrigger>
+                    <SelectTrigger className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white">
                       <SelectValue placeholder="Use asset home location" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent className="bg-charcoal-black border-muted-gray/30">
                       {locations?.map((loc) => (
-                        <SelectItem key={loc.id} value={loc.id}>
+                        <SelectItem key={loc.id} value={loc.id} className="text-bone-white hover:bg-muted-gray/20">
                           {loc.name}
                           {loc.is_default_home && ' (Default)'}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-gray">
                     Leave empty to use each asset's home location
                   </p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Notes</Label>
+                  <Label className="text-bone-white">Notes</Label>
                   <Textarea
                     placeholder="Add any notes about this return..."
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     rows={3}
+                    className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray/50"
                   />
                 </div>
               </AccordionContent>
             </AccordionItem>
 
             {/* Summary Section */}
-            <AccordionItem value="summary" className="border rounded-lg">
-              <AccordionTrigger className="px-4 hover:no-underline">
+            <AccordionItem value="summary" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
+              <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
                 <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
+                  <FileText className="h-4 w-4 text-purple-400" />
                   <span>Summary</span>
                 </div>
               </AccordionTrigger>
               <AccordionContent className="px-4 pb-4">
                 <div className="space-y-3 text-sm">
                   <div className="flex justify-between">
-                    <span className="text-muted-foreground">Items returning</span>
-                    <span className="font-medium">{returningItems}</span>
+                    <span className="text-muted-gray">Items returning</span>
+                    <span className="font-medium text-bone-white">{returningItems}</span>
                   </div>
 
                   {isPartialReturn && (
-                    <div className="flex justify-between text-yellow-600">
-                      <span>Items not returning</span>
-                      <span className="font-medium">{totalItems - returningItems}</span>
-                    </div>
+                    <>
+                      <div className="flex justify-between text-red-400">
+                        <span>Items not returning (will be marked MISSING)</span>
+                        <span className="font-medium">{totalItems - returningItems}</span>
+                      </div>
+                      <p className="text-xs text-red-400/80">
+                        Unchecked items will create missing item incidents
+                      </p>
+                    </>
+                  )}
+
+                  {/* Damage reports count */}
+                  {Array.from(conditionReports.values()).filter(r => r.has_damage).length > 0 && (
+                    <>
+                      <Separator className="bg-muted-gray/20" />
+                      <div className="flex justify-between text-orange-400">
+                        <span>Damage reports</span>
+                        <span className="font-medium">
+                          {Array.from(conditionReports.values()).filter(r => r.has_damage).length}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-gray">
+                        Incidents will be created for reported damage
+                      </p>
+                    </>
                   )}
 
                   {lateInfo?.is_late && (
                     <>
-                      <Separator />
-                      <div className="flex justify-between text-destructive">
+                      <Separator className="bg-muted-gray/20" />
+                      <div className="flex justify-between text-orange-400">
                         <span>Days late</span>
                         <span className="font-medium">{lateInfo.late_days}</span>
                       </div>
                       {lateInfo.late_fee_amount > 0 && (
-                        <div className="flex justify-between text-destructive">
+                        <div className="flex justify-between text-orange-400">
                           <span>Late fee</span>
                           <span className="font-medium">
                             ${lateInfo.late_fee_amount.toFixed(2)}
@@ -496,8 +524,8 @@ export function CheckinDialog({
                   )}
 
                   {conditionRequired && missingConditions.length > 0 && (
-                    <div className="bg-destructive/10 border border-destructive/20 rounded p-2 mt-2">
-                      <p className="text-destructive text-xs">
+                    <div className="bg-red-500/10 border border-red-500/20 rounded p-2 mt-2">
+                      <p className="text-red-400 text-xs">
                         Condition assessment required for {missingConditions.length} item
                         {missingConditions.length !== 1 ? 's' : ''}
                       </p>
@@ -508,16 +536,19 @@ export function CheckinDialog({
             </AccordionItem>
           </Accordion>
 
-          {/* Partial Return Warning */}
-          {isPartialReturn && settings?.partial_return_policy === 'warn' && (
-            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+          {/* Missing Items Warning */}
+          {isPartialReturn && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
               <div className="flex items-start gap-3">
-                <AlertTriangle className="h-5 w-5 text-yellow-600 shrink-0 mt-0.5" />
+                <AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-medium text-yellow-600">Partial Return</p>
-                  <p className="text-sm text-muted-foreground">
-                    {totalItems - returningItems} item{totalItems - returningItems !== 1 ? 's are' : ' is'} not being returned.
-                    A separate checkout will remain active for these items.
+                  <p className="font-medium text-red-400">Missing Items Warning</p>
+                  <p className="text-sm text-muted-gray">
+                    {totalItems - returningItems} item{totalItems - returningItems !== 1 ? 's are' : ' is'} not checked.
+                    These will be marked as <span className="text-red-400 font-medium">MISSING</span> and incident reports will be created automatically.
+                  </p>
+                  <p className="text-xs text-muted-gray mt-1">
+                    The renter/custodian will be logged as the responsible party.
                   </p>
                 </div>
               </div>
@@ -532,16 +563,16 @@ export function CheckinDialog({
             const hasDetails = rawMessage.length > cleanMessage.length;
 
             return (
-              <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
-                <p className="text-sm text-destructive font-medium mb-1">Check-in failed</p>
-                <p className="text-xs text-destructive/80 mb-2">{cleanMessage}</p>
+              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                <p className="text-sm text-red-400 font-medium mb-1">Check-in failed</p>
+                <p className="text-xs text-red-400/80 mb-2">{cleanMessage}</p>
                 {hasDetails && (
                   <details>
-                    <summary className="text-xs text-destructive/60 cursor-pointer hover:text-destructive/80">
+                    <summary className="text-xs text-red-400/60 cursor-pointer hover:text-red-400/80">
                       Show technical details
                     </summary>
-                    <div className="mt-2 max-h-40 overflow-y-auto bg-destructive/5 rounded p-2">
-                      <pre className="text-xs text-destructive/70 whitespace-pre-wrap break-all">
+                    <div className="mt-2 max-h-40 overflow-y-auto bg-red-500/5 rounded p-2 border border-red-500/20">
+                      <pre className="text-xs text-red-400/70 whitespace-pre-wrap break-all">
                         {rawMessage}
                       </pre>
                     </div>
@@ -552,13 +583,14 @@ export function CheckinDialog({
           })()}
 
           {/* Footer */}
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={handleClose}>
+          <div className="flex justify-end gap-2 pt-4 border-t border-muted-gray/20">
+            <Button variant="outline" onClick={handleClose} className="border-muted-gray/30 text-muted-gray hover:text-bone-white">
               Cancel
             </Button>
             <Button
               onClick={handleComplete}
               disabled={!canComplete || (conditionRequired && missingConditions.length > 0)}
+              className="bg-green-600 hover:bg-green-700 text-white"
             >
               {isCompleting ? (
                 <>
@@ -581,10 +613,11 @@ export function CheckinDialog({
         <DamageReportModal
           isOpen={!!damageAssetId}
           onClose={() => setDamageAssetId(null)}
+          orgId={orgId}
           assetId={damageAssetId}
           assetName={damageAssetName}
-          onSubmit={(tier, description, photos) =>
-            handleDamageReport(damageAssetId, tier, description, photos)
+          onSubmit={(tier, description, photoKeys) =>
+            handleDamageReport(damageAssetId, tier, description, photoKeys)
           }
         />
       )}

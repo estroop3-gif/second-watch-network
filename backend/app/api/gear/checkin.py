@@ -28,7 +28,7 @@ class ConditionReportItem(BaseModel):
     has_damage: bool = False
     damage_tier: Optional[str] = None  # cosmetic, functional, unsafe
     damage_description: Optional[str] = None
-    damage_photos: List[str] = []
+    damage_photo_keys: List[str] = []  # S3 keys for damage photos
     notes: Optional[str] = None
 
 
