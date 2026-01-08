@@ -1,0 +1,77 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - heading "Create Asset Modal - Containment Test" [level=1] [ref=e3]
+    - paragraph [ref=e4]: Click the buttons below to see the difference between the current implementation and the fixed version.
+    - generic [ref=e5]:
+      - button "Show BROKEN Modal (Current)" [ref=e6] [cursor=pointer]
+      - button "Show FIXED Modal" [ref=e7] [cursor=pointer]
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - heading "Add New Asset" [level=2] [ref=e11]
+      - paragraph [ref=e12]: Add a new piece of equipment to your inventory
+    - generic [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]: Asset Name *
+        - textbox "e.g., Canon C300 Mark III" [ref=e16]
+      - generic [ref=e17]:
+        - generic [ref=e18]:
+          - generic [ref=e19]: Category
+          - combobox [ref=e20]:
+            - option "Select category" [selected]
+        - generic [ref=e21]:
+          - generic [ref=e22]: Asset Type
+          - combobox [ref=e23]:
+            - option "Serialized" [selected]
+      - generic [ref=e24]:
+        - generic [ref=e25]:
+          - generic [ref=e26]: Manufacturer
+          - textbox "e.g., Canon" [ref=e27]
+        - generic [ref=e28]:
+          - generic [ref=e29]: Model
+          - textbox "e.g., C300 Mark III" [ref=e30]
+      - generic [ref=e31]:
+        - generic [ref=e32]: Manufacturer Serial Number
+        - textbox "From equipment label" [ref=e33]
+        - paragraph [ref=e34]: Internal ID will be auto-generated
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: Home Location
+          - button "+ Add" [active] [ref=e38] [cursor=pointer]
+        - combobox [ref=e39]:
+          - option "Select location" [selected]
+        - generic [ref=e40]:
+          - textbox "Location name" [ref=e41]
+          - generic [ref=e42]:
+            - button "Add" [ref=e43] [cursor=pointer]
+            - button "Cancel" [ref=e44] [cursor=pointer]
+      - generic [ref=e45]:
+        - paragraph [ref=e46]: Pricing & Value
+        - generic [ref=e47]:
+          - generic [ref=e48]:
+            - generic [ref=e49]: Purchase Price
+            - spinbutton [ref=e50]
+          - generic [ref=e51]:
+            - generic [ref=e52]: Replacement Cost
+            - spinbutton [ref=e53]
+      - generic [ref=e54]:
+        - paragraph [ref=e55]: Rental Rates
+        - generic [ref=e56]:
+          - generic [ref=e57]:
+            - generic [ref=e58]: Daily Rate
+            - spinbutton [ref=e59]
+          - generic [ref=e60]:
+            - generic [ref=e61]: Weekly Rate
+            - spinbutton [ref=e62]
+          - generic [ref=e63]:
+            - generic [ref=e64]: Monthly Rate
+            - spinbutton [ref=e65]
+      - generic [ref=e66]:
+        - generic [ref=e67]: Description
+        - textbox "Additional details about this asset" [ref=e68]
+    - generic [ref=e69]:
+      - button "Cancel" [ref=e70] [cursor=pointer]
+      - button "Add Asset" [ref=e71] [cursor=pointer]
+```

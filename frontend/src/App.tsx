@@ -136,6 +136,8 @@ import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 // Gear House Pages
 import GearHousePage from "./pages/gear/GearHousePage";
 import GearWorkspacePage from "./pages/gear/GearWorkspacePage";
+import { AsyncVerificationPage } from "./pages/gear/AsyncVerificationPage";
+import MyGearLite from "./pages/MyGearLite";
 
 // Watch/Streaming Pages
 import {
@@ -281,9 +283,16 @@ const App = () => (
                     <Route path="/church" element={<ChurchToolsHome />} />
                     <Route path="/church/:tool" element={<ChurchToolPage />} />
 
-                    {/* Gear House Routes */}
-                    <Route path="/gear" element={<GearHousePage />} />
-                    <Route path="/gear/:orgId" element={<GearWorkspacePage />} />
+                    {/* Gear House Routes - restricted to non-free users */}
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium']} redirectTo="/my-gear" />}>
+                      <Route path="/gear" element={<GearHousePage />} />
+                      <Route path="/gear/:orgId" element={<GearWorkspacePage />} />
+                    </Route>
+                    {/* Public verification route - no auth required */}
+                    <Route path="/gear/verify/:token" element={<AsyncVerificationPage />} />
+
+                    {/* My Gear (Lite) - accessible to all authenticated users */}
+                    <Route path="/my-gear" element={<MyGearLite />} />
 
                     {/* Green Room Routes */}
                     <Route path="/greenroom" element={<GreenRoom />} />

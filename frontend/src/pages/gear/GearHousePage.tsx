@@ -8,16 +8,14 @@ import {
   Package,
   Plus,
   Building2,
-  Settings,
   Users,
   ChevronRight,
-  Warehouse,
-  Store,
   Loader2,
+  Globe,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -40,26 +38,8 @@ import {
 } from '@/components/ui/select';
 
 import { useGearOrganizations } from '@/hooks/gear';
-import type { GearOrganization, OrganizationType } from '@/types/gear';
+import type { GearOrganization, CreateOrganizationInput, OrganizationType } from '@/types/gear';
 import { cn } from '@/lib/utils';
-
-const ORG_TYPE_CONFIG: Record<OrganizationType, { label: string; icon: React.ReactNode; color: string }> = {
-  production_company: {
-    label: 'Production Company',
-    icon: <Building2 className="w-5 h-5" />,
-    color: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  },
-  rental_house: {
-    label: 'Rental House',
-    icon: <Store className="w-5 h-5" />,
-    color: 'bg-green-500/20 text-green-400 border-green-500/30',
-  },
-  hybrid: {
-    label: 'Hybrid',
-    icon: <Warehouse className="w-5 h-5" />,
-    color: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  },
-};
 
 export default function GearHousePage() {
   const navigate = useNavigate();
@@ -145,8 +125,6 @@ interface OrganizationCardProps {
 }
 
 function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
-  const config = ORG_TYPE_CONFIG[organization.organization_type];
-
   return (
     <Card
       className="bg-charcoal-black/50 border-muted-gray/30 hover:border-accent-yellow/50 transition-colors cursor-pointer group"
@@ -162,15 +140,19 @@ function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
                 className="w-10 h-10 rounded-lg object-cover"
               />
             ) : (
-              <div className="w-10 h-10 rounded-lg bg-muted-gray/20 flex items-center justify-center">
-                {config.icon}
+              <div className="w-10 h-10 rounded-lg bg-accent-yellow/20 flex items-center justify-center">
+                <Building2 className="w-5 h-5 text-accent-yellow" />
               </div>
             )}
             <div>
               <CardTitle className="text-bone-white group-hover:text-accent-yellow transition-colors">
                 {organization.name}
               </CardTitle>
-              <Badge className={cn('border mt-1', config.color)}>{config.label}</Badge>
+              {organization.role && (
+                <Badge className="border mt-1 bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30 capitalize">
+                  {organization.role}
+                </Badge>
+              )}
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-muted-gray group-hover:text-accent-yellow transition-colors" />
@@ -178,7 +160,7 @@ function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
       </CardHeader>
       <CardContent>
         {organization.description && (
-          <p className="text-sm text-muted-gray line-clamp-2 mb-3">{organization.description}</p>
+          <p className="text-sm text-muted-gray mb-3 line-clamp-2">{organization.description}</p>
         )}
         <div className="flex items-center gap-4 text-sm text-muted-gray">
           <div className="flex items-center gap-1">
@@ -202,12 +184,7 @@ function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
 interface CreateOrganizationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: {
-    name: string;
-    organization_type: OrganizationType;
-    description?: string;
-    contact_email?: string;
-  }) => Promise<void>;
+  onSubmit: (data: CreateOrganizationInput) => Promise<void>;
   isSubmitting: boolean;
 }
 
@@ -215,7 +192,7 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
   const [name, setName] = useState('');
   const [orgType, setOrgType] = useState<OrganizationType>('production_company');
   const [description, setDescription] = useState('');
-  const [contactEmail, setContactEmail] = useState('');
+  const [website, setWebsite] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -229,15 +206,15 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
     try {
       await onSubmit({
         name: name.trim(),
-        organization_type: orgType,
+        org_type: orgType,
         description: description.trim() || undefined,
-        contact_email: contactEmail.trim() || undefined,
+        website: website.trim() || undefined,
       });
       // Reset form
       setName('');
       setOrgType('production_company');
       setDescription('');
-      setContactEmail('');
+      setWebsite('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create organization');
     }
@@ -255,7 +232,7 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <Label htmlFor="name">Organization Name</Label>
+            <Label htmlFor="name">Organization Name *</Label>
             <Input
               id="name"
               value={name}
@@ -265,22 +242,20 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
           </div>
 
           <div>
-            <Label htmlFor="type">Organization Type</Label>
+            <Label htmlFor="org-type">Organization Type</Label>
             <Select value={orgType} onValueChange={(v) => setOrgType(v as OrganizationType)}>
               <SelectTrigger>
-                <SelectValue />
+                <SelectValue placeholder="Select type" />
               </SelectTrigger>
               <SelectContent>
-                {Object.entries(ORG_TYPE_CONFIG).map(([value, config]) => (
-                  <SelectItem key={value} value={value}>
-                    <div className="flex items-center gap-2">
-                      {config.icon}
-                      <span>{config.label}</span>
-                    </div>
-                  </SelectItem>
-                ))}
+                <SelectItem value="production_company">Production Company</SelectItem>
+                <SelectItem value="rental_house">Rental House</SelectItem>
+                <SelectItem value="hybrid">Hybrid (Both)</SelectItem>
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-gray mt-1">
+              Rental Houses default to client rentals, Production Companies default to team checkouts
+            </p>
           </div>
 
           <div>
@@ -289,23 +264,31 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
               id="description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="Brief description of your organization"
-              rows={2}
+              placeholder="Brief description of your organization..."
+              rows={3}
             />
           </div>
 
           <div>
-            <Label htmlFor="email">Contact Email (optional)</Label>
-            <Input
-              id="email"
-              type="email"
-              value={contactEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
-              placeholder="contact@example.com"
-            />
+            <Label htmlFor="website">Website (optional)</Label>
+            <div className="relative">
+              <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+              <Input
+                id="website"
+                type="url"
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+                placeholder="https://example.com"
+                className="pl-10"
+              />
+            </div>
           </div>
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && (
+            <div className="max-h-24 overflow-y-auto rounded-md bg-red-500/10 border border-red-500/30 p-3">
+              <p className="text-sm text-red-500 whitespace-pre-wrap">{error}</p>
+            </div>
+          )}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>

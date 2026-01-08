@@ -3,13 +3,13 @@ Gear House Strikes API
 
 Endpoints for managing user strikes and escalation.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user_from_token
-from app.api.users import get_profile_id_from_cognito_id
+from app.core.auth import get_current_user
+
 from app.services import gear_service
 
 router = APIRouter(prefix="/strikes", tags=["Gear Strikes"])
@@ -44,12 +44,8 @@ class EscalationReview(BaseModel):
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def get_current_profile_id(authorization: str = Header(None)) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization required")
-    user = await get_current_user_from_token(authorization)
-    profile_id = get_profile_id_from_cognito_id(user["sub"])
-    return profile_id or user["sub"]
+def get_profile_id(user: Dict[str, Any]) -> str:
+    return user.get("id")
 
 
 def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> None:
@@ -68,10 +64,10 @@ async def list_strikes(
     active_only: bool = Query(True),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List strikes for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_query
@@ -111,10 +107,10 @@ async def list_strikes(
 async def create_strike(
     org_id: str,
     data: StrikeCreate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Issue a strike against a user."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     # Validate severity
@@ -128,7 +124,7 @@ async def create_strike(
         profile_id,
         data.severity,
         data.reason,
-        **data.dict(exclude={"user_id", "severity", "reason"})
+        **data.model_dump(exclude={"user_id", "severity", "reason"})
     )
 
     if not strike:
@@ -142,10 +138,10 @@ async def get_user_strikes(
     org_id: str,
     user_id: str,
     active_only: bool = Query(True),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get strikes for a specific user."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     # Users can view their own strikes, managers can view anyone's
@@ -162,10 +158,10 @@ async def get_user_strikes(
 async def void_strike(
     strike_id: str,
     data: StrikeVoid,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Void a strike."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     # Get strike to check org
     from app.core.database import execute_single
@@ -188,33 +184,14 @@ async def void_strike(
 # ESCALATION ENDPOINTS
 # ============================================================================
 
-@router.get("/escalation/{org_id}/{user_id}")
-async def get_escalation_status(
-    org_id: str,
-    user_id: str,
-    authorization: str = Header(None)
-):
-    """Get user's escalation status."""
-    profile_id = await get_current_profile_id(authorization)
-    require_org_access(org_id, profile_id)
-
-    # Users can view their own status, managers can view anyone's
-    member = gear_service.get_organization_member(org_id, profile_id)
-    if user_id != profile_id and member.get("role") not in ["owner", "admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Cannot view other users' escalation status")
-
-    status = gear_service.get_user_escalation_status(org_id, user_id)
-
-    return {"status": status}
-
-
+# NOTE: pending-review route MUST come before {user_id} route to avoid matching "pending-review" as a user_id
 @router.get("/escalation/{org_id}/pending-review")
 async def list_pending_reviews(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List users requiring manager review."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_query
@@ -233,15 +210,35 @@ async def list_pending_reviews(
     return {"pending_reviews": pending}
 
 
+@router.get("/escalation/{org_id}/{user_id}")
+async def get_escalation_status(
+    org_id: str,
+    user_id: str,
+    user=Depends(get_current_user)
+):
+    """Get user's escalation status."""
+    profile_id = get_profile_id(user)
+    require_org_access(org_id, profile_id)
+
+    # Users can view their own status, managers can view anyone's
+    member = gear_service.get_organization_member(org_id, profile_id)
+    if user_id != profile_id and member.get("role") not in ["owner", "admin", "manager"]:
+        raise HTTPException(status_code=403, detail="Cannot view other users' escalation status")
+
+    status = gear_service.get_user_escalation_status(org_id, user_id)
+
+    return {"status": status}
+
+
 @router.post("/escalation/{org_id}/{user_id}/review")
 async def review_escalation(
     org_id: str,
     user_id: str,
     data: EscalationReview,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Review a user's escalation status."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     # Validate decision
@@ -279,10 +276,10 @@ async def review_escalation(
 @router.get("/rules/{org_id}")
 async def list_strike_rules(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List strike rules for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_query
@@ -306,10 +303,10 @@ async def update_strike_rule(
     is_auto_applied: Optional[bool] = None,
     requires_review: Optional[bool] = None,
     is_active: Optional[bool] = None,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update a strike rule."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     from app.core.database import execute_single, execute_insert
 

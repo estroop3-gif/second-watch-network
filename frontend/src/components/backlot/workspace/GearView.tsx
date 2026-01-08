@@ -37,6 +37,7 @@ import {
   HelpCircle,
   Truck,
   ClipboardList,
+  Store,
 } from 'lucide-react';
 import {
   DropdownMenu,
@@ -45,6 +46,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useGear, useGearCosts, useSyncGearToBudget, useBudget, useBudgetLineItems, GEAR_CATEGORIES } from '@/hooks/backlot';
+import { MarketplaceRentalDialog } from './gear/MarketplaceRentalDialog';
+import { MarketplaceBrowserSection } from './gear/MarketplaceBrowserSection';
 import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
 import { BacklotGearItem, GearItemInput, BacklotGearStatus } from '@/types/backlot';
 import { format } from 'date-fns';
@@ -245,6 +248,10 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   // Tips panel state
   const [showTipsPanel, setShowTipsPanel] = useState(false);
 
+  // Marketplace rental state
+  const [showMarketplaceDialog, setShowMarketplaceDialog] = useState(false);
+  const [showMarketplaceBrowser, setShowMarketplaceBrowser] = useState(false);
+
   // Form state with extended fields
   const [formData, setFormData] = useState<ExtendedFormData>({
     name: '',
@@ -442,6 +449,16 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               ))}
             </SelectContent>
           </Select>
+          {canEdit && !showMarketplaceBrowser && (
+            <Button
+              variant="outline"
+              onClick={() => setShowMarketplaceBrowser(true)}
+              className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+            >
+              <Store className="w-4 h-4 mr-2" />
+              Rent from Marketplace
+            </Button>
+          )}
           {canEdit && gear.length > 0 && (
             <Button
               variant="outline"
@@ -497,6 +514,18 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
             </p>
           </div>
         </div>
+      )}
+
+      {/* Embedded Marketplace Browser */}
+      {showMarketplaceBrowser && (
+        <MarketplaceBrowserSection
+          projectId={projectId}
+          budgetLineItems={budgetLineItems || []}
+          onClose={() => setShowMarketplaceBrowser(false)}
+          onRequestSuccess={() => {
+            // Optionally refresh gear list or show success message
+          }}
+        />
       )}
 
       {/* Gear List */}
@@ -942,6 +971,14 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Marketplace Rental Dialog */}
+      <MarketplaceRentalDialog
+        isOpen={showMarketplaceDialog}
+        onClose={() => setShowMarketplaceDialog(false)}
+        projectId={projectId}
+        budgetLineItems={budgetLineItems || []}
+      />
     </div>
   );
 };

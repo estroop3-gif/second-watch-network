@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -39,6 +39,11 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
   const showOnboardingLink = isFilmmaker && !hasOnboarded;
   const canSubmitAndManageSubmissions = isFilmmakerRole || isAdmin;
   const showOrderLink = isOrderMember || isAdmin;
+
+  // Full Gear House is for non-free users (filmmaker, premium, admin, etc.)
+  // Free users use My Gear (lite) instead
+  const isFreeUser = profile?.role === 'free' || (!profile?.role && !isFilmmakerRole && !isAdmin);
+  const hasFullGearHouseAccess = !isFreeUser;
 
   return (
     <div className="flex flex-col gap-1">
@@ -103,9 +108,15 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <Film className="mr-3 h-5 w-5" />
         <span>The Backlot</span>
       </MenuItem>
-      <MenuItem to="/gear" onClick={onLinkClick}>
-        <Wrench className="mr-3 h-5 w-5" />
-        <span>Gear House</span>
+      {hasFullGearHouseAccess && (
+        <MenuItem to="/gear" onClick={onLinkClick}>
+          <Wrench className="mr-3 h-5 w-5" />
+          <span>Gear House</span>
+        </MenuItem>
+      )}
+      <MenuItem to="/my-gear" onClick={onLinkClick}>
+        <Package className="mr-3 h-5 w-5" />
+        <span>My Gear</span>
       </MenuItem>
       <MenuItem to="/greenroom" onClick={onLinkClick}>
         <Trophy className="mr-3 h-5 w-5" />

@@ -1294,7 +1294,7 @@ class APIClient {
     })
   }
 
-  async updateAvailability(availabilityId: string, data: any) {
+  async updateScheduleAvailability(availabilityId: string, data: any) {
     return this.request<any>(`/api/v1/availability/${availabilityId}`, {
       method: 'PUT',
       body: JSON.stringify(data),

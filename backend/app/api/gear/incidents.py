@@ -3,13 +3,13 @@ Gear House Incidents API
 
 Endpoints for managing damage reports and missing item incidents.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user_from_token
-from app.api.users import get_profile_id_from_cognito_id
+from app.core.auth import get_current_user
+
 from app.services import gear_service
 
 router = APIRouter(prefix="/incidents", tags=["Gear Incidents"])
@@ -47,12 +47,8 @@ class IncidentResolve(BaseModel):
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def get_current_profile_id(authorization: str = Header(None)) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization required")
-    user = await get_current_user_from_token(authorization)
-    profile_id = get_profile_id_from_cognito_id(user["sub"])
-    return profile_id or user["sub"]
+def get_profile_id(user: Dict[str, Any]) -> str:
+    return user.get("id")
 
 
 def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> None:
@@ -72,10 +68,10 @@ async def list_incidents(
     asset_id: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List incidents for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     result = gear_service.list_incidents(
@@ -94,10 +90,10 @@ async def list_incidents(
 async def create_incident(
     org_id: str,
     data: IncidentCreate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Report a new incident."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     # Validate incident type
@@ -115,7 +111,7 @@ async def create_incident(
         org_id,
         data.incident_type,
         profile_id,
-        **data.dict(exclude={"incident_type"})
+        **data.model_dump(exclude={"incident_type"})
     )
 
     if not incident:
@@ -127,10 +123,10 @@ async def create_incident(
 @router.get("/item/{incident_id}")
 async def get_incident(
     incident_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get incident details."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     incident = gear_service.get_incident(incident_id)
     if not incident:
@@ -145,10 +141,10 @@ async def get_incident(
 async def update_incident(
     incident_id: str,
     data: IncidentUpdate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update an incident."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     incident = gear_service.get_incident(incident_id)
     if not incident:
@@ -203,10 +199,10 @@ async def update_incident(
 async def resolve_incident(
     incident_id: str,
     data: IncidentResolve,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Resolve an incident."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     incident = gear_service.get_incident(incident_id)
     if not incident:
@@ -222,10 +218,10 @@ async def resolve_incident(
 @router.get("/{org_id}/stats")
 async def get_incident_stats(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get incident statistics."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_query, execute_single

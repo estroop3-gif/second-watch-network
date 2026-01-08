@@ -3,13 +3,13 @@ Gear House Assets API
 
 Endpoints for managing gear assets (inventory items).
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import date
 from fastapi import APIRouter, HTTPException, Depends, Header, Query
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user_from_token
-from app.api.users import get_profile_id_from_cognito_id
+from app.core.auth import get_current_user
+
 from app.services import gear_service
 
 router = APIRouter(prefix="/assets", tags=["Gear Assets"])
@@ -30,10 +30,14 @@ class AssetCreate(BaseModel):
     manufacturer_serial: Optional[str] = None
     location_id: Optional[str] = None
     home_location_id: Optional[str] = None
+    # Purchase & Value
     purchase_date: Optional[date] = None
     purchase_price: Optional[float] = None
+    replacement_cost: Optional[float] = None
+    # Rental Rates
     daily_rate: Optional[float] = None
     weekly_rate: Optional[float] = None
+    monthly_rate: Optional[float] = None
     notes: Optional[str] = None
     # For consumables
     quantity_on_hand: Optional[int] = None
@@ -63,6 +67,7 @@ class AssetUpdate(BaseModel):
     condition_notes: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
+    photos: Optional[List[str]] = None  # Base64 encoded or existing URLs
 
 
 class AssetStatusUpdate(BaseModel):
@@ -78,14 +83,10 @@ class BulkAssetCreate(BaseModel):
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def get_current_profile_id(authorization: str = Header(None)) -> str:
-    """Extract profile ID from authorization header."""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization required")
+def get_profile_id(user: Dict[str, Any]) -> str:
+    """Extract profile ID from user dict."""
 
-    user = await get_current_user_from_token(authorization)
-    profile_id = get_profile_id_from_cognito_id(user["sub"])
-    return profile_id or user["sub"]
+    return user.get("id")
 
 
 def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> None:
@@ -109,10 +110,10 @@ async def list_assets(
     search: Optional[str] = Query(None, description="Search term"),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List assets for an organization with filtering."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     result = gear_service.list_assets(
@@ -134,17 +135,17 @@ async def list_assets(
 async def create_asset(
     org_id: str,
     data: AssetCreate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Create a new asset."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     asset = gear_service.create_asset(
         org_id,
         data.name,
         profile_id,
-        **data.dict(exclude={"name"})
+        **data.model_dump(exclude={"name"})
     )
 
     if not asset:
@@ -157,10 +158,10 @@ async def create_asset(
 async def bulk_create_assets(
     org_id: str,
     data: BulkAssetCreate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Bulk create assets."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     created = []
@@ -172,7 +173,7 @@ async def bulk_create_assets(
                 org_id,
                 asset_data.name,
                 profile_id,
-                **asset_data.dict(exclude={"name"})
+                **asset_data.model_dump(exclude={"name"})
             )
             if asset:
                 created.append(asset)
@@ -187,10 +188,10 @@ async def bulk_create_assets(
 @router.get("/item/{asset_id}")
 async def get_asset(
     asset_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get a single asset with full details."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     asset = gear_service.get_asset(asset_id)
     if not asset:
@@ -205,10 +206,10 @@ async def get_asset(
 async def update_asset(
     asset_id: str,
     data: AssetUpdate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update an asset."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     # Get asset to check org access
     current = gear_service.get_asset(asset_id)
@@ -218,7 +219,11 @@ async def update_asset(
     require_org_access(current["organization_id"], profile_id, ["owner", "admin", "manager"])
 
     # Only include non-None values
-    update_data = {k: v for k, v in data.dict().items() if v is not None}
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+
+    # Map photos field to photos_current for database storage
+    if "photos" in update_data:
+        update_data["photos_current"] = update_data.pop("photos")
 
     asset = gear_service.update_asset(asset_id, profile_id, **update_data)
 
@@ -229,10 +234,10 @@ async def update_asset(
 async def update_asset_status(
     asset_id: str,
     data: AssetStatusUpdate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update asset status."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     current = gear_service.get_asset(asset_id)
     if not current:
@@ -256,10 +261,10 @@ async def update_asset_status(
 @router.delete("/item/{asset_id}")
 async def delete_asset(
     asset_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Soft delete an asset (marks as inactive)."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     current = gear_service.get_asset(asset_id)
     if not current:
@@ -280,10 +285,10 @@ async def delete_asset(
 async def get_asset_history(
     asset_id: str,
     limit: int = Query(50, le=200),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get audit history for an asset."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     current = gear_service.get_asset(asset_id)
     if not current:
@@ -300,10 +305,10 @@ async def get_asset_history(
 async def find_asset_by_scan(
     org_id: str,
     scan_code: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Find an asset by barcode or QR code."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     asset = gear_service.get_asset_by_scan_code(org_id, scan_code)
@@ -317,10 +322,10 @@ async def find_asset_by_scan(
 @router.get("/{org_id}/stats")
 async def get_asset_stats(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get asset statistics for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     from app.core.database import execute_single, execute_query

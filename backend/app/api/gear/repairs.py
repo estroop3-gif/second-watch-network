@@ -3,13 +3,13 @@ Gear House Repairs API
 
 Endpoints for managing repair tickets.
 """
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import date
-from fastapi import APIRouter, HTTPException, Header, Query
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user_from_token
-from app.api.users import get_profile_id_from_cognito_id
+from app.core.auth import get_current_user
+
 from app.services import gear_service
 
 router = APIRouter(prefix="/repairs", tags=["Gear Repairs"])
@@ -56,12 +56,8 @@ class RepairTicketUpdate(BaseModel):
 # HELPER FUNCTIONS
 # ============================================================================
 
-async def get_current_profile_id(authorization: str = Header(None)) -> str:
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization required")
-    user = await get_current_user_from_token(authorization)
-    profile_id = get_profile_id_from_cognito_id(user["sub"])
-    return profile_id or user["sub"]
+def get_profile_id(user: Dict[str, Any]) -> str:
+    return user.get("id")
 
 
 def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> None:
@@ -81,10 +77,10 @@ async def list_repair_tickets(
     assigned_to: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List repair tickets for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     result = gear_service.list_repair_tickets(
@@ -103,10 +99,10 @@ async def list_repair_tickets(
 async def create_repair_ticket(
     org_id: str,
     data: RepairTicketCreate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Create a new repair ticket."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     # Validate priority
@@ -119,7 +115,7 @@ async def create_repair_ticket(
         data.asset_id,
         data.title,
         profile_id,
-        **data.dict(exclude={"asset_id", "title"})
+        **data.model_dump(exclude={"asset_id", "title"})
     )
 
     if not ticket:
@@ -131,10 +127,10 @@ async def create_repair_ticket(
 @router.get("/item/{ticket_id}")
 async def get_repair_ticket(
     ticket_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get repair ticket details."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     ticket = gear_service.get_repair_ticket(ticket_id)
     if not ticket:
@@ -149,10 +145,10 @@ async def get_repair_ticket(
 async def update_repair_ticket(
     ticket_id: str,
     data: RepairTicketUpdate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update repair ticket details."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     ticket = gear_service.get_repair_ticket(ticket_id)
     if not ticket:
@@ -190,10 +186,10 @@ async def update_repair_ticket(
 async def update_repair_ticket_status(
     ticket_id: str,
     data: RepairTicketStatusUpdate,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Update repair ticket status."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
 
     ticket = gear_service.get_repair_ticket(ticket_id)
     if not ticket:
@@ -230,7 +226,7 @@ async def update_repair_ticket_status(
         data.status,
         profile_id,
         notes=data.notes,
-        **data.dict(exclude={"status", "notes"})
+        **data.model_dump(exclude={"status", "notes"})
     )
 
     return {"ticket": updated}
@@ -239,10 +235,10 @@ async def update_repair_ticket_status(
 @router.get("/{org_id}/stats")
 async def get_repair_stats(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Get repair ticket statistics."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_query, execute_single
@@ -287,11 +283,12 @@ async def get_repair_stats(
     time_stats = execute_single(
         """
         SELECT AVG(
-            EXTRACT(EPOCH FROM (actual_completion_date - created_at::date)) / 86400
+            actual_completion_date::date - created_at::date
         ) as avg_days_to_close
         FROM gear_repair_tickets
         WHERE organization_id = :org_id
           AND status = 'closed'
+          AND actual_completion_date IS NOT NULL
           AND created_at > NOW() - INTERVAL '90 days'
         """,
         {"org_id": org_id}
@@ -312,10 +309,10 @@ async def get_repair_stats(
 @router.get("/{org_id}/vendors")
 async def list_vendors(
     org_id: str,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """List repair vendors for an organization."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id)
 
     from app.core.database import execute_query
@@ -340,10 +337,10 @@ async def create_vendor(
     phone: Optional[str] = None,
     website: Optional[str] = None,
     is_preferred: bool = False,
-    authorization: str = Header(None)
+    user=Depends(get_current_user)
 ):
     """Create a new vendor."""
-    profile_id = await get_current_profile_id(authorization)
+    profile_id = get_profile_id(user)
     require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
 
     from app.core.database import execute_insert

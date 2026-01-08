@@ -5,11 +5,11 @@ Comprehensive service module for the Gear House bounded context.
 Handles assets, kits, transactions, conditions, incidents, repairs, and strikes.
 """
 from typing import Optional, Dict, Any, List
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 from uuid import UUID
 import json
 
-from app.core.database import execute_query, execute_single, execute_insert
+from app.core.database import execute_query, execute_single, execute_insert, execute_update
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,10 +38,10 @@ def get_user_organizations(user_id: str) -> List[Dict[str, Any]]:
     """Get all organizations a user belongs to."""
     return execute_query(
         """
-        SELECT o.*, om.role, om.permissions, om.title, om.department
+        SELECT o.*, om.role
         FROM organizations o
         JOIN organization_members om ON om.organization_id = o.id
-        WHERE om.user_id = :user_id AND om.is_active = TRUE
+        WHERE om.user_id = :user_id
         ORDER BY o.name
         """,
         {"user_id": user_id}
@@ -50,37 +50,47 @@ def get_user_organizations(user_id: str) -> List[Dict[str, Any]]:
 
 def create_organization(
     name: str,
-    org_type: str,
     created_by: str,
-    **kwargs
+    org_type: str = "production_company",
+    description: str = None,
+    website: str = None,
 ) -> Dict[str, Any]:
     """Create a new organization."""
+    import re
+    import uuid
+
+    # Generate slug from name
+    base_slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+    slug = base_slug
+
+    # Check if slug exists and add suffix if needed
+    existing = execute_single(
+        "SELECT id FROM organizations WHERE slug = :slug",
+        {"slug": slug}
+    )
+    if existing:
+        # Add short unique suffix
+        slug = f"{base_slug}-{str(uuid.uuid4())[:8]}"
+
     org = execute_insert(
         """
-        INSERT INTO organizations (name, org_type, created_by, email, phone, website,
-                                   address_line1, city, state, postal_code, country)
-        VALUES (:name, :org_type, :created_by, :email, :phone, :website,
-                :address_line1, :city, :state, :postal_code, :country)
+        INSERT INTO organizations (name, slug, org_type, description, website_url, created_by)
+        VALUES (:name, :slug, :org_type, :description, :website_url, :created_by)
         RETURNING *
         """,
         {
             "name": name,
-            "org_type": org_type,
+            "slug": slug,
+            "org_type": org_type or "production_company",
+            "description": description,
+            "website_url": website,
             "created_by": created_by,
-            "email": kwargs.get("email"),
-            "phone": kwargs.get("phone"),
-            "website": kwargs.get("website"),
-            "address_line1": kwargs.get("address_line1"),
-            "city": kwargs.get("city"),
-            "state": kwargs.get("state"),
-            "postal_code": kwargs.get("postal_code"),
-            "country": kwargs.get("country", "US")
         }
     )
 
     if org:
-        # Create default settings
-        execute_insert(
+        # Create default settings (use execute_update since INSERT doesn't return rows)
+        execute_update(
             """
             INSERT INTO gear_organization_settings (organization_id)
             VALUES (:org_id)
@@ -90,10 +100,11 @@ def create_organization(
         )
 
         # Add creator as owner
-        execute_insert(
+        execute_update(
             """
             INSERT INTO organization_members (organization_id, user_id, role)
             VALUES (:org_id, :user_id, 'owner')
+            ON CONFLICT (organization_id, user_id) DO NOTHING
             """,
             {"org_id": org["id"], "user_id": created_by}
         )
@@ -122,7 +133,7 @@ def _initialize_org_categories(org_id: str) -> None:
     ]
 
     for name, slug, sort_order in categories:
-        execute_insert(
+        execute_update(
             """
             INSERT INTO gear_categories (organization_id, name, slug, sort_order)
             VALUES (:org_id, :name, :slug, :sort_order)
@@ -146,7 +157,12 @@ def get_organization_member(org_id: str, user_id: str) -> Optional[Dict[str, Any
 def check_org_permission(org_id: str, user_id: str, required_roles: List[str] = None) -> bool:
     """Check if user has access to organization with optional role requirement."""
     member = get_organization_member(org_id, user_id)
-    if not member or not member.get("is_active"):
+    if not member:
+        return False
+
+    # Check status is active (status column, not is_active)
+    status = member.get("status", "active")
+    if status not in ("active", "accepted"):
         return False
 
     if required_roles:
@@ -215,7 +231,7 @@ def list_assets(
     assets = execute_query(
         f"""
         SELECT a.*, c.name as category_name, c.slug as category_slug,
-               l.name as location_name, p.display_name as custodian_name
+               l.name as current_location_name, p.display_name as current_custodian_name
         FROM gear_assets a
         LEFT JOIN gear_categories c ON c.id = a.category_id
         LEFT JOIN gear_locations l ON l.id = a.current_location_id
@@ -235,8 +251,8 @@ def get_asset(asset_id: str) -> Optional[Dict[str, Any]]:
     return execute_single(
         """
         SELECT a.*, c.name as category_name, c.slug as category_slug,
-               l.name as location_name, l.address_line1 as location_address,
-               p.display_name as custodian_name, p.avatar_url as custodian_avatar,
+               l.name as current_location_name, l.address_line1 as location_address,
+               p.display_name as current_custodian_name, p.avatar_url as custodian_avatar,
                hl.name as home_location_name
         FROM gear_assets a
         LEFT JOIN gear_categories c ON c.id = a.category_id
@@ -332,16 +348,24 @@ def update_asset(
         "manufacturer_serial", "current_location_id", "default_home_location_id",
         "purchase_date", "purchase_price", "daily_rate", "weekly_rate",
         "current_value", "replacement_cost", "insurance_policy_id", "insured_value",
-        "condition_notes", "notes", "tags"
+        "condition_notes", "notes", "tags", "photos_current"
     ]
 
     updates = []
     params = {"asset_id": asset_id}
 
+    # Fields that need JSONB casting
+    jsonb_fields = {"photos_current", "tags"}
+
     for field in allowed_fields:
         if field in kwargs:
-            updates.append(f"{field} = :{field}")
-            params[field] = kwargs[field]
+            if field in jsonb_fields:
+                # Cast to JSONB for array/object fields using CAST() to avoid :: syntax conflict with SQLAlchemy
+                updates.append(f"{field} = CAST(:{field} AS jsonb)")
+                params[field] = json.dumps(kwargs[field])
+            else:
+                updates.append(f"{field} = :{field}")
+                params[field] = kwargs[field]
 
     if not updates:
         return current
@@ -405,7 +429,7 @@ def _generate_asset_labels(asset_id: str, internal_id: str) -> None:
     barcode_value = internal_id
     qr_value = f"GH:{internal_id}"
 
-    execute_query(
+    execute_update(
         """
         UPDATE gear_assets
         SET barcode = :barcode, qr_code = :qr, primary_scan_code = :barcode
@@ -634,11 +658,11 @@ def create_kit_instance(
         {
             "org_id": org_id,
             "name": name,
-            "internal_id": kwargs.get("internal_id", f"KIT-{datetime.now().strftime('%Y%m%d%H%M%S')}"),
+            "internal_id": kwargs.get("internal_id") or f"KIT-{datetime.now().strftime('%Y%m%d%H%M%S')}",
             "template_id": kwargs.get("template_id"),
             "case_asset_id": kwargs.get("case_asset_id"),
             "location_id": kwargs.get("location_id"),
-            "scan_mode": kwargs.get("scan_mode_required", "case_plus_items"),
+            "scan_mode": kwargs.get("scan_mode_required") or "case_plus_items",
             "notes": kwargs.get("notes"),
             "created_by": created_by
         }
@@ -676,7 +700,7 @@ def add_asset_to_kit(
 
 def remove_asset_from_kit(kit_id: str, asset_id: str) -> bool:
     """Remove an asset from a kit instance."""
-    result = execute_query(
+    execute_update(
         """
         UPDATE gear_kit_memberships
         SET is_present = FALSE
@@ -699,18 +723,23 @@ def create_transaction(
     **kwargs
 ) -> Dict[str, Any]:
     """Create a new transaction with items."""
+    # Use checkout_at if provided, otherwise default to NOW()
+    checkout_at = kwargs.get("checkout_at")
+
     transaction = execute_insert(
         """
         INSERT INTO gear_transactions (
             organization_id, transaction_type, counterparty_org_id,
             backlot_project_id, initiated_by_user_id, primary_custodian_user_id,
-            destination_location_id, destination_address, scheduled_at,
-            expected_return_at, scan_mode_required, reference_number, notes
+            custodian_contact_id, destination_location_id, destination_address,
+            scheduled_at, expected_return_at, scan_mode_required,
+            reference_number, notes, created_at
         ) VALUES (
             :org_id, :tx_type, :counterparty_org_id,
             :project_id, :initiated_by, :custodian_id,
-            :location_id, :destination_address, :scheduled_at,
-            :expected_return_at, :scan_mode, :reference, :notes
+            :custodian_contact_id, :location_id, :destination_address,
+            :scheduled_at, :expected_return_at, :scan_mode,
+            :reference, :notes, COALESCE(:checkout_at, NOW())
         )
         RETURNING *
         """,
@@ -721,20 +750,22 @@ def create_transaction(
             "project_id": kwargs.get("backlot_project_id"),
             "initiated_by": initiated_by,
             "custodian_id": kwargs.get("primary_custodian_user_id"),
+            "custodian_contact_id": kwargs.get("custodian_contact_id"),
             "location_id": kwargs.get("destination_location_id"),
             "destination_address": json.dumps(kwargs.get("destination_address")) if kwargs.get("destination_address") else None,
             "scheduled_at": kwargs.get("scheduled_at"),
             "expected_return_at": kwargs.get("expected_return_at"),
             "scan_mode": kwargs.get("scan_mode_required", "case_plus_items"),
             "reference": kwargs.get("reference_number"),
-            "notes": kwargs.get("notes")
+            "notes": kwargs.get("notes"),
+            "checkout_at": checkout_at
         }
     )
 
     if transaction:
         # Add items
         for item in items:
-            execute_insert(
+            execute_update(
                 """
                 INSERT INTO gear_transaction_items (
                     transaction_id, asset_id, kit_instance_id, quantity, notes
@@ -757,38 +788,79 @@ def create_transaction(
 
 
 def get_transaction(transaction_id: str) -> Optional[Dict[str, Any]]:
-    """Get transaction with items."""
+    """Get transaction with items, full asset details, and condition reports."""
     tx = execute_single(
         """
         SELECT t.*, o.name as org_name, co.name as counterparty_name,
                p.display_name as initiated_by_name,
-               cp.display_name as custodian_name,
-               l.name as destination_name
+               cp.display_name as primary_custodian_name,
+               sp.display_name as secondary_custodian_name,
+               NULLIF(TRIM(CONCAT(gc.first_name, ' ', gc.last_name)), '') as custodian_contact_name,
+               gc.company as custodian_contact_company,
+               gc.email as custodian_contact_email,
+               gc.phone as custodian_contact_phone,
+               l.name as destination_name,
+               proj.title as project_name,
+               t.handed_off_at as checked_out_at
         FROM gear_transactions t
         LEFT JOIN organizations o ON o.id = t.organization_id
         LEFT JOIN organizations co ON co.id = t.counterparty_org_id
         LEFT JOIN profiles p ON p.id = t.initiated_by_user_id
         LEFT JOIN profiles cp ON cp.id = t.primary_custodian_user_id
+        LEFT JOIN profiles sp ON sp.id = t.secondary_custodian_user_id
+        LEFT JOIN gear_organization_contacts gc ON gc.id = t.custodian_contact_id
         LEFT JOIN gear_locations l ON l.id = t.destination_location_id
+        LEFT JOIN backlot_projects proj ON proj.id = t.backlot_project_id
         WHERE t.id = :tx_id
         """,
         {"tx_id": transaction_id}
     )
 
     if tx:
+        # Get items with full asset details and scanner names
         items = execute_query(
             """
-            SELECT ti.*, a.name as asset_name, a.internal_id as asset_internal_id,
-                   ki.name as kit_name, ki.internal_id as kit_internal_id
+            SELECT ti.*,
+                   a.name as asset_name,
+                   a.internal_id as asset_internal_id,
+                   a.manufacturer_serial as serial_number,
+                   a.make,
+                   a.model,
+                   a.barcode,
+                   cat.name as category_name,
+                   ki.name as kit_name,
+                   ki.internal_id as kit_internal_id,
+                   scanner_out.display_name as scanned_out_by_name,
+                   scanner_in.display_name as scanned_in_by_name
             FROM gear_transaction_items ti
             LEFT JOIN gear_assets a ON a.id = ti.asset_id
+            LEFT JOIN gear_categories cat ON cat.id = a.category_id
             LEFT JOIN gear_kit_instances ki ON ki.id = ti.kit_instance_id
+            LEFT JOIN profiles scanner_out ON scanner_out.id = ti.scanned_out_by
+            LEFT JOIN profiles scanner_in ON scanner_in.id = ti.scanned_in_by
             WHERE ti.transaction_id = :tx_id
             ORDER BY ti.created_at
             """,
             {"tx_id": transaction_id}
         )
         tx["items"] = items
+
+        # Get condition reports for this transaction
+        condition_reports = execute_query(
+            """
+            SELECT cr.id, cr.checkpoint_type, cr.reported_at, cr.overall_notes as report_notes,
+                   cri.asset_id, cri.condition_grade, cri.notes, cri.photos,
+                   cri.has_cosmetic_damage, cri.has_functional_damage, cri.is_unsafe,
+                   p.display_name as reported_by_name
+            FROM gear_condition_reports cr
+            JOIN gear_condition_report_items cri ON cri.report_id = cr.id
+            LEFT JOIN profiles p ON p.id = cr.reported_by_user_id
+            WHERE cr.transaction_id = :tx_id
+            ORDER BY cr.reported_at DESC
+            """,
+            {"tx_id": transaction_id}
+        )
+        tx["condition_reports"] = condition_reports
 
     return tx
 
@@ -884,7 +956,7 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
         return None
 
     # Update transaction
-    execute_query(
+    execute_update(
         """
         UPDATE gear_transactions
         SET handed_off_at = NOW(), status = 'completed'
@@ -896,7 +968,7 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
     # Update asset statuses
     for item in tx.get("items", []):
         if item.get("asset_id"):
-            execute_query(
+            execute_update(
                 """
                 UPDATE gear_assets
                 SET status = 'checked_out',
@@ -922,7 +994,7 @@ def complete_checkin(transaction_id: str, user_id: str) -> Dict[str, Any]:
         return None
 
     # Update transaction
-    execute_query(
+    execute_update(
         """
         UPDATE gear_transactions
         SET returned_at = NOW(), reconciled_at = NOW(), status = 'completed'
@@ -934,7 +1006,7 @@ def complete_checkin(transaction_id: str, user_id: str) -> Dict[str, Any]:
     # Update asset statuses
     for item in tx.get("items", []):
         if item.get("asset_id"):
-            execute_query(
+            execute_update(
                 """
                 UPDATE gear_assets
                 SET status = 'available',
@@ -1024,7 +1096,7 @@ def create_condition_report_item(
     )
 
     # Update asset condition
-    execute_query(
+    execute_update(
         """
         UPDATE gear_assets
         SET current_condition = :grade, condition_notes = :notes, updated_at = NOW()
@@ -1310,7 +1382,7 @@ def create_repair_ticket(
 
     if ticket:
         # Generate ticket number
-        execute_query(
+        execute_update(
             """
             UPDATE gear_repair_tickets
             SET ticket_number = CONCAT('RPR-', LPAD(CAST(
@@ -1485,7 +1557,7 @@ def update_repair_ticket_status(
 
     if ticket:
         # Add history record
-        execute_insert(
+        execute_update(
             """
             INSERT INTO gear_repair_ticket_history (
                 ticket_id, previous_status, new_status, action, notes, changed_by_user_id
@@ -1835,7 +1907,7 @@ def _log_audit(
 ) -> None:
     """Log an audit entry."""
     try:
-        execute_insert(
+        execute_update(
             """
             INSERT INTO gear_audit_log (
                 organization_id, action, entity_type, entity_id, user_id,
@@ -1898,3 +1970,731 @@ def get_audit_log(
         """,
         params
     )
+
+
+# ============================================================================
+# CHECK-IN WORKFLOW SERVICES
+# ============================================================================
+
+def get_user_active_checkouts(org_id: str, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Get all assets currently checked out to a user with full transaction details.
+    Returns transactions with items, overdue status, and expected return info.
+    """
+    transactions = execute_query(
+        """
+        SELECT t.*,
+               p.display_name as initiated_by_name,
+               l.name as destination_location_name,
+               proj.title as project_name,
+               t.handed_off_at as checked_out_at,
+               CASE
+                   WHEN t.expected_return_at IS NOT NULL AND t.expected_return_at < NOW()
+                   THEN TRUE
+                   ELSE FALSE
+               END as is_overdue,
+               CASE
+                   WHEN t.expected_return_at IS NOT NULL AND t.expected_return_at < NOW()
+                   THEN EXTRACT(DAY FROM NOW() - t.expected_return_at)::INTEGER
+                   ELSE 0
+               END as days_overdue
+        FROM gear_transactions t
+        LEFT JOIN profiles p ON p.id = t.initiated_by_user_id
+        LEFT JOIN gear_locations l ON l.id = t.destination_location_id
+        LEFT JOIN backlot_projects proj ON proj.id = t.backlot_project_id
+        WHERE t.organization_id = :org_id
+          AND t.primary_custodian_user_id = :user_id
+          AND t.transaction_type IN ('internal_checkout', 'rental_pickup')
+          AND t.status IN ('in_progress', 'completed')
+          AND t.returned_at IS NULL
+        ORDER BY t.expected_return_at ASC NULLS LAST, t.created_at DESC
+        """,
+        {"org_id": org_id, "user_id": user_id}
+    )
+
+    # Get items for each transaction
+    for tx in transactions:
+        items = execute_query(
+            """
+            SELECT ti.*,
+                   a.name as asset_name,
+                   a.internal_id as asset_internal_id,
+                   a.manufacturer_serial as serial_number,
+                   a.make, a.model, a.barcode,
+                   a.default_home_location_id,
+                   hl.name as home_location_name,
+                   cat.name as category_name,
+                   ki.name as kit_name,
+                   ki.internal_id as kit_internal_id
+            FROM gear_transaction_items ti
+            LEFT JOIN gear_assets a ON a.id = ti.asset_id
+            LEFT JOIN gear_locations hl ON hl.id = a.default_home_location_id
+            LEFT JOIN gear_categories cat ON cat.id = a.category_id
+            LEFT JOIN gear_kit_instances ki ON ki.id = ti.kit_instance_id
+            WHERE ti.transaction_id = :tx_id
+              AND ti.scanned_in_at IS NULL
+            ORDER BY ti.created_at
+            """,
+            {"tx_id": tx["id"]}
+        )
+        tx["items"] = items
+        tx["item_count"] = len(items)
+
+    return transactions
+
+
+def get_transaction_for_checkin(
+    org_id: str,
+    transaction_id: str = None,
+    asset_barcode: str = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Lookup checkout transaction by ID or by scanning any checked-out asset.
+    Returns full transaction with items suitable for check-in.
+    """
+    tx_id = transaction_id
+
+    # If barcode provided, find the transaction
+    if asset_barcode and not transaction_id:
+        asset = execute_single(
+            """
+            SELECT a.id, ti.transaction_id
+            FROM gear_assets a
+            JOIN gear_transaction_items ti ON ti.asset_id = a.id
+            JOIN gear_transactions t ON t.id = ti.transaction_id
+            WHERE a.organization_id = :org_id
+              AND (a.barcode = :barcode OR a.internal_id = :barcode)
+              AND a.status = 'checked_out'
+              AND t.returned_at IS NULL
+              AND ti.scanned_in_at IS NULL
+            ORDER BY t.created_at DESC
+            LIMIT 1
+            """,
+            {"org_id": org_id, "barcode": asset_barcode}
+        )
+        if asset:
+            tx_id = asset["transaction_id"]
+
+    if not tx_id:
+        return None
+
+    # Get full transaction details
+    tx = execute_single(
+        """
+        SELECT t.*,
+               o.name as org_name,
+               p.display_name as initiated_by_name,
+               cp.display_name as primary_custodian_name,
+               NULLIF(TRIM(CONCAT(gc.first_name, ' ', gc.last_name)), '') as custodian_contact_name,
+               gc.company as custodian_contact_company,
+               l.name as destination_location_name,
+               proj.title as project_name,
+               t.handed_off_at as checked_out_at,
+               CASE
+                   WHEN t.expected_return_at IS NOT NULL AND t.expected_return_at < NOW()
+                   THEN TRUE
+                   ELSE FALSE
+               END as is_overdue,
+               CASE
+                   WHEN t.expected_return_at IS NOT NULL AND t.expected_return_at < NOW()
+                   THEN EXTRACT(DAY FROM NOW() - t.expected_return_at)::INTEGER
+                   ELSE 0
+               END as days_overdue
+        FROM gear_transactions t
+        LEFT JOIN organizations o ON o.id = t.organization_id
+        LEFT JOIN profiles p ON p.id = t.initiated_by_user_id
+        LEFT JOIN profiles cp ON cp.id = t.primary_custodian_user_id
+        LEFT JOIN gear_organization_contacts gc ON gc.id = t.custodian_contact_id
+        LEFT JOIN gear_locations l ON l.id = t.destination_location_id
+        LEFT JOIN backlot_projects proj ON proj.id = t.backlot_project_id
+        WHERE t.id = :tx_id
+          AND t.organization_id = :org_id
+        """,
+        {"tx_id": tx_id, "org_id": org_id}
+    )
+
+    if not tx:
+        return None
+
+    # Get items not yet checked in
+    items = execute_query(
+        """
+        SELECT ti.*,
+               a.name as asset_name,
+               a.internal_id as asset_internal_id,
+               a.manufacturer_serial as serial_number,
+               a.make, a.model, a.barcode,
+               a.default_home_location_id,
+               hl.name as home_location_name,
+               cat.name as category_name,
+               ki.name as kit_name,
+               ki.internal_id as kit_internal_id
+        FROM gear_transaction_items ti
+        LEFT JOIN gear_assets a ON a.id = ti.asset_id
+        LEFT JOIN gear_locations hl ON hl.id = a.default_home_location_id
+        LEFT JOIN gear_categories cat ON cat.id = a.category_id
+        LEFT JOIN gear_kit_instances ki ON ki.id = ti.kit_instance_id
+        WHERE ti.transaction_id = :tx_id
+        ORDER BY ti.created_at
+        """,
+        {"tx_id": tx_id}
+    )
+    tx["items"] = items
+    tx["items_pending_return"] = [i for i in items if not i.get("scanned_in_at")]
+    tx["items_already_returned"] = [i for i in items if i.get("scanned_in_at")]
+
+    return tx
+
+
+def check_checkin_permission(
+    org_id: str,
+    user_id: str,
+    custodian_id: str
+) -> Dict[str, Any]:
+    """
+    Check if user can perform check-in based on org settings.
+    Returns: {allowed: bool, reason: str, permission_level: str}
+    """
+    # Get org settings
+    settings = execute_single(
+        """
+        SELECT checkin_permission_level
+        FROM gear_organization_settings
+        WHERE organization_id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    permission_level = settings.get("checkin_permission_level", "anyone") if settings else "anyone"
+
+    # Check based on permission level
+    if permission_level == "anyone":
+        return {"allowed": True, "reason": None, "permission_level": permission_level}
+
+    if permission_level == "custodian_only":
+        if user_id == custodian_id:
+            return {"allowed": True, "reason": None, "permission_level": permission_level}
+        return {
+            "allowed": False,
+            "reason": "Only the custodian can return these items",
+            "permission_level": permission_level
+        }
+
+    if permission_level == "custodian_and_admins":
+        if user_id == custodian_id:
+            return {"allowed": True, "reason": None, "permission_level": permission_level}
+
+        # Check if user is admin/owner/manager
+        member = execute_single(
+            """
+            SELECT role FROM organization_members
+            WHERE organization_id = :org_id AND user_id = :user_id
+            """,
+            {"org_id": org_id, "user_id": user_id}
+        )
+
+        if member and member.get("role") in ("owner", "admin", "manager"):
+            return {"allowed": True, "reason": None, "permission_level": permission_level}
+
+        return {
+            "allowed": False,
+            "reason": "Only the custodian or an admin can return these items",
+            "permission_level": permission_level
+        }
+
+    return {"allowed": True, "reason": None, "permission_level": permission_level}
+
+
+def calculate_late_fees(
+    org_id: str,
+    transaction_id: str,
+    return_date: datetime = None
+) -> Dict[str, Any]:
+    """
+    Calculate late fees for a rental transaction.
+    Returns: {late_days, late_fee_amount, within_grace_period, expected_return, actual_return}
+    """
+    # Get org settings and transaction
+    settings = execute_single(
+        """
+        SELECT late_fee_per_day, late_grace_period_hours
+        FROM gear_organization_settings
+        WHERE organization_id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    tx = execute_single(
+        """
+        SELECT expected_return_at, transaction_type
+        FROM gear_transactions
+        WHERE id = :tx_id
+        """,
+        {"tx_id": transaction_id}
+    )
+
+    if not tx or not tx.get("expected_return_at"):
+        return {
+            "late_days": 0,
+            "late_fee_amount": 0,
+            "within_grace_period": True,
+            "expected_return": None,
+            "actual_return": return_date
+        }
+
+    expected = tx["expected_return_at"]
+    # Parse string to datetime if needed (database may return string)
+    if isinstance(expected, str):
+        expected = datetime.fromisoformat(expected.replace('Z', '+00:00'))
+    # Ensure expected is timezone-aware (assume UTC if naive)
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    actual = return_date or datetime.now(timezone.utc)
+    # Ensure actual is timezone-aware
+    if actual.tzinfo is None:
+        actual = actual.replace(tzinfo=timezone.utc)
+    fee_per_day = float(settings.get("late_fee_per_day", 0)) if settings else 0
+    grace_hours = int(settings.get("late_grace_period_hours", 0)) if settings else 0
+
+    # Add grace period
+    expected_with_grace = expected + timedelta(hours=grace_hours) if grace_hours else expected
+
+    if actual <= expected_with_grace:
+        return {
+            "late_days": 0,
+            "late_fee_amount": 0,
+            "within_grace_period": True,
+            "expected_return": expected.isoformat() if expected else None,
+            "actual_return": actual.isoformat() if actual else None
+        }
+
+    # Calculate late days (round up partial days)
+    late_delta = actual - expected
+    late_days = late_delta.days + (1 if late_delta.seconds > 0 else 0)
+    late_fee = late_days * fee_per_day
+
+    return {
+        "late_days": late_days,
+        "late_fee_amount": round(late_fee, 2),
+        "within_grace_period": False,
+        "expected_return": expected.isoformat() if expected else None,
+        "actual_return": actual.isoformat() if actual else None
+    }
+
+
+def create_late_return_incident(
+    org_id: str,
+    transaction_id: str,
+    reported_by: str,
+    late_days: int,
+    late_fee_amount: float = 0
+) -> Optional[Dict[str, Any]]:
+    """
+    Create an incident for late return.
+    Links to transaction and returns the created incident.
+    """
+    # Get transaction details
+    tx = execute_single(
+        """
+        SELECT t.*, p.display_name as custodian_name
+        FROM gear_transactions t
+        LEFT JOIN profiles p ON p.id = t.primary_custodian_user_id
+        WHERE t.id = :tx_id
+        """,
+        {"tx_id": transaction_id}
+    )
+
+    if not tx:
+        return None
+
+    description = f"Late return: {late_days} day(s) overdue"
+    if late_fee_amount > 0:
+        description += f". Late fee: ${late_fee_amount:.2f}"
+
+    incident = execute_insert(
+        """
+        INSERT INTO gear_incidents (
+            organization_id, transaction_id, incident_type,
+            reported_by_user_id, assigned_user_id, status,
+            description, severity
+        ) VALUES (
+            :org_id, :tx_id, 'late_return',
+            :reported_by, :custodian_id, 'open',
+            :description, 'low'
+        )
+        RETURNING *
+        """,
+        {
+            "org_id": org_id,
+            "tx_id": transaction_id,
+            "reported_by": reported_by,
+            "custodian_id": tx.get("primary_custodian_user_id"),
+            "description": description
+        }
+    )
+
+    # Update transaction with incident reference
+    if incident:
+        execute_update(
+            """
+            UPDATE gear_transactions
+            SET late_incident_id = :incident_id,
+                is_overdue = TRUE,
+                late_days = :late_days,
+                late_fee_amount = :late_fee
+            WHERE id = :tx_id
+            """,
+            {
+                "incident_id": incident["id"],
+                "late_days": late_days,
+                "late_fee": late_fee_amount,
+                "tx_id": transaction_id
+            }
+        )
+
+    _log_audit(org_id, "late_return_incident", "incident", incident["id"] if incident else None, reported_by)
+
+    return incident
+
+
+def process_damage_on_checkin(
+    org_id: str,
+    asset_id: str,
+    damage_tier: str,
+    description: str,
+    photos: List[str],
+    reported_by: str,
+    transaction_id: str
+) -> Dict[str, Any]:
+    """
+    Process damage found during check-in.
+    - Creates incident
+    - Creates repair ticket for functional/unsafe
+    - Updates asset status based on tier
+    Returns: {incident, repair_ticket, asset_status}
+    """
+    result = {
+        "incident": None,
+        "repair_ticket": None,
+        "asset_status": "available"
+    }
+
+    # Get asset info
+    asset = execute_single(
+        """
+        SELECT * FROM gear_assets WHERE id = :asset_id
+        """,
+        {"asset_id": asset_id}
+    )
+
+    if not asset:
+        return result
+
+    # Determine severity and asset status based on damage tier
+    severity_map = {
+        "cosmetic": "low",
+        "functional": "medium",
+        "unsafe": "high"
+    }
+    severity = severity_map.get(damage_tier, "medium")
+
+    # Determine new asset status
+    if damage_tier == "cosmetic":
+        new_status = "available"  # Cosmetic damage doesn't prevent use
+    elif damage_tier in ("functional", "unsafe"):
+        new_status = "under_repair"
+    else:
+        new_status = "available"
+
+    result["asset_status"] = new_status
+
+    # Create incident
+    incident = execute_insert(
+        """
+        INSERT INTO gear_incidents (
+            organization_id, asset_id, transaction_id, incident_type,
+            reported_by_user_id, status, description, severity,
+            damage_tier, photos
+        ) VALUES (
+            :org_id, :asset_id, :tx_id, 'damage',
+            :reported_by, 'open', :description, :severity,
+            :damage_tier, :photos
+        )
+        RETURNING *
+        """,
+        {
+            "org_id": org_id,
+            "asset_id": asset_id,
+            "tx_id": transaction_id,
+            "reported_by": reported_by,
+            "description": description,
+            "severity": severity,
+            "damage_tier": damage_tier,
+            "photos": photos
+        }
+    )
+    result["incident"] = incident
+
+    # Create repair ticket for functional/unsafe damage
+    if damage_tier in ("functional", "unsafe"):
+        repair_priority = "urgent" if damage_tier == "unsafe" else "normal"
+
+        repair_ticket = execute_insert(
+            """
+            INSERT INTO gear_repair_tickets (
+                organization_id, asset_id, incident_id,
+                reported_by_user_id, status, priority,
+                description, photos
+            ) VALUES (
+                :org_id, :asset_id, :incident_id,
+                :reported_by, 'open', :priority,
+                :description, :photos
+            )
+            RETURNING *
+            """,
+            {
+                "org_id": org_id,
+                "asset_id": asset_id,
+                "incident_id": incident["id"] if incident else None,
+                "reported_by": reported_by,
+                "priority": repair_priority,
+                "description": f"Damage found on check-in: {description}",
+                "photos": photos
+            }
+        )
+        result["repair_ticket"] = repair_ticket
+
+    # Update asset status
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET status = :status, updated_at = NOW()
+        WHERE id = :asset_id
+        """,
+        {"asset_id": asset_id, "status": new_status}
+    )
+
+    _log_audit(org_id, "damage_reported", "asset", asset_id, reported_by, {
+        "damage_tier": damage_tier,
+        "incident_id": incident["id"] if incident else None,
+        "repair_ticket_id": result["repair_ticket"]["id"] if result["repair_ticket"] else None
+    })
+
+    return result
+
+
+def complete_checkin_with_condition(
+    org_id: str,
+    transaction_id: str,
+    user_id: str,
+    items_to_return: List[str],
+    condition_reports: List[Dict] = None,
+    location_id: str = None,
+    notes: str = None
+) -> Dict[str, Any]:
+    """
+    Complete check-in with condition assessment for each item.
+    Handles partial returns, late fees, and damage routing.
+
+    Args:
+        items_to_return: List of asset_ids being returned
+        condition_reports: List of {asset_id, condition_grade, damage_tier?, damage_description?, photos?}
+        location_id: Override return location (defaults to asset home location)
+        notes: Check-in notes
+    """
+    tx = get_transaction_for_checkin(org_id, transaction_id)
+    if not tx:
+        return {"error": "Transaction not found"}
+
+    result = {
+        "transaction": None,
+        "items_returned": [],
+        "items_not_returned": [],
+        "late_fee": None,
+        "late_incident": None,
+        "damage_reports": [],
+        "partial_return": False
+    }
+
+    # Check if partial return
+    all_item_ids = [i["asset_id"] for i in tx.get("items_pending_return", []) if i.get("asset_id")]
+    is_partial = set(items_to_return) != set(all_item_ids)
+    result["partial_return"] = is_partial
+    result["items_not_returned"] = [i for i in all_item_ids if i not in items_to_return]
+
+    # Calculate late fees
+    late_info = calculate_late_fees(org_id, transaction_id)
+    result["late_fee"] = late_info
+
+    # Create late incident if applicable
+    settings = execute_single(
+        """
+        SELECT late_return_auto_incident
+        FROM gear_organization_settings
+        WHERE organization_id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    if late_info["late_days"] > 0 and settings and settings.get("late_return_auto_incident", True):
+        late_incident = create_late_return_incident(
+            org_id, transaction_id, user_id,
+            late_info["late_days"], late_info["late_fee_amount"]
+        )
+        result["late_incident"] = late_incident
+
+    # Process each item being returned
+    condition_map = {c["asset_id"]: c for c in (condition_reports or [])}
+
+    for item in tx.get("items_pending_return", []):
+        asset_id = item.get("asset_id")
+        if not asset_id or asset_id not in items_to_return:
+            continue
+
+        condition = condition_map.get(asset_id, {})
+        return_location = location_id or item.get("default_home_location_id")
+
+        # Process damage if reported
+        if condition.get("damage_tier"):
+            damage_result = process_damage_on_checkin(
+                org_id=org_id,
+                asset_id=asset_id,
+                damage_tier=condition["damage_tier"],
+                description=condition.get("damage_description", ""),
+                photos=condition.get("photos", []),
+                reported_by=user_id,
+                transaction_id=transaction_id
+            )
+            result["damage_reports"].append({
+                "asset_id": asset_id,
+                **damage_result
+            })
+            new_status = damage_result["asset_status"]
+        else:
+            new_status = "available"
+
+        # Update transaction item - mark as scanned in
+        execute_update(
+            """
+            UPDATE gear_transaction_items
+            SET scanned_in_at = NOW(),
+                scanned_in_by = :user_id,
+                condition_in = :condition
+            WHERE transaction_id = :tx_id AND asset_id = :asset_id
+            """,
+            {
+                "tx_id": transaction_id,
+                "asset_id": asset_id,
+                "user_id": user_id,
+                "condition": condition.get("condition_grade", "good")
+            }
+        )
+
+        # Update asset status and location (unless damaged)
+        if new_status == "available":
+            execute_update(
+                """
+                UPDATE gear_assets
+                SET status = 'available',
+                    current_custodian_user_id = NULL,
+                    current_location_id = COALESCE(:location_id, default_home_location_id, current_location_id),
+                    updated_at = NOW()
+                WHERE id = :asset_id
+                """,
+                {"asset_id": asset_id, "location_id": return_location}
+            )
+
+        result["items_returned"].append(asset_id)
+
+    # Update transaction
+    update_fields = {
+        "checkin_location_id": location_id,
+        "partial_return": is_partial,
+        "items_not_returned": len(result["items_not_returned"]),
+        "late_days": late_info["late_days"],
+        "late_fee_amount": late_info["late_fee_amount"],
+        "is_overdue": late_info["late_days"] > 0
+    }
+
+    # If all items returned, mark transaction complete
+    if not is_partial:
+        update_fields["returned_at"] = "NOW()"
+        update_fields["reconciled_at"] = "NOW()"
+        update_fields["status"] = "completed"
+
+    # Build update query
+    set_clauses = []
+    params = {"tx_id": transaction_id}
+    for key, val in update_fields.items():
+        if val == "NOW()":
+            set_clauses.append(f"{key} = NOW()")
+        else:
+            set_clauses.append(f"{key} = :{key}")
+            params[key] = val
+
+    if notes:
+        set_clauses.append("notes = COALESCE(notes || E'\\n', '') || :notes")
+        params["notes"] = f"[Check-in] {notes}"
+
+    execute_update(
+        f"""
+        UPDATE gear_transactions
+        SET {', '.join(set_clauses)}, updated_at = NOW()
+        WHERE id = :tx_id
+        """,
+        params
+    )
+
+    _log_audit(org_id, "checkin_complete", "transaction", transaction_id, user_id, {
+        "items_returned": len(result["items_returned"]),
+        "partial": is_partial,
+        "late_days": late_info["late_days"]
+    })
+
+    result["transaction"] = get_transaction(transaction_id)
+    return result
+
+
+def get_checkin_settings(org_id: str) -> Dict[str, Any]:
+    """Get check-in related settings for an organization."""
+    settings = execute_single(
+        """
+        SELECT
+            checkin_permission_level,
+            checkin_verification_required,
+            checkin_verify_method,
+            checkin_kit_verification,
+            checkin_discrepancy_action,
+            require_condition_on_checkin,
+            partial_return_policy,
+            late_return_auto_incident,
+            late_fee_per_day,
+            late_grace_period_hours,
+            notify_on_checkin,
+            notify_late_return,
+            notify_damage_found
+        FROM gear_organization_settings
+        WHERE organization_id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    # Return defaults if no settings found
+    if not settings:
+        return {
+            "checkin_permission_level": "anyone",
+            "checkin_verification_required": False,
+            "checkin_verify_method": "scan_or_checkoff",
+            "checkin_kit_verification": "kit_only",
+            "checkin_discrepancy_action": "warn",
+            "require_condition_on_checkin": False,
+            "partial_return_policy": "allow",
+            "late_return_auto_incident": True,
+            "late_fee_per_day": 0,
+            "late_grace_period_hours": 0,
+            "notify_on_checkin": True,
+            "notify_late_return": True,
+            "notify_damage_found": True
+        }
+
+    return settings

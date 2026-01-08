@@ -1,0 +1,218 @@
+{
+  "config": {
+    "configFile": "/home/estro/second-watch-network/frontend/playwright.config.ts",
+    "rootDir": "/home/estro/second-watch-network/frontend/tests/e2e",
+    "forbidOnly": false,
+    "fullyParallel": true,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "html",
+        {
+          "outputFolder": "playwright-report"
+        }
+      ],
+      [
+        "json",
+        {
+          "outputFile": "test-results/results.json"
+        }
+      ],
+      [
+        "list",
+        null
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "/home/estro/second-watch-network/frontend/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/home/estro/second-watch-network/frontend/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      },
+      {
+        "outputDir": "/home/estro/second-watch-network/frontend/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "firefox",
+        "name": "firefox",
+        "testDir": "/home/estro/second-watch-network/frontend/tests/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 30000
+      }
+    ],
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.57.0",
+    "workers": 6,
+    "webServer": {
+      "command": "npm run dev",
+      "url": "http://localhost:8080",
+      "reuseExistingServer": true,
+      "timeout": 120000
+    }
+  },
+  "suites": [
+    {
+      "title": "gear-modal-visual-inspection.spec.ts",
+      "file": "gear-modal-visual-inspection.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "Create Asset Modal - Visual Comparison",
+          "file": "gear-modal-visual-inspection.spec.ts",
+          "line": 447,
+          "column": 6,
+          "specs": [
+            {
+              "title": "should demonstrate modal containment issue and fix",
+              "ok": false,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 30000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "firefox",
+                  "projectName": "firefox",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "timedOut",
+                      "duration": 30099,
+                      "error": {
+                        "message": "\u001b[31mTest timeout of 30000ms exceeded.\u001b[39m",
+                        "stack": "\u001b[31mTest timeout of 30000ms exceeded.\u001b[39m"
+                      },
+                      "errors": [
+                        {
+                          "message": "\u001b[31mTest timeout of 30000ms exceeded.\u001b[39m"
+                        },
+                        {
+                          "location": {
+                            "file": "/home/estro/second-watch-network/frontend/tests/e2e/gear-modal-visual-inspection.spec.ts",
+                            "column": 16,
+                            "line": 505
+                          },
+                          "message": "Error: page.click: Test timeout of 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('.dialog-overlay')\u001b[22m\n\u001b[2m    - locator resolved to 2 elements. Proceeding with the first one: <div class=\"dialog-overlay\"></div>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <form>…</form> from <div class=\"dialog-content\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <form>…</form> from <div class=\"dialog-content\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    54 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m       - element is visible, enabled and stable\u001b[22m\n\u001b[2m       - scrolling into view if needed\u001b[22m\n\u001b[2m       - done scrolling\u001b[22m\n\u001b[2m       - <form>…</form> from <div class=\"dialog-content\">…</div> subtree intercepts pointer events\u001b[22m\n\u001b[2m     - retrying click action\u001b[22m\n\u001b[2m       - waiting 500ms\u001b[22m\n\n\n  503 |\n  504 |     // Close broken modal\n> 505 |     await page.click('.dialog-overlay');\n      |                ^\n  506 |     await page.waitForTimeout(300);\n  507 |\n  508 |     // Test FIXED modal\n    at /home/estro/second-watch-network/frontend/tests/e2e/gear-modal-visual-inspection.spec.ts:505:16"
+                        }
+                      ],
+                      "stdout": [
+                        {
+                          "text": "\n========================================\n"
+                        },
+                        {
+                          "text": "VISUAL COMPARISON TEST\n"
+                        },
+                        {
+                          "text": "========================================\n\n"
+                        },
+                        {
+                          "text": "Screenshot: 01-landing-page.png\n"
+                        },
+                        {
+                          "text": "\nTesting BROKEN modal (current implementation)...\n"
+                        },
+                        {
+                          "text": "Screenshot: 02-broken-modal-initial.png\n"
+                        },
+                        {
+                          "text": "Screenshot: 03-broken-modal-expanded.png\n"
+                        },
+                        {
+                          "text": "\nBroken Modal Dimensions:\n"
+                        },
+                        {
+                          "text": "  Width: 576px\n"
+                        },
+                        {
+                          "text": "  Height: 720px\n"
+                        },
+                        {
+                          "text": "  Bottom: 760px\n"
+                        },
+                        {
+                          "text": "  Viewport height: 800px\n"
+                        }
+                      ],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-01-06T22:21:54.095Z",
+                      "annotations": [],
+                      "attachments": [
+                        {
+                          "name": "screenshot",
+                          "contentType": "image/png",
+                          "path": "/home/estro/second-watch-network/frontend/test-results/gear-modal-visual-inspecti-0e5e5-l-containment-issue-and-fix-firefox/test-failed-1.png"
+                        },
+                        {
+                          "name": "video",
+                          "contentType": "video/webm",
+                          "path": "/home/estro/second-watch-network/frontend/test-results/gear-modal-visual-inspecti-0e5e5-l-containment-issue-and-fix-firefox/video.webm"
+                        },
+                        {
+                          "name": "error-context",
+                          "contentType": "text/markdown",
+                          "path": "/home/estro/second-watch-network/frontend/test-results/gear-modal-visual-inspecti-0e5e5-l-containment-issue-and-fix-firefox/error-context.md"
+                        }
+                      ]
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ],
+              "id": "5f3d1b58434ef82b5e23-3c7c79556c139527ea5c",
+              "file": "gear-modal-visual-inspection.spec.ts",
+              "line": 452,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-01-06T22:21:53.321Z",
+    "duration": 31689.915,
+    "expected": 0,
+    "skipped": 0,
+    "unexpected": 1,
+    "flaky": 0
+  }
+}

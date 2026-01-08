@@ -18,6 +18,8 @@ import {
   QrCode,
   BarChart3,
   Clock,
+  Building2,
+  Store,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -33,16 +35,20 @@ import { cn } from '@/lib/utils';
 import { AssetsView } from '@/components/gear/workspace/AssetsView';
 import { KitsView } from '@/components/gear/workspace/KitsView';
 import { TransactionsView } from '@/components/gear/workspace/TransactionsView';
+import { ClientsView } from '@/components/gear/workspace/ClientsView';
 import { IncidentsView } from '@/components/gear/workspace/IncidentsView';
 import { RepairsView } from '@/components/gear/workspace/RepairsView';
 import { StrikesView } from '@/components/gear/workspace/StrikesView';
 import { SettingsView } from '@/components/gear/workspace/SettingsView';
 import { LabelsView } from '@/components/gear/workspace/LabelsView';
+import { MarketplaceView } from '@/components/gear/marketplace';
 
 type WorkspaceTab =
   | 'assets'
   | 'kits'
   | 'transactions'
+  | 'marketplace'
+  | 'clients'
   | 'incidents'
   | 'repairs'
   | 'strikes'
@@ -53,6 +59,8 @@ const TABS: { id: WorkspaceTab; label: string; icon: React.ReactNode }[] = [
   { id: 'assets', label: 'Assets', icon: <Box className="w-4 h-4" /> },
   { id: 'kits', label: 'Kits', icon: <Layers className="w-4 h-4" /> },
   { id: 'transactions', label: 'Transactions', icon: <ArrowRightLeft className="w-4 h-4" /> },
+  { id: 'marketplace', label: 'Marketplace', icon: <Store className="w-4 h-4" /> },
+  { id: 'clients', label: 'Clients', icon: <Building2 className="w-4 h-4" /> },
   { id: 'incidents', label: 'Incidents', icon: <AlertTriangle className="w-4 h-4" /> },
   { id: 'repairs', label: 'Repairs', icon: <Wrench className="w-4 h-4" /> },
   { id: 'strikes', label: 'Strikes', icon: <Shield className="w-4 h-4" /> },
@@ -122,9 +130,11 @@ export default function GearWorkspacePage() {
                 )}
                 <div>
                   <h1 className="text-xl font-bold text-bone-white">{organization.name}</h1>
-                  <p className="text-sm text-muted-gray capitalize">
-                    {organization.organization_type.replace('_', ' ')}
-                  </p>
+                  {organization.description && (
+                    <p className="text-sm text-muted-gray line-clamp-1">
+                      {organization.description}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -167,7 +177,15 @@ export default function GearWorkspacePage() {
           </TabsContent>
 
           <TabsContent value="transactions">
-            <TransactionsView orgId={orgId!} />
+            <TransactionsView orgId={orgId!} orgType={organization.org_type} />
+          </TabsContent>
+
+          <TabsContent value="marketplace">
+            <MarketplaceView orgId={orgId!} onGoToSettings={() => setActiveTab('settings')} />
+          </TabsContent>
+
+          <TabsContent value="clients">
+            <ClientsView orgId={orgId!} orgType={organization.org_type} />
           </TabsContent>
 
           <TabsContent value="incidents">

@@ -2,7 +2,8 @@
  * Assets View
  * Main view for managing gear assets within an organization
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '@/context/AuthContext';
 import {
   Box,
   Plus,
@@ -21,6 +22,18 @@ import {
   XCircle,
   Loader2,
   ScanLine,
+  MapPin,
+  Check,
+  Barcode,
+  Printer,
+  RefreshCw,
+  ExternalLink,
+  ListPlus,
+  Store,
+  Camera,
+  Upload,
+  X,
+  ImagePlus,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -30,6 +43,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -69,6 +83,8 @@ import {
   useGearLocations,
   useGearScanLookup,
   useGearAssetStats,
+  useGearLabels,
+  useGearPrintQueue,
 } from '@/hooks/gear';
 import type {
   GearAsset,
@@ -78,6 +94,9 @@ import type {
   CreateAssetInput,
 } from '@/types/gear';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
+import { BatchPrintModal } from './BatchPrintModal';
+import { CreateListingDialog } from '../marketplace/CreateListingDialog';
 
 // ============================================================================
 // STATUS & CONDITION CONFIG
@@ -142,6 +161,70 @@ const ASSET_TYPE_LABELS: Record<AssetType, string> = {
 };
 
 // ============================================================================
+// AUTHENTICATED IMAGE COMPONENT
+// ============================================================================
+
+interface AuthenticatedImageProps {
+  src: string;
+  alt: string;
+  className?: string;
+}
+
+function AuthenticatedImage({ src, alt, className }: AuthenticatedImageProps) {
+  const { session } = useAuth();
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!session?.access_token || !src) return;
+
+    const fetchImage = async () => {
+      setIsLoading(true);
+      setError(false);
+      try {
+        const response = await fetch(src, {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+        if (!response.ok) throw new Error('Failed to fetch image');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        setImageSrc(url);
+      } catch {
+        setError(true);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchImage();
+
+    // Cleanup
+    return () => {
+      if (imageSrc) {
+        URL.revokeObjectURL(imageSrc);
+      }
+    };
+  }, [src, session?.access_token]);
+
+  if (isLoading) {
+    return <Skeleton className={className} />;
+  }
+
+  if (error || !imageSrc) {
+    return (
+      <div className={cn('flex items-center justify-center bg-gray-100 text-gray-400', className)}>
+        <AlertCircle className="w-6 h-6" />
+      </div>
+    );
+  }
+
+  return <img src={imageSrc} alt={alt} className={className} />;
+}
+
+// ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
@@ -157,7 +240,18 @@ export function AssetsView({ orgId }: AssetsViewProps) {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
 
+  // Multi-select state for batch operations
+  const [selectedAssets, setSelectedAssets] = useState<Set<string>>(new Set());
+  const [isBatchPrintModalOpen, setIsBatchPrintModalOpen] = useState(false);
+  const [queueAddedCount, setQueueAddedCount] = useState<number | null>(null);
+
+  // Marketplace listing state
+  const [isListingDialogOpen, setIsListingDialogOpen] = useState(false);
+  const [assetToList, setAssetToList] = useState<GearAsset | null>(null);
+  const [assetsToList, setAssetsToList] = useState<GearAsset[]>([]);
+
   const { categories } = useGearCategories(orgId);
+  const { addToQueue } = useGearPrintQueue(orgId);
   const { assets, isLoading, createAsset } = useGearAssets({
     orgId,
     status: statusFilter === 'all' ? undefined : statusFilter,
@@ -165,6 +259,66 @@ export function AssetsView({ orgId }: AssetsViewProps) {
     search: searchTerm || undefined,
   });
   const { data: stats } = useGearAssetStats(orgId);
+
+  // Selection handlers for batch operations
+  const toggleAsset = (assetId: string) => {
+    const newSelected = new Set(selectedAssets);
+    if (newSelected.has(assetId)) {
+      newSelected.delete(assetId);
+    } else {
+      newSelected.add(assetId);
+    }
+    setSelectedAssets(newSelected);
+  };
+
+  const toggleAll = () => {
+    if (selectedAssets.size === assets.length && assets.length > 0) {
+      setSelectedAssets(new Set());
+    } else {
+      setSelectedAssets(new Set(assets.map((a) => a.id)));
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedAssets(new Set());
+  };
+
+  const handleAddToQueue = async () => {
+    if (selectedAssets.size === 0) return;
+    try {
+      await addToQueue.mutateAsync({
+        asset_ids: Array.from(selectedAssets),
+      });
+      setQueueAddedCount(selectedAssets.size);
+      clearSelection();
+      // Clear the success message after 3 seconds
+      setTimeout(() => setQueueAddedCount(null), 3000);
+    } catch (error) {
+      console.error('Failed to add to queue:', error);
+    }
+  };
+
+  // Marketplace listing handlers
+  const handleListAsset = (asset: GearAsset) => {
+    setAssetToList(asset);
+    setAssetsToList([]);
+    setIsListingDialogOpen(true);
+  };
+
+  const handleBulkListAssets = () => {
+    if (selectedAssets.size === 0) return;
+    const selectedAssetsList = assets.filter(a => selectedAssets.has(a.id));
+    setAssetToList(null);
+    setAssetsToList(selectedAssetsList);
+    setIsListingDialogOpen(true);
+  };
+
+  const handleListingDialogClose = () => {
+    setIsListingDialogOpen(false);
+    setAssetToList(null);
+    setAssetsToList([]);
+    clearSelection();
+  };
 
   return (
     <div className="space-y-6">
@@ -242,6 +396,56 @@ export function AssetsView({ orgId }: AssetsViewProps) {
         </Button>
       </div>
 
+      {/* Queue Added Success Message */}
+      {queueAddedCount !== null && (
+        <div className="flex items-center gap-2 p-3 bg-green-500/10 rounded-lg border border-green-500/30">
+          <CheckCircle2 className="w-4 h-4 text-green-400" />
+          <span className="text-sm text-green-400">
+            Added {queueAddedCount} asset{queueAddedCount !== 1 ? 's' : ''} to print queue
+          </span>
+        </div>
+      )}
+
+      {/* Selection Toolbar - shows when items selected */}
+      {selectedAssets.size > 0 && (
+        <div className="flex items-center gap-4 p-3 bg-accent-yellow/10 rounded-lg border border-accent-yellow/30">
+          <span className="text-sm font-medium text-bone-white">
+            {selectedAssets.size} asset{selectedAssets.size !== 1 ? 's' : ''} selected
+          </span>
+          <div className="flex-1" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleAddToQueue}
+            disabled={addToQueue.isPending}
+          >
+            {addToQueue.isPending ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <ListPlus className="w-4 h-4 mr-2" />
+            )}
+            Add to Queue
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleBulkListAssets}
+            className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+          >
+            <Store className="w-4 h-4 mr-2" />
+            List for Rent
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setIsBatchPrintModalOpen(true)}>
+            <Printer className="w-4 h-4 mr-2" />
+            Print Labels
+          </Button>
+          <Button variant="ghost" size="sm" onClick={clearSelection}>
+            <XCircle className="w-4 h-4 mr-2" />
+            Clear
+          </Button>
+        </div>
+      )}
+
       {/* Assets Table */}
       {isLoading ? (
         <div className="space-y-2">
@@ -272,6 +476,13 @@ export function AssetsView({ orgId }: AssetsViewProps) {
           <Table>
             <TableHeader>
               <TableRow className="border-muted-gray/30 hover:bg-transparent">
+                <TableHead className="w-10">
+                  <Checkbox
+                    checked={selectedAssets.size === assets.length && assets.length > 0}
+                    onCheckedChange={toggleAll}
+                    aria-label="Select all"
+                  />
+                </TableHead>
                 <TableHead>Asset</TableHead>
                 <TableHead>Internal ID</TableHead>
                 <TableHead>Category</TableHead>
@@ -286,7 +497,10 @@ export function AssetsView({ orgId }: AssetsViewProps) {
                 <AssetRow
                   key={asset.id}
                   asset={asset}
+                  isSelected={selectedAssets.has(asset.id)}
+                  onToggle={toggleAsset}
                   onView={() => setSelectedAssetId(asset.id)}
+                  onListForRent={handleListAsset}
                 />
               ))}
             </TableBody>
@@ -321,6 +535,29 @@ export function AssetsView({ orgId }: AssetsViewProps) {
         onAssetFound={(asset) => {
           setIsScanModalOpen(false);
           setSelectedAssetId(asset.id);
+        }}
+      />
+
+      {/* Batch Print Modal */}
+      <BatchPrintModal
+        isOpen={isBatchPrintModalOpen}
+        onClose={() => {
+          setIsBatchPrintModalOpen(false);
+          clearSelection();
+        }}
+        orgId={orgId}
+        selectedAssetIds={Array.from(selectedAssets)}
+      />
+
+      {/* Create Listing Dialog */}
+      <CreateListingDialog
+        isOpen={isListingDialogOpen}
+        onClose={handleListingDialogClose}
+        orgId={orgId}
+        asset={assetToList}
+        assets={assetsToList}
+        onSuccess={() => {
+          // Optionally refresh assets or show success toast
         }}
       />
     </div>
@@ -360,15 +597,31 @@ function StatCard({ label, value, icon, color }: StatCardProps) {
 
 interface AssetRowProps {
   asset: GearAsset;
+  isSelected: boolean;
+  onToggle: (assetId: string) => void;
   onView: () => void;
+  onListForRent: (asset: GearAsset) => void;
 }
 
-function AssetRow({ asset, onView }: AssetRowProps) {
-  const statusConfig = STATUS_CONFIG[asset.status];
-  const conditionConfig = CONDITION_CONFIG[asset.condition];
+function AssetRow({ asset, isSelected, onToggle, onView, onListForRent }: AssetRowProps) {
+  const statusConfig = STATUS_CONFIG[asset.status] || STATUS_CONFIG.available;
+  const conditionConfig = CONDITION_CONFIG[asset.current_condition as AssetCondition] || { label: 'Unknown', color: 'text-muted-gray' };
 
   return (
-    <TableRow className="border-muted-gray/30 hover:bg-charcoal-black/30 cursor-pointer" onClick={onView}>
+    <TableRow
+      className={cn(
+        "border-muted-gray/30 hover:bg-charcoal-black/30 cursor-pointer",
+        isSelected && "bg-accent-yellow/10"
+      )}
+      onClick={onView}
+    >
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        <Checkbox
+          checked={isSelected}
+          onCheckedChange={() => onToggle(asset.id)}
+          aria-label={`Select ${asset.name}`}
+        />
+      </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-muted-gray/20 flex items-center justify-center">
@@ -415,6 +668,10 @@ function AssetRow({ asset, onView }: AssetRowProps) {
             <DropdownMenuItem onClick={onView}>
               <Edit className="w-4 h-4 mr-2" /> View Details
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onListForRent(asset)}>
+              <Store className="w-4 h-4 mr-2" /> List for Rent
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem>
               <QrCode className="w-4 h-4 mr-2" /> Print Label
             </DropdownMenuItem>
@@ -458,8 +715,33 @@ function CreateAssetModal({
   const [description, setDescription] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const { locations } = useGearLocations(orgId);
+  // Pricing fields
+  const [purchasePrice, setPurchasePrice] = useState<string>('');
+  const [replacementCost, setReplacementCost] = useState<string>('');
+  const [dailyRate, setDailyRate] = useState<string>('');
+  const [weeklyRate, setWeeklyRate] = useState<string>('');
+  const [monthlyRate, setMonthlyRate] = useState<string>('');
+
+  const { locations, createLocation } = useGearLocations(orgId);
   const [homeLocationId, setHomeLocationId] = useState<string>('');
+  const [showAddLocation, setShowAddLocation] = useState(false);
+  const [newLocationName, setNewLocationName] = useState('');
+
+  // Handle quick add location
+  const handleAddLocation = async () => {
+    if (!newLocationName.trim()) return;
+    try {
+      const result = await createLocation.mutateAsync({
+        name: newLocationName.trim(),
+        location_type: 'warehouse',
+      });
+      setHomeLocationId(result.location.id);
+      setShowAddLocation(false);
+      setNewLocationName('');
+    } catch (err) {
+      console.error('Failed to create location:', err);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -479,6 +761,12 @@ function CreateAssetModal({
         serial_number: serialNumber.trim() || undefined,
         description: description.trim() || undefined,
         home_location_id: homeLocationId || undefined,
+        // Pricing
+        purchase_price: purchasePrice ? parseFloat(purchasePrice) : undefined,
+        replacement_cost: replacementCost ? parseFloat(replacementCost) : undefined,
+        daily_rate: dailyRate ? parseFloat(dailyRate) : undefined,
+        weekly_rate: weeklyRate ? parseFloat(weeklyRate) : undefined,
+        monthly_rate: monthlyRate ? parseFloat(monthlyRate) : undefined,
       });
       // Reset form
       setName('');
@@ -489,6 +777,13 @@ function CreateAssetModal({
       setSerialNumber('');
       setDescription('');
       setHomeLocationId('');
+      setPurchasePrice('');
+      setReplacementCost('');
+      setDailyRate('');
+      setWeeklyRate('');
+      setMonthlyRate('');
+      setShowAddLocation(false);
+      setNewLocationName('');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create asset');
     }
@@ -496,13 +791,15 @@ function CreateAssetModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-xl max-h-[90vh] flex flex-col p-0 overflow-hidden">
+        <DialogHeader className="px-6 pt-6 pb-4 flex-shrink-0">
           <DialogTitle>Add New Asset</DialogTitle>
           <DialogDescription>Add a new piece of equipment to your inventory</DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
+          <div className="flex-1 overflow-y-auto px-6">
+            <div className="space-y-4 pb-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <Label htmlFor="name">Asset Name *</Label>
@@ -567,31 +864,195 @@ function CreateAssetModal({
             </div>
 
             <div>
-              <Label htmlFor="serial">Serial Number</Label>
+              <Label htmlFor="serial">Manufacturer Serial Number</Label>
               <Input
                 id="serial"
                 value={serialNumber}
                 onChange={(e) => setSerialNumber(e.target.value)}
-                placeholder="e.g., ABC123456"
+                placeholder="From equipment label"
+                className="font-mono"
               />
+              <p className="text-xs text-muted-gray mt-1">
+                Internal ID will be auto-generated
+              </p>
             </div>
 
-            <div>
-              <Label htmlFor="location">Home Location</Label>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="location" className="flex items-center gap-2">
+                  <MapPin className="w-4 h-4" />
+                  Home Location
+                </Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowAddLocation(!showAddLocation)}
+                  className="text-accent-yellow hover:text-accent-yellow/80 h-6 px-2 text-xs"
+                >
+                  <Plus className="w-3 h-3 mr-1" />
+                  Add
+                </Button>
+              </div>
               <Select value={homeLocationId} onValueChange={setHomeLocationId}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select location" />
                 </SelectTrigger>
                 <SelectContent>
-                  {locations.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>
-                      {loc.name}
-                    </SelectItem>
-                  ))}
+                  {locations.length === 0 ? (
+                    <div className="px-2 py-4 text-sm text-muted-gray text-center">
+                      No locations yet
+                    </div>
+                  ) : (
+                    locations.map((loc) => (
+                      <SelectItem key={loc.id} value={loc.id}>
+                        {loc.name}
+                      </SelectItem>
+                    ))
+                  )}
                 </SelectContent>
               </Select>
-            </div>
 
+              {/* Quick Add Location Form */}
+              {showAddLocation && (
+                <div className="p-3 bg-charcoal-black/30 rounded-lg space-y-2">
+                  <Input
+                    placeholder="Location name"
+                    value={newLocationName}
+                    onChange={(e) => setNewLocationName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddLocation();
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleAddLocation}
+                      disabled={!newLocationName.trim() || createLocation.isPending}
+                    >
+                      {createLocation.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Check className="w-4 h-4 mr-1" />
+                      )}
+                      Add
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setShowAddLocation(false);
+                        setNewLocationName('');
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Pricing Section */}
+          <div className="border-t border-muted-gray/30 pt-4 mt-4">
+            <Label className="text-sm font-medium text-muted-gray mb-3 block">Pricing & Value</Label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="purchasePrice">Purchase Price</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="purchasePrice"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={purchasePrice}
+                    onChange={(e) => setPurchasePrice(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="replacementCost">Replacement Cost</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="replacementCost"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={replacementCost}
+                    onChange={(e) => setReplacementCost(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Rental Rates Section */}
+          <div className="border-t border-muted-gray/30 pt-4">
+            <Label className="text-sm font-medium text-muted-gray mb-3 block">Rental Rates</Label>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label htmlFor="dailyRate">Daily Rate</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="dailyRate"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={dailyRate}
+                    onChange={(e) => setDailyRate(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="weeklyRate">Weekly Rate</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="weeklyRate"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={weeklyRate}
+                    onChange={(e) => setWeeklyRate(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="monthlyRate">Monthly Rate</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="monthlyRate"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={monthlyRate}
+                    onChange={(e) => setMonthlyRate(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
               <Label htmlFor="description">Description</Label>
               <Textarea
@@ -605,8 +1066,10 @@ function CreateAssetModal({
           </div>
 
           {error && <p className="text-sm text-red-500">{error}</p>}
+            </div>
+          </div>
 
-          <DialogFooter>
+          <DialogFooter className="px-6 py-4 border-t border-muted-gray/30">
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
@@ -631,7 +1094,127 @@ interface AssetDetailModalProps {
 }
 
 function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
-  const { asset, isLoading } = useGearAsset(assetId);
+  const { session } = useAuth();
+  const { asset, isLoading, updateAsset, refetch } = useGearAsset(assetId);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<Partial<GearAsset>>({});
+  const [editPhotos, setEditPhotos] = useState<string[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [showLabelPreview, setShowLabelPreview] = useState(false);
+  const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
+
+  // Labels hook
+  const { getAssetBarcode, getAssetQR, generateCodes } = useGearLabels(asset?.organization_id ?? null);
+
+  // Initialize edit form when asset loads or edit mode is entered
+  const startEditing = () => {
+    if (asset) {
+      setEditForm({
+        name: asset.name,
+        manufacturer: asset.manufacturer,
+        model: asset.model,
+        serial_number: asset.serial_number,
+        description: asset.description,
+        notes: asset.notes,
+        // Pricing fields
+        purchase_price: asset.purchase_price,
+        replacement_cost: asset.replacement_cost,
+        daily_rate: asset.daily_rate,
+        weekly_rate: asset.weekly_rate,
+        monthly_rate: asset.monthly_rate,
+      });
+      // Initialize photos from current asset
+      setEditPhotos(asset.photos_current || []);
+      setIsEditing(true);
+    }
+  };
+
+  // Photo upload handler
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files) return;
+
+    for (const file of Array.from(files)) {
+      if (editPhotos.length >= 6) {
+        toast.error('Maximum 6 photos allowed');
+        break;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        setEditPhotos((prev) => [...prev, base64]);
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // Reset input
+    e.target.value = '';
+  };
+
+  const removePhoto = (index: number) => {
+    setEditPhotos((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleSave = async () => {
+    if (!asset) return;
+    setIsSaving(true);
+    try {
+      // Include photos in the update
+      await updateAsset.mutateAsync({ ...editForm, photos: editPhotos });
+      setIsEditing(false);
+    } catch (error) {
+      console.error('Failed to update asset:', error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setIsEditing(false);
+    setEditForm({});
+  };
+
+  const handleGenerateCodes = async () => {
+    if (!asset) return;
+    setIsGeneratingCodes(true);
+    try {
+      await generateCodes.mutateAsync([asset.id]);
+      // Refetch asset to get updated barcode/qr_code values
+      refetch();
+    } catch (error) {
+      console.error('Failed to generate codes:', error);
+    } finally {
+      setIsGeneratingCodes(false);
+    }
+  };
+
+  const handlePrintLabel = async (labelType: 'barcode' | 'qr' | 'both') => {
+    if (!asset) return;
+
+    // Fetch label HTML with auth headers
+    const labelUrl = `/api/v1/gear/labels/asset/${asset.id}/label?label_type=${labelType}&include_name=true&include_category=true`;
+    try {
+      const response = await fetch(labelUrl, {
+        headers: {
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+      });
+      if (!response.ok) throw new Error('Failed to fetch label');
+      const html = await response.text();
+
+      // Open new window and write HTML content
+      const printWindow = window.open('', '_blank', 'width=400,height=400');
+      if (printWindow) {
+        printWindow.document.write(html);
+        printWindow.document.close();
+        // Auto-trigger print dialog
+        printWindow.onload = () => printWindow.print();
+      }
+    } catch (error) {
+      console.error('Failed to print label:', error);
+    }
+  };
 
   if (!assetId) return null;
 
@@ -653,54 +1236,486 @@ function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
             <div className="space-y-6">
               {/* Status & Condition */}
               <div className="flex items-center gap-4">
-                <Badge className={cn('border', STATUS_CONFIG[asset.status].color)}>
-                  {STATUS_CONFIG[asset.status].icon}
-                  <span className="ml-1">{STATUS_CONFIG[asset.status].label}</span>
+                <Badge className={cn('border', (STATUS_CONFIG[asset.status] || STATUS_CONFIG.available).color)}>
+                  {(STATUS_CONFIG[asset.status] || STATUS_CONFIG.available).icon}
+                  <span className="ml-1">{(STATUS_CONFIG[asset.status] || STATUS_CONFIG.available).label}</span>
                 </Badge>
-                <span className={cn('text-sm', CONDITION_CONFIG[asset.condition].color)}>
-                  {CONDITION_CONFIG[asset.condition].label} condition
+                <span className={cn('text-sm', (CONDITION_CONFIG[asset.current_condition as AssetCondition] || { color: 'text-muted-gray' }).color)}>
+                  {(CONDITION_CONFIG[asset.current_condition as AssetCondition] || { label: 'Unknown' }).label} condition
                 </span>
               </div>
 
               {/* Details Grid */}
-              <div className="grid grid-cols-2 gap-4">
-                <DetailItem label="Internal ID" value={asset.internal_id} mono />
-                <DetailItem label="Category" value={asset.category_name} />
-                <DetailItem label="Manufacturer" value={asset.manufacturer} />
-                <DetailItem label="Model" value={asset.model} />
-                <DetailItem label="Serial Number" value={asset.serial_number} mono />
-                <DetailItem label="Asset Type" value={ASSET_TYPE_LABELS[asset.asset_type]} />
-                <DetailItem label="Current Location" value={asset.current_location_name} />
-                <DetailItem label="Current Custodian" value={asset.current_custodian_name} />
-                {asset.barcode && <DetailItem label="Barcode" value={asset.barcode} mono />}
-                {asset.purchase_price && (
-                  <DetailItem
-                    label="Purchase Price"
-                    value={`$${asset.purchase_price.toLocaleString()}`}
-                  />
-                )}
-                {asset.replacement_value && (
-                  <DetailItem
-                    label="Replacement Value"
-                    value={`$${asset.replacement_value.toLocaleString()}`}
-                  />
-                )}
-              </div>
+              {isEditing ? (
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="edit-name">Name</Label>
+                    <Input
+                      id="edit-name"
+                      value={editForm.name || ''}
+                      onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="edit-manufacturer">Manufacturer</Label>
+                      <Input
+                        id="edit-manufacturer"
+                        value={editForm.manufacturer || ''}
+                        onChange={(e) => setEditForm({ ...editForm, manufacturer: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="edit-model">Model</Label>
+                      <Input
+                        id="edit-model"
+                        value={editForm.model || ''}
+                        onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-serial">Manufacturer Serial Number</Label>
+                    <Input
+                      id="edit-serial"
+                      value={editForm.serial_number || ''}
+                      onChange={(e) => setEditForm({ ...editForm, serial_number: e.target.value })}
+                      placeholder="From equipment label"
+                      className="font-mono"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-description">Description</Label>
+                    <Textarea
+                      id="edit-description"
+                      value={editForm.description || ''}
+                      onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                      rows={2}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="edit-notes">Notes</Label>
+                    <Textarea
+                      id="edit-notes"
+                      value={editForm.notes || ''}
+                      onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                      rows={2}
+                    />
+                  </div>
 
-              {/* Description */}
-              {asset.description && (
-                <div>
-                  <Label className="text-muted-gray">Description</Label>
-                  <p className="text-bone-white mt-1">{asset.description}</p>
-                </div>
-              )}
+                  {/* Pricing & Value Section */}
+                  <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                    <Label className="text-sm font-medium text-muted-gray mb-3 block">Pricing & Value</Label>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label htmlFor="edit-purchase-price">Purchase Price</Label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                          <Input
+                            id="edit-purchase-price"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editForm.purchase_price ?? ''}
+                            onChange={(e) => setEditForm({ ...editForm, purchase_price: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            placeholder="0.00"
+                            className="pl-7"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label htmlFor="edit-replacement-cost">Replacement Cost</Label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                          <Input
+                            id="edit-replacement-cost"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editForm.replacement_cost ?? ''}
+                            onChange={(e) => setEditForm({ ...editForm, replacement_cost: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            placeholder="0.00"
+                            className="pl-7"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
-              {/* Notes */}
-              {asset.notes && (
-                <div>
-                  <Label className="text-muted-gray">Notes</Label>
-                  <p className="text-bone-white mt-1">{asset.notes}</p>
+                  {/* Rental Rates Section */}
+                  <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                    <Label className="text-sm font-medium text-muted-gray mb-3 block">Rental Rates</Label>
+                    <div className="grid grid-cols-3 gap-4">
+                      <div>
+                        <Label htmlFor="edit-daily-rate">Daily Rate</Label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                          <Input
+                            id="edit-daily-rate"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editForm.daily_rate ?? ''}
+                            onChange={(e) => setEditForm({ ...editForm, daily_rate: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            placeholder="0.00"
+                            className="pl-7"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label htmlFor="edit-weekly-rate">Weekly Rate</Label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                          <Input
+                            id="edit-weekly-rate"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editForm.weekly_rate ?? ''}
+                            onChange={(e) => setEditForm({ ...editForm, weekly_rate: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            placeholder="0.00"
+                            className="pl-7"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <Label htmlFor="edit-monthly-rate">Monthly Rate</Label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                          <Input
+                            id="edit-monthly-rate"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={editForm.monthly_rate ?? ''}
+                            onChange={(e) => setEditForm({ ...editForm, monthly_rate: e.target.value ? parseFloat(e.target.value) : undefined })}
+                            placeholder="0.00"
+                            className="pl-7"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Photos Section */}
+                  <div className="border-t border-muted-gray/30 pt-4 mt-4">
+                    <Label className="text-sm font-medium text-muted-gray mb-3 block flex items-center gap-2">
+                      <ImagePlus className="h-4 w-4" />
+                      Photos
+                      <span className="text-xs font-normal">(Required for marketplace listings)</span>
+                    </Label>
+
+                    {/* Photo Grid */}
+                    <div className="grid grid-cols-3 gap-3">
+                      {editPhotos.map((photo, index) => (
+                        <div
+                          key={index}
+                          className="relative aspect-square rounded-lg overflow-hidden bg-white/10"
+                        >
+                          <img
+                            src={photo}
+                            alt={`Photo ${index + 1}`}
+                            className="h-full w-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removePhoto(index)}
+                            className="absolute top-1 right-1 p-1 rounded-full bg-black/60 hover:bg-black/80 text-white"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                          {index === 0 && (
+                            <span className="absolute bottom-1 left-1 text-xs bg-accent-yellow text-black px-1 rounded">
+                              Main
+                            </span>
+                          )}
+                        </div>
+                      ))}
+
+                      {/* Upload Button */}
+                      {editPhotos.length < 6 && (
+                        <label className="aspect-square rounded-lg border-2 border-dashed border-white/20 hover:border-accent-yellow/50 flex flex-col items-center justify-center cursor-pointer transition-colors">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handlePhotoUpload}
+                            className="hidden"
+                          />
+                          <Camera className="h-6 w-6 text-muted-gray mb-1" />
+                          <span className="text-xs text-muted-gray">Add Photo</span>
+                        </label>
+                      )}
+                    </div>
+
+                    {editPhotos.length === 0 && (
+                      <div className="text-center py-6 border-2 border-dashed border-white/20 rounded-lg mt-3">
+                        <Upload className="h-8 w-8 mx-auto text-muted-gray mb-2" />
+                        <p className="text-sm text-muted-gray">
+                          Drag photos here or click to upload
+                        </p>
+                        <label className="mt-2 inline-block">
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handlePhotoUpload}
+                            className="hidden"
+                          />
+                          <Button type="button" variant="outline" size="sm" asChild>
+                            <span>Choose Files</span>
+                          </Button>
+                        </label>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-muted-gray mt-2">
+                      Up to 6 photos. First photo will be the main image.
+                    </p>
+                  </div>
                 </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <DetailItem label="Internal ID" value={asset.internal_id} mono />
+                    <DetailItem label="Category" value={asset.category_name} />
+                    <DetailItem label="Manufacturer" value={asset.manufacturer} />
+                    <DetailItem label="Model" value={asset.model} />
+                    <DetailItem label="Serial Number" value={asset.serial_number} mono />
+                    <DetailItem label="Asset Type" value={ASSET_TYPE_LABELS[asset.asset_type]} />
+                    <DetailItem label="Current Location" value={asset.current_location_name} />
+                    <DetailItem label="Current Custodian" value={asset.current_custodian_name} />
+                  </div>
+
+                  {/* Pricing & Value Section */}
+                  {(asset.purchase_price || asset.replacement_cost || asset.daily_rate || asset.weekly_rate || asset.monthly_rate) && (
+                    <div className="border-t border-muted-gray/30 pt-4">
+                      <Label className="text-sm font-medium text-muted-gray mb-3 block">Pricing & Value</Label>
+                      <div className="grid grid-cols-2 gap-4">
+                        {asset.purchase_price && (
+                          <DetailItem
+                            label="Purchase Price"
+                            value={`$${asset.purchase_price.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                          />
+                        )}
+                        {asset.replacement_cost && (
+                          <DetailItem
+                            label="Replacement Cost"
+                            value={`$${asset.replacement_cost.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                          />
+                        )}
+                      </div>
+                      {(asset.daily_rate || asset.weekly_rate || asset.monthly_rate) && (
+                        <div className="grid grid-cols-3 gap-4 mt-3">
+                          {asset.daily_rate && (
+                            <DetailItem
+                              label="Daily Rate"
+                              value={`$${asset.daily_rate.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                            />
+                          )}
+                          {asset.weekly_rate && (
+                            <DetailItem
+                              label="Weekly Rate"
+                              value={`$${asset.weekly_rate.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                            />
+                          )}
+                          {asset.monthly_rate && (
+                            <DetailItem
+                              label="Monthly Rate"
+                              value={`$${asset.monthly_rate.toLocaleString('en-US', { minimumFractionDigits: 2 })}`}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Description */}
+                  {asset.description && (
+                    <div>
+                      <Label className="text-muted-gray">Description</Label>
+                      <p className="text-bone-white mt-1">{asset.description}</p>
+                    </div>
+                  )}
+
+                  {/* Notes */}
+                  {asset.notes && (
+                    <div>
+                      <Label className="text-muted-gray">Notes</Label>
+                      <p className="text-bone-white mt-1">{asset.notes}</p>
+                    </div>
+                  )}
+
+                  {/* Photos Section (View Mode) */}
+                  {asset.photos_current && asset.photos_current.length > 0 && (
+                    <div className="border-t border-muted-gray/30 pt-4">
+                      <Label className="text-sm font-medium text-muted-gray mb-3 block flex items-center gap-2">
+                        <ImagePlus className="h-4 w-4" />
+                        Photos ({asset.photos_current.length})
+                      </Label>
+                      <div className="grid grid-cols-3 gap-3">
+                        {asset.photos_current.map((photo, index) => (
+                          <div
+                            key={index}
+                            className="relative aspect-square rounded-lg overflow-hidden bg-white/10"
+                          >
+                            <img
+                              src={photo}
+                              alt={`Photo ${index + 1}`}
+                              className="h-full w-full object-cover"
+                            />
+                            {index === 0 && (
+                              <span className="absolute bottom-1 left-1 text-xs bg-accent-yellow text-black px-1 rounded">
+                                Main
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Labels & Scanning Section */}
+                  <div className="border-t border-muted-gray/30 pt-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <Label className="text-sm font-medium text-muted-gray flex items-center gap-2">
+                        <Barcode className="w-4 h-4" />
+                        Labels & Scanning
+                      </Label>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleGenerateCodes}
+                          disabled={isGeneratingCodes}
+                        >
+                          {isGeneratingCodes ? (
+                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          ) : (
+                            <RefreshCw className="w-4 h-4 mr-1" />
+                          )}
+                          {asset.barcode ? 'Regenerate' : 'Generate'}
+                        </Button>
+                        {asset.barcode && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="outline" size="sm">
+                                <Printer className="w-4 h-4 mr-1" />
+                                Print
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => handlePrintLabel('barcode')}>
+                                <Barcode className="w-4 h-4 mr-2" />
+                                Barcode Only
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handlePrintLabel('qr')}>
+                                <QrCode className="w-4 h-4 mr-2" />
+                                QR Code Only
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => handlePrintLabel('both')}>
+                                <Package className="w-4 h-4 mr-2" />
+                                Both (Full Label)
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </div>
+                    </div>
+
+                    {asset.barcode ? (
+                      <div className="space-y-4">
+                        {/* Barcode Display */}
+                        <div className="bg-white rounded-lg p-4 flex flex-col items-center">
+                          <AuthenticatedImage
+                            src={getAssetBarcode(asset.id)}
+                            alt={`Barcode: ${asset.barcode}`}
+                            className="max-w-full h-16 object-contain"
+                          />
+                          <code className="text-xs text-gray-600 mt-2">{asset.barcode}</code>
+                        </div>
+
+                        {/* QR Code Display */}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="bg-white rounded-lg p-3 flex flex-col items-center">
+                            <AuthenticatedImage
+                              src={getAssetQR(asset.id)}
+                              alt={`QR Code: ${asset.qr_code}`}
+                              className="w-24 h-24 object-contain"
+                            />
+                            <code className="text-xs text-gray-600 mt-1 truncate max-w-full">{asset.qr_code}</code>
+                          </div>
+                          <div className="flex flex-col justify-center text-sm text-muted-gray space-y-2">
+                            <p><strong>Scan this asset</strong> to:</p>
+                            <ul className="list-disc list-inside space-y-1 text-xs">
+                              <li>Add to checkout list</li>
+                              <li>Add to kit contents</li>
+                              <li>View asset details</li>
+                              <li>Record condition check</li>
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* Toggle preview */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-full text-muted-gray"
+                          onClick={() => setShowLabelPreview(!showLabelPreview)}
+                        >
+                          <ExternalLink className="w-4 h-4 mr-1" />
+                          {showLabelPreview ? 'Hide' : 'Show'} Printable Label Preview
+                        </Button>
+
+                        {showLabelPreview && (
+                          <div className="bg-white rounded-lg p-4 border-2 border-dashed border-gray-300">
+                            <div className="flex justify-between items-start gap-4">
+                              <div className="flex-1">
+                                <AuthenticatedImage
+                                  src={getAssetBarcode(asset.id)}
+                                  alt="Barcode"
+                                  className="max-w-full h-12 object-contain"
+                                />
+                              </div>
+                              <AuthenticatedImage
+                                src={getAssetQR(asset.id)}
+                                alt="QR Code"
+                                className="w-16 h-16 object-contain"
+                              />
+                            </div>
+                            <div className="mt-2">
+                              <p className="font-bold text-sm text-black truncate">{asset.name}</p>
+                              <p className="font-mono text-xs text-gray-600">{asset.internal_id}</p>
+                              {asset.category_name && (
+                                <p className="text-xs text-gray-500">{asset.category_name}</p>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-center py-6 bg-charcoal-black/30 rounded-lg">
+                        <QrCode className="w-8 h-8 mx-auto mb-2 text-muted-gray" />
+                        <p className="text-sm text-muted-gray mb-3">
+                          No barcode or QR code generated yet
+                        </p>
+                        <Button
+                          size="sm"
+                          onClick={handleGenerateCodes}
+                          disabled={isGeneratingCodes}
+                        >
+                          {isGeneratingCodes ? (
+                            <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                          ) : (
+                            <Barcode className="w-4 h-4 mr-1" />
+                          )}
+                          Generate Barcode & QR Code
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </div>
           ) : (
@@ -709,13 +1724,27 @@ function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
         </ScrollArea>
 
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-          <Button>
-            <Edit className="w-4 h-4 mr-2" />
-            Edit Asset
-          </Button>
+          {isEditing ? (
+            <>
+              <Button variant="outline" onClick={handleCancel}>
+                Cancel
+              </Button>
+              <Button onClick={handleSave} disabled={isSaving}>
+                {isSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save Changes
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={onClose}>
+                Close
+              </Button>
+              <Button onClick={startEditing}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit Asset
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

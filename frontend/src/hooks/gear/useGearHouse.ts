@@ -21,12 +21,18 @@ import type {
   GearStrike,
   GearUserEscalationStatus,
   GearStrikeRule,
+  GearClientCompany,
+  GearClientContact,
   CreateOrganizationInput,
   CreateAssetInput,
   CreateTransactionInput,
   CreateIncidentInput,
   CreateRepairTicketInput,
   CreateStrikeInput,
+  CreateClientCompanyInput,
+  CreateClientContactInput,
+  LinkedProject,
+  UserSearchResult,
   AssetStatus,
   AssetCondition,
   TransactionType,
@@ -34,6 +40,7 @@ import type {
   IncidentType,
   IncidentStatus,
   RepairStatus,
+  IDType,
 } from '@/types/gear';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -43,7 +50,10 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 // ============================================================================
 
 async function fetchWithAuth(url: string, token: string, options?: RequestInit) {
-  const response = await fetch(`${API_BASE}${url}`, {
+  const fullUrl = `${API_BASE}${url}`;
+  console.log(`[Gear API] ${options?.method || 'GET'} ${fullUrl}`);
+
+  const response = await fetch(fullUrl, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -53,11 +63,21 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
   });
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ detail: 'Request failed' }));
-    throw new Error(error.detail || `HTTP ${response.status}`);
+    const errorText = await response.text();
+    let errorDetail = `HTTP ${response.status}: ${response.statusText}`;
+    try {
+      const errorJson = JSON.parse(errorText);
+      errorDetail = errorJson.detail || errorJson.message || errorDetail;
+    } catch {
+      if (errorText) errorDetail += ` - ${errorText}`;
+    }
+    console.error(`[Gear API] Error: ${errorDetail}`);
+    throw new Error(errorDetail);
   }
 
-  return response.json();
+  const data = await response.json();
+  console.log(`[Gear API] Response:`, data);
+  return data;
 }
 
 // ============================================================================
@@ -69,19 +89,20 @@ export interface UseGearOrganizationsOptions {
 }
 
 export function useGearOrganizations(options?: UseGearOrganizationsOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: ['gear-organizations'],
-    queryFn: () => fetchWithAuth('/api/v1/gear/organizations', token!),
+    queryFn: () => fetchWithAuth('/api/v1/gear/organizations/', token!),
     enabled: !!token && (options?.enabled ?? true),
     select: (data) => data.organizations as GearOrganization[],
   });
 
   const createOrganization = useMutation({
     mutationFn: (input: CreateOrganizationInput) =>
-      fetchWithAuth('/api/v1/gear/organizations', token!, {
+      fetchWithAuth('/api/v1/gear/organizations/', token!, {
         method: 'POST',
         body: JSON.stringify(input),
       }),
@@ -100,7 +121,8 @@ export function useGearOrganizations(options?: UseGearOrganizationsOptions) {
 }
 
 export function useGearOrganization(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -132,7 +154,8 @@ export function useGearOrganization(orgId: string | null) {
 }
 
 export function useGearOrgMembers(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -186,7 +209,8 @@ export function useGearOrgMembers(orgId: string | null) {
 }
 
 export function useGearOrgSettings(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -202,9 +226,31 @@ export function useGearOrgSettings(orgId: string | null) {
         method: 'PUT',
         body: JSON.stringify(input),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['gear-org-settings', orgId] });
+    onMutate: async (input) => {
+      // Cancel outgoing refetches to avoid overwriting optimistic update
+      await queryClient.cancelQueries({ queryKey: ['gear-org-settings', orgId] });
+
+      // Snapshot previous value
+      const previousData = queryClient.getQueryData(['gear-org-settings', orgId]);
+
+      // Optimistically update cache immediately
+      queryClient.setQueryData(['gear-org-settings', orgId], (old: any) => {
+        if (!old) return old;
+        return {
+          ...old,
+          settings: { ...old.settings, ...input }
+        };
+      });
+
+      return { previousData };
     },
+    onError: (_err, _input, context) => {
+      // Rollback on error
+      if (context?.previousData) {
+        queryClient.setQueryData(['gear-org-settings', orgId], context.previousData);
+      }
+    },
+    // No onSuccess invalidation - the optimistic update already has the correct data
   });
 
   return {
@@ -217,7 +263,8 @@ export function useGearOrgSettings(orgId: string | null) {
 }
 
 export function useGearCategories(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -248,7 +295,8 @@ export function useGearCategories(orgId: string | null) {
 }
 
 export function useGearLocations(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -279,6 +327,113 @@ export function useGearLocations(orgId: string | null) {
 }
 
 // ============================================================================
+// CONTACT HOOKS (External custodians)
+// ============================================================================
+
+export interface GearContact {
+  id: string;
+  organization_id: string;
+  first_name: string;
+  last_name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  job_title?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+  notes?: string;
+  is_active: boolean;
+  created_by?: string;
+  created_at: string;
+  updated_at: string;
+  // Client management fields
+  client_company_id?: string;
+  client_company_name?: string;
+  linked_user_id?: string;
+  linked_user_name?: string;
+  // Document fields
+  id_photo_url?: string;
+  id_photo_file_name?: string;
+  id_type?: string;
+  id_expiry?: string;
+}
+
+export interface CreateContactInput {
+  first_name: string;
+  last_name: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  job_title?: string;
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country?: string;
+  notes?: string;
+}
+
+export function useGearContacts(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-contacts', orgId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts`, token!),
+    enabled: !!token && !!orgId,
+    select: (data) => data.contacts as GearContact[],
+  });
+
+  const createContact = useMutation({
+    mutationFn: (input: CreateContactInput) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const updateContact = useMutation({
+    mutationFn: ({ contactId, ...input }: Partial<CreateContactInput> & { contactId: string }) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const deleteContact = useMutation({
+    mutationFn: (contactId: string) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  return {
+    contacts: query.data ?? [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createContact,
+    updateContact,
+    deleteContact,
+  };
+}
+
+// ============================================================================
 // ASSET HOOKS
 // ============================================================================
 
@@ -294,7 +449,8 @@ export interface UseGearAssetsOptions {
 }
 
 export function useGearAssets(options: UseGearAssetsOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
   const { orgId, categoryId, status, condition, search, limit = 50, offset = 0, enabled = true } = options;
 
@@ -350,7 +506,8 @@ export function useGearAssets(options: UseGearAssetsOptions) {
 }
 
 export function useGearAsset(assetId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -395,7 +552,8 @@ export function useGearAsset(assetId: string | null) {
 }
 
 export function useGearAssetHistory(assetId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-asset-history', assetId],
@@ -406,7 +564,8 @@ export function useGearAssetHistory(assetId: string | null) {
 }
 
 export function useGearAssetStats(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-asset-stats', orgId],
@@ -416,7 +575,8 @@ export function useGearAssetStats(orgId: string | null) {
 }
 
 export function useGearScanLookup(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   const lookupAsset = useMutation({
     mutationFn: (scanCode: string) =>
@@ -431,7 +591,8 @@ export function useGearScanLookup(orgId: string | null) {
 // ============================================================================
 
 export function useGearKitTemplates(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -461,8 +622,42 @@ export function useGearKitTemplates(orgId: string | null) {
   };
 }
 
+export function useGearKitTemplate(templateId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-kit-template', templateId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/kits/templates/item/${templateId}`, token!),
+    enabled: !!token && !!templateId,
+    select: (data) => data.template as GearKitTemplate,
+  });
+
+  const updateTemplate = useMutation({
+    mutationFn: (input: Partial<GearKitTemplate>) =>
+      fetchWithAuth(`/api/v1/gear/kits/templates/item/${templateId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-template', templateId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-templates'] });
+    },
+  });
+
+  return {
+    template: query.data,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    updateTemplate,
+  };
+}
+
 export function useGearKitInstances(orgId: string | null, options?: { status?: AssetStatus }) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -497,19 +692,32 @@ export function useGearKitInstances(orgId: string | null, options?: { status?: A
 }
 
 export function useGearKitInstance(kitId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
     queryKey: ['gear-kit-instance', kitId],
-    queryFn: () => fetchWithAuth(`/api/v1/gear/kits/instance/${kitId}`, token!),
+    queryFn: () => fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}`, token!),
     enabled: !!token && !!kitId,
     select: (data) => data.kit as GearKitInstance,
   });
 
+  const updateInstance = useMutation({
+    mutationFn: (input: Partial<GearKitInstance>) =>
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instance', kitId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instances'] });
+    },
+  });
+
   const addAsset = useMutation({
     mutationFn: (assetId: string) =>
-      fetchWithAuth(`/api/v1/gear/kits/instance/${kitId}/add-asset`, token!, {
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}/assets`, token!, {
         method: 'POST',
         body: JSON.stringify({ asset_id: assetId }),
       }),
@@ -520,9 +728,8 @@ export function useGearKitInstance(kitId: string | null) {
 
   const removeAsset = useMutation({
     mutationFn: (assetId: string) =>
-      fetchWithAuth(`/api/v1/gear/kits/instance/${kitId}/remove-asset`, token!, {
-        method: 'POST',
-        body: JSON.stringify({ asset_id: assetId }),
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}/assets/${assetId}`, token!, {
+        method: 'DELETE',
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gear-kit-instance', kitId] });
@@ -531,9 +738,9 @@ export function useGearKitInstance(kitId: string | null) {
 
   const verifyContents = useMutation({
     mutationFn: (scannedAssetIds: string[]) =>
-      fetchWithAuth(`/api/v1/gear/kits/instance/${kitId}/verify`, token!, {
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}/verify`, token!, {
         method: 'POST',
-        body: JSON.stringify({ scanned_asset_ids: scannedAssetIds }),
+        body: JSON.stringify({ scanned_assets: scannedAssetIds }),
       }),
   });
 
@@ -542,6 +749,7 @@ export function useGearKitInstance(kitId: string | null) {
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,
+    updateInstance,
     addAsset,
     removeAsset,
     verifyContents,
@@ -563,7 +771,8 @@ export interface UseGearTransactionsOptions {
 }
 
 export function useGearTransactions(options: UseGearTransactionsOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
   const { orgId, transactionType, status, custodianId, projectId, limit = 50, offset = 0 } = options;
 
@@ -598,9 +807,12 @@ export function useGearTransactions(options: UseGearTransactionsOptions) {
   const quickCheckout = useMutation({
     mutationFn: (input: {
       asset_ids: string[];
-      custodian_user_id: string;
+      custodian_user_id?: string;
+      custodian_contact_id?: string;
       project_id?: string;
+      checkout_at?: string;
       expected_return_at?: string;
+      destination_location_id?: string;
       notes?: string;
     }) =>
       fetchWithAuth(`/api/v1/gear/transactions/${orgId}/quick-checkout`, token!, {
@@ -611,6 +823,7 @@ export function useGearTransactions(options: UseGearTransactionsOptions) {
       queryClient.invalidateQueries({ queryKey: ['gear-transactions'] });
       queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
       queryClient.invalidateQueries({ queryKey: ['gear-my-checkouts'] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts'] });
     },
   });
 
@@ -640,7 +853,8 @@ export function useGearTransactions(options: UseGearTransactionsOptions) {
 }
 
 export function useGearTransaction(transactionId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -697,7 +911,8 @@ export function useGearTransaction(transactionId: string | null) {
 }
 
 export function useGearMyCheckouts(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-my-checkouts', orgId],
@@ -708,7 +923,8 @@ export function useGearMyCheckouts(orgId: string | null) {
 }
 
 export function useGearOverdue(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-overdue', orgId],
@@ -732,7 +948,8 @@ export interface UseGearIncidentsOptions {
 }
 
 export function useGearIncidents(options: UseGearIncidentsOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
   const { orgId, incidentType, status, assetId, limit = 50, offset = 0 } = options;
 
@@ -773,7 +990,8 @@ export function useGearIncidents(options: UseGearIncidentsOptions) {
 }
 
 export function useGearIncident(incidentId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -818,7 +1036,8 @@ export function useGearIncident(incidentId: string | null) {
 }
 
 export function useGearIncidentStats(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-incident-stats', orgId],
@@ -841,7 +1060,8 @@ export interface UseGearRepairsOptions {
 }
 
 export function useGearRepairs(options: UseGearRepairsOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
   const { orgId, status, assetId, assignedTo, limit = 50, offset = 0 } = options;
 
@@ -882,7 +1102,8 @@ export function useGearRepairs(options: UseGearRepairsOptions) {
 }
 
 export function useGearRepairTicket(ticketId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -936,7 +1157,8 @@ export function useGearRepairTicket(ticketId: string | null) {
 }
 
 export function useGearRepairStats(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-repair-stats', orgId],
@@ -946,7 +1168,8 @@ export function useGearRepairStats(orgId: string | null) {
 }
 
 export function useGearVendors(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -989,7 +1212,8 @@ export interface UseGearStrikesOptions {
 }
 
 export function useGearStrikes(options: UseGearStrikesOptions) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
   const { orgId, userId, activeOnly = true, limit = 50, offset = 0 } = options;
 
@@ -1029,7 +1253,8 @@ export function useGearStrikes(options: UseGearStrikesOptions) {
 }
 
 export function useGearUserStrikes(orgId: string | null, userId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-user-strikes', orgId, userId],
@@ -1040,7 +1265,8 @@ export function useGearUserStrikes(orgId: string | null, userId: string | null) 
 }
 
 export function useGearVoidStrike() {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   return useMutation({
@@ -1057,7 +1283,8 @@ export function useGearVoidStrike() {
 }
 
 export function useGearEscalationStatus(orgId: string | null, userId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   return useQuery({
     queryKey: ['gear-escalation-status', orgId, userId],
@@ -1068,7 +1295,8 @@ export function useGearEscalationStatus(orgId: string | null, userId: string | n
 }
 
 export function useGearPendingReviews(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -1100,7 +1328,8 @@ export function useGearPendingReviews(orgId: string | null) {
 }
 
 export function useGearStrikeRules(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -1135,7 +1364,8 @@ export function useGearStrikeRules(orgId: string | null) {
 // ============================================================================
 
 export function useGearLabels(orgId: string | null) {
-  const { token } = useAuth();
+  const { session } = useAuth();
+  const token = session?.access_token;
 
   const getAssetBarcode = (assetId: string, format: 'svg' | 'png' = 'svg') =>
     `${API_BASE}/api/v1/gear/labels/asset/${assetId}/barcode?format=${format}`;
@@ -1152,9 +1382,24 @@ export function useGearLabels(orgId: string | null) {
   const generateBatch = useMutation({
     mutationFn: async (input: {
       asset_ids: string[];
+      kit_ids?: string[];
       label_type?: 'barcode' | 'qr' | 'both';
+      label_size?: string;
+      print_mode?: 'sheet' | 'roll';
+      printer_type?: string;
+      sheet_rows?: number;
+      sheet_columns?: number;
+      custom_width_mm?: number;
+      custom_height_mm?: number;
       include_name?: boolean;
       include_category?: boolean;
+      include_internal_id?: boolean;
+      include_serial_number?: boolean;
+      include_manufacturer?: boolean;
+      include_model?: boolean;
+      include_purchase_date?: boolean;
+      include_logo?: boolean;
+      color_coding_enabled?: boolean;
     }) => {
       const response = await fetch(`${API_BASE}/api/v1/gear/labels/${orgId}/batch`, {
         method: 'POST',
@@ -1164,9 +1409,24 @@ export function useGearLabels(orgId: string | null) {
         },
         body: JSON.stringify({
           asset_ids: input.asset_ids,
+          kit_ids: input.kit_ids,
           label_type: input.label_type ?? 'both',
+          label_size: input.label_size ?? '2x1',
+          print_mode: input.print_mode ?? 'sheet',
+          printer_type: input.printer_type ?? 'generic',
+          sheet_rows: input.sheet_rows,
+          sheet_columns: input.sheet_columns,
+          custom_width_mm: input.custom_width_mm,
+          custom_height_mm: input.custom_height_mm,
           include_name: input.include_name ?? true,
           include_category: input.include_category ?? true,
+          include_internal_id: input.include_internal_id ?? true,
+          include_serial_number: input.include_serial_number ?? false,
+          include_manufacturer: input.include_manufacturer ?? false,
+          include_model: input.include_model ?? false,
+          include_purchase_date: input.include_purchase_date ?? false,
+          include_logo: input.include_logo ?? false,
+          color_coding_enabled: input.color_coding_enabled ?? false,
         }),
       });
 
@@ -1191,4 +1451,803 @@ export function useGearLabels(orgId: string | null) {
     generateBatch,
     generateCodes,
   };
+}
+
+// ============================================================================
+// RENTAL HOOKS (POS)
+// ============================================================================
+
+export interface RentalItemPricing {
+  asset_id: string;
+  rate_type: 'daily' | 'weekly' | 'flat';
+  quoted_rate: number;
+  quantity: number;
+  line_total: number;
+}
+
+export interface QuickRentalInput {
+  items: RentalItemPricing[];
+  contact_id?: string;
+  client_org_id?: string;
+  project_id?: string;
+  rental_start_date: string; // ISO date
+  rental_end_date: string; // ISO date
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total_amount: number;
+  payment_option: 'invoice_later' | 'pay_now';
+  payment_method?: string;
+  payment_reference?: string;
+  destination_location_id?: string;
+  notes?: string;
+}
+
+export interface GearRentalQuote {
+  id: string;
+  rental_house_org_id: string;
+  contact_id?: string;
+  quote_number: string;
+  rental_start_date: string;
+  rental_end_date: string;
+  subtotal?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  status: string;
+  prepared_by_user_id: string;
+  prepared_by_name?: string;
+  contact_name?: string;
+  contact_company?: string;
+  created_at: string;
+  items?: GearRentalQuoteItem[];
+}
+
+export interface GearRentalQuoteItem {
+  id: string;
+  quote_id: string;
+  asset_id?: string;
+  asset_name?: string;
+  asset_internal_id?: string;
+  quantity: number;
+  quoted_rate?: number;
+  rate_type: string;
+  line_total?: number;
+}
+
+export interface GearRentalOrder {
+  id: string;
+  quote_id?: string;
+  rental_house_org_id: string;
+  client_org_id?: string;
+  contact_id?: string;
+  backlot_project_id?: string;
+  order_number: string;
+  rental_start_date: string;
+  rental_end_date: string;
+  status: string;
+  total_amount?: number;
+  tax_amount?: number;
+  notes?: string;
+  contact_name?: string;
+  contact_company?: string;
+  item_count?: number;
+  amount_paid?: number;
+  balance_due?: number;
+  created_at: string;
+  items?: GearRentalOrderItem[];
+  payments?: GearRentalPayment[];
+}
+
+export interface GearRentalOrderItem {
+  id: string;
+  order_id: string;
+  asset_id?: string;
+  asset_name?: string;
+  asset_internal_id?: string;
+  quantity: number;
+  quoted_rate?: number;
+  line_total?: number;
+}
+
+export interface GearRentalPayment {
+  id: string;
+  order_id: string;
+  invoice_id?: string;
+  amount: number;
+  payment_method?: string;
+  payment_reference?: string;
+  payment_date: string;
+  recorded_by?: string;
+  recorded_by_name?: string;
+  notes?: string;
+  created_at: string;
+}
+
+export function useGearRentals(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  // Create a quick rental at POS
+  const createQuickRental = useMutation({
+    mutationFn: (input: QuickRentalInput) =>
+      fetchWithAuth(`/api/v1/gear/rentals/${orgId}/quick-rental`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-quotes', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-orders', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-transactions'] });
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+    },
+  });
+
+  return {
+    createQuickRental,
+  };
+}
+
+export interface UseGearRentalQuotesOptions {
+  orgId: string | null;
+  status?: string;
+  contactId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function useGearRentalQuotes(options: UseGearRentalQuotesOptions) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const { orgId, status, contactId, limit = 50, offset = 0 } = options;
+
+  const query = useQuery({
+    queryKey: ['gear-rental-quotes', { orgId, status, contactId, limit, offset }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (contactId) params.set('contact_id', contactId);
+      params.set('limit', limit.toString());
+      params.set('offset', offset.toString());
+
+      return fetchWithAuth(`/api/v1/gear/rentals/${orgId}/quotes?${params}`, token!);
+    },
+    enabled: !!token && !!orgId,
+  });
+
+  return {
+    quotes: (query.data?.quotes ?? []) as GearRentalQuote[],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  };
+}
+
+export function useGearRentalQuote(quoteId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-rental-quote', quoteId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/rentals/quotes/${quoteId}`, token!),
+    enabled: !!token && !!quoteId,
+    select: (data) => data.quote as GearRentalQuote,
+  });
+}
+
+export interface UseGearRentalOrdersOptions {
+  orgId: string | null;
+  status?: string;
+  contactId?: string;
+  projectId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function useGearRentalOrders(options: UseGearRentalOrdersOptions) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+  const { orgId, status, contactId, projectId, limit = 50, offset = 0 } = options;
+
+  const query = useQuery({
+    queryKey: ['gear-rental-orders', { orgId, status, contactId, projectId, limit, offset }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (status) params.set('status', status);
+      if (contactId) params.set('contact_id', contactId);
+      if (projectId) params.set('project_id', projectId);
+      params.set('limit', limit.toString());
+      params.set('offset', offset.toString());
+
+      return fetchWithAuth(`/api/v1/gear/rentals/${orgId}/orders?${params}`, token!);
+    },
+    enabled: !!token && !!orgId,
+  });
+
+  const updateOrderStatus = useMutation({
+    mutationFn: ({ orderId, status, notes }: { orderId: string; status: string; notes?: string }) =>
+      fetchWithAuth(`/api/v1/gear/rentals/orders/${orderId}/status`, token!, {
+        method: 'PATCH',
+        body: JSON.stringify({ status, notes }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-orders'] });
+    },
+  });
+
+  return {
+    orders: (query.data?.orders ?? []) as GearRentalOrder[],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    updateOrderStatus,
+  };
+}
+
+export function useGearRentalOrder(orderId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-rental-order', orderId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/rentals/orders/${orderId}`, token!),
+    enabled: !!token && !!orderId,
+    select: (data) => data.order as GearRentalOrder,
+  });
+
+  const recordPayment = useMutation({
+    mutationFn: (input: { amount: number; payment_method: string; payment_reference?: string; notes?: string }) =>
+      fetchWithAuth(`/api/v1/gear/rentals/orders/${orderId}/record-payment`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-order', orderId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-orders'] });
+    },
+  });
+
+  const generateInvoice = useMutation({
+    mutationFn: () =>
+      fetchWithAuth(`/api/v1/gear/rentals/orders/${orderId}/generate-invoice`, token!, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-rental-order', orderId] });
+    },
+  });
+
+  return {
+    order: query.data,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    recordPayment,
+    generateInvoice,
+  };
+}
+
+// ============================================================================
+// CLIENT COMPANY HOOKS
+// ============================================================================
+
+export function useGearClientCompanies(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-client-companies', orgId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/organizations/${orgId}/client-companies`, token!),
+    enabled: !!token && !!orgId,
+    select: (data) => data.companies as GearClientCompany[],
+  });
+
+  const createCompany = useMutation({
+    mutationFn: (input: CreateClientCompanyInput) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/client-companies`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-companies', orgId] });
+    },
+  });
+
+  const updateCompany = useMutation({
+    mutationFn: ({ companyId, ...input }: Partial<CreateClientCompanyInput> & { companyId: string }) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/client-companies/${companyId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-companies', orgId] });
+    },
+  });
+
+  const deleteCompany = useMutation({
+    mutationFn: (companyId: string) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/client-companies/${companyId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-companies', orgId] });
+    },
+  });
+
+  const getUploadUrl = useMutation({
+    mutationFn: ({ companyId, docType, fileName }: { companyId: string; docType: 'insurance' | 'coi'; fileName: string }) =>
+      fetchWithAuth(
+        `/api/v1/gear/organizations/${orgId}/client-companies/${companyId}/upload-url?doc_type=${docType}&file_name=${encodeURIComponent(fileName)}`,
+        token!,
+        { method: 'POST' }
+      ),
+  });
+
+  return {
+    companies: query.data ?? [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createCompany,
+    updateCompany,
+    deleteCompany,
+    getUploadUrl,
+  };
+}
+
+export function useGearClientCompany(orgId: string | null, companyId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-client-company', orgId, companyId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/organizations/${orgId}/client-companies/${companyId}`, token!),
+    enabled: !!token && !!orgId && !!companyId,
+    select: (data) => data.company as GearClientCompany,
+  });
+}
+
+// ============================================================================
+// ENHANCED CONTACT HOOKS
+// ============================================================================
+
+export function useGearClientContacts(orgId: string | null, options?: { companyId?: string; search?: string }) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-client-contacts', orgId, options],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (options?.companyId) params.set('company_id', options.companyId);
+      if (options?.search) params.set('search', options.search);
+      return fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts?${params}`, token!);
+    },
+    enabled: !!token && !!orgId,
+    select: (data) => data.contacts as GearClientContact[],
+  });
+
+  const createContact = useMutation({
+    mutationFn: (input: CreateClientContactInput) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-contacts', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const updateContact = useMutation({
+    mutationFn: ({ contactId, ...input }: Partial<CreateClientContactInput> & { contactId: string }) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-contacts', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const deleteContact = useMutation({
+    mutationFn: (contactId: string) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-contacts', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const getUploadUrl = useMutation({
+    mutationFn: ({
+      contactId,
+      docType,
+      fileName,
+    }: {
+      contactId: string;
+      docType: 'id_photo' | 'personal_insurance';
+      fileName: string;
+    }) =>
+      fetchWithAuth(
+        `/api/v1/gear/organizations/${orgId}/contacts/${contactId}/upload-url?doc_type=${docType}&file_name=${encodeURIComponent(fileName)}`,
+        token!,
+        { method: 'POST' }
+      ),
+  });
+
+  const linkUser = useMutation({
+    mutationFn: ({ contactId, userId }: { contactId: string; userId: string }) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}/link-user`, token!, {
+        method: 'PUT',
+        body: JSON.stringify({ user_id: userId }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-contacts', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  const unlinkUser = useMutation({
+    mutationFn: (contactId: string) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}/link-user`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-client-contacts', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-contacts', orgId] });
+    },
+  });
+
+  return {
+    contacts: query.data ?? [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createContact,
+    updateContact,
+    deleteContact,
+    getUploadUrl,
+    linkUser,
+    unlinkUser,
+  };
+}
+
+export function useGearContactProjects(orgId: string | null, contactId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-contact-projects', orgId, contactId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/organizations/${orgId}/contacts/${contactId}/projects`, token!),
+    enabled: !!token && !!orgId && !!contactId,
+    select: (data) => data.projects as LinkedProject[],
+  });
+}
+
+export function useGearMemberProjects(orgId: string | null, userId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-member-projects', orgId, userId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/organizations/${orgId}/members/${userId}/projects`, token!),
+    enabled: !!token && !!orgId && !!userId,
+    select: (data) => data.projects as LinkedProject[],
+  });
+}
+
+export function useGearUserSearch(orgId: string | null, searchTerm: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-user-search', orgId, searchTerm],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      // Determine if it's an email search or general search
+      if (searchTerm?.includes('@')) {
+        params.set('email', searchTerm);
+      } else if (searchTerm) {
+        params.set('query', searchTerm);
+      }
+      return fetchWithAuth(`/api/v1/gear/organizations/${orgId}/search-users?${params}`, token!);
+    },
+    enabled: !!token && !!orgId && !!searchTerm && searchTerm.length >= 2,
+    select: (data) => data.users as UserSearchResult[],
+  });
+}
+
+// ============================================================================
+// LABEL TEMPLATE HOOKS
+// ============================================================================
+
+import type {
+  GearLabelTemplate,
+  CreateLabelTemplateInput,
+  GearPrintQueueItem,
+  AddToPrintQueueInput,
+  GearPrintHistoryEntry,
+  GearPrintHistoryStats,
+} from '@/types/gear';
+
+export function useGearLabelTemplates(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-label-templates', orgId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/labels/${orgId}/templates`, token!),
+    enabled: !!token && !!orgId,
+    select: (data) => data.templates as GearLabelTemplate[],
+  });
+
+  const createTemplate = useMutation({
+    mutationFn: (input: CreateLabelTemplateInput) =>
+      fetchWithAuth(`/api/v1/gear/labels/${orgId}/templates`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-label-templates', orgId] });
+    },
+  });
+
+  const updateTemplate = useMutation({
+    mutationFn: ({ templateId, ...input }: Partial<CreateLabelTemplateInput> & { templateId: string }) =>
+      fetchWithAuth(`/api/v1/gear/labels/templates/${templateId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-label-templates', orgId] });
+    },
+  });
+
+  const deleteTemplate = useMutation({
+    mutationFn: (templateId: string) =>
+      fetchWithAuth(`/api/v1/gear/labels/templates/${templateId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-label-templates', orgId] });
+    },
+  });
+
+  return {
+    templates: query.data ?? [],
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    createTemplate,
+    updateTemplate,
+    deleteTemplate,
+  };
+}
+
+// ============================================================================
+// PRINT QUEUE HOOKS
+// ============================================================================
+
+export function useGearPrintQueue(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['gear-print-queue', orgId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/labels/${orgId}/queue`, token!),
+    enabled: !!token && !!orgId,
+  });
+
+  const addToQueue = useMutation({
+    mutationFn: (input: AddToPrintQueueInput) =>
+      fetchWithAuth(`/api/v1/gear/labels/${orgId}/queue`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-queue', orgId] });
+    },
+  });
+
+  const updateQueueItem = useMutation({
+    mutationFn: ({
+      itemId,
+      ...input
+    }: {
+      itemId: string;
+      quantity?: number;
+      template_id?: string;
+      include_kit_contents?: boolean;
+    }) =>
+      fetchWithAuth(`/api/v1/gear/labels/${orgId}/queue/${itemId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-queue', orgId] });
+    },
+  });
+
+  const removeFromQueue = useMutation({
+    mutationFn: (itemId: string) =>
+      fetchWithAuth(`/api/v1/gear/labels/${orgId}/queue/${itemId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-queue', orgId] });
+    },
+  });
+
+  const clearQueue = useMutation({
+    mutationFn: () =>
+      fetchWithAuth(`/api/v1/gear/labels/${orgId}/queue`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-queue', orgId] });
+    },
+  });
+
+  const printQueue = useMutation({
+    mutationFn: async ({
+      templateId,
+      outputFormat = 'html',
+      autoGenerateCodes = true,
+      labelSettings,
+    }: {
+      templateId?: string;
+      outputFormat?: 'html' | 'zpl';
+      autoGenerateCodes?: boolean;
+      labelSettings?: {
+        label_type?: 'barcode' | 'qr' | 'both';
+        label_size?: string;
+        print_mode?: 'sheet' | 'roll';
+        printer_type?: string;
+        sheet_rows?: number;
+        sheet_columns?: number;
+        custom_width_mm?: number;
+        custom_height_mm?: number;
+        include_name?: boolean;
+        include_category?: boolean;
+        include_internal_id?: boolean;
+        include_serial_number?: boolean;
+        include_manufacturer?: boolean;
+        include_model?: boolean;
+        include_purchase_date?: boolean;
+        include_logo?: boolean;
+        color_coding_enabled?: boolean;
+      };
+    }) => {
+      const params = new URLSearchParams();
+      if (templateId) params.set('template_id', templateId);
+      params.set('output_format', outputFormat);
+      params.set('auto_generate_codes', autoGenerateCodes.toString());
+
+      const response = await fetch(`${API_BASE}/api/v1/gear/labels/${orgId}/queue/print?${params}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: labelSettings ? JSON.stringify(labelSettings) : undefined,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to print queue');
+      }
+
+      return response.text();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-queue', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-print-history', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+    },
+  });
+
+  return {
+    queue: (query.data?.queue ?? []) as GearPrintQueueItem[],
+    count: query.data?.count ?? 0,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+    addToQueue,
+    updateQueueItem,
+    removeFromQueue,
+    clearQueue,
+    printQueue,
+  };
+}
+
+// ============================================================================
+// PRINT HISTORY HOOKS
+// ============================================================================
+
+export interface UseGearPrintHistoryOptions {
+  orgId: string | null;
+  itemType?: 'asset' | 'kit';
+  userId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function useGearPrintHistory(options: UseGearPrintHistoryOptions) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const { orgId, itemType, userId, limit = 50, offset = 0 } = options;
+
+  const query = useQuery({
+    queryKey: ['gear-print-history', { orgId, itemType, userId, limit, offset }],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (itemType) params.set('item_type', itemType);
+      if (userId) params.set('user_id', userId);
+      params.set('limit', limit.toString());
+      params.set('offset', offset.toString());
+
+      return fetchWithAuth(`/api/v1/gear/labels/${orgId}/history?${params}`, token!);
+    },
+    enabled: !!token && !!orgId,
+  });
+
+  return {
+    history: (query.data?.history ?? []) as GearPrintHistoryEntry[],
+    total: query.data?.total ?? 0,
+    isLoading: query.isLoading,
+    error: query.error,
+    refetch: query.refetch,
+  };
+}
+
+export function useGearPrintHistoryStats(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  return useQuery({
+    queryKey: ['gear-print-history-stats', orgId],
+    queryFn: () => fetchWithAuth(`/api/v1/gear/labels/${orgId}/history/stats`, token!),
+    enabled: !!token && !!orgId,
+    select: (data) => data as GearPrintHistoryStats,
+  });
+}
+
+export function useGearReprint(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ historyId, outputFormat = 'html' }: { historyId: string; outputFormat?: 'html' | 'zpl' }) => {
+      const params = new URLSearchParams();
+      params.set('output_format', outputFormat);
+
+      const response = await fetch(`${API_BASE}/api/v1/gear/labels/${orgId}/history/${historyId}/reprint?${params}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Failed to reprint');
+      }
+
+      return response.text();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-print-history'] });
+    },
+  });
 }

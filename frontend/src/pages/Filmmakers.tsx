@@ -15,6 +15,8 @@ import TopicsBoard from '@/components/community/TopicsBoard';
 import ThreadForm from '@/components/community/ThreadForm';
 import ThreadView from '@/components/community/ThreadView';
 import { FeedBoard } from '@/components/community/feed';
+import CommunityMarketplaceTab from '@/components/community/CommunityMarketplaceTab';
+import CommunityForSaleTab from '@/components/community/CommunityForSaleTab';
 import { CommunityCollab, CommunityThread } from '@/types/community';
 import { useAuth } from '@/context/AuthContext';
 
@@ -149,6 +151,14 @@ const Filmmakers = () => {
           onClose={handleCloseCollabForm}
           editCollab={editingCollab}
         />
+      )}
+
+      {activeTab === 'marketplace' && (
+        <CommunityMarketplaceTab />
+      )}
+
+      {activeTab === 'for-sale' && (
+        <CommunityForSaleTab />
       )}
 
       {activeTab === 'topics' && (
