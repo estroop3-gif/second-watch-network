@@ -11,12 +11,14 @@ import {
   Barcode,
   Package,
   Layers,
+  Link,
   ChevronDown,
   ChevronRight,
   Loader2,
   AlertCircle,
   CheckCircle2,
   XCircle,
+  Camera,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -41,9 +43,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 import { useGearScanLookup } from '@/hooks/gear';
+import { CameraScannerModal } from '@/components/gear/scanner';
+import type { ScanResult } from '@/types/scanner';
 import type {
   VerificationItem,
   VerificationDiscrepancy,
@@ -72,6 +82,7 @@ interface VerificationScreenProps {
   verifyMethod: VerifyMethod;
   discrepancyAction: DiscrepancyAction;
   kitVerification: KitVerificationMode;
+  packageVerification?: KitVerificationMode;  // Equipment package verification mode
   onVerifyItem: (itemId: string, method: 'scan' | 'checkoff') => Promise<void>;
   onReportDiscrepancy: (itemId: string, issueType: string, notes?: string) => Promise<void>;
   onComplete: () => Promise<void>;
@@ -95,6 +106,7 @@ export function VerificationScreen({
   verifyMethod,
   discrepancyAction,
   kitVerification,
+  packageVerification = 'package_only',
   onVerifyItem,
   onReportDiscrepancy,
   onComplete,
@@ -108,6 +120,7 @@ export function VerificationScreen({
   const [scanInput, setScanInput] = useState('');
   const [scanError, setScanError] = useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
   const scannerRef = useRef<HTMLInputElement>(null);
 
   // Discrepancy dialog state
@@ -119,6 +132,8 @@ export function VerificationScreen({
 
   // Expanded kits state
   const [expandedKits, setExpandedKits] = useState<Set<string>>(new Set());
+  // Expanded packages state
+  const [expandedPackages, setExpandedPackages] = useState<Set<string>>(new Set());
 
   // Completion state
   const [isCompleting, setIsCompleting] = useState(false);
@@ -215,6 +230,19 @@ export function VerificationScreen({
     }
   };
 
+  // Handle camera scan result
+  const handleCameraScan = useCallback(
+    (result: ScanResult) => {
+      setScanInput(result.code);
+      setShowCameraScanner(false);
+      // Trigger scan submit after short delay
+      setTimeout(() => {
+        handleScanSubmit();
+      }, 100);
+    },
+    [handleScanSubmit]
+  );
+
   // Handle manual check-off
   const handleCheckOff = async (itemId: string) => {
     if (verifyMethod === 'scan_only') return;
@@ -261,6 +289,19 @@ export function VerificationScreen({
     });
   };
 
+  // Toggle package expansion
+  const togglePackageExpansion = (packageId: string) => {
+    setExpandedPackages((prev) => {
+      const next = new Set(prev);
+      if (next.has(packageId)) {
+        next.delete(packageId);
+      } else {
+        next.add(packageId);
+      }
+      return next;
+    });
+  };
+
   // Handle complete verification
   const handleComplete = async () => {
     setIsCompleting(true);
@@ -284,7 +325,7 @@ export function VerificationScreen({
     (hasUnacknowledgedDiscrepancies && discrepancyAction === 'warn') ||
     discrepancyAcknowledged;
 
-  // Group items by kit
+  // Group items by kit and package
   const groupedItems = items.reduce(
     (acc, item) => {
       if (item.parent_kit_id) {
@@ -292,12 +333,21 @@ export function VerificationScreen({
           acc.kitContents[item.parent_kit_id] = [];
         }
         acc.kitContents[item.parent_kit_id].push(item);
+      } else if (item.parent_package_id) {
+        if (!acc.packageContents[item.parent_package_id]) {
+          acc.packageContents[item.parent_package_id] = [];
+        }
+        acc.packageContents[item.parent_package_id].push(item);
       } else {
         acc.topLevel.push(item);
       }
       return acc;
     },
-    { topLevel: [] as VerificationItem[], kitContents: {} as Record<string, VerificationItem[]> }
+    {
+      topLevel: [] as VerificationItem[],
+      kitContents: {} as Record<string, VerificationItem[]>,
+      packageContents: {} as Record<string, VerificationItem[]>,
+    }
   );
 
   // Get title based on verification type
@@ -351,6 +401,8 @@ export function VerificationScreen({
         <div className="flex-shrink-0">
           {item.type === 'kit' ? (
             <Layers className="h-5 w-5 text-muted-foreground" />
+          ) : item.is_package_parent ? (
+            <Link className="h-5 w-5 text-accent-yellow" />
           ) : (
             <Package className="h-5 w-5 text-muted-foreground" />
           )}
@@ -363,6 +415,11 @@ export function VerificationScreen({
             {item.type === 'kit' && (
               <Badge variant="outline" className="text-xs">
                 Kit
+              </Badge>
+            )}
+            {item.is_package_parent && (
+              <Badge variant="outline" className="text-xs border-accent-yellow/50 text-accent-yellow">
+                Equipment Package
               </Badge>
             )}
           </div>
@@ -398,6 +455,22 @@ export function VerificationScreen({
               className="text-muted-foreground"
             >
               {expandedKits.has(item.id) ? (
+                <ChevronDown className="h-4 w-4" />
+              ) : (
+                <ChevronRight className="h-4 w-4" />
+              )}
+            </Button>
+          )}
+
+          {/* Package expansion toggle */}
+          {item.is_package_parent && packageVerification === 'verify_contents' && groupedItems.packageContents[item.id] && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => togglePackageExpansion(item.id)}
+              className="text-muted-foreground"
+            >
+              {expandedPackages.has(item.id) ? (
                 <ChevronDown className="h-4 w-4" />
               ) : (
                 <ChevronRight className="h-4 w-4" />
@@ -447,6 +520,23 @@ export function VerificationScreen({
               className="flex-1"
               disabled={isScanning}
             />
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => setShowCameraScanner(true)}
+                    disabled={isScanning}
+                  >
+                    <Camera className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Scan with camera</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
             <Button onClick={handleScanSubmit} disabled={!scanInput.trim() || isScanning}>
               {isScanning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
             </Button>
@@ -470,6 +560,11 @@ export function VerificationScreen({
                   kitVerification === 'verify_contents' &&
                   expandedKits.has(item.id) &&
                   groupedItems.kitContents[item.id]?.map((contentItem) => renderItemRow(contentItem, true))}
+                {/* Render package contents if expanded */}
+                {item.is_package_parent &&
+                  packageVerification === 'verify_contents' &&
+                  expandedPackages.has(item.id) &&
+                  groupedItems.packageContents[item.id]?.map((contentItem) => renderItemRow(contentItem, true))}
               </React.Fragment>
             ))}
           </div>
@@ -593,6 +688,17 @@ export function VerificationScreen({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Camera Scanner Modal */}
+      <CameraScannerModal
+        isOpen={showCameraScanner}
+        onClose={() => setShowCameraScanner(false)}
+        onScan={handleCameraScan}
+        title="Scan to Verify"
+        scanMode="continuous"
+        audioFeedback
+        hapticFeedback
+      />
     </Dialog>
   );
 }

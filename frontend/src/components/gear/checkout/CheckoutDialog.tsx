@@ -64,6 +64,10 @@ export interface SelectedItem {
   // Kit tracking - if this item was added as part of a kit
   fromKitId?: string;
   fromKitName?: string;
+  // Equipment package tracking - if this item was added as part of a package
+  fromPackageId?: string;
+  fromPackageName?: string;
+  isPackageParent?: boolean;  // True if this is the main equipment package item
 }
 
 export interface ItemPricing {
@@ -162,6 +166,9 @@ export function CheckoutDialog({
   const kitVerification = mode === 'client'
     ? orgSettings?.client_checkout_kit_verification || 'kit_only'
     : orgSettings?.team_checkout_kit_verification || 'kit_only';
+  const packageVerification = mode === 'client'
+    ? orgSettings?.client_checkout_package_verification || 'package_only'
+    : orgSettings?.team_checkout_package_verification || 'package_only';
 
   // Reset state when modal opens
   useEffect(() => {
@@ -249,9 +256,21 @@ export function CheckoutDialog({
     setTimeout(() => scannerRef.current?.focus(), 50);
   }, []);
 
-  // Remove item callback
+  // Remove item callback - cascade remove package accessories
   const handleRemoveItem = useCallback((id: string) => {
-    setSelectedItems((prev) => prev.filter((item) => item.id !== id));
+    setSelectedItems((prev) => {
+      const item = prev.find((i) => i.id === id);
+
+      // If removing a package parent, also remove all its accessories
+      if (item?.isPackageParent) {
+        const accessoryIds = prev
+          .filter((i) => i.fromPackageId === id)
+          .map((i) => i.id);
+        return prev.filter((i) => i.id !== id && !accessoryIds.includes(i.id));
+      }
+
+      return prev.filter((i) => i.id !== id);
+    });
   }, []);
 
   // Update item pricing
@@ -284,6 +303,14 @@ export function CheckoutDialog({
       name: item.name,
       internal_id: item.internalId,
       status: 'pending' as const,
+      required: true,
+      // Kit tracking
+      parent_kit_id: item.fromKitId,
+      parent_kit_name: item.fromKitName,
+      // Package tracking
+      parent_package_id: item.fromPackageId,
+      parent_package_name: item.fromPackageName,
+      is_package_parent: item.isPackageParent,
     }));
   }, [selectedItems]);
 
@@ -651,6 +678,7 @@ export function CheckoutDialog({
         verifyMethod={verifyMethod as 'scan_only' | 'scan_or_checkoff'}
         discrepancyAction={discrepancyAction as 'block' | 'warn'}
         kitVerification={kitVerification as 'kit_only' | 'verify_contents'}
+        packageVerification={packageVerification as 'package_only' | 'verify_contents'}
         onVerifyItem={handleVerifyItem}
         onReportDiscrepancy={handleReportDiscrepancy}
         onComplete={handleVerificationComplete}

@@ -1,6 +1,7 @@
 /**
  * Items Section
  * Barcode scanner + browse functionality for checkout
+ * Supports both USB barcode scanner and camera-based scanning
  */
 import React, { useState, useCallback, useEffect } from 'react';
 import {
@@ -12,6 +13,8 @@ import {
   Loader2,
   AlertCircle,
   Check,
+  Link,
+  Camera,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -21,11 +24,22 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Switch } from '@/components/ui/switch';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 import { useGearAssets, useGearKitInstances, useGearKitInstance, useGearScanLookup } from '@/hooks/gear';
+import { useAuth } from '@/context/AuthContext';
+import { CameraScannerModal } from '@/components/gear/scanner';
+import type { ScanResult } from '@/types/scanner';
 import type { GearAsset, GearKitInstance } from '@/types/gear';
 import type { SelectedItem } from './CheckoutDialog';
+
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Component to browse and select a kit - fetches full data on click
 function KitBrowseCard({
@@ -100,9 +114,14 @@ export function ItemsSection({
   onRemoveItem,
   scannerRef,
 }: ItemsSectionProps) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
   // Scanner state
   const [scanInput, setScanInput] = useState('');
   const [scanError, setScanError] = useState<string | null>(null);
+  const [isAddingPackage, setIsAddingPackage] = useState(false);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
 
   // Browse state
   const [showBrowse, setShowBrowse] = useState(false);
@@ -111,6 +130,46 @@ export function ItemsSection({
 
   // Hooks
   const { lookupAsset } = useGearScanLookup(orgId);
+
+  // Helper to fetch asset with accessories
+  const fetchAssetWithAccessories = async (assetId: string): Promise<GearAsset & { accessories?: GearAsset[] }> => {
+    const response = await fetch(
+      `${API_BASE}/api/v1/gear/assets/item/${assetId}?include_accessories=true`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const data = await response.json();
+    return data.asset;
+  };
+
+  // Add equipment package accessories
+  const addPackageAccessories = async (asset: GearAsset) => {
+    if (!asset.is_equipment_package) return;
+
+    setIsAddingPackage(true);
+    try {
+      const fullAsset = await fetchAssetWithAccessories(asset.id);
+      fullAsset.accessories?.forEach((acc) => {
+        if (!selectedItems.some((item) => item.id === acc.id)) {
+          onAddItem({
+            id: acc.id,
+            type: 'asset',
+            name: acc.name,
+            internalId: acc.internal_id,
+            status: acc.status,
+            dailyRate: acc.daily_rate,
+            weeklyRate: acc.weekly_rate,
+            monthlyRate: acc.monthly_rate,
+            fromPackageId: asset.id,
+            fromPackageName: asset.name,
+          });
+        }
+      });
+    } catch (err) {
+      console.error('Failed to fetch package accessories:', err);
+    } finally {
+      setIsAddingPackage(false);
+    }
+  };
   const { assets, isLoading: assetsLoading } = useGearAssets({
     orgId,
     search: searchQuery || undefined,
@@ -159,13 +218,20 @@ export function ItemsSection({
         dailyRate: asset.daily_rate,
         weeklyRate: asset.weekly_rate,
         monthlyRate: asset.monthly_rate,
+        isPackageParent: asset.is_equipment_package,
       });
+
+      // If it's an equipment package, also add all accessories
+      if (asset.is_equipment_package) {
+        addPackageAccessories(asset);
+      }
+
       setScanInput('');
     } catch {
       setScanError(`Scan failed: ${scanInput}`);
       setTimeout(() => setScanError(null), 3000);
     }
-  }, [scanInput, lookupAsset, selectedItems, onAddItem]);
+  }, [scanInput, lookupAsset, selectedItems, onAddItem, addPackageAccessories]);
 
   // Handle scan input keypress
   const handleScanKeyDown = (e: React.KeyboardEvent) => {
@@ -174,6 +240,55 @@ export function ItemsSection({
       handleScanSubmit();
     }
   };
+
+  // Handle camera scan result
+  const handleCameraScan = useCallback(
+    (result: ScanResult) => {
+      // Use the scanned code to do a lookup
+      setScanInput(result.code);
+      setShowCameraScanner(false);
+      // Trigger the lookup
+      setTimeout(() => {
+        lookupAsset.mutateAsync(result.code).then((res) => {
+          const asset = res.asset as GearAsset;
+          if (!asset) {
+            setScanError(`No asset found: ${result.code}`);
+            setTimeout(() => setScanError(null), 3000);
+            return;
+          }
+          if (asset.status !== 'available') {
+            setScanError(`"${asset.name}" is ${asset.status}`);
+            setTimeout(() => setScanError(null), 3000);
+            return;
+          }
+          if (selectedItems.some((item) => item.id === asset.id)) {
+            setScanError(`"${asset.name}" already selected`);
+            setTimeout(() => setScanError(null), 3000);
+            return;
+          }
+          onAddItem({
+            id: asset.id,
+            type: 'asset',
+            name: asset.name,
+            internalId: asset.internal_id,
+            status: asset.status,
+            dailyRate: asset.daily_rate,
+            weeklyRate: asset.weekly_rate,
+            monthlyRate: asset.monthly_rate,
+            isPackageParent: asset.is_equipment_package,
+          });
+          if (asset.is_equipment_package) {
+            addPackageAccessories(asset);
+          }
+          setScanInput('');
+        }).catch(() => {
+          setScanError(`Scan failed: ${result.code}`);
+          setTimeout(() => setScanError(null), 3000);
+        });
+      }, 100);
+    },
+    [lookupAsset, selectedItems, onAddItem, addPackageAccessories]
+  );
 
   // Add asset from browse
   const handleAddAsset = (asset: GearAsset) => {
@@ -187,7 +302,13 @@ export function ItemsSection({
       dailyRate: asset.daily_rate,
       weeklyRate: asset.weekly_rate,
       monthlyRate: asset.monthly_rate,
+      isPackageParent: asset.is_equipment_package,
     });
+
+    // If it's an equipment package, also add all accessories
+    if (asset.is_equipment_package) {
+      addPackageAccessories(asset);
+    }
   };
 
   // Add kit (adds all kit contents with kit tracking)
@@ -232,6 +353,24 @@ export function ItemsSection({
             )}
             autoComplete="off"
           />
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setShowCameraScanner(true)}
+                  className="flex-shrink-0"
+                >
+                  <Camera className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Scan with camera</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button
             type="button"
             variant="secondary"
@@ -384,11 +523,20 @@ export function ItemsSection({
                 variant="secondary"
                 className="flex items-center gap-1 pr-1 py-1"
               >
-                <Package className="w-3 h-3 mr-1" />
+                {item.isPackageParent ? (
+                  <Link className="w-3 h-3 mr-1 text-accent-yellow" />
+                ) : (
+                  <Package className="w-3 h-3 mr-1" />
+                )}
                 <span className="truncate max-w-[150px]">{item.name}</span>
                 {item.fromKitName && (
                   <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-purple-500/20 text-purple-400 rounded">
                     {item.fromKitName}
+                  </span>
+                )}
+                {item.fromPackageName && (
+                  <span className="ml-1 px-1.5 py-0.5 text-[10px] bg-accent-yellow/20 text-accent-yellow rounded">
+                    {item.fromPackageName}
                   </span>
                 )}
                 <button
@@ -403,6 +551,17 @@ export function ItemsSection({
           </div>
         </div>
       )}
+
+      {/* Camera Scanner Modal */}
+      <CameraScannerModal
+        isOpen={showCameraScanner}
+        onClose={() => setShowCameraScanner(false)}
+        onScan={handleCameraScan}
+        title="Scan Asset Barcode"
+        scanMode="continuous"
+        audioFeedback
+        hapticFeedback
+      />
     </div>
   );
 }

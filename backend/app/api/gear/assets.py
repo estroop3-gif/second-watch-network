@@ -43,6 +43,8 @@ class AssetCreate(BaseModel):
     quantity_on_hand: Optional[int] = None
     reorder_point: Optional[int] = None
     unit_of_measure: Optional[str] = None
+    # Equipment Package - create as accessory of parent
+    parent_asset_id: Optional[str] = None
 
 
 class AssetUpdate(BaseModel):
@@ -79,6 +81,14 @@ class BulkAssetCreate(BaseModel):
     assets: List[AssetCreate]
 
 
+class AddAccessory(BaseModel):
+    accessory_id: str
+
+
+class ConvertToPackage(BaseModel):
+    accessory_ids: List[str]
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -107,6 +117,8 @@ async def list_assets(
     custodian_id: Optional[str] = Query(None, description="Filter by custodian"),
     location_id: Optional[str] = Query(None, description="Filter by location"),
     asset_type: Optional[str] = Query(None, description="Filter by asset type"),
+    parent_asset_id: Optional[str] = Query(None, description="Filter by parent asset: 'none' for root assets only, or UUID for accessories of specific parent"),
+    include_accessory_count: bool = Query(False, description="Include accessory count for each asset"),
     search: Optional[str] = Query(None, description="Search term"),
     limit: int = Query(50, le=200),
     offset: int = Query(0),
@@ -124,6 +136,8 @@ async def list_assets(
         location_id=location_id,
         search=search,
         asset_type=asset_type,
+        parent_asset_id=parent_asset_id,
+        include_accessory_count=include_accessory_count,
         limit=limit,
         offset=offset
     )
@@ -188,12 +202,13 @@ async def bulk_create_assets(
 @router.get("/item/{asset_id}")
 async def get_asset(
     asset_id: str,
+    include_accessories: bool = Query(False, description="Include accessories for equipment packages"),
     user=Depends(get_current_user)
 ):
     """Get a single asset with full details."""
     profile_id = get_profile_id(user)
 
-    asset = gear_service.get_asset(asset_id)
+    asset = gear_service.get_asset(asset_id, include_accessories=include_accessories)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -373,3 +388,92 @@ async def get_asset_stats(
         "by_category": category_counts,
         "values": value_stats
     }
+
+
+# ============================================================================
+# EQUIPMENT PACKAGE (ACCESSORY) ENDPOINTS
+# ============================================================================
+
+@router.get("/item/{asset_id}/accessories")
+async def get_asset_accessories(
+    asset_id: str,
+    user=Depends(get_current_user)
+):
+    """Get all accessories for an equipment package."""
+    profile_id = get_profile_id(user)
+
+    asset = gear_service.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    require_org_access(asset["organization_id"], profile_id)
+
+    accessories = gear_service.get_asset_accessories(asset_id)
+
+    return {"accessories": accessories}
+
+
+@router.post("/item/{asset_id}/accessories")
+async def add_accessory_to_asset(
+    asset_id: str,
+    data: AddAccessory,
+    user=Depends(get_current_user)
+):
+    """Add an accessory to an equipment package."""
+    profile_id = get_profile_id(user)
+
+    asset = gear_service.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    require_org_access(asset["organization_id"], profile_id, ["owner", "admin", "manager"])
+
+    try:
+        result = gear_service.add_accessory_to_asset(asset_id, data.accessory_id, profile_id)
+        return {"asset": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.delete("/item/{asset_id}/accessories/{accessory_id}")
+async def remove_accessory_from_asset(
+    asset_id: str,
+    accessory_id: str,
+    user=Depends(get_current_user)
+):
+    """Remove an accessory from an equipment package."""
+    profile_id = get_profile_id(user)
+
+    asset = gear_service.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    require_org_access(asset["organization_id"], profile_id, ["owner", "admin", "manager"])
+
+    try:
+        result = gear_service.remove_accessory_from_asset(asset_id, accessory_id, profile_id)
+        return {"asset": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/item/{asset_id}/convert-to-package")
+async def convert_to_equipment_package(
+    asset_id: str,
+    data: ConvertToPackage,
+    user=Depends(get_current_user)
+):
+    """Convert an asset to an equipment package by adding multiple accessories at once."""
+    profile_id = get_profile_id(user)
+
+    asset = gear_service.get_asset(asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    require_org_access(asset["organization_id"], profile_id, ["owner", "admin", "manager"])
+
+    try:
+        result = gear_service.convert_to_equipment_package(asset_id, data.accessory_ids, profile_id)
+        return {"asset": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

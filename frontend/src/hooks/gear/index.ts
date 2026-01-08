@@ -7,3 +7,4 @@ export * from './useGearVerification';
 export * from './useGearCheckin';
 export * from './useGearMarketplace';
 export * from './usePersonalGear';
+export * from './useGearWorkOrders';

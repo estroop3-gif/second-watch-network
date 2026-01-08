@@ -357,7 +357,12 @@ async def update_organization_settings(
         # Receiver verification settings
         "receiver_verification_mode", "receiver_verification_timing",
         # Check-in verification settings
-        "checkin_verification_required", "checkin_verify_method", "checkin_kit_verification"
+        "checkin_verification_required", "checkin_verify_method", "checkin_kit_verification",
+        # Equipment package verification settings
+        "team_checkout_package_verification", "client_checkout_package_verification",
+        "checkin_package_verification",
+        # Work order staging settings
+        "work_order_staging_verify_method", "work_order_auto_ready"
     ]
 
     updates = []

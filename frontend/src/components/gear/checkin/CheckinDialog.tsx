@@ -2,7 +2,7 @@
  * Check-in Dialog
  * Accordion-based check-in workflow with condition assessment, damage reporting, and late fee handling
  */
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   X,
   Package,
@@ -14,10 +14,12 @@ import {
   Camera,
   Loader2,
   AlertCircle,
+  Barcode,
 } from 'lucide-react';
 import { format } from 'date-fns';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -30,6 +32,12 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -43,6 +51,8 @@ import {
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { cn } from '@/lib/utils';
+import { CameraScannerModal } from '@/components/gear/scanner';
+import type { ScanResult } from '@/types/scanner';
 
 import { useStartCheckinFromTransaction, useCompleteCheckin, useCheckinReceipt } from '@/hooks/gear/useGearCheckin';
 import { useGearLocations } from '@/hooks/gear';
@@ -80,6 +90,13 @@ export function CheckinDialog({
   const [returnLocationId, setReturnLocationId] = useState<string>('');
   const [notes, setNotes] = useState('');
 
+  // Scanner state
+  const [scanInput, setScanInput] = useState('');
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanSuccess, setScanSuccess] = useState<string | null>(null);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+
   // Damage modal state
   const [damageAssetId, setDamageAssetId] = useState<string | null>(null);
   const [damageAssetName, setDamageAssetName] = useState('');
@@ -104,6 +121,12 @@ export function CheckinDialog({
   } = useCompleteCheckin(orgId, transactionId);
 
   const { locations } = useGearLocations(orgId);
+
+  // Extract data from check-in session (must be before handlers that use these)
+  const transaction = checkinData?.transaction;
+  const lateInfo = checkinData?.late_info;
+  const settings = checkinData?.settings;
+  const items = transaction?.items ?? [];
 
   // Start the check-in session when dialog opens
   useEffect(() => {
@@ -179,6 +202,77 @@ export function CheckinDialog({
     setDamageAssetName(assetName);
   }, []);
 
+  // Handle barcode/QR scan verification - accepts optional direct code for camera scans
+  const handleScanSubmit = useCallback((directCode?: string) => {
+    const codeToUse = directCode ?? scanInput;
+    if (!codeToUse.trim()) return;
+
+    setScanError(null);
+    setScanSuccess(null);
+
+    const code = codeToUse.trim().toLowerCase();
+    console.log('[CheckinDialog] Processing scan code:', code);
+
+    // Find matching item in the transaction by barcode or internal_id
+    const matchingItem = items.find(
+      (item) =>
+        item.asset_id &&
+        (item.barcode?.toLowerCase() === code ||
+          item.asset_internal_id?.toLowerCase() === code)
+    );
+
+    if (!matchingItem || !matchingItem.asset_id) {
+      const errorMsg = `No item found with code: ${codeToUse}`;
+      console.warn('[CheckinDialog] Scan failed:', errorMsg);
+      setScanError(errorMsg);
+      setScanInput('');
+      return;
+    }
+
+    // Check if already selected
+    if (selectedItems.has(matchingItem.asset_id)) {
+      const errorMsg = `"${matchingItem.asset_name}" is already checked`;
+      console.warn('[CheckinDialog] Scan failed:', errorMsg);
+      setScanError(errorMsg);
+      setScanInput('');
+      return;
+    }
+
+    // Auto-select the item
+    setSelectedItems((prev) => {
+      const next = new Set(prev);
+      next.add(matchingItem.asset_id!);
+      return next;
+    });
+
+    const successMsg = `Verified: ${matchingItem.asset_name}`;
+    console.log('[CheckinDialog] Scan success:', successMsg);
+    setScanSuccess(successMsg);
+    setScanInput('');
+
+    // Clear success message after 2 seconds
+    setTimeout(() => setScanSuccess(null), 2000);
+  }, [scanInput, items, selectedItems]);
+
+  // Handle scan input keypress
+  const handleScanKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleScanSubmit();
+    }
+  };
+
+  // Handle camera scan result
+  const handleCameraScan = useCallback(
+    (result: ScanResult) => {
+      console.log('[CheckinDialog] Camera scan detected:', result.code, 'format:', result.format);
+      setShowCameraScanner(false);
+      // Process scan directly with the code (don't rely on state)
+      handleScanSubmit(result.code);
+    },
+    [handleScanSubmit]
+  );
+
   const handleComplete = async () => {
     try {
       const result = await completeCheckin({
@@ -205,6 +299,11 @@ export function CheckinDialog({
     setReturnLocationId('');
     setNotes('');
     setExpandedSections(['items']);
+    // Reset scanner state
+    setScanInput('');
+    setScanError(null);
+    setScanSuccess(null);
+    setShowCameraScanner(false);
     onClose();
   }, [onClose, resetStart]);
 
@@ -212,12 +311,6 @@ export function CheckinDialog({
     setShowReceipt(false);
     handleClose();
   }, [handleClose]);
-
-  // Extract data from check-in session
-  const transaction = checkinData?.transaction;
-  const lateInfo = checkinData?.late_info;
-  const settings = checkinData?.settings;
-  const items = transaction?.items ?? [];
 
   // Calculate partial return info
   const totalItems = items.filter((i) => i.asset_id).length;
@@ -295,6 +388,67 @@ export function CheckinDialog({
               Check-in Items
             </DialogTitle>
           </DialogHeader>
+
+          {/* Scanner Input for Verification */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2 text-bone-white">
+              <Barcode className="w-4 h-4" />
+              Scan to Verify Return
+            </Label>
+            <div className="flex gap-2">
+              <Input
+                ref={scanInputRef}
+                value={scanInput}
+                onChange={(e) => {
+                  setScanInput(e.target.value);
+                  setScanError(null);
+                  setScanSuccess(null);
+                }}
+                onKeyDown={handleScanKeyDown}
+                placeholder="Scan barcode or QR code..."
+                className="flex-1 bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray/50"
+                autoComplete="off"
+              />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      onClick={() => setShowCameraScanner(true)}
+                      className="border-muted-gray/30 text-muted-gray hover:text-bone-white"
+                    >
+                      <Camera className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Scan with camera</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleScanSubmit}
+                disabled={!scanInput.trim()}
+              >
+                Verify
+              </Button>
+            </div>
+            {scanError && (
+              <p className="text-sm text-red-400 flex items-center gap-1">
+                <AlertCircle className="w-3 h-3" />
+                {scanError}
+              </p>
+            )}
+            {scanSuccess && (
+              <p className="text-sm text-green-400 flex items-center gap-1">
+                <CheckCircle className="w-3 h-3" />
+                {scanSuccess}
+              </p>
+            )}
+          </div>
 
           {/* Late Warning Banner */}
           {lateInfo?.is_late && (
@@ -631,6 +785,17 @@ export function CheckinDialog({
           transactionId={completedTransactionId}
         />
       )}
+
+      {/* Camera Scanner Modal */}
+      <CameraScannerModal
+        isOpen={showCameraScanner}
+        onClose={() => setShowCameraScanner(false)}
+        onScan={handleCameraScan}
+        title="Scan to Verify Return"
+        scanMode="continuous"
+        audioFeedback
+        hapticFeedback
+      />
     </>
   );
 }

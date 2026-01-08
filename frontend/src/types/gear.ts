@@ -73,6 +73,9 @@ export type CheckinPermissionLevel = 'anyone' | 'custodian_only' | 'custodian_an
 export type PartialReturnPolicy = 'allow' | 'warn' | 'block';
 export type CheckinDamageTier = 'cosmetic' | 'functional' | 'unsafe';
 
+// Work order staging verification method
+export type WorkOrderStagingVerifyMethod = 'checkoff_only' | 'barcode_required' | 'qr_required' | 'scan_or_checkoff';
+
 // Label printing types
 export type LabelSize = '2x1' | '1.5x0.5' | '3x2' | 'custom';
 export type PrintMode = 'sheet' | 'roll';
@@ -173,6 +176,10 @@ export interface GearOrganizationSettings {
   checkin_verify_method?: VerifyMethod;
   checkin_kit_verification?: KitVerificationMode;
   checkin_discrepancy_action?: DiscrepancyAction;
+  // Equipment package verification settings
+  team_checkout_package_verification?: KitVerificationMode;
+  client_checkout_package_verification?: KitVerificationMode;
+  checkin_package_verification?: KitVerificationMode;
 
   // Check-in permissions & policies
   checkin_permission_level?: CheckinPermissionLevel;
@@ -188,6 +195,10 @@ export interface GearOrganizationSettings {
   notify_on_checkin?: boolean;
   notify_late_return?: boolean;
   notify_damage_found?: boolean;
+
+  // Work order staging settings
+  work_order_staging_verify_method?: WorkOrderStagingVerifyMethod;
+  work_order_auto_ready?: boolean;
 }
 
 // Verification session types
@@ -198,6 +209,10 @@ export interface VerificationItem {
   internal_id: string;
   parent_kit_id?: string;
   parent_kit_name?: string;
+  // Equipment package tracking
+  parent_package_id?: string;
+  parent_package_name?: string;
+  is_package_parent?: boolean;  // True if this item is an equipment package
   required: boolean;
   status: ItemVerificationStatus;
   verified_at?: string;
@@ -325,6 +340,13 @@ export interface GearAsset {
   insurance_policy_number?: string;
   last_maintenance_date?: string;
   next_maintenance_date?: string;
+  // Equipment Package (Accessories)
+  parent_asset_id?: string;
+  parent_asset_name?: string;
+  is_equipment_package: boolean;
+  accessory_count?: number;
+  accessories?: GearAsset[];
+  // Status
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -369,6 +391,9 @@ export interface GearKitTemplateItem {
   quantity: number;
   is_required: boolean;
   sort_order: number;
+  // Nested template support (for sub-kit templates)
+  nested_template_id?: string;
+  nested_template_name?: string;
 }
 
 export interface GearKitInstance {
@@ -396,13 +421,21 @@ export interface GearKitInstance {
 export interface GearKitMembership {
   id: string;
   kit_instance_id: string;
-  asset_id: string;
+  asset_id?: string;
   asset_name?: string;
   asset_internal_id?: string;
+  asset_status?: AssetStatus;
   added_at: string;
   added_by_user_id?: string;
   is_present: boolean;
+  slot_name?: string;
   slot_number?: number;
+  // Nested kit support (for sub-kits within kits)
+  nested_kit_id?: string;
+  nested_kit_name?: string;
+  nested_kit_internal_id?: string;
+  nested_kit_status?: AssetStatus;
+  nested_kit_contents?: GearKitMembership[];
 }
 
 // ============================================================================
@@ -1792,10 +1825,127 @@ export interface ExtensionResponseInput {
 }
 
 // ============================================================================
-// TRANSACTIONS 5-TAB TYPES
+// WORK ORDER TYPES
 // ============================================================================
 
-export type TransactionTab = 'outgoing' | 'incoming' | 'requests' | 'history' | 'overdue';
+export type WorkOrderStatus = 'draft' | 'in_progress' | 'ready' | 'checked_out' | 'cancelled';
+
+export interface WorkOrderStatusConfig {
+  id: string;
+  label: string;
+  color: string;
+  sort_order: number;
+}
+
+export interface GearWorkOrder {
+  id: string;
+  organization_id: string;
+  reference_number?: string;
+  title: string;
+  notes?: string;
+  status: WorkOrderStatus;
+  // Assignment
+  created_by: string;
+  created_by_name?: string;
+  assigned_to?: string;
+  assigned_to_name?: string;
+  // Custodian (who gets equipment)
+  custodian_user_id?: string;
+  custodian_user_name?: string;
+  custodian_contact_id?: string;
+  custodian_contact_name?: string;
+  backlot_project_id?: string;
+  project_name?: string;
+  // Dates
+  due_date?: string;
+  pickup_date?: string;
+  expected_return_date?: string;
+  destination_location_id?: string;
+  destination_location_name?: string;
+  // Checkout link
+  checkout_transaction_id?: string;
+  checked_out_at?: string;
+  checked_out_by?: string;
+  checked_out_by_name?: string;
+  // Counts
+  item_count?: number;
+  staged_count?: number;
+  // Timestamps
+  created_at: string;
+  updated_at: string;
+  // Related data
+  items?: GearWorkOrderItem[];
+}
+
+export interface GearWorkOrderItem {
+  id: string;
+  work_order_id: string;
+  asset_id?: string;
+  asset_name?: string;
+  asset_internal_id?: string;
+  kit_instance_id?: string;
+  kit_name?: string;
+  kit_internal_id?: string;
+  quantity: number;
+  is_staged: boolean;
+  staged_at?: string;
+  staged_by?: string;
+  staged_by_name?: string;
+  notes?: string;
+  sort_order: number;
+}
+
+export interface GearWorkOrderCounts {
+  draft: number;
+  in_progress: number;
+  ready: number;
+  checked_out: number;
+  total: number;
+}
+
+export interface CreateWorkOrderInput {
+  title: string;
+  notes?: string;
+  assigned_to?: string;
+  custodian_user_id?: string;
+  custodian_contact_id?: string;
+  backlot_project_id?: string;
+  due_date?: string;
+  pickup_date?: string;
+  expected_return_date?: string;
+  destination_location_id?: string;
+  items?: Array<{
+    asset_id?: string;
+    kit_instance_id?: string;
+    quantity?: number;
+    notes?: string;
+  }>;
+}
+
+export interface UpdateWorkOrderInput {
+  title?: string;
+  notes?: string;
+  status?: WorkOrderStatus;
+  assigned_to?: string;
+  custodian_user_id?: string;
+  custodian_contact_id?: string;
+  backlot_project_id?: string;
+  due_date?: string;
+  pickup_date?: string;
+  expected_return_date?: string;
+  destination_location_id?: string;
+}
+
+export interface WorkOrderCheckoutResponse {
+  work_order: GearWorkOrder;
+  transaction: GearTransaction;
+}
+
+// ============================================================================
+// TRANSACTIONS 6-TAB TYPES
+// ============================================================================
+
+export type TransactionTab = 'outgoing' | 'incoming' | 'requests' | 'history' | 'overdue' | 'work_orders';
 
 export interface OutgoingTransaction extends GearTransaction {
   renter_org_name?: string;

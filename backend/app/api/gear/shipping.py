@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from app.core.auth import get_current_user
 from app.core.database import execute_query, execute_single, execute_insert, execute_update
+from app.services import gear_service
 from app.services.easypost_service import (
     EasyPostService,
     ShippingAddress,
@@ -103,33 +104,15 @@ class VerifyAddressRequest(BaseModel):
 # HELPERS
 # ============================================================================
 
-def get_profile_id(user) -> str:
-    """Get profile ID from user dict."""
-    profile = execute_single(
-        "SELECT id FROM profiles WHERE cognito_user_id = :sub",
-        {"sub": user.get("sub")}
-    )
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return str(profile["id"])
+def get_profile_id(user: dict) -> str:
+    """Extract profile ID from user dict (already resolved by get_current_user)."""
+    return user.get("id")
 
 
-def verify_org_member(profile_id: str, org_id: str, require_admin: bool = False) -> dict:
-    """Verify user is a member of the organization."""
-    member = execute_single(
-        """
-        SELECT * FROM organization_members
-        WHERE user_id = :user_id AND organization_id = :org_id AND is_active = TRUE
-        """,
-        {"user_id": profile_id, "org_id": org_id}
-    )
-    if not member:
-        raise HTTPException(status_code=403, detail="Not a member of this organization")
-
-    if require_admin and member.get("role") not in ["owner", "admin", "manager"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-    return member
+def require_org_access(org_id: str, user_id: str, roles: list = None) -> None:
+    """Verify user has access to organization with optional role requirement."""
+    if not gear_service.check_org_permission(org_id, user_id, roles):
+        raise HTTPException(status_code=403, detail="Access denied to this organization")
 
 
 def get_org_marketplace_settings(org_id: str) -> dict:
@@ -354,7 +337,7 @@ async def purchase_label(
         raise HTTPException(status_code=400, detail="Either quote_id or order_id is required")
 
     # Verify user has access to org
-    verify_org_member(profile_id, org_id)
+    require_org_access(org_id, profile_id)
 
     # Get org settings
     settings = get_org_marketplace_settings(org_id)
@@ -512,7 +495,7 @@ async def get_label(
         raise HTTPException(status_code=404, detail="Shipment not found")
 
     # Verify access
-    verify_org_member(profile_id, shipment["organization_id"])
+    require_org_access(shipment["organization_id"], profile_id)
 
     return shipment
 
@@ -532,7 +515,7 @@ async def download_label(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    verify_org_member(profile_id, shipment["organization_id"])
+    require_org_access(shipment["organization_id"], profile_id)
 
     if not shipment.get("label_url"):
         raise HTTPException(status_code=404, detail="No label available for this shipment")
@@ -692,7 +675,7 @@ async def get_tracking(
 
     if shipment:
         # Verify access
-        verify_org_member(profile_id, shipment["organization_id"])
+        require_org_access(shipment["organization_id"], profile_id)
         carrier = carrier or shipment.get("carrier")
 
     # Get tracking info
@@ -843,7 +826,7 @@ async def get_shipping_settings(
 ):
     """Get shipping settings for an organization."""
     profile_id = get_profile_id(user)
-    verify_org_member(profile_id, org_id)
+    require_org_access(org_id, profile_id)
 
     settings = get_org_marketplace_settings(org_id)
 
@@ -878,7 +861,7 @@ async def update_shipping_settings(
 ):
     """Update shipping settings for an organization."""
     profile_id = get_profile_id(user)
-    verify_org_member(profile_id, org_id, require_admin=True)
+    require_org_access(org_id, profile_id, roles=["owner", "admin", "manager"])
 
     # Build update query dynamically
     updates = {}
@@ -926,7 +909,7 @@ async def verify_org_address(
 ):
     """Verify the organization's ship-from address."""
     profile_id = get_profile_id(user)
-    verify_org_member(profile_id, org_id, require_admin=True)
+    require_org_access(org_id, profile_id, roles=["owner", "admin", "manager"])
 
     address = address_input_to_shipping(data.address)
 
@@ -951,7 +934,7 @@ async def test_shipping_rates(
 ):
     """Test shipping rate calculation to a sample address."""
     profile_id = get_profile_id(user)
-    verify_org_member(profile_id, org_id, require_admin=True)
+    require_org_access(org_id, profile_id, roles=["owner", "admin", "manager"])
 
     settings = get_org_marketplace_settings(org_id)
 

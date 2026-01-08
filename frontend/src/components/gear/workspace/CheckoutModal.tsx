@@ -24,6 +24,7 @@ import {
   Trash2,
   Building2,
   DollarSign,
+  Camera,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -46,8 +47,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
+import { CameraScannerModal } from '@/components/gear/scanner';
+import type { ScanResult } from '@/types/scanner';
 import { format } from 'date-fns';
 
 import {
@@ -126,6 +135,7 @@ export function CheckoutModal({
   const [showKits, setShowKits] = useState(false);
   const [showAssetBrowser, setShowAssetBrowser] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
 
   // Step 2: Checkout details
   const [custodianType, setCustodianType] = useState<'member' | 'contact'>('member');
@@ -209,6 +219,7 @@ export function CheckoutModal({
       setShowKits(false);
       setShowAssetBrowser(false);
       setScanError(null);
+      setShowCameraScanner(false);
       setCustodianType(getDefaultCustodianType(orgType));
       setCustodianId('');
       setCustodianContactId('');
@@ -302,6 +313,19 @@ export function CheckoutModal({
       handleScanSubmit();
     }
   };
+
+  // Handle camera scan result
+  const handleCameraScan = useCallback(
+    (result: ScanResult) => {
+      setScanInput(result.code);
+      setShowCameraScanner(false);
+      // Trigger scan submit after short delay
+      setTimeout(() => {
+        handleScanSubmit();
+      }, 100);
+    },
+    [handleScanSubmit]
+  );
 
   // Add asset from search results
   const addAsset = (asset: GearAsset) => {
@@ -569,6 +593,23 @@ export function CheckoutModal({
                     className="flex-1"
                     autoComplete="off"
                   />
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => setShowCameraScanner(true)}
+                        >
+                          <Camera className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Scan with camera</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                   <Button
                     type="button"
                     variant="secondary"
@@ -1505,6 +1546,17 @@ export function CheckoutModal({
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Camera Scanner Modal */}
+      <CameraScannerModal
+        isOpen={showCameraScanner}
+        onClose={() => setShowCameraScanner(false)}
+        onScan={handleCameraScan}
+        title="Scan Barcode / QR Code"
+        scanMode="continuous"
+        audioFeedback
+        hapticFeedback
+      />
     </Dialog>
   );
 }

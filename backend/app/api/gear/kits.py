@@ -57,6 +57,12 @@ class KitVerifyRequest(BaseModel):
     scanned_assets: List[str]
 
 
+class NestedKitAdd(BaseModel):
+    nested_kit_id: str
+    slot_name: Optional[str] = None
+    sort_order: int = 0
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -435,3 +441,88 @@ async def verify_kit_contents(
         "extra": list(extra),
         "is_complete": len(missing) == 0
     }
+
+
+# ============================================================================
+# NESTED KIT ENDPOINTS
+# ============================================================================
+
+@router.post("/instances/item/{kit_id}/nested-kits")
+async def add_nested_kit_to_instance(
+    kit_id: str,
+    data: NestedKitAdd,
+    user=Depends(get_current_user)
+):
+    """
+    Add a nested kit instance to a parent kit.
+
+    Enforces 2-level nesting maximum - cannot add a kit that already contains sub-kits.
+    """
+    profile_id = get_profile_id(user)
+
+    # Validate parent kit exists
+    parent_kit = gear_service.get_kit_instance(kit_id)
+    if not parent_kit:
+        raise HTTPException(status_code=404, detail="Parent kit instance not found")
+
+    require_org_access(parent_kit["organization_id"], profile_id, ["owner", "admin", "manager"])
+
+    # Validate nested kit exists and is in same org
+    nested_kit = gear_service.get_kit_instance(data.nested_kit_id)
+    if not nested_kit:
+        raise HTTPException(status_code=404, detail="Nested kit instance not found")
+
+    if nested_kit["organization_id"] != parent_kit["organization_id"]:
+        raise HTTPException(status_code=400, detail="Nested kit must belong to the same organization")
+
+    # Cannot nest a kit into itself
+    if data.nested_kit_id == kit_id:
+        raise HTTPException(status_code=400, detail="Cannot nest a kit into itself")
+
+    # Check 2-level depth limit - nested kit cannot already have sub-kits
+    if not gear_service.validate_kit_nesting_depth(data.nested_kit_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot nest a kit that already contains sub-kits (2-level maximum)"
+        )
+
+    # Check if parent kit is already a sub-kit of another kit (would exceed 2 levels)
+    if not gear_service.validate_kit_can_have_subkits(kit_id):
+        raise HTTPException(
+            status_code=400,
+            detail="This kit is already nested inside another kit (2-level maximum)"
+        )
+
+    # Add the nested kit
+    membership = gear_service.add_nested_kit_to_instance(
+        kit_id,
+        data.nested_kit_id,
+        profile_id,
+        data.slot_name,
+        data.sort_order
+    )
+
+    if not membership:
+        raise HTTPException(status_code=500, detail="Failed to add nested kit")
+
+    return {"membership": membership}
+
+
+@router.delete("/instances/item/{kit_id}/nested-kits/{nested_kit_id}")
+async def remove_nested_kit_from_instance(
+    kit_id: str,
+    nested_kit_id: str,
+    user=Depends(get_current_user)
+):
+    """Remove a nested kit from a parent kit."""
+    profile_id = get_profile_id(user)
+
+    kit = gear_service.get_kit_instance(kit_id)
+    if not kit:
+        raise HTTPException(status_code=404, detail="Kit instance not found")
+
+    require_org_access(kit["organization_id"], profile_id, ["owner", "admin", "manager"])
+
+    gear_service.remove_nested_kit_from_instance(kit_id, nested_kit_id)
+
+    return {"success": True}

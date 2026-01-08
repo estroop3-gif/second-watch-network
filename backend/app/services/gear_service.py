@@ -183,6 +183,8 @@ def list_assets(
     location_id: str = None,
     search: str = None,
     asset_type: str = None,
+    parent_asset_id: str = None,  # 'none' for root assets only, UUID for accessories of specific parent
+    include_accessory_count: bool = False,
     limit: int = 50,
     offset: int = 0
 ) -> Dict[str, Any]:
@@ -218,6 +220,13 @@ def list_assets(
         conditions.append("a.asset_type = :asset_type")
         params["asset_type"] = asset_type
 
+    # Filter by parent_asset_id: 'none' = root assets only, specific UUID = accessories of that parent
+    if parent_asset_id == "none":
+        conditions.append("a.parent_asset_id IS NULL")
+    elif parent_asset_id:
+        conditions.append("a.parent_asset_id = :parent_asset_id")
+        params["parent_asset_id"] = parent_asset_id
+
     where_clause = " AND ".join(conditions)
 
     # Get total count
@@ -227,15 +236,24 @@ def list_assets(
     )
     total = count_result["total"] if count_result else 0
 
+    # Build accessory count subquery if needed
+    accessory_count_select = ""
+    if include_accessory_count:
+        accessory_count_select = """,
+               (SELECT COUNT(*) FROM gear_assets acc
+                WHERE acc.parent_asset_id = a.id AND acc.is_active = TRUE) as accessory_count"""
+
     # Get assets
     assets = execute_query(
         f"""
         SELECT a.*, c.name as category_name, c.slug as category_slug,
-               l.name as current_location_name, p.display_name as current_custodian_name
+               l.name as current_location_name, p.display_name as current_custodian_name,
+               pa.name as parent_asset_name{accessory_count_select}
         FROM gear_assets a
         LEFT JOIN gear_categories c ON c.id = a.category_id
         LEFT JOIN gear_locations l ON l.id = a.current_location_id
         LEFT JOIN profiles p ON p.id = a.current_custodian_user_id
+        LEFT JOIN gear_assets pa ON pa.id = a.parent_asset_id
         WHERE {where_clause}
         ORDER BY a.name
         LIMIT :limit OFFSET :offset
@@ -246,23 +264,45 @@ def list_assets(
     return {"assets": assets, "total": total}
 
 
-def get_asset(asset_id: str) -> Optional[Dict[str, Any]]:
+def get_asset(asset_id: str, include_accessories: bool = False) -> Optional[Dict[str, Any]]:
     """Get single asset with full details."""
-    return execute_single(
+    asset = execute_single(
         """
         SELECT a.*, c.name as category_name, c.slug as category_slug,
                l.name as current_location_name, l.address_line1 as location_address,
                p.display_name as current_custodian_name, p.avatar_url as custodian_avatar,
-               hl.name as home_location_name
+               hl.name as home_location_name,
+               pa.name as parent_asset_name,
+               (SELECT COUNT(*) FROM gear_assets acc WHERE acc.parent_asset_id = a.id AND acc.is_active = TRUE) as accessory_count
         FROM gear_assets a
         LEFT JOIN gear_categories c ON c.id = a.category_id
         LEFT JOIN gear_locations l ON l.id = a.current_location_id
         LEFT JOIN gear_locations hl ON hl.id = a.default_home_location_id
         LEFT JOIN profiles p ON p.id = a.current_custodian_user_id
+        LEFT JOIN gear_assets pa ON pa.id = a.parent_asset_id
         WHERE a.id = :asset_id
         """,
         {"asset_id": asset_id}
     )
+
+    if asset and include_accessories:
+        # Get accessories for equipment packages
+        accessories = execute_query(
+            """
+            SELECT a.*, c.name as category_name, c.slug as category_slug,
+                   l.name as current_location_name, p.display_name as current_custodian_name
+            FROM gear_assets a
+            LEFT JOIN gear_categories c ON c.id = a.category_id
+            LEFT JOIN gear_locations l ON l.id = a.current_location_id
+            LEFT JOIN profiles p ON p.id = a.current_custodian_user_id
+            WHERE a.parent_asset_id = :asset_id AND a.is_active = TRUE
+            ORDER BY a.name
+            """,
+            {"asset_id": asset_id}
+        )
+        asset["accessories"] = accessories
+
+    return asset
 
 
 def get_asset_by_scan_code(org_id: str, scan_code: str) -> Optional[Dict[str, Any]]:
@@ -285,18 +325,39 @@ def create_asset(
     **kwargs
 ) -> Dict[str, Any]:
     """Create a new asset."""
+    parent_asset_id = kwargs.get("parent_asset_id")
+
+    # If parent_asset_id provided, validate and mark parent as equipment package
+    if parent_asset_id:
+        parent = execute_single(
+            "SELECT id, organization_id, parent_asset_id FROM gear_assets WHERE id = :id AND is_active = TRUE",
+            {"id": parent_asset_id}
+        )
+        if not parent:
+            raise ValueError("Parent asset not found")
+        if parent["organization_id"] != org_id:
+            raise ValueError("Parent must be in same organization")
+        if parent.get("parent_asset_id"):
+            raise ValueError("Cannot nest accessories more than one level")
+
+        # Mark parent as equipment package
+        execute_update(
+            "UPDATE gear_assets SET is_equipment_package = TRUE, updated_at = NOW() WHERE id = :id",
+            {"id": parent_asset_id}
+        )
+
     asset = execute_insert(
         """
         INSERT INTO gear_assets (
             organization_id, name, asset_type, make, model, description,
             category_id, subcategory, manufacturer_serial, current_location_id,
             default_home_location_id, purchase_date, purchase_price,
-            daily_rate, weekly_rate, notes, created_by
+            daily_rate, weekly_rate, notes, created_by, parent_asset_id
         ) VALUES (
             :org_id, :name, :asset_type, :make, :model, :description,
             :category_id, :subcategory, :manufacturer_serial, :location_id,
             :home_location_id, :purchase_date, :purchase_price,
-            :daily_rate, :weekly_rate, :notes, :created_by
+            :daily_rate, :weekly_rate, :notes, :created_by, :parent_asset_id
         )
         RETURNING *
         """,
@@ -317,7 +378,8 @@ def create_asset(
             "daily_rate": kwargs.get("daily_rate"),
             "weekly_rate": kwargs.get("weekly_rate"),
             "notes": kwargs.get("notes"),
-            "created_by": created_by
+            "created_by": created_by,
+            "parent_asset_id": parent_asset_id
         }
     )
 
@@ -600,7 +662,7 @@ def list_kit_instances(
 
 
 def get_kit_instance(kit_id: str) -> Optional[Dict[str, Any]]:
-    """Get kit instance with contents."""
+    """Get kit instance with contents, including nested kit details."""
     kit = execute_single(
         """
         SELECT ki.*, kt.name as template_name, l.name as location_name,
@@ -616,12 +678,13 @@ def get_kit_instance(kit_id: str) -> Optional[Dict[str, Any]]:
     )
 
     if kit:
-        # Get current contents
+        # Get current contents (assets and nested kits)
         contents = execute_query(
             """
             SELECT km.*, a.name as asset_name, a.internal_id as asset_internal_id,
                    a.status as asset_status, a.make, a.model,
-                   nki.name as nested_kit_name
+                   nki.name as nested_kit_name, nki.internal_id as nested_kit_internal_id,
+                   nki.status as nested_kit_status
             FROM gear_kit_memberships km
             LEFT JOIN gear_assets a ON a.id = km.asset_id
             LEFT JOIN gear_kit_instances nki ON nki.id = km.nested_kit_id
@@ -630,9 +693,239 @@ def get_kit_instance(kit_id: str) -> Optional[Dict[str, Any]]:
             """,
             {"kit_id": kit_id}
         )
+
+        # For nested kits, also fetch their contents
+        for content in contents:
+            if content.get("nested_kit_id"):
+                nested_contents = execute_query(
+                    """
+                    SELECT km.*, a.name as asset_name, a.internal_id as asset_internal_id,
+                           a.status as asset_status
+                    FROM gear_kit_memberships km
+                    LEFT JOIN gear_assets a ON a.id = km.asset_id
+                    WHERE km.kit_instance_id = :nested_kit_id AND km.is_present = TRUE
+                    ORDER BY km.sort_order
+                    """,
+                    {"nested_kit_id": content["nested_kit_id"]}
+                )
+                content["nested_kit_contents"] = nested_contents
+
         kit["contents"] = contents
 
     return kit
+
+
+def validate_kit_nesting_depth(kit_id: str) -> bool:
+    """
+    Check if a kit can be added as a nested sub-kit.
+    Returns True if the kit has no sub-kits of its own (can be nested).
+    Returns False if it already contains nested kits (would exceed 2-level limit).
+    """
+    nested = execute_query(
+        """
+        SELECT nested_kit_id FROM gear_kit_memberships
+        WHERE kit_instance_id = :kit_id AND nested_kit_id IS NOT NULL AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+    return len(nested) == 0
+
+
+def validate_kit_can_have_subkits(kit_id: str) -> bool:
+    """
+    Check if a kit can have sub-kits added to it.
+    Returns True if this kit is NOT already nested inside another kit.
+    Returns False if it's already a sub-kit (would exceed 2-level limit).
+    """
+    parent = execute_query(
+        """
+        SELECT kit_instance_id FROM gear_kit_memberships
+        WHERE nested_kit_id = :kit_id AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+    return len(parent) == 0
+
+
+def add_nested_kit_to_instance(
+    parent_kit_id: str,
+    nested_kit_id: str,
+    added_by: str,
+    slot_name: str = None,
+    sort_order: int = 0
+) -> Dict[str, Any]:
+    """Add a nested kit to a parent kit instance."""
+    return execute_insert(
+        """
+        INSERT INTO gear_kit_memberships (
+            kit_instance_id, nested_kit_id, slot_name, sort_order, added_by, is_present
+        ) VALUES (
+            :parent_kit_id, :nested_kit_id, :slot_name, :sort_order, :added_by, TRUE
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING *
+        """,
+        {
+            "parent_kit_id": parent_kit_id,
+            "nested_kit_id": nested_kit_id,
+            "slot_name": slot_name,
+            "sort_order": sort_order,
+            "added_by": added_by
+        }
+    )
+
+
+def remove_nested_kit_from_instance(parent_kit_id: str, nested_kit_id: str) -> bool:
+    """Remove a nested kit from a parent kit instance."""
+    execute_update(
+        """
+        UPDATE gear_kit_memberships
+        SET is_present = FALSE
+        WHERE kit_instance_id = :parent_kit_id AND nested_kit_id = :nested_kit_id
+        """,
+        {"parent_kit_id": parent_kit_id, "nested_kit_id": nested_kit_id}
+    )
+    return True
+
+
+def _cascade_accessory_checkout(asset_id: str, custodian_id: str) -> None:
+    """Cascade checkout status to all accessories of an equipment package."""
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET status = 'checked_out',
+            current_custodian_user_id = :custodian_id,
+            updated_at = NOW()
+        WHERE parent_asset_id = :asset_id AND is_active = TRUE
+        """,
+        {"asset_id": asset_id, "custodian_id": custodian_id}
+    )
+
+
+def _cascade_accessory_checkin(asset_id: str) -> None:
+    """Cascade checkin status to all accessories of an equipment package."""
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET status = 'available',
+            current_custodian_user_id = NULL,
+            current_location_id = COALESCE(default_home_location_id, current_location_id),
+            updated_at = NOW()
+        WHERE parent_asset_id = :asset_id AND is_active = TRUE
+        """,
+        {"asset_id": asset_id}
+    )
+
+
+def _cascade_kit_checkout(kit_id: str, custodian_id: str) -> None:
+    """
+    Cascade checkout status to a kit and all its contents.
+    Updates the kit instance status and all assets within it (including nested kits).
+    """
+    # Update kit instance status
+    execute_update(
+        """
+        UPDATE gear_kit_instances
+        SET status = 'checked_out', updated_at = NOW()
+        WHERE id = :kit_id
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Get all direct assets in the kit
+    direct_assets = execute_query(
+        """
+        SELECT asset_id FROM gear_kit_memberships
+        WHERE kit_instance_id = :kit_id AND asset_id IS NOT NULL AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Update direct assets to checked_out (and their accessories)
+    for item in direct_assets:
+        if item.get("asset_id"):
+            execute_update(
+                """
+                UPDATE gear_assets
+                SET status = 'checked_out',
+                    current_custodian_user_id = :custodian_id,
+                    updated_at = NOW()
+                WHERE id = :asset_id
+                """,
+                {"asset_id": item["asset_id"], "custodian_id": custodian_id}
+            )
+            # Also cascade to accessories of this asset
+            _cascade_accessory_checkout(item["asset_id"], custodian_id)
+
+    # Get nested kits
+    nested_kits = execute_query(
+        """
+        SELECT nested_kit_id FROM gear_kit_memberships
+        WHERE kit_instance_id = :kit_id AND nested_kit_id IS NOT NULL AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Recursively cascade to nested kits (only one level deep due to 2-level limit)
+    for nested in nested_kits:
+        if nested.get("nested_kit_id"):
+            _cascade_kit_checkout(nested["nested_kit_id"], custodian_id)
+
+
+def _cascade_kit_checkin(kit_id: str) -> None:
+    """
+    Cascade checkin status to a kit and all its contents.
+    Updates the kit instance status and all assets within it (including nested kits).
+    """
+    # Update kit instance status
+    execute_update(
+        """
+        UPDATE gear_kit_instances
+        SET status = 'available', updated_at = NOW()
+        WHERE id = :kit_id
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Get all direct assets in the kit
+    direct_assets = execute_query(
+        """
+        SELECT asset_id FROM gear_kit_memberships
+        WHERE kit_instance_id = :kit_id AND asset_id IS NOT NULL AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Update direct assets to available (and their accessories)
+    for item in direct_assets:
+        if item.get("asset_id"):
+            execute_update(
+                """
+                UPDATE gear_assets
+                SET status = 'available',
+                    current_custodian_user_id = NULL,
+                    current_location_id = COALESCE(default_home_location_id, current_location_id),
+                    updated_at = NOW()
+                WHERE id = :asset_id
+                """,
+                {"asset_id": item["asset_id"]}
+            )
+            # Also cascade to accessories of this asset
+            _cascade_accessory_checkin(item["asset_id"])
+
+    # Get nested kits
+    nested_kits = execute_query(
+        """
+        SELECT nested_kit_id FROM gear_kit_memberships
+        WHERE kit_instance_id = :kit_id AND nested_kit_id IS NOT NULL AND is_present = TRUE
+        """,
+        {"kit_id": kit_id}
+    )
+
+    # Recursively cascade to nested kits
+    for nested in nested_kits:
+        if nested.get("nested_kit_id"):
+            _cascade_kit_checkin(nested["nested_kit_id"])
 
 
 def create_kit_instance(
@@ -950,10 +1243,12 @@ def record_scan(
 
 
 def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
-    """Complete a checkout transaction - update asset statuses."""
+    """Complete a checkout transaction - update asset and kit statuses."""
     tx = get_transaction(transaction_id)
     if not tx:
         return None
+
+    custodian_id = tx.get("primary_custodian_user_id")
 
     # Update transaction
     execute_update(
@@ -965,8 +1260,9 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
         {"tx_id": transaction_id}
     )
 
-    # Update asset statuses
+    # Update statuses for items
     for item in tx.get("items", []):
+        # Handle individual assets (and their accessories if equipment package)
         if item.get("asset_id"):
             execute_update(
                 """
@@ -978,9 +1274,15 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
                 """,
                 {
                     "asset_id": item["asset_id"],
-                    "custodian_id": tx.get("primary_custodian_user_id")
+                    "custodian_id": custodian_id
                 }
             )
+            # Cascade to accessories of equipment packages
+            _cascade_accessory_checkout(item["asset_id"], custodian_id)
+
+        # Handle kit instances - cascade status to kit and all contents
+        if item.get("kit_instance_id"):
+            _cascade_kit_checkout(item["kit_instance_id"], custodian_id)
 
     _log_audit(tx["organization_id"], "checkout_complete", "transaction", transaction_id, user_id)
 
@@ -988,7 +1290,7 @@ def complete_checkout(transaction_id: str, user_id: str) -> Dict[str, Any]:
 
 
 def complete_checkin(transaction_id: str, user_id: str) -> Dict[str, Any]:
-    """Complete a checkin transaction - update asset statuses."""
+    """Complete a checkin transaction - update asset and kit statuses."""
     tx = get_transaction(transaction_id)
     if not tx:
         return None
@@ -1003,8 +1305,9 @@ def complete_checkin(transaction_id: str, user_id: str) -> Dict[str, Any]:
         {"tx_id": transaction_id}
     )
 
-    # Update asset statuses
+    # Update statuses for items
     for item in tx.get("items", []):
+        # Handle individual assets (and their accessories if equipment package)
         if item.get("asset_id"):
             execute_update(
                 """
@@ -1017,6 +1320,12 @@ def complete_checkin(transaction_id: str, user_id: str) -> Dict[str, Any]:
                 """,
                 {"asset_id": item["asset_id"]}
             )
+            # Cascade to accessories of equipment packages
+            _cascade_accessory_checkin(item["asset_id"])
+
+        # Handle kit instances - cascade status to kit and all contents
+        if item.get("kit_instance_id"):
+            _cascade_kit_checkin(item["kit_instance_id"])
 
     _log_audit(tx["organization_id"], "checkin_complete", "transaction", transaction_id, user_id)
 
@@ -2774,3 +3083,221 @@ def get_checkin_settings(org_id: str) -> Dict[str, Any]:
         }
 
     return settings
+
+
+# ============================================================================
+# EQUIPMENT PACKAGE (ACCESSORY) SERVICES
+# ============================================================================
+
+def get_asset_accessories(asset_id: str) -> List[Dict[str, Any]]:
+    """Get all accessories for an equipment package."""
+    return execute_query(
+        """
+        SELECT a.*, c.name as category_name, c.slug as category_slug,
+               l.name as current_location_name, p.display_name as current_custodian_name
+        FROM gear_assets a
+        LEFT JOIN gear_categories c ON c.id = a.category_id
+        LEFT JOIN gear_locations l ON l.id = a.current_location_id
+        LEFT JOIN profiles p ON p.id = a.current_custodian_user_id
+        WHERE a.parent_asset_id = :asset_id AND a.is_active = TRUE
+        ORDER BY a.name
+        """,
+        {"asset_id": asset_id}
+    )
+
+
+def add_accessory_to_asset(
+    parent_id: str,
+    accessory_id: str,
+    user_id: str
+) -> Dict[str, Any]:
+    """Add an accessory to an equipment package (parent asset)."""
+    # Verify parent asset exists
+    parent = execute_single(
+        "SELECT id, organization_id, name, parent_asset_id FROM gear_assets WHERE id = :id AND is_active = TRUE",
+        {"id": parent_id}
+    )
+    if not parent:
+        raise ValueError("Parent asset not found")
+
+    # Prevent nested accessories (accessories cannot have their own accessories)
+    if parent.get("parent_asset_id"):
+        raise ValueError("Cannot add accessories to an asset that is already an accessory")
+
+    # Verify accessory asset exists
+    accessory = execute_single(
+        "SELECT id, organization_id, name, parent_asset_id FROM gear_assets WHERE id = :id AND is_active = TRUE",
+        {"id": accessory_id}
+    )
+    if not accessory:
+        raise ValueError("Accessory asset not found")
+
+    # Ensure both are in same organization
+    if parent["organization_id"] != accessory["organization_id"]:
+        raise ValueError("Parent and accessory must be in the same organization")
+
+    # Prevent circular reference
+    if parent_id == accessory_id:
+        raise ValueError("An asset cannot be its own accessory")
+
+    # Check if accessory is already assigned to another parent
+    if accessory.get("parent_asset_id"):
+        raise ValueError("This asset is already an accessory of another equipment package")
+
+    # Update accessory to point to parent
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET parent_asset_id = :parent_id, updated_at = NOW()
+        WHERE id = :accessory_id
+        """,
+        {"parent_id": parent_id, "accessory_id": accessory_id}
+    )
+
+    # Mark parent as equipment package
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET is_equipment_package = TRUE, updated_at = NOW()
+        WHERE id = :parent_id
+        """,
+        {"parent_id": parent_id}
+    )
+
+    # Log audit
+    _log_audit(
+        parent["organization_id"],
+        "add_accessory",
+        "asset",
+        parent_id,
+        user_id,
+        details={"accessory_id": accessory_id, "accessory_name": accessory["name"]}
+    )
+
+    return get_asset(parent_id, include_accessories=True)
+
+
+def remove_accessory_from_asset(
+    parent_id: str,
+    accessory_id: str,
+    user_id: str
+) -> Dict[str, Any]:
+    """Remove an accessory from an equipment package."""
+    # Verify accessory belongs to this parent
+    accessory = execute_single(
+        "SELECT id, organization_id, name, parent_asset_id FROM gear_assets WHERE id = :id AND parent_asset_id = :parent_id",
+        {"id": accessory_id, "parent_id": parent_id}
+    )
+    if not accessory:
+        raise ValueError("Accessory not found or does not belong to this equipment package")
+
+    # Remove parent reference
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET parent_asset_id = NULL, updated_at = NOW()
+        WHERE id = :accessory_id
+        """,
+        {"accessory_id": accessory_id}
+    )
+
+    # Check if parent still has accessories
+    remaining = execute_single(
+        "SELECT COUNT(*) as count FROM gear_assets WHERE parent_asset_id = :parent_id AND is_active = TRUE",
+        {"parent_id": parent_id}
+    )
+    if remaining and remaining["count"] == 0:
+        # No more accessories, remove equipment package flag
+        execute_update(
+            """
+            UPDATE gear_assets
+            SET is_equipment_package = FALSE, updated_at = NOW()
+            WHERE id = :parent_id
+            """,
+            {"parent_id": parent_id}
+        )
+
+    # Log audit
+    _log_audit(
+        accessory["organization_id"],
+        "remove_accessory",
+        "asset",
+        parent_id,
+        user_id,
+        details={"accessory_id": accessory_id, "accessory_name": accessory["name"]}
+    )
+
+    return get_asset(parent_id, include_accessories=True)
+
+
+def convert_to_equipment_package(
+    asset_id: str,
+    accessory_ids: List[str],
+    user_id: str
+) -> Dict[str, Any]:
+    """Convert an asset to an equipment package by adding multiple accessories at once."""
+    # Verify main asset exists
+    asset = execute_single(
+        "SELECT id, organization_id, name, parent_asset_id FROM gear_assets WHERE id = :id AND is_active = TRUE",
+        {"id": asset_id}
+    )
+    if not asset:
+        raise ValueError("Asset not found")
+
+    # Prevent nested accessories
+    if asset.get("parent_asset_id"):
+        raise ValueError("Cannot convert an accessory to an equipment package")
+
+    if not accessory_ids:
+        raise ValueError("Must provide at least one accessory")
+
+    # Validate all accessories
+    for acc_id in accessory_ids:
+        if acc_id == asset_id:
+            raise ValueError("An asset cannot be its own accessory")
+
+        accessory = execute_single(
+            "SELECT id, organization_id, parent_asset_id, is_equipment_package FROM gear_assets WHERE id = :id AND is_active = TRUE",
+            {"id": acc_id}
+        )
+        if not accessory:
+            raise ValueError(f"Accessory {acc_id} not found")
+        if accessory["organization_id"] != asset["organization_id"]:
+            raise ValueError("All assets must be in the same organization")
+        if accessory.get("parent_asset_id"):
+            raise ValueError(f"Asset {acc_id} is already an accessory of another equipment package")
+        if accessory.get("is_equipment_package"):
+            raise ValueError(f"Asset {acc_id} is already an equipment package and cannot be added as an accessory")
+
+    # Update all accessories to point to parent
+    for acc_id in accessory_ids:
+        execute_update(
+            """
+            UPDATE gear_assets
+            SET parent_asset_id = :parent_id, updated_at = NOW()
+            WHERE id = :accessory_id
+            """,
+            {"parent_id": asset_id, "accessory_id": acc_id}
+        )
+
+    # Mark asset as equipment package
+    execute_update(
+        """
+        UPDATE gear_assets
+        SET is_equipment_package = TRUE, updated_at = NOW()
+        WHERE id = :asset_id
+        """,
+        {"asset_id": asset_id}
+    )
+
+    # Log audit
+    _log_audit(
+        asset["organization_id"],
+        "convert_to_package",
+        "asset",
+        asset_id,
+        user_id,
+        details={"accessory_count": len(accessory_ids), "accessory_ids": accessory_ids}
+    )
+
+    return get_asset(asset_id, include_accessories=True)

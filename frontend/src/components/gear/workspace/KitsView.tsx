@@ -20,6 +20,7 @@ import {
   ArrowRight,
   Check,
   X,
+  Link,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -69,7 +70,7 @@ interface KitsViewProps {
 
 export function KitsView({ orgId }: KitsViewProps) {
   const { session } = useAuth();
-  const [activeTab, setActiveTab] = useState<'templates' | 'instances'>('instances');
+  const [activeTab, setActiveTab] = useState<'packages' | 'assembled' | 'templates'>('assembled');
   const [searchTerm, setSearchTerm] = useState('');
   const [isCreateTemplateOpen, setIsCreateTemplateOpen] = useState(false);
   const [isCreateInstanceOpen, setIsCreateInstanceOpen] = useState(false);
@@ -86,11 +87,25 @@ export function KitsView({ orgId }: KitsViewProps) {
   const { instances, isLoading: instancesLoading, error: instancesError, refetch: refetchInstances, createInstance } = useGearKitInstances(orgId);
   const { addToQueue } = useGearPrintQueue(orgId);
 
+  // Fetch equipment packages (assets with accessories)
+  const { assets: allPackageAssets, isLoading: packagesLoading, error: packagesError, refetch: refetchPackages } = useGearAssets({
+    orgId,
+    parentAssetId: 'none', // Root assets only
+    includeAccessoryCount: true,
+    limit: 200,
+  });
+
+  // Filter to only equipment packages (assets with is_equipment_package = true)
+  const equipmentPackages = (allPackageAssets ?? []).filter((a) => a.is_equipment_package);
+
   const filteredTemplates = (templates ?? []).filter((t) =>
     t.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
   const filteredInstances = (instances ?? []).filter((i) =>
     i.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+  const filteredPackages = equipmentPackages.filter((p) =>
+    p.name.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   // Selection handlers for batch operations
@@ -146,15 +161,17 @@ export function KitsView({ orgId }: KitsViewProps) {
             className="pl-9"
           />
         </div>
-        <Button
-          variant="outline"
-          onClick={() =>
-            activeTab === 'templates' ? setIsCreateTemplateOpen(true) : setIsCreateInstanceOpen(true)
-          }
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          {activeTab === 'templates' ? 'New Template' : 'New Kit'}
-        </Button>
+        {activeTab !== 'packages' && (
+          <Button
+            variant="outline"
+            onClick={() =>
+              activeTab === 'templates' ? setIsCreateTemplateOpen(true) : setIsCreateInstanceOpen(true)
+            }
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            {activeTab === 'templates' ? 'New Template' : 'New Kit'}
+          </Button>
+        )}
       </div>
 
       {/* Queue Added Success Message */}
@@ -168,7 +185,7 @@ export function KitsView({ orgId }: KitsViewProps) {
       )}
 
       {/* Selection Toolbar - shows when items selected */}
-      {selectedKits.size > 0 && activeTab === 'instances' && (
+      {selectedKits.size > 0 && activeTab === 'assembled' && (
         <div className="flex items-center gap-4 p-3 bg-accent-yellow/10 rounded-lg border border-accent-yellow/30">
           <Checkbox
             checked={selectedKits.size === filteredInstances.length && filteredInstances.length > 0}
@@ -199,16 +216,53 @@ export function KitsView({ orgId }: KitsViewProps) {
         </div>
       )}
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'templates' | 'instances')}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'packages' | 'assembled' | 'templates')}>
         <TabsList className="bg-charcoal-black/50 border border-muted-gray/30">
-          <TabsTrigger value="instances">Kit Instances ({instances.length})</TabsTrigger>
+          <TabsTrigger value="packages">Equipment Packages ({equipmentPackages.length})</TabsTrigger>
+          <TabsTrigger value="assembled">Assembled Kits ({instances.length})</TabsTrigger>
           <TabsTrigger value="templates">Templates ({templates.length})</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="instances" className="mt-6">
+        {/* Equipment Packages Tab */}
+        <TabsContent value="packages" className="mt-6">
+          {packagesError ? (
+            <ErrorState
+              message={packagesError instanceof Error ? packagesError.message : 'Failed to load equipment packages'}
+              onRetry={() => refetchPackages()}
+            />
+          ) : packagesLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-40" />
+              ))}
+            </div>
+          ) : filteredPackages.length === 0 ? (
+            <EmptyState
+              title="No Equipment Packages"
+              description="Equipment packages group accessories with main assets. Create them from the Assets tab."
+              action={
+                <p className="text-sm text-muted-gray">
+                  To create an equipment package, select an asset and use "Convert to Equipment Package"
+                </p>
+              }
+            />
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {filteredPackages.map((pkg) => (
+                <EquipmentPackageCard
+                  key={pkg.id}
+                  package={pkg}
+                />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Assembled Kits Tab */}
+        <TabsContent value="assembled" className="mt-6">
           {instancesError ? (
             <ErrorState
-              message={instancesError instanceof Error ? instancesError.message : 'Failed to load kit instances'}
+              message={instancesError instanceof Error ? instancesError.message : 'Failed to load assembled kits'}
               onRetry={() => refetchInstances()}
             />
           ) : instancesLoading ? (
@@ -219,8 +273,8 @@ export function KitsView({ orgId }: KitsViewProps) {
             </div>
           ) : filteredInstances.length === 0 ? (
             <EmptyState
-              title="No Kit Instances"
-              description="Create kit instances from templates to group equipment together"
+              title="No Assembled Kits"
+              description="Create assembled kits from templates to group equipment together"
               action={
                 <Button onClick={() => setIsCreateInstanceOpen(true)}>
                   <Plus className="w-4 h-4 mr-2" />
@@ -387,6 +441,8 @@ function KitInstanceCard({
 }) {
   const contentCount = kit.contents?.length ?? 0;
   const presentCount = kit.contents?.filter((c) => c.is_present).length ?? 0;
+  const subKitCount = kit.contents?.filter((c) => c.nested_kit_id).length ?? 0;
+  const assetCount = kit.contents?.filter((c) => c.asset_id && c.is_present).length ?? 0;
 
   return (
     <Card
@@ -435,11 +491,17 @@ function KitInstanceCard({
           <Badge className={cn('border', STATUS_COLORS[kit.status])}>
             {kit.status.replace('_', ' ')}
           </Badge>
-          <div className="flex items-center gap-1 text-sm text-muted-gray">
-            <Package className="w-4 h-4" />
-            <span>
-              {presentCount}/{contentCount} items
-            </span>
+          <div className="flex items-center gap-3 text-sm text-muted-gray">
+            {subKitCount > 0 && (
+              <div className="flex items-center gap-1">
+                <Layers className="w-4 h-4 text-accent-yellow" />
+                <span>{subKitCount} nested kit{subKitCount !== 1 ? 's' : ''}</span>
+              </div>
+            )}
+            <div className="flex items-center gap-1">
+              <Package className="w-4 h-4" />
+              <span>{assetCount} item{assetCount !== 1 ? 's' : ''}</span>
+            </div>
           </div>
         </div>
         {kit.template_name && (
@@ -489,6 +551,41 @@ function KitTemplateCard({ template, onEdit }: { template: GearKitTemplate; onEd
         <p className="text-sm text-muted-gray">{itemCount} items in template</p>
         {template.description && (
           <p className="text-xs text-muted-gray mt-1 line-clamp-2">{template.description}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function EquipmentPackageCard({ package: pkg }: { package: GearAsset }) {
+  const accessoryCount = (pkg as any).accessory_count ?? 0;
+
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray/30 hover:border-accent-yellow/50 transition-colors cursor-pointer">
+      <CardContent className="p-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-lg bg-accent-yellow/20 flex items-center justify-center">
+            <Package className="w-5 h-5 text-accent-yellow" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-medium text-bone-white truncate">{pkg.name}</h3>
+            <p className="text-sm text-muted-gray">
+              {pkg.manufacturer || pkg.make}{pkg.model && ` • ${pkg.model}`}
+            </p>
+            <code className="text-xs text-muted-gray">{pkg.internal_id}</code>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-4 text-sm">
+          <Badge className={cn('border', STATUS_COLORS[pkg.status as AssetStatus])}>
+            {pkg.status.replace('_', ' ')}
+          </Badge>
+          <span className="flex items-center gap-1 text-muted-gray">
+            <Link className="w-4 h-4 text-accent-yellow" />
+            {accessoryCount} accessor{accessoryCount === 1 ? 'y' : 'ies'}
+          </span>
+        </div>
+        {pkg.category_name && (
+          <p className="text-xs text-muted-gray mt-2">{pkg.category_name}</p>
         )}
       </CardContent>
     </Card>
@@ -945,10 +1042,36 @@ function EditInstanceModal({
   instanceId: string;
   onClose: () => void;
 }) {
-  const { kit, isLoading, updateInstance } = useGearKitInstance(instanceId);
+  const { kit, isLoading, updateInstance, addNestedKit, removeNestedKit, refetch } = useGearKitInstance(instanceId);
+  const [activeTab, setActiveTab] = useState<'details' | 'subkits'>('details');
   const [name, setName] = useState('');
   const [notes, setNotes] = useState('');
   const [isInitialized, setIsInitialized] = useState(false);
+  const [selectedKitToAdd, setSelectedKitToAdd] = useState('');
+
+  // Get organization ID from the kit for fetching available kits
+  const orgId = kit?.organization_id ?? '';
+
+  // Fetch all kit instances to find available sub-kits
+  const { instances: allKits } = useGearKitInstances(orgId);
+
+  // Current sub-kits
+  const currentSubKits = kit?.contents?.filter((c) => c.nested_kit_id) ?? [];
+  const currentSubKitIds = new Set(currentSubKits.map((c) => c.nested_kit_id));
+
+  // Filter available kits to add as sub-kits:
+  // - Not the current kit itself
+  // - Not already a sub-kit of this kit
+  // - Kit must not have any sub-kits of its own (2-level limit)
+  // - Kit must not already be nested inside another kit
+  const availableKitsToAdd = (allKits ?? []).filter((k) => {
+    if (k.id === instanceId) return false; // Can't add self
+    if (currentSubKitIds.has(k.id)) return false; // Already a sub-kit
+    // Check if this kit has sub-kits (would exceed 2-level limit)
+    const hasSubKits = k.contents?.some((c) => c.nested_kit_id);
+    if (hasSubKits) return false;
+    return true;
+  });
 
   // Initialize form when kit data loads
   React.useEffect(() => {
@@ -966,47 +1089,181 @@ function EditInstanceModal({
     onClose();
   };
 
+  const handleAddSubKit = async () => {
+    if (!selectedKitToAdd) return;
+    try {
+      await addNestedKit.mutateAsync({ nested_kit_id: selectedKitToAdd });
+      setSelectedKitToAdd('');
+      refetch();
+    } catch (error) {
+      console.error('Failed to add sub-kit:', error);
+    }
+  };
+
+  const handleRemoveSubKit = async (nestedKitId: string) => {
+    try {
+      await removeNestedKit.mutateAsync(nestedKitId);
+      refetch();
+    } catch (error) {
+      console.error('Failed to remove sub-kit:', error);
+    }
+  };
+
   return (
     <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Edit Kit Instance</DialogTitle>
-          <DialogDescription>Update kit details</DialogDescription>
+          <DialogDescription>
+            {kit?.name} - {kit?.internal_id}
+          </DialogDescription>
         </DialogHeader>
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Label htmlFor="edit-name">Kit Name</Label>
-              <Input
-                id="edit-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Kit name"
-              />
-            </div>
-            <div>
-              <Label htmlFor="edit-notes">Notes</Label>
-              <Input
-                id="edit-notes"
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Optional notes"
-              />
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={updateInstance.isPending || !name.trim()}>
-                {updateInstance.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Save Changes
-              </Button>
-            </DialogFooter>
-          </form>
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'details' | 'subkits')}>
+            <TabsList className="bg-charcoal-black/50 border border-muted-gray/30 mb-4">
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="subkits">
+                Nested Kits ({currentSubKits.length})
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="details">
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <Label htmlFor="edit-name">Kit Name</Label>
+                  <Input
+                    id="edit-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Kit name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-notes">Notes</Label>
+                  <Input
+                    id="edit-notes"
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Optional notes"
+                  />
+                </div>
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={updateInstance.isPending || !name.trim()}>
+                    {updateInstance.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    Save Changes
+                  </Button>
+                </DialogFooter>
+              </form>
+            </TabsContent>
+
+            <TabsContent value="subkits">
+              <div className="space-y-4">
+                {/* Add Nested Kit Section */}
+                <div className="space-y-2">
+                  <Label>Add Nested Kit</Label>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedKitToAdd}
+                      onChange={(e) => setSelectedKitToAdd(e.target.value)}
+                      className="flex-1 p-2 bg-charcoal-black border border-muted-gray/30 rounded text-bone-white text-sm"
+                    >
+                      <option value="">Select a kit to add...</option>
+                      {availableKitsToAdd.map((k) => (
+                        <option key={k.id} value={k.id}>
+                          {k.name} ({k.internal_id})
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      onClick={handleAddSubKit}
+                      disabled={!selectedKitToAdd || addNestedKit.isPending}
+                    >
+                      {addNestedKit.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
+                  {availableKitsToAdd.length === 0 && (
+                    <p className="text-xs text-muted-gray">
+                      No kits available to add. Kits that already contain nested kits cannot be nested.
+                    </p>
+                  )}
+                </div>
+
+                {/* Current Nested Kits List */}
+                <div className="space-y-2">
+                  <Label>Current Nested Kits</Label>
+                  {currentSubKits.length === 0 ? (
+                    <div className="text-center py-6 text-muted-gray">
+                      <Layers className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">No nested kits added yet</p>
+                      <p className="text-xs mt-1">
+                        Nested kits allow you to group kits together
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[250px] overflow-y-auto">
+                      {currentSubKits.map((subKit) => (
+                        <div
+                          key={subKit.id}
+                          className="flex items-center gap-3 p-3 rounded-lg border border-accent-yellow/30 bg-accent-yellow/5"
+                        >
+                          <div className="w-8 h-8 rounded flex items-center justify-center bg-accent-yellow/20 flex-shrink-0">
+                            <Layers className="w-4 h-4 text-accent-yellow" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-bone-white truncate">
+                              {subKit.nested_kit_name || 'Unnamed Kit'}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <code className="text-xs text-muted-gray">
+                                {subKit.nested_kit_internal_id}
+                              </code>
+                              {subKit.nested_kit_status && (
+                                <Badge className={cn('text-xs border', STATUS_COLORS[subKit.nested_kit_status])}>
+                                  {subKit.nested_kit_status.replace('_', ' ')}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                            onClick={() => handleRemoveSubKit(subKit.nested_kit_id!)}
+                            disabled={removeNestedKit.isPending}
+                          >
+                            {removeNestedKit.isPending ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    Done
+                  </Button>
+                </DialogFooter>
+              </div>
+            </TabsContent>
+          </Tabs>
         )}
       </DialogContent>
     </Dialog>
@@ -1020,10 +1277,34 @@ function EditTemplateModal({
   templateId: string;
   onClose: () => void;
 }) {
-  const { template, isLoading, updateTemplate } = useGearKitTemplate(templateId);
+  const { template, isLoading, updateTemplate, addTemplateItem, removeTemplateItem, refetch } = useGearKitTemplate(templateId);
+  const [activeTab, setActiveTab] = useState<'details' | 'subtemplates'>('details');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [isInitialized, setIsInitialized] = useState(false);
+  const [selectedTemplateToAdd, setSelectedTemplateToAdd] = useState('');
+
+  // Get organization ID from template for fetching available templates
+  const orgId = template?.organization_id ?? '';
+
+  // Fetch all templates to find available sub-templates
+  const { templates: allTemplates } = useGearKitTemplates(orgId);
+
+  // Current sub-templates (items with nested_template_id)
+  const currentSubTemplates = template?.items?.filter((item) => item.nested_template_id) ?? [];
+  const currentSubTemplateIds = new Set(currentSubTemplates.map((item) => item.nested_template_id));
+
+  // Regular items (non-nested template items)
+  const regularItems = template?.items?.filter((item) => !item.nested_template_id) ?? [];
+
+  // Filter available templates to add as sub-templates:
+  // - Not the current template itself
+  // - Not already a sub-template of this template
+  const availableTemplatesToAdd = (allTemplates ?? []).filter((t) => {
+    if (t.id === templateId) return false; // Can't add self
+    if (currentSubTemplateIds.has(t.id)) return false; // Already a sub-template
+    return true;
+  });
 
   // Initialize form when template data loads
   React.useEffect(() => {
@@ -1041,47 +1322,206 @@ function EditTemplateModal({
     onClose();
   };
 
+  const handleAddSubTemplate = async () => {
+    if (!selectedTemplateToAdd) return;
+    try {
+      await addTemplateItem.mutateAsync({
+        nested_template_id: selectedTemplateToAdd,
+        quantity: 1,
+        is_required: true,
+      });
+      setSelectedTemplateToAdd('');
+      refetch();
+    } catch (error) {
+      console.error('Failed to add sub-template:', error);
+    }
+  };
+
+  const handleRemoveSubTemplate = async (itemId: string) => {
+    try {
+      await removeTemplateItem.mutateAsync(itemId);
+      refetch();
+    } catch (error) {
+      console.error('Failed to remove sub-template:', error);
+    }
+  };
+
   return (
     <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent>
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Edit Kit Template</DialogTitle>
-          <DialogDescription>Update template details</DialogDescription>
+          <DialogDescription>
+            {template?.name} - {regularItems.length} items, {currentSubTemplates.length} sub-templates
+          </DialogDescription>
         </DialogHeader>
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
           </div>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Label htmlFor="edit-template-name">Template Name</Label>
-              <Input
-                id="edit-template-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Template name"
-              />
-            </div>
-            <div>
-              <Label htmlFor="edit-template-description">Description</Label>
-              <Input
-                id="edit-template-description"
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Optional description"
-              />
-            </div>
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={updateTemplate.isPending || !name.trim()}>
-                {updateTemplate.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                Save Changes
-              </Button>
-            </DialogFooter>
-          </form>
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'details' | 'subtemplates')}>
+            <TabsList className="bg-charcoal-black/50 border border-muted-gray/30 mb-4">
+              <TabsTrigger value="details">Details</TabsTrigger>
+              <TabsTrigger value="subtemplates">
+                Sub-Templates ({currentSubTemplates.length})
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="details">
+              <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                  <Label htmlFor="edit-template-name">Template Name</Label>
+                  <Input
+                    id="edit-template-name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Template name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="edit-template-description">Description</Label>
+                  <Input
+                    id="edit-template-description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Optional description"
+                  />
+                </div>
+
+                {/* Show current items summary */}
+                {regularItems.length > 0 && (
+                  <div className="bg-white/5 rounded-lg p-3">
+                    <p className="text-xs text-muted-gray mb-2">Template Items ({regularItems.length})</p>
+                    <div className="space-y-1 max-h-[120px] overflow-y-auto">
+                      {regularItems.map((item) => (
+                        <div key={item.id} className="flex items-center gap-2 text-sm">
+                          <Package className="w-3 h-3 text-muted-gray" />
+                          <span className="text-bone-white truncate">
+                            {item.item_description || item.category_name || 'Item'}
+                          </span>
+                          {item.quantity > 1 && (
+                            <span className="text-xs text-muted-gray">x{item.quantity}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={updateTemplate.isPending || !name.trim()}>
+                    {updateTemplate.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    Save Changes
+                  </Button>
+                </DialogFooter>
+              </form>
+            </TabsContent>
+
+            <TabsContent value="subtemplates">
+              <div className="space-y-4">
+                {/* Add Sub-Template Section */}
+                <div className="space-y-2">
+                  <Label>Add Sub-Template</Label>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedTemplateToAdd}
+                      onChange={(e) => setSelectedTemplateToAdd(e.target.value)}
+                      className="flex-1 p-2 bg-charcoal-black border border-muted-gray/30 rounded text-bone-white text-sm"
+                    >
+                      <option value="">Select a template to add...</option>
+                      {availableTemplatesToAdd.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.items?.length ?? 0} items)
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      type="button"
+                      onClick={handleAddSubTemplate}
+                      disabled={!selectedTemplateToAdd || addTemplateItem.isPending}
+                    >
+                      {addTemplateItem.isPending ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-gray">
+                    Sub-templates define expected nested kits that should be included when creating instances from this template.
+                  </p>
+                </div>
+
+                {/* Current Sub-Templates List */}
+                <div className="space-y-2">
+                  <Label>Current Sub-Templates</Label>
+                  {currentSubTemplates.length === 0 ? (
+                    <div className="text-center py-6 text-muted-gray">
+                      <Copy className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">No sub-templates added yet</p>
+                      <p className="text-xs mt-1">
+                        Add templates that should be included as nested kits
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[250px] overflow-y-auto">
+                      {currentSubTemplates.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center gap-3 p-3 rounded-lg border border-blue-500/30 bg-blue-500/5"
+                        >
+                          <div className="w-8 h-8 rounded flex items-center justify-center bg-blue-500/20 flex-shrink-0">
+                            <Copy className="w-4 h-4 text-blue-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-bone-white truncate">
+                              {item.nested_template_name || 'Unknown Template'}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              {item.quantity > 1 && (
+                                <span className="text-xs text-muted-gray">
+                                  Quantity: {item.quantity}
+                                </span>
+                              )}
+                              {item.is_required && (
+                                <Badge variant="outline" className="text-xs">
+                                  Required
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                            onClick={() => handleRemoveSubTemplate(item.id)}
+                            disabled={removeTemplateItem.isPending}
+                          >
+                            {removeTemplateItem.isPending ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={onClose}>
+                    Done
+                  </Button>
+                </DialogFooter>
+              </div>
+            </TabsContent>
+          </Tabs>
         )}
       </DialogContent>
     </Dialog>
@@ -1097,6 +1537,7 @@ function VerifyContentsModal({
 }) {
   const { kit, isLoading, verifyContents, refetch } = useGearKitInstance(kitId);
   const [checkedAssets, setCheckedAssets] = useState<Set<string>>(new Set());
+  const [expandedSubKits, setExpandedSubKits] = useState<Set<string>>(new Set());
   const [verificationResult, setVerificationResult] = useState<{
     matched: string[];
     missing: string[];
@@ -1105,6 +1546,52 @@ function VerifyContentsModal({
   } | null>(null);
 
   const contents = kit?.contents ?? [];
+
+  // Separate direct assets from nested kits
+  const directAssets = contents.filter((c) => c.asset_id && !c.nested_kit_id);
+  const nestedKits = contents.filter((c) => c.nested_kit_id);
+
+  // Get all asset IDs including from nested kits
+  const getAllAssetIds = (): string[] => {
+    const ids: string[] = [];
+    // Direct assets
+    directAssets.forEach((c) => {
+      if (c.asset_id) ids.push(c.asset_id);
+    });
+    // Assets from nested kits
+    nestedKits.forEach((nk) => {
+      (nk.nested_kit_contents ?? []).forEach((item: any) => {
+        if (item.asset_id) ids.push(item.asset_id);
+      });
+    });
+    return ids;
+  };
+
+  const allAssetIds = getAllAssetIds();
+  const totalItemCount = allAssetIds.length;
+
+  // Build a lookup map for finding asset info by ID (including nested)
+  const assetLookup = new Map<string, { name: string; internal_id: string; source: string }>();
+  directAssets.forEach((c) => {
+    if (c.asset_id) {
+      assetLookup.set(c.asset_id, {
+        name: c.asset_name || 'Unnamed Asset',
+        internal_id: c.asset_internal_id || '',
+        source: 'Direct',
+      });
+    }
+  });
+  nestedKits.forEach((nk) => {
+    (nk.nested_kit_contents ?? []).forEach((item: any) => {
+      if (item.asset_id) {
+        assetLookup.set(item.asset_id, {
+          name: item.asset_name || 'Unnamed Asset',
+          internal_id: item.asset_internal_id || '',
+          source: nk.nested_kit_name || 'Nested Kit',
+        });
+      }
+    });
+  });
 
   const handleToggleAsset = (assetId: string) => {
     setCheckedAssets((prev) => {
@@ -1119,12 +1606,35 @@ function VerifyContentsModal({
   };
 
   const handleSelectAll = () => {
-    const allIds = contents.map((c) => c.asset_id);
-    setCheckedAssets(new Set(allIds));
+    setCheckedAssets(new Set(allAssetIds));
   };
 
   const handleClearAll = () => {
     setCheckedAssets(new Set());
+  };
+
+  const toggleSubKitExpanded = (kitId: string) => {
+    setExpandedSubKits((prev) => {
+      const next = new Set(prev);
+      if (next.has(kitId)) {
+        next.delete(kitId);
+      } else {
+        next.add(kitId);
+      }
+      return next;
+    });
+  };
+
+  // Check all items in a nested kit
+  const handleCheckAllInSubKit = (nestedKit: any) => {
+    const subKitAssetIds = (nestedKit.nested_kit_contents ?? [])
+      .filter((item: any) => item.asset_id)
+      .map((item: any) => item.asset_id);
+    setCheckedAssets((prev) => {
+      const next = new Set(prev);
+      subKitAssetIds.forEach((id: string) => next.add(id));
+      return next;
+    });
   };
 
   const handleVerify = async () => {
@@ -1182,10 +1692,15 @@ function VerifyContentsModal({
                 <h4 className="text-sm font-medium text-bone-white mb-2">Missing Items:</h4>
                 <ul className="text-sm text-red-400 space-y-1">
                   {verificationResult.missing.map((id) => {
-                    const item = contents.find((c) => c.asset_id === id);
+                    const asset = assetLookup.get(id);
                     return (
-                      <li key={id}>
-                        {item?.asset_name || item?.asset_internal_id || id}
+                      <li key={id} className="flex items-center gap-2">
+                        <span>{asset?.name || id}</span>
+                        {asset?.source && asset.source !== 'Direct' && (
+                          <span className="text-xs text-muted-gray">
+                            (from {asset.source})
+                          </span>
+                        )}
                       </li>
                     );
                   })}
@@ -1204,7 +1719,7 @@ function VerifyContentsModal({
           <div className="space-y-4">
             <div className="flex justify-between items-center">
               <span className="text-sm text-muted-gray">
-                {checkedAssets.size} of {contents.length} items checked
+                {checkedAssets.size} of {totalItemCount} items checked
               </span>
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" onClick={handleSelectAll}>
@@ -1216,43 +1731,159 @@ function VerifyContentsModal({
               </div>
             </div>
 
-            <div className="max-h-64 overflow-y-auto space-y-2">
-              {contents.length === 0 ? (
-                <p className="text-sm text-muted-gray text-center py-4">
-                  No items in this kit yet
-                </p>
-              ) : (
-                contents.map((item) => (
-                  <label
-                    key={item.id}
-                    className={cn(
-                      'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
-                      checkedAssets.has(item.asset_id)
-                        ? 'bg-green-500/10 border-green-500/30'
-                        : 'bg-charcoal-black/50 border-muted-gray/30 hover:border-muted-gray/50'
+            <ScrollArea className="h-[300px]">
+              <div className="space-y-3 pr-4">
+                {totalItemCount === 0 ? (
+                  <p className="text-sm text-muted-gray text-center py-4">
+                    No items in this kit yet
+                  </p>
+                ) : (
+                  <>
+                    {/* Nested Kits Section */}
+                    {nestedKits.length > 0 && (
+                      <div className="space-y-2">
+                        <h4 className="text-xs font-medium text-muted-gray uppercase tracking-wide flex items-center gap-2">
+                          <Layers className="w-3 h-3" />
+                          Nested Kits
+                        </h4>
+                        {nestedKits.map((nk) => {
+                          const subKitContents = nk.nested_kit_contents ?? [];
+                          const subKitAssetIds = subKitContents
+                            .filter((item: any) => item.asset_id)
+                            .map((item: any) => item.asset_id);
+                          const checkedCount = subKitAssetIds.filter((id: string) =>
+                            checkedAssets.has(id)
+                          ).length;
+                          const isExpanded = expandedSubKits.has(nk.nested_kit_id!);
+
+                          return (
+                            <div
+                              key={nk.id}
+                              className="border border-accent-yellow/30 rounded-lg overflow-hidden"
+                            >
+                              {/* Nested kit header */}
+                              <div className="flex items-center gap-2 p-3 bg-accent-yellow/10">
+                                <button
+                                  onClick={() => toggleSubKitExpanded(nk.nested_kit_id!)}
+                                  className="flex items-center gap-2 flex-1 text-left"
+                                >
+                                  <div className="w-6 h-6 rounded flex items-center justify-center bg-accent-yellow/20">
+                                    <Layers className="w-3 h-3 text-accent-yellow" />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium text-bone-white truncate">
+                                      {nk.nested_kit_name || 'Nested Kit'}
+                                    </p>
+                                    <code className="text-[10px] text-muted-gray">
+                                      {checkedCount}/{subKitAssetIds.length} checked
+                                    </code>
+                                  </div>
+                                  {isExpanded ? (
+                                    <X className="w-4 h-4 text-muted-gray" />
+                                  ) : (
+                                    <ArrowRight className="w-4 h-4 text-muted-gray" />
+                                  )}
+                                </button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="text-xs h-7"
+                                  onClick={() => handleCheckAllInSubKit(nk)}
+                                >
+                                  Check All
+                                </Button>
+                              </div>
+
+                              {/* Nested kit contents */}
+                              {isExpanded && (
+                                <div className="border-t border-accent-yellow/20 bg-charcoal-black/30 p-2 space-y-1">
+                                  {subKitContents.length === 0 ? (
+                                    <p className="text-xs text-muted-gray text-center py-2">
+                                      No items in this nested kit
+                                    </p>
+                                  ) : (
+                                    subKitContents.map((item: any) => (
+                                      <label
+                                        key={item.id}
+                                        className={cn(
+                                          'flex items-center gap-2 p-2 rounded-lg ml-2 border-l-2 cursor-pointer transition-colors',
+                                          checkedAssets.has(item.asset_id)
+                                            ? 'border-l-green-500/50 bg-green-500/10'
+                                            : 'border-l-muted-gray/30 bg-charcoal-black/20 hover:bg-charcoal-black/40'
+                                        )}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checkedAssets.has(item.asset_id)}
+                                          onChange={() => handleToggleAsset(item.asset_id)}
+                                          className="w-3 h-3 rounded"
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-xs font-medium text-bone-white truncate">
+                                            {item.asset_name || 'Unnamed Asset'}
+                                          </p>
+                                          <code className="text-[10px] text-muted-gray">
+                                            {item.asset_internal_id}
+                                          </code>
+                                        </div>
+                                        {checkedAssets.has(item.asset_id) && (
+                                          <CheckCircle2 className="w-3 h-3 text-green-500 flex-shrink-0" />
+                                        )}
+                                      </label>
+                                    ))
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checkedAssets.has(item.asset_id)}
-                      onChange={() => handleToggleAsset(item.asset_id)}
-                      className="w-4 h-4 rounded"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-bone-white truncate">
-                        {item.asset_name || 'Unnamed Asset'}
-                      </p>
-                      <code className="text-xs text-muted-gray">
-                        {item.asset_internal_id}
-                      </code>
-                    </div>
-                    {checkedAssets.has(item.asset_id) && (
-                      <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+
+                    {/* Direct Assets Section */}
+                    {directAssets.length > 0 && (
+                      <div className="space-y-2">
+                        {nestedKits.length > 0 && (
+                          <h4 className="text-xs font-medium text-muted-gray uppercase tracking-wide flex items-center gap-2 mt-3">
+                            <Package className="w-3 h-3" />
+                            Direct Items
+                          </h4>
+                        )}
+                        {directAssets.map((item) => (
+                          <label
+                            key={item.id}
+                            className={cn(
+                              'flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors',
+                              checkedAssets.has(item.asset_id)
+                                ? 'bg-green-500/10 border-green-500/30'
+                                : 'bg-charcoal-black/50 border-muted-gray/30 hover:border-muted-gray/50'
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checkedAssets.has(item.asset_id)}
+                              onChange={() => handleToggleAsset(item.asset_id)}
+                              className="w-4 h-4 rounded"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-bone-white truncate">
+                                {item.asset_name || 'Unnamed Asset'}
+                              </p>
+                              <code className="text-xs text-muted-gray">
+                                {item.asset_internal_id}
+                              </code>
+                            </div>
+                            {checkedAssets.has(item.asset_id) && (
+                              <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+                            )}
+                          </label>
+                        ))}
+                      </div>
                     )}
-                  </label>
-                ))
-              )}
-            </div>
+                  </>
+                )}
+              </div>
+            </ScrollArea>
 
             <DialogFooter>
               <Button type="button" variant="outline" onClick={onClose}>
@@ -1273,6 +1904,113 @@ function VerifyContentsModal({
   );
 }
 
+// Helper component to display nested kit contents
+function NestedKitSection({
+  membership,
+  isExpanded,
+  onToggle,
+}: {
+  membership: any;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const nestedContents = membership.nested_kit_contents ?? [];
+  const presentCount = nestedContents.filter((c: any) => c.is_present).length;
+  const totalCount = nestedContents.length;
+
+  return (
+    <div className="border border-accent-yellow/30 rounded-lg overflow-hidden">
+      {/* Nested kit header - clickable to expand/collapse */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-3 p-3 bg-accent-yellow/10 hover:bg-accent-yellow/15 transition-colors"
+      >
+        <div className="w-8 h-8 rounded flex items-center justify-center bg-accent-yellow/20 flex-shrink-0">
+          <Layers className="w-4 h-4 text-accent-yellow" />
+        </div>
+        <div className="flex-1 min-w-0 text-left">
+          <p className="text-sm font-medium text-bone-white truncate">
+            {membership.nested_kit_name || 'Unnamed Nested Kit'}
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="text-xs text-muted-gray">
+              {membership.nested_kit_internal_id}
+            </code>
+            {membership.nested_kit_status && (
+              <Badge className={cn('text-xs border', STATUS_COLORS[membership.nested_kit_status])}>
+                {membership.nested_kit_status.replace('_', ' ')}
+              </Badge>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-muted-gray">
+          <Package className="w-3 h-3" />
+          <span>{presentCount}/{totalCount}</span>
+          {isExpanded ? (
+            <X className="w-4 h-4 text-muted-gray" />
+          ) : (
+            <ArrowRight className="w-4 h-4 text-muted-gray" />
+          )}
+        </div>
+      </button>
+
+      {/* Nested kit contents (collapsible) */}
+      {isExpanded && (
+        <div className="border-t border-accent-yellow/20 bg-charcoal-black/30">
+          {nestedContents.length === 0 ? (
+            <p className="text-xs text-muted-gray text-center py-3">
+              No items in this nested kit
+            </p>
+          ) : (
+            <div className="p-2 space-y-1">
+              {nestedContents.map((item: any) => (
+                <div
+                  key={item.id}
+                  className={cn(
+                    'flex items-center gap-2 p-2 rounded-lg ml-2 border-l-2',
+                    item.is_present
+                      ? 'border-l-green-500/50 bg-green-500/5'
+                      : 'border-l-muted-gray/30 bg-charcoal-black/20'
+                  )}
+                >
+                  <div
+                    className={cn(
+                      'w-6 h-6 rounded flex items-center justify-center flex-shrink-0',
+                      item.is_present ? 'bg-green-500/20' : 'bg-muted-gray/20'
+                    )}
+                  >
+                    {item.is_present ? (
+                      <CheckCircle2 className="w-3 h-3 text-green-500" />
+                    ) : (
+                      <Package className="w-3 h-3 text-muted-gray" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-bone-white truncate">
+                      {item.asset_name || 'Unnamed Asset'}
+                    </p>
+                    <code className="text-[10px] text-muted-gray">
+                      {item.asset_internal_id}
+                    </code>
+                  </div>
+                  {!item.is_present && (
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
+                    >
+                      Missing
+                    </Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function KitDetailModal({
   kitId,
   onClose,
@@ -1285,10 +2023,28 @@ function KitDetailModal({
   onVerify: () => void;
 }) {
   const { kit, isLoading } = useGearKitInstance(kitId);
+  const [expandedSubKits, setExpandedSubKits] = useState<Set<string>>(new Set());
 
   const contents = kit?.contents ?? [];
-  const presentCount = contents.filter((c) => c.is_present).length;
-  const totalCount = contents.length;
+
+  // Separate regular assets from nested kits
+  const regularAssets = contents.filter((c) => c.asset_id && !c.nested_kit_id);
+  const nestedKits = contents.filter((c) => c.nested_kit_id);
+
+  const presentAssetCount = regularAssets.filter((c) => c.is_present).length;
+  const totalAssetCount = regularAssets.length;
+
+  const toggleSubKit = (kitId: string) => {
+    setExpandedSubKits((prev) => {
+      const next = new Set(prev);
+      if (next.has(kitId)) {
+        next.delete(kitId);
+      } else {
+        next.add(kitId);
+      }
+      return next;
+    });
+  };
 
   return (
     <Dialog open={true} onOpenChange={onClose}>
@@ -1308,14 +2064,23 @@ function KitDetailModal({
             </div>
           </DialogTitle>
           <DialogDescription>
-            {totalCount > 0 ? (
-              <span className="flex items-center gap-2">
-                <Package className="w-4 h-4" />
-                {presentCount}/{totalCount} items present
-              </span>
-            ) : (
-              'No items in this kit'
-            )}
+            <span className="flex items-center gap-4">
+              {nestedKits.length > 0 && (
+                <span className="flex items-center gap-1">
+                  <Layers className="w-4 h-4 text-accent-yellow" />
+                  {nestedKits.length} nested kit{nestedKits.length !== 1 ? 's' : ''}
+                </span>
+              )}
+              {totalAssetCount > 0 && (
+                <span className="flex items-center gap-1">
+                  <Package className="w-4 h-4" />
+                  {presentAssetCount}/{totalAssetCount} items present
+                </span>
+              )}
+              {nestedKits.length === 0 && totalAssetCount === 0 && (
+                <span>No items in this kit</span>
+              )}
+            </span>
           </DialogDescription>
         </DialogHeader>
 
@@ -1345,59 +2110,88 @@ function KitDetailModal({
                 <Package className="w-12 h-12 text-muted-gray mb-3" />
                 <p className="text-muted-gray">No items in this kit</p>
                 <p className="text-xs text-muted-gray mt-1">
-                  Edit the kit to add assets
+                  Edit the kit to add assets or nested kits
                 </p>
               </div>
             ) : (
               <ScrollArea className="h-[300px]">
-                <div className="space-y-2 pr-4">
-                  {contents.map((item) => (
-                    <div
-                      key={item.id}
-                      className={cn(
-                        'flex items-center gap-3 p-3 rounded-lg border',
-                        item.is_present
-                          ? 'bg-green-500/5 border-green-500/20'
-                          : 'bg-charcoal-black/50 border-muted-gray/30'
+                <div className="space-y-3 pr-4">
+                  {/* Nested Kits Section */}
+                  {nestedKits.length > 0 && (
+                    <div className="space-y-2">
+                      <h4 className="text-xs font-medium text-muted-gray uppercase tracking-wide flex items-center gap-2">
+                        <Layers className="w-3 h-3" />
+                        Nested Kits ({nestedKits.length})
+                      </h4>
+                      {nestedKits.map((item) => (
+                        <NestedKitSection
+                          key={item.id}
+                          membership={item}
+                          isExpanded={expandedSubKits.has(item.nested_kit_id!)}
+                          onToggle={() => toggleSubKit(item.nested_kit_id!)}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Regular Assets Section */}
+                  {regularAssets.length > 0 && (
+                    <div className="space-y-2">
+                      {nestedKits.length > 0 && (
+                        <h4 className="text-xs font-medium text-muted-gray uppercase tracking-wide flex items-center gap-2 mt-4">
+                          <Package className="w-3 h-3" />
+                          Direct Items ({regularAssets.length})
+                        </h4>
                       )}
-                    >
-                      <div
-                        className={cn(
-                          'w-8 h-8 rounded flex items-center justify-center flex-shrink-0',
-                          item.is_present ? 'bg-green-500/20' : 'bg-muted-gray/20'
-                        )}
-                      >
-                        {item.is_present ? (
-                          <CheckCircle2 className="w-4 h-4 text-green-500" />
-                        ) : (
-                          <Package className="w-4 h-4 text-muted-gray" />
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-bone-white truncate">
-                          {item.asset_name || 'Unnamed Asset'}
-                        </p>
-                        <div className="flex items-center gap-2">
-                          <code className="text-xs text-muted-gray">
-                            {item.asset_internal_id}
-                          </code>
-                          {item.quantity && item.quantity > 1 && (
-                            <Badge variant="outline" className="text-xs">
-                              x{item.quantity}
+                      {regularAssets.map((item) => (
+                        <div
+                          key={item.id}
+                          className={cn(
+                            'flex items-center gap-3 p-3 rounded-lg border',
+                            item.is_present
+                              ? 'bg-green-500/5 border-green-500/20'
+                              : 'bg-charcoal-black/50 border-muted-gray/30'
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              'w-8 h-8 rounded flex items-center justify-center flex-shrink-0',
+                              item.is_present ? 'bg-green-500/20' : 'bg-muted-gray/20'
+                            )}
+                          >
+                            {item.is_present ? (
+                              <CheckCircle2 className="w-4 h-4 text-green-500" />
+                            ) : (
+                              <Package className="w-4 h-4 text-muted-gray" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-bone-white truncate">
+                              {item.asset_name || 'Unnamed Asset'}
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <code className="text-xs text-muted-gray">
+                                {item.asset_internal_id}
+                              </code>
+                              {item.quantity && item.quantity > 1 && (
+                                <Badge variant="outline" className="text-xs">
+                                  x{item.quantity}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          {!item.is_present && (
+                            <Badge
+                              variant="outline"
+                              className="text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
+                            >
+                              Missing
                             </Badge>
                           )}
                         </div>
-                      </div>
-                      {!item.is_present && (
-                        <Badge
-                          variant="outline"
-                          className="text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
-                        >
-                          Missing
-                        </Badge>
-                      )}
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               </ScrollArea>
             )}

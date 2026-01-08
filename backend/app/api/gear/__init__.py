@@ -24,6 +24,7 @@ from .reputation import router as reputation_router
 from .shipping import router as shipping_router
 from .sales import router as sales_router
 from .personal import router as personal_router
+from .work_orders import router as work_orders_router
 
 router = APIRouter(tags=["Gear House"])
 
@@ -46,3 +47,4 @@ router.include_router(reputation_router)
 router.include_router(shipping_router)
 router.include_router(sales_router)
 router.include_router(personal_router)
+router.include_router(work_orders_router)

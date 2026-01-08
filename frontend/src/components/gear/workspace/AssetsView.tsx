@@ -34,6 +34,10 @@ import {
   Upload,
   X,
   ImagePlus,
+  ChevronDown,
+  ChevronRight,
+  Link,
+  Unlink,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -75,6 +79,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
   useGearAssets,
@@ -250,15 +255,32 @@ export function AssetsView({ orgId }: AssetsViewProps) {
   const [assetToList, setAssetToList] = useState<GearAsset | null>(null);
   const [assetsToList, setAssetsToList] = useState<GearAsset[]>([]);
 
+  // Equipment Package state
+  const [expandedAssets, setExpandedAssets] = useState<Set<string>>(new Set());
+  const [convertingAssetId, setConvertingAssetId] = useState<string | null>(null);
+
   const { categories } = useGearCategories(orgId);
   const { addToQueue } = useGearPrintQueue(orgId);
-  const { assets, isLoading, createAsset } = useGearAssets({
+  const { assets, isLoading, createAsset, refetch: refetchAssets } = useGearAssets({
     orgId,
     status: statusFilter === 'all' ? undefined : statusFilter,
     categoryId: categoryFilter === 'all' ? undefined : categoryFilter,
     search: searchTerm || undefined,
+    parentAssetId: 'none', // Only show root assets
+    includeAccessoryCount: true, // Include accessory count for each asset
   });
   const { data: stats } = useGearAssetStats(orgId);
+
+  // Toggle expanded state for equipment packages
+  const toggleExpanded = (assetId: string) => {
+    const newExpanded = new Set(expandedAssets);
+    if (newExpanded.has(assetId)) {
+      newExpanded.delete(assetId);
+    } else {
+      newExpanded.add(assetId);
+    }
+    setExpandedAssets(newExpanded);
+  };
 
   // Selection handlers for batch operations
   const toggleAsset = (assetId: string) => {
@@ -476,6 +498,7 @@ export function AssetsView({ orgId }: AssetsViewProps) {
           <Table>
             <TableHeader>
               <TableRow className="border-muted-gray/30 hover:bg-transparent">
+                <TableHead className="w-8"></TableHead>
                 <TableHead className="w-10">
                   <Checkbox
                     checked={selectedAssets.size === assets.length && assets.length > 0}
@@ -494,14 +517,27 @@ export function AssetsView({ orgId }: AssetsViewProps) {
             </TableHeader>
             <TableBody>
               {assets.map((asset) => (
-                <AssetRow
-                  key={asset.id}
-                  asset={asset}
-                  isSelected={selectedAssets.has(asset.id)}
-                  onToggle={toggleAsset}
-                  onView={() => setSelectedAssetId(asset.id)}
-                  onListForRent={handleListAsset}
-                />
+                <React.Fragment key={asset.id}>
+                  <AssetRow
+                    asset={asset}
+                    isSelected={selectedAssets.has(asset.id)}
+                    onToggle={toggleAsset}
+                    onView={() => setSelectedAssetId(asset.id)}
+                    onListForRent={handleListAsset}
+                    isExpanded={expandedAssets.has(asset.id)}
+                    onToggleExpand={() => toggleExpanded(asset.id)}
+                    onConvertToPackage={() => setConvertingAssetId(asset.id)}
+                  />
+                  {/* Render accessories when expanded */}
+                  {asset.is_equipment_package && expandedAssets.has(asset.id) && (
+                    <AccessoryRows
+                      parentAssetId={asset.id}
+                      orgId={orgId}
+                      onView={(accessoryId) => setSelectedAssetId(accessoryId)}
+                      onRefetch={refetchAssets}
+                    />
+                  )}
+                </React.Fragment>
               ))}
             </TableBody>
           </Table>
@@ -560,6 +596,15 @@ export function AssetsView({ orgId }: AssetsViewProps) {
           // Optionally refresh assets or show success toast
         }}
       />
+
+      {/* Convert to Equipment Package Dialog */}
+      <ConvertToEquipmentPackageDialog
+        isOpen={!!convertingAssetId}
+        onClose={() => setConvertingAssetId(null)}
+        assetId={convertingAssetId}
+        orgId={orgId}
+        onSuccess={refetchAssets}
+      />
     </div>
   );
 }
@@ -601,11 +646,15 @@ interface AssetRowProps {
   onToggle: (assetId: string) => void;
   onView: () => void;
   onListForRent: (asset: GearAsset) => void;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  onConvertToPackage?: () => void;
 }
 
-function AssetRow({ asset, isSelected, onToggle, onView, onListForRent }: AssetRowProps) {
+function AssetRow({ asset, isSelected, onToggle, onView, onListForRent, isExpanded, onToggleExpand, onConvertToPackage }: AssetRowProps) {
   const statusConfig = STATUS_CONFIG[asset.status] || STATUS_CONFIG.available;
   const conditionConfig = CONDITION_CONFIG[asset.current_condition as AssetCondition] || { label: 'Unknown', color: 'text-muted-gray' };
+  const hasAccessories = asset.is_equipment_package && (asset.accessory_count ?? 0) > 0;
 
   return (
     <TableRow
@@ -615,6 +664,25 @@ function AssetRow({ asset, isSelected, onToggle, onView, onListForRent }: AssetR
       )}
       onClick={onView}
     >
+      {/* Expand/Collapse Column */}
+      <TableCell onClick={(e) => e.stopPropagation()} className="px-2">
+        {hasAccessories ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 p-0"
+            onClick={onToggleExpand}
+          >
+            {isExpanded ? (
+              <ChevronDown className="w-4 h-4 text-accent-yellow" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-muted-gray" />
+            )}
+          </Button>
+        ) : (
+          <div className="w-6" />
+        )}
+      </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <Checkbox
           checked={isSelected}
@@ -625,10 +693,21 @@ function AssetRow({ asset, isSelected, onToggle, onView, onListForRent }: AssetR
       <TableCell>
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-muted-gray/20 flex items-center justify-center">
-            <Box className="w-5 h-5 text-muted-gray" />
+            {hasAccessories ? (
+              <Package className="w-5 h-5 text-accent-yellow" />
+            ) : (
+              <Box className="w-5 h-5 text-muted-gray" />
+            )}
           </div>
           <div>
-            <p className="font-medium text-bone-white">{asset.name}</p>
+            <div className="flex items-center gap-2">
+              <p className="font-medium text-bone-white">{asset.name}</p>
+              {hasAccessories && (
+                <Badge variant="outline" className="text-xs border-accent-yellow/50 text-accent-yellow">
+                  {asset.accessory_count} accessori{asset.accessory_count === 1 ? 'y' : 'es'}
+                </Badge>
+              )}
+            </div>
             {asset.manufacturer && (
               <p className="text-sm text-muted-gray">
                 {asset.manufacturer} {asset.model && `• ${asset.model}`}
@@ -672,6 +751,11 @@ function AssetRow({ asset, isSelected, onToggle, onView, onListForRent }: AssetR
               <Store className="w-4 h-4 mr-2" /> List for Rent
             </DropdownMenuItem>
             <DropdownMenuSeparator />
+            {!asset.is_equipment_package && !asset.parent_asset_id && (
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onConvertToPackage?.(); }}>
+                <Package className="w-4 h-4 mr-2" /> Convert to Equipment Package
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem>
               <QrCode className="w-4 h-4 mr-2" /> Print Label
             </DropdownMenuItem>
@@ -1095,7 +1179,7 @@ interface AssetDetailModalProps {
 
 function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
   const { session } = useAuth();
-  const { asset, isLoading, updateAsset, refetch } = useGearAsset(assetId);
+  const { asset, isLoading, updateAsset, refetch } = useGearAsset(assetId, { includeAccessories: true });
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Partial<GearAsset>>({});
   const [editPhotos, setEditPhotos] = useState<string[]>([]);
@@ -1240,10 +1324,55 @@ function AssetDetailModal({ assetId, onClose }: AssetDetailModalProps) {
                   {(STATUS_CONFIG[asset.status] || STATUS_CONFIG.available).icon}
                   <span className="ml-1">{(STATUS_CONFIG[asset.status] || STATUS_CONFIG.available).label}</span>
                 </Badge>
+                {asset.is_equipment_package && (
+                  <Badge className="border bg-accent-yellow/20 text-accent-yellow border-accent-yellow/30">
+                    <Link className="w-3 h-3 mr-1" />
+                    Equipment Package
+                  </Badge>
+                )}
                 <span className={cn('text-sm', (CONDITION_CONFIG[asset.current_condition as AssetCondition] || { color: 'text-muted-gray' }).color)}>
                   {(CONDITION_CONFIG[asset.current_condition as AssetCondition] || { label: 'Unknown' }).label} condition
                 </span>
               </div>
+
+              {/* Equipment Package Contents */}
+              {asset.is_equipment_package && (asset as any).accessories && (asset as any).accessories.length > 0 && !isEditing && (
+                <div className="border border-accent-yellow/30 rounded-lg bg-accent-yellow/5 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Link className="w-4 h-4 text-accent-yellow" />
+                    <Label className="text-sm font-medium text-accent-yellow">
+                      Package Contents ({(asset as any).accessories.length} accessories)
+                    </Label>
+                  </div>
+                  <div className="space-y-2">
+                    {(asset as any).accessories.map((acc: any) => (
+                      <div
+                        key={acc.id}
+                        className="flex items-center gap-3 p-2 bg-charcoal-black/30 rounded-lg"
+                      >
+                        <div className="w-8 h-8 rounded bg-muted-gray/20 flex items-center justify-center flex-shrink-0">
+                          <Package className="w-4 h-4 text-muted-gray" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-bone-white truncate">{acc.name}</p>
+                          <div className="flex items-center gap-2 text-xs text-muted-gray">
+                            <code>{acc.internal_id}</code>
+                            {acc.category_name && (
+                              <>
+                                <span>•</span>
+                                <span>{acc.category_name}</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <Badge className={cn('border text-xs', (STATUS_CONFIG[acc.status as AssetStatus] || STATUS_CONFIG.available).color)}>
+                          {(STATUS_CONFIG[acc.status as AssetStatus] || STATUS_CONFIG.available).label}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Details Grid */}
               {isEditing ? (
@@ -1836,6 +1965,454 @@ function ScanLookupModal({ isOpen, onClose, orgId, onAssetFound }: ScanLookupMod
             </Button>
           </DialogFooter>
         </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
+// ACCESSORY ROWS (for expanded equipment packages)
+// ============================================================================
+
+interface AccessoryRowsProps {
+  parentAssetId: string;
+  orgId: string;
+  onView: (assetId: string) => void;
+  onRefetch: () => void;
+}
+
+function AccessoryRows({ parentAssetId, orgId, onView, onRefetch }: AccessoryRowsProps) {
+  const { assets: accessories, isLoading } = useGearAssets({
+    orgId,
+    parentAssetId,
+    limit: 100,
+  });
+
+  const { removeAccessory } = useGearAsset(parentAssetId);
+
+  const handleRemoveAccessory = async (accessoryId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await removeAccessory.mutateAsync(accessoryId);
+      onRefetch();
+      toast.success('Accessory removed from equipment package');
+    } catch (error) {
+      toast.error('Failed to remove accessory');
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <TableRow className="bg-charcoal-black/20 border-muted-gray/20">
+        <TableCell colSpan={9} className="py-2">
+          <div className="flex items-center gap-2 pl-12">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-gray" />
+            <span className="text-sm text-muted-gray">Loading accessories...</span>
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  return (
+    <>
+      {accessories.map((accessory, index) => {
+        const statusConfig = STATUS_CONFIG[accessory.status] || STATUS_CONFIG.available;
+        const isLast = index === accessories.length - 1;
+
+        return (
+          <TableRow
+            key={accessory.id}
+            className="bg-charcoal-black/20 border-muted-gray/20 hover:bg-charcoal-black/30 cursor-pointer"
+            onClick={() => onView(accessory.id)}
+          >
+            {/* Tree line indicator */}
+            <TableCell className="px-2 relative">
+              <div className="absolute left-4 -top-[1px] w-0.5 h-full bg-accent-yellow/30" />
+              <div className={cn(
+                "absolute left-4 top-1/2 w-4 h-0.5 bg-accent-yellow/30",
+                isLast && "rounded-bl"
+              )} />
+              {isLast && <div className="absolute left-4 top-1/2 bottom-0 w-0.5 bg-transparent" />}
+            </TableCell>
+            <TableCell>
+              {/* Empty - no checkbox for accessories */}
+            </TableCell>
+            <TableCell>
+              <div className="flex items-center gap-3 pl-4">
+                <div className="w-8 h-8 rounded-lg bg-accent-yellow/10 flex items-center justify-center">
+                  <Link className="w-4 h-4 text-accent-yellow/70" />
+                </div>
+                <div>
+                  <p className="font-medium text-bone-white/80">{accessory.name}</p>
+                  {accessory.manufacturer && (
+                    <p className="text-sm text-muted-gray">
+                      {accessory.manufacturer} {accessory.model && `• ${accessory.model}`}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </TableCell>
+            <TableCell>
+              <code className="text-sm bg-muted-gray/20 px-2 py-1 rounded text-muted-gray">{accessory.internal_id}</code>
+            </TableCell>
+            <TableCell>
+              <span className="text-sm text-muted-gray">{accessory.category_name || '—'}</span>
+            </TableCell>
+            <TableCell>
+              <Badge className={cn('border', statusConfig.color)}>
+                {statusConfig.icon}
+                <span className="ml-1">{statusConfig.label}</span>
+              </Badge>
+            </TableCell>
+            <TableCell>
+              <span className="text-sm text-muted-gray">
+                {(CONDITION_CONFIG[accessory.current_condition as AssetCondition] || { label: 'Unknown' }).label}
+              </span>
+            </TableCell>
+            <TableCell>
+              <span className="text-sm text-muted-gray">
+                {accessory.current_custodian_name || accessory.current_location_name || '—'}
+              </span>
+            </TableCell>
+            <TableCell>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => handleRemoveAccessory(accessory.id, e)}
+                disabled={removeAccessory.isPending}
+                className="text-muted-gray hover:text-red-400"
+              >
+                <Unlink className="w-4 h-4" />
+              </Button>
+            </TableCell>
+          </TableRow>
+        );
+      })}
+    </>
+  );
+}
+
+// ============================================================================
+// CONVERT TO EQUIPMENT PACKAGE DIALOG
+// ============================================================================
+
+interface ConvertToEquipmentPackageDialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  assetId: string | null;
+  orgId: string;
+  onSuccess: () => void;
+}
+
+function ConvertToEquipmentPackageDialog({
+  isOpen,
+  onClose,
+  assetId,
+  orgId,
+  onSuccess,
+}: ConvertToEquipmentPackageDialogProps) {
+  // Tab state
+  const [dialogTab, setDialogTab] = useState<'existing' | 'create'>('existing');
+
+  // Select existing state
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedAccessories, setSelectedAccessories] = useState<Set<string>>(new Set());
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
+
+  // Quick-add state
+  const [quickAddName, setQuickAddName] = useState('');
+  const [quickAddCategory, setQuickAddCategory] = useState('');
+  const [quickAddManufacturer, setQuickAddManufacturer] = useState('');
+  const [quickAddModel, setQuickAddModel] = useState('');
+  const [isQuickAdding, setIsQuickAdding] = useState(false);
+
+  const { categories } = useGearCategories(orgId);
+  const { convertToPackage, asset: parentAsset } = useGearAsset(assetId, { includeAccessories: true });
+  const { assets: availableAssets, isLoading, createAsset, refetch: refetchAssets } = useGearAssets({
+    orgId,
+    parentAssetId: 'none', // Only root assets
+    search: searchTerm || undefined,
+    categoryId: categoryFilter === 'all' ? undefined : categoryFilter,
+    limit: 100,
+    enabled: isOpen,
+  });
+
+  // Filter out the parent asset and already-packaged assets
+  const filteredAssets = availableAssets.filter(
+    (a) => a.id !== assetId && !a.is_equipment_package && !a.parent_asset_id
+  );
+
+  // Count of already-attached accessories
+  const existingAccessoryCount = parentAsset?.accessory_count ?? 0;
+
+  const toggleAccessory = (accessoryId: string) => {
+    const newSelected = new Set(selectedAccessories);
+    if (newSelected.has(accessoryId)) {
+      newSelected.delete(accessoryId);
+    } else {
+      newSelected.add(accessoryId);
+    }
+    setSelectedAccessories(newSelected);
+  };
+
+  const handleConvert = async () => {
+    if (selectedAccessories.size === 0) {
+      toast.error('Please select at least one accessory');
+      return;
+    }
+
+    try {
+      await convertToPackage.mutateAsync(Array.from(selectedAccessories));
+      toast.success(`Converted to equipment package with ${selectedAccessories.size} accessori${selectedAccessories.size === 1 ? 'y' : 'es'}`);
+      setSelectedAccessories(new Set());
+      setSearchTerm('');
+      setCategoryFilter('all');
+      onSuccess();
+      onClose();
+    } catch (error) {
+      toast.error('Failed to convert to equipment package');
+    }
+  };
+
+  const handleQuickAdd = async () => {
+    if (!quickAddName.trim()) {
+      toast.error('Accessory name is required');
+      return;
+    }
+
+    setIsQuickAdding(true);
+    try {
+      await createAsset.mutateAsync({
+        name: quickAddName.trim(),
+        category_id: quickAddCategory || undefined,
+        manufacturer: quickAddManufacturer || undefined,
+        model: quickAddModel || undefined,
+        parent_asset_id: assetId!,
+      } as any);
+
+      toast.success(`Added "${quickAddName}" to package`);
+
+      // Reset form
+      setQuickAddName('');
+      setQuickAddCategory('');
+      setQuickAddManufacturer('');
+      setQuickAddModel('');
+
+      // Refresh data
+      refetchAssets();
+      onSuccess();
+    } catch (error) {
+      toast.error('Failed to create accessory');
+    } finally {
+      setIsQuickAdding(false);
+    }
+  };
+
+  const handleClose = () => {
+    setSelectedAccessories(new Set());
+    setSearchTerm('');
+    setCategoryFilter('all');
+    setDialogTab('existing');
+    setQuickAddName('');
+    setQuickAddCategory('');
+    setQuickAddManufacturer('');
+    setQuickAddModel('');
+    onClose();
+  };
+
+  if (!assetId) return null;
+
+  return (
+    <Dialog open={isOpen} onOpenChange={handleClose}>
+      <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>
+            {parentAsset?.is_equipment_package ? 'Add Accessories' : 'Convert to Equipment Package'}
+          </DialogTitle>
+          <DialogDescription>
+            {parentAsset && (
+              <span>
+                {parentAsset.is_equipment_package
+                  ? `Add accessories to ${parentAsset.name} (${existingAccessoryCount} current)`
+                  : `Select accessories to group with ${parentAsset.name}`
+                }
+              </span>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        <Tabs value={dialogTab} onValueChange={(v) => setDialogTab(v as 'existing' | 'create')} className="flex-1 min-h-0 flex flex-col">
+          <TabsList className="bg-charcoal-black/50 border border-muted-gray/30">
+            <TabsTrigger value="existing">Select Existing</TabsTrigger>
+            <TabsTrigger value="create">Quick Add</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="existing" className="flex-1 min-h-0 flex flex-col gap-4 mt-4">
+            {/* Search and Filter */}
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+                <Input
+                  placeholder="Search assets..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-9"
+                />
+              </div>
+              <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                <SelectTrigger className="w-40">
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {categories.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Selected count */}
+            {selectedAccessories.size > 0 && (
+              <div className="flex items-center gap-2 p-2 bg-accent-yellow/10 rounded-lg border border-accent-yellow/30">
+                <Package className="w-4 h-4 text-accent-yellow" />
+                <span className="text-sm text-accent-yellow">
+                  {selectedAccessories.size} accessori{selectedAccessories.size === 1 ? 'y' : 'es'} selected
+                </span>
+              </div>
+            )}
+
+            {/* Assets List */}
+            <ScrollArea className="flex-1 min-h-[250px] border border-muted-gray/30 rounded-lg">
+              {isLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
+                </div>
+              ) : filteredAssets.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <Box className="w-8 h-8 text-muted-gray mb-2" />
+                  <p className="text-muted-gray">No available assets found</p>
+                  <p className="text-sm text-muted-gray/70">Try the Quick Add tab to create new accessories</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-muted-gray/20">
+                  {filteredAssets.map((asset) => (
+                    <div
+                      key={asset.id}
+                      className={cn(
+                        "flex items-center gap-3 p-3 cursor-pointer transition-colors",
+                        selectedAccessories.has(asset.id)
+                          ? "bg-accent-yellow/10"
+                          : "hover:bg-charcoal-black/30"
+                      )}
+                      onClick={() => toggleAccessory(asset.id)}
+                    >
+                      <Checkbox
+                        checked={selectedAccessories.has(asset.id)}
+                        onCheckedChange={() => toggleAccessory(asset.id)}
+                      />
+                      <div className="w-8 h-8 rounded-lg bg-muted-gray/20 flex items-center justify-center">
+                        <Box className="w-4 h-4 text-muted-gray" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-bone-white truncate">{asset.name}</p>
+                        <p className="text-sm text-muted-gray truncate">
+                          {asset.category_name || 'Uncategorized'}
+                          {asset.manufacturer && ` • ${asset.manufacturer}`}
+                        </p>
+                      </div>
+                      <code className="text-xs bg-muted-gray/20 px-2 py-1 rounded text-muted-gray">
+                        {asset.internal_id}
+                      </code>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+          </TabsContent>
+
+          <TabsContent value="create" className="mt-4 space-y-4">
+            <div>
+              <Label htmlFor="quickAddName">Accessory Name *</Label>
+              <Input
+                id="quickAddName"
+                value={quickAddName}
+                onChange={(e) => setQuickAddName(e.target.value)}
+                placeholder="e.g., XLR Cable 25ft"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="quickAddCategory">Category</Label>
+                <Select value={quickAddCategory} onValueChange={setQuickAddCategory}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((cat) => (
+                      <SelectItem key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="quickAddManufacturer">Manufacturer</Label>
+                <Input
+                  id="quickAddManufacturer"
+                  value={quickAddManufacturer}
+                  onChange={(e) => setQuickAddManufacturer(e.target.value)}
+                  placeholder="e.g., Mogami"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label htmlFor="quickAddModel">Model</Label>
+              <Input
+                id="quickAddModel"
+                value={quickAddModel}
+                onChange={(e) => setQuickAddModel(e.target.value)}
+                placeholder="e.g., Gold Studio"
+              />
+            </div>
+
+            <Button
+              onClick={handleQuickAdd}
+              disabled={!quickAddName.trim() || isQuickAdding}
+              className="w-full"
+            >
+              {isQuickAdding && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Plus className="w-4 h-4 mr-2" />
+              Add to Package
+            </Button>
+
+            <p className="text-xs text-muted-gray text-center">
+              The accessory will be created and immediately added to this equipment package
+            </p>
+          </TabsContent>
+        </Tabs>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={handleClose}>
+            {dialogTab === 'create' ? 'Done' : 'Cancel'}
+          </Button>
+          {dialogTab === 'existing' && (
+            <Button
+              onClick={handleConvert}
+              disabled={selectedAccessories.size === 0 || convertToPackage.isPending}
+            >
+              {convertToPackage.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              <Package className="w-4 h-4 mr-2" />
+              Add to Package ({selectedAccessories.size})
+            </Button>
+          )}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

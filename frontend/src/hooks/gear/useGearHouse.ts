@@ -443,6 +443,8 @@ export interface UseGearAssetsOptions {
   status?: AssetStatus;
   condition?: AssetCondition;
   search?: string;
+  parentAssetId?: string | 'none';  // 'none' for root assets only
+  includeAccessoryCount?: boolean;
   limit?: number;
   offset?: number;
   enabled?: boolean;
@@ -452,9 +454,20 @@ export function useGearAssets(options: UseGearAssetsOptions) {
   const { session } = useAuth();
   const token = session?.access_token;
   const queryClient = useQueryClient();
-  const { orgId, categoryId, status, condition, search, limit = 50, offset = 0, enabled = true } = options;
+  const {
+    orgId,
+    categoryId,
+    status,
+    condition,
+    search,
+    parentAssetId,
+    includeAccessoryCount,
+    limit = 50,
+    offset = 0,
+    enabled = true
+  } = options;
 
-  const queryKey = ['gear-assets', { orgId, categoryId, status, condition, search, limit, offset }];
+  const queryKey = ['gear-assets', { orgId, categoryId, status, condition, search, parentAssetId, includeAccessoryCount, limit, offset }];
 
   const query = useQuery({
     queryKey,
@@ -464,6 +477,8 @@ export function useGearAssets(options: UseGearAssetsOptions) {
       if (status) params.set('status', status);
       if (condition) params.set('condition', condition);
       if (search) params.set('search', search);
+      if (parentAssetId) params.set('parent_asset_id', parentAssetId);
+      if (includeAccessoryCount) params.set('include_accessory_count', 'true');
       params.set('limit', limit.toString());
       params.set('offset', offset.toString());
 
@@ -505,14 +520,18 @@ export function useGearAssets(options: UseGearAssetsOptions) {
   };
 }
 
-export function useGearAsset(assetId: string | null) {
+export function useGearAsset(assetId: string | null, options?: { includeAccessories?: boolean }) {
   const { session } = useAuth();
   const token = session?.access_token;
   const queryClient = useQueryClient();
+  const includeAccessories = options?.includeAccessories ?? false;
 
   const query = useQuery({
-    queryKey: ['gear-asset', assetId],
-    queryFn: () => fetchWithAuth(`/api/v1/gear/assets/item/${assetId}`, token!),
+    queryKey: ['gear-asset', assetId, { includeAccessories }],
+    queryFn: () => {
+      const params = includeAccessories ? '?include_accessories=true' : '';
+      return fetchWithAuth(`/api/v1/gear/assets/item/${assetId}${params}`, token!);
+    },
     enabled: !!token && !!assetId,
     select: (data) => data.asset as GearAsset,
   });
@@ -541,6 +560,42 @@ export function useGearAsset(assetId: string | null) {
     },
   });
 
+  // Equipment Package mutations
+  const addAccessory = useMutation({
+    mutationFn: (accessoryId: string) =>
+      fetchWithAuth(`/api/v1/gear/assets/item/${assetId}/accessories`, token!, {
+        method: 'POST',
+        body: JSON.stringify({ accessory_id: accessoryId }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-asset', assetId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+    },
+  });
+
+  const removeAccessory = useMutation({
+    mutationFn: (accessoryId: string) =>
+      fetchWithAuth(`/api/v1/gear/assets/item/${assetId}/accessories/${accessoryId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-asset', assetId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+    },
+  });
+
+  const convertToPackage = useMutation({
+    mutationFn: (accessoryIds: string[]) =>
+      fetchWithAuth(`/api/v1/gear/assets/item/${assetId}/convert-to-package`, token!, {
+        method: 'POST',
+        body: JSON.stringify({ accessory_ids: accessoryIds }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-asset', assetId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+    },
+  });
+
   return {
     asset: query.data,
     isLoading: query.isLoading,
@@ -548,6 +603,10 @@ export function useGearAsset(assetId: string | null) {
     refetch: query.refetch,
     updateAsset,
     updateStatus,
+    // Equipment Package
+    addAccessory,
+    removeAccessory,
+    convertToPackage,
   };
 }
 
@@ -646,12 +705,46 @@ export function useGearKitTemplate(templateId: string | null) {
     },
   });
 
+  const addTemplateItem = useMutation({
+    mutationFn: (data: {
+      asset_id?: string;
+      category_id?: string;
+      item_description?: string;
+      quantity?: number;
+      is_required?: boolean;
+      notes?: string;
+      sort_order?: number;
+      nested_template_id?: string;
+    }) =>
+      fetchWithAuth(`/api/v1/gear/kits/templates/item/${templateId}/items`, token!, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-template', templateId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-templates'] });
+    },
+  });
+
+  const removeTemplateItem = useMutation({
+    mutationFn: (itemId: string) =>
+      fetchWithAuth(`/api/v1/gear/kits/templates/item/${templateId}/items/${itemId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-template', templateId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-templates'] });
+    },
+  });
+
   return {
     template: query.data,
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,
     updateTemplate,
+    addTemplateItem,
+    removeTemplateItem,
   };
 }
 
@@ -744,6 +837,30 @@ export function useGearKitInstance(kitId: string | null) {
       }),
   });
 
+  // Nested kit mutations
+  const addNestedKit = useMutation({
+    mutationFn: (data: { nested_kit_id: string; slot_name?: string; sort_order?: number }) =>
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}/nested-kits`, token!, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instance', kitId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instances'] });
+    },
+  });
+
+  const removeNestedKit = useMutation({
+    mutationFn: (nestedKitId: string) =>
+      fetchWithAuth(`/api/v1/gear/kits/instances/item/${kitId}/nested-kits/${nestedKitId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instance', kitId] });
+      queryClient.invalidateQueries({ queryKey: ['gear-kit-instances'] });
+    },
+  });
+
   return {
     kit: query.data,
     isLoading: query.isLoading,
@@ -753,6 +870,8 @@ export function useGearKitInstance(kitId: string | null) {
     addAsset,
     removeAsset,
     verifyContents,
+    addNestedKit,
+    removeNestedKit,
   };
 }
 

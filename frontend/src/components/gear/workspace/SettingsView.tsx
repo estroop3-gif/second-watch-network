@@ -33,6 +33,7 @@ import {
   Building2,
   CheckCircle2,
   AlertCircle,
+  ClipboardList,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -1672,6 +1673,27 @@ function VerificationSettings({ orgId }: { orgId: string }) {
                   Choose whether to verify the kit as one item or each item inside
                 </p>
               </div>
+
+              <div>
+                <Label>Equipment Package Verification</Label>
+                <Select
+                  value={settings?.team_checkout_package_verification ?? 'package_only'}
+                  onValueChange={(value) =>
+                    updateSettings.mutate({ team_checkout_package_verification: value })
+                  }
+                >
+                  <SelectTrigger className="w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="package_only">Verify Package as Unit</SelectItem>
+                    <SelectItem value="verify_contents">Verify Each Accessory</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-gray mt-1">
+                  Choose whether to verify equipment packages as one item or each accessory
+                </p>
+              </div>
             </>
           )}
         </CardContent>
@@ -1756,6 +1778,24 @@ function VerificationSettings({ orgId }: { orgId: string }) {
                   <SelectContent>
                     <SelectItem value="kit_only">Verify Kit as Unit</SelectItem>
                     <SelectItem value="verify_contents">Verify Each Item in Kit</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label>Equipment Package Verification</Label>
+                <Select
+                  value={settings?.client_checkout_package_verification ?? 'package_only'}
+                  onValueChange={(value) =>
+                    updateSettings.mutate({ client_checkout_package_verification: value })
+                  }
+                >
+                  <SelectTrigger className="w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="package_only">Verify Package as Unit</SelectItem>
+                    <SelectItem value="verify_contents">Verify Each Accessory</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1878,6 +1918,24 @@ function VerificationSettings({ orgId }: { orgId: string }) {
                   <SelectContent>
                     <SelectItem value="kit_only">Verify Kit as Unit</SelectItem>
                     <SelectItem value="verify_contents">Verify Each Item in Kit</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <Label>Equipment Package Verification</Label>
+                <Select
+                  value={settings?.checkin_package_verification ?? 'package_only'}
+                  onValueChange={(value) =>
+                    updateSettings.mutate({ checkin_package_verification: value })
+                  }
+                >
+                  <SelectTrigger className="w-64">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="package_only">Verify Package as Unit</SelectItem>
+                    <SelectItem value="verify_contents">Verify Each Accessory</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -2049,6 +2107,56 @@ function VerificationSettings({ orgId }: { orgId: string }) {
             <Switch
               checked={settings?.notify_damage_found ?? true}
               onCheckedChange={(checked) => updateSettings.mutate({ notify_damage_found: checked })}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Work Order Staging */}
+      <Card className="bg-charcoal-black/50 border-muted-gray/30">
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <ClipboardList className="w-4 h-4" />
+            Work Order Staging
+          </CardTitle>
+          <CardDescription>
+            Configure how items are verified when staging work orders
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div>
+            <Label>Staging Verification Method</Label>
+            <Select
+              value={settings?.work_order_staging_verify_method ?? 'checkoff_only'}
+              onValueChange={(value) =>
+                updateSettings.mutate({ work_order_staging_verify_method: value })
+              }
+            >
+              <SelectTrigger className="w-72">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="checkoff_only">Checkoff Only (Simple checkbox)</SelectItem>
+                <SelectItem value="barcode_required">Barcode Scan Required</SelectItem>
+                <SelectItem value="qr_required">QR Code Scan Required</SelectItem>
+                <SelectItem value="scan_or_checkoff">Scan or Checkoff (Either method)</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-gray mt-1">
+              Choose how preparers verify items when staging work orders
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Auto-mark as Ready</Label>
+              <p className="text-sm text-muted-gray">
+                Automatically transition to Ready status when all items are staged
+              </p>
+            </div>
+            <Switch
+              checked={settings?.work_order_auto_ready ?? true}
+              onCheckedChange={(checked) => updateSettings.mutate({ work_order_auto_ready: checked })}
             />
           </div>
         </CardContent>

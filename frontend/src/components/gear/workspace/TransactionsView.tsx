@@ -1,5 +1,5 @@
 /**
- * Transactions View - 5-Tab Structure
+ * Transactions View - 6-Tab Structure
  *
  * Tabs:
  * - Outgoing: Our gear currently rented/checked out to others
@@ -7,6 +7,7 @@
  * - Requests: Pending quotes, approvals, and extensions
  * - History: Completed transactions
  * - Overdue: Late returns requiring attention
+ * - Work Orders: Pre-checkout staging
  */
 import React, { useState } from 'react';
 import {
@@ -27,6 +28,7 @@ import {
   Loader2,
   ChevronRight,
   FileText,
+  ClipboardList,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -61,6 +63,8 @@ import { format, formatDistanceToNow } from 'date-fns';
 import { CheckoutDialog, TransactionDetailDialog } from '@/components/gear/checkout';
 import { CheckinDialog } from '@/components/gear/checkin';
 import { ExtensionResponseDialog, ExtensionCard } from '@/components/gear/marketplace';
+import { WorkOrdersTabContent, WorkOrderDialog } from '@/components/gear/work-orders';
+import { useWorkOrderCounts } from '@/hooks/gear/useGearWorkOrders';
 import type { GearRentalExtension } from '@/types/gear';
 
 // Tab configuration
@@ -100,6 +104,12 @@ const TABS: Array<{
     icon: <AlertTriangle className="w-4 h-4" />,
     description: 'Late returns',
   },
+  {
+    id: 'work_orders',
+    label: 'Work Orders',
+    icon: <ClipboardList className="w-4 h-4" />,
+    description: 'Pre-checkout staging',
+  },
 ];
 
 const REQUEST_STATUS_CONFIG: Record<RentalRequestStatus, { label: string; color: string }> = {
@@ -127,11 +137,13 @@ interface TransactionsViewProps {
 export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
   const [activeTab, setActiveTab] = useState<TransactionTab>('outgoing');
   const [isQuickCheckoutOpen, setIsQuickCheckoutOpen] = useState(false);
+  const [isWorkOrderDialogOpen, setIsWorkOrderDialogOpen] = useState(false);
   const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null);
   const [checkinTransactionId, setCheckinTransactionId] = useState<string | null>(null);
   const [selectedExtension, setSelectedExtension] = useState<GearRentalExtension | null>(null);
 
   const tabData = useTransactionsTab(orgId, activeTab);
+  const { counts: workOrderCounts } = useWorkOrderCounts(orgId);
 
   // Calculate badge counts
   const outgoingCount = tabData.outgoing.total;
@@ -140,6 +152,7 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
                         tabData.requests.totals.outgoing_quotes +
                         tabData.requests.totals.extensions;
   const overdueCount = tabData.overdue.transactions.length;
+  const workOrdersActiveCount = (workOrderCounts.draft || 0) + (workOrderCounts.in_progress || 0) + (workOrderCounts.ready || 0);
 
   return (
     <div className="space-y-6">
@@ -174,14 +187,25 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
                     {overdueCount}
                   </Badge>
                 )}
+                {tab.id === 'work_orders' && workOrdersActiveCount > 0 && (
+                  <Badge className="ml-1 bg-orange-500/20 text-orange-400 text-xs">
+                    {workOrdersActiveCount}
+                  </Badge>
+                )}
               </TabsTrigger>
             ))}
           </TabsList>
 
-          <Button onClick={() => setIsQuickCheckoutOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            New Checkout
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setIsWorkOrderDialogOpen(true)}>
+              <ClipboardList className="w-4 h-4 mr-2" />
+              New Work Order
+            </Button>
+            <Button onClick={() => setIsQuickCheckoutOpen(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              New Checkout
+            </Button>
+          </div>
         </div>
 
         {/* Outgoing Tab */}
@@ -237,6 +261,11 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
             }}
           />
         </TabsContent>
+
+        {/* Work Orders Tab */}
+        <TabsContent value="work_orders" className="mt-6">
+          <WorkOrdersTabContent orgId={orgId} />
+        </TabsContent>
       </Tabs>
 
       {/* Checkout Dialog */}
@@ -245,6 +274,17 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
         onClose={() => setIsQuickCheckoutOpen(false)}
         orgId={orgId}
         orgType={orgType}
+      />
+
+      {/* Work Order Dialog */}
+      <WorkOrderDialog
+        isOpen={isWorkOrderDialogOpen}
+        onClose={() => setIsWorkOrderDialogOpen(false)}
+        orgId={orgId}
+        onSuccess={() => {
+          // Switch to work orders tab on success
+          setActiveTab('work_orders');
+        }}
       />
 
       {/* Transaction Detail Dialog */}

@@ -156,7 +156,7 @@ class APIClient {
     } catch (err: any) {
       // Log network errors
       if (err.name === 'TypeError' && err.message.includes('NetworkError')) {
-        console.error(`[API] Network error for ${options.method} ${url}:`, err.message)
+        console.error(`[API] Network error for ${options.method || 'GET'} ${url}:`, err.message)
       }
       throw err
     }
