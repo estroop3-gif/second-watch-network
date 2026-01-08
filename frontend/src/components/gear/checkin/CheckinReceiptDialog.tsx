@@ -63,6 +63,9 @@ export function CheckinReceiptDialog({
     return (
       <Dialog open={isOpen} onOpenChange={onClose}>
         <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Loading Receipt...</DialogTitle>
+          </DialogHeader>
           <div className="space-y-4 py-4">
             <Skeleton className="h-8 w-48 mx-auto" />
             <Skeleton className="h-4 w-full" />
