@@ -73,7 +73,14 @@ type ScriptElementType =
   | 'dialogue'
   | 'parenthetical'
   | 'transition'
-  | 'general';
+  | 'general'
+  // Title page elements
+  | 'title'
+  | 'author'
+  | 'contact'
+  | 'draft_info'
+  | 'copyright'
+  | 'title_page_text';
 
 interface ScriptLine {
   type: ScriptElementType;
@@ -91,9 +98,14 @@ interface ScriptPage {
 // Element patterns for detection
 const ELEMENT_PATTERNS = {
   scene_heading: /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.)[\s\S]*/i,
-  transition: /^(FADE IN:|FADE OUT:|FADE TO:|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|THE END\.?)[\s\S]*/i,
+  transition: /^(FADE IN:|FADE OUT:|FADE TO:|CUT TO:|DISSOLVE TO:|DISSOLVE:|SMASH CUT TO:|SMASH CUT:|MATCH CUT TO:|MATCH CUT:|JUMP CUT TO:|JUMP CUT:|TIME CUT:|IRIS IN:|IRIS OUT:|WIPE TO:|.+\s+TO:|THE END\.?)[\s\S]*/i,
   character: /^[A-Z][A-Z0-9\s\-'\.]+(\s*\(V\.O\.\)|\s*\(O\.S\.\)|\s*\(O\.C\.\)|\s*\(CONT'D\))?$/,
   parenthetical: /^\(.+\)$/,
+  // Title page patterns
+  author: /^(written\s+by|screenplay\s+by|teleplay\s+by|story\s+by|by\s*$)/i,
+  draft_info: /^(draft|revision|version|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+  copyright: /^(©|copyright|\(c\))/i,
+  contact: /(@[\w.-]+\.\w+|\(\d{3}\)\s*\d{3}[-.]?\d{4}|\d{3}[-.]?\d{3}[-.]?\d{4}|agent:|manager:|represented\s+by)/i,
 };
 
 // Element styling config (positioning is calculated separately based on page measurements)
@@ -153,6 +165,49 @@ const ELEMENT_CONFIG: Record<ScriptElementType, {
     textStyle: {},
     placeholder: '',
   },
+  // Title page elements - centered formatting
+  title: {
+    label: 'Title',
+    shortcut: '',
+    icon: Type,
+    textStyle: { fontWeight: 'bold', textTransform: 'uppercase' as const, fontSize: '18px' },
+    placeholder: 'TITLE',
+  },
+  author: {
+    label: 'Author',
+    shortcut: '',
+    icon: Users,
+    textStyle: {},
+    placeholder: 'Written by...',
+  },
+  contact: {
+    label: 'Contact',
+    shortcut: '',
+    icon: AlignLeft,
+    textStyle: { fontSize: '10px' },
+    placeholder: 'Contact info',
+  },
+  draft_info: {
+    label: 'Draft Info',
+    shortcut: '',
+    icon: AlignLeft,
+    textStyle: { fontSize: '10px' },
+    placeholder: 'Draft date',
+  },
+  copyright: {
+    label: 'Copyright',
+    shortcut: '',
+    icon: AlignLeft,
+    textStyle: { fontSize: '10px' },
+    placeholder: 'Copyright notice',
+  },
+  title_page_text: {
+    label: 'Title Page',
+    shortcut: '',
+    icon: AlignLeft,
+    textStyle: {},
+    placeholder: '',
+  },
 };
 
 // Calculate element positioning based on type (returns left offset and width in pixels at base scale)
@@ -175,16 +230,93 @@ function getElementPosition(type: ScriptElementType): { left: number; width: num
     case 'transition':
       // Right-aligned
       return { left: 0, width: CONTENT_WIDTH, textAlign: 'right' };
+    // Title page elements - centered
+    case 'title':
+    case 'author':
+    case 'draft_info':
+    case 'copyright':
+    case 'title_page_text':
+      return { left: 0, width: CONTENT_WIDTH, textAlign: 'center' };
+    case 'contact':
+      // Contact info is left-aligned at bottom of page
+      return { left: 0, width: CONTENT_WIDTH, textAlign: 'left' };
     default:
       return { left: 0, width: CONTENT_WIDTH };
   }
 }
 
-// Detect element type from content
-function detectElementType(line: string, prevType?: ScriptElementType): ScriptElementType {
+// Detect element type from content using indent-based detection (matches backend output)
+// Backend format_screenplay_text() outputs these indentation levels:
+// - Scene Heading: 0 chars (left-aligned)
+// - Action: 0 chars (left-aligned)
+// - Dialogue: 10 chars (detected at 8-14)
+// - Parenthetical: 15 chars (detected at 12-18)
+// - Character: 20 chars (detected at 15-30)
+// - Transition: 40 chars (detected at 35+)
+function detectElementType(line: string, prevType?: ScriptElementType, isTitlePage?: boolean): ScriptElementType {
+  // Measure indentation BEFORE trimming - this is critical for accurate detection
+  const leadingSpaces = line.length - line.trimStart().length;
   const trimmed = line.trim();
+
   if (!trimmed) return 'general';
 
+  // If we're in title page context, check for title page elements
+  if (isTitlePage) {
+    const isCentered = leadingSpaces >= 15;
+
+    if (ELEMENT_PATTERNS.copyright.test(trimmed)) return 'copyright';
+    if (ELEMENT_PATTERNS.author.test(trimmed)) return 'author';
+    if (ELEMENT_PATTERNS.draft_info.test(trimmed)) return 'draft_info';
+    if (ELEMENT_PATTERNS.contact.test(trimmed)) return 'contact';
+
+    if ((trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !ELEMENT_PATTERNS.scene_heading.test(trimmed)) ||
+        (isCentered && trimmed === trimmed.toUpperCase() && !ELEMENT_PATTERNS.scene_heading.test(trimmed))) {
+      return 'title';
+    }
+
+    if (isCentered) {
+      return 'title_page_text';
+    }
+
+    return 'title_page_text';
+  }
+
+  // RIGHT-ALIGNED TRANSITIONS (35+ chars indent) - backend outputs 40 spaces
+  if (leadingSpaces >= 35) {
+    return 'transition';
+  }
+
+  // CENTERED CHARACTER NAME (15-30 chars indent, ALL CAPS) - backend outputs 20 spaces
+  if (leadingSpaces >= 15 && leadingSpaces <= 30) {
+    // Remove parenthetical extensions like (V.O.), (O.S.), (CONT'D)
+    const namePart = trimmed.replace(/\s*\([^)]+\)\s*$/, '');
+    if (namePart === namePart.toUpperCase() && namePart.length > 1 && namePart.length < 50) {
+      return 'character';
+    }
+  }
+
+  // PARENTHETICAL (12-18 chars indent, starts with () - backend outputs 15 spaces
+  if (leadingSpaces >= 12 && leadingSpaces <= 18 && trimmed.startsWith('(')) {
+    if (ELEMENT_PATTERNS.parenthetical.test(trimmed)) {
+      return 'parenthetical';
+    }
+  }
+
+  // DIALOGUE (8-14 chars indent, after character/parenthetical/dialogue) - backend outputs 10 spaces
+  if (leadingSpaces >= 8 && leadingSpaces <= 14) {
+    if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
+      return 'dialogue';
+    }
+  }
+
+  // LEFT-ALIGNED (0-8 chars indent) - scene headings, action, and left-aligned transitions
+  if (leadingSpaces < 8) {
+    if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
+    if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
+    return 'action';
+  }
+
+  // Fallback to pattern matching for edge cases (unusual indentation)
   if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
   if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
   if (ELEMENT_PATTERNS.parenthetical.test(trimmed) &&
@@ -195,14 +327,31 @@ function detectElementType(line: string, prevType?: ScriptElementType): ScriptEl
   return 'action';
 }
 
+// Check if a line is just a page number (e.g., "1.", "2.", "123.")
+// These are often included in PDF imports and should be filtered out
+// since we render our own page numbers
+function isPageNumberLine(line: string): boolean {
+  const trimmed = line.trim();
+  return /^\d{1,3}\.$/.test(trimmed);
+}
+
 // Parse content into lines with types
 function parseScriptLines(content: string): ScriptLine[] {
   const rawLines = content.split('\n');
   const lines: ScriptLine[] = [];
   let prevType: ScriptElementType | undefined;
 
+  // Note: Title page content is now handled separately (stored in title_page_data JSON)
+  // The text_content passed here should only contain the script body, not title page
+  // So we don't need to detect title pages - treat everything as script body
   for (let i = 0; i < rawLines.length; i++) {
-    const type = detectElementType(rawLines[i], prevType);
+    // Skip standalone page number lines (from PDF imports)
+    // since we render our own page numbers
+    if (isPageNumberLine(rawLines[i])) {
+      continue;
+    }
+
+    const type = detectElementType(rawLines[i], prevType, false);
     lines.push({ type, content: rawLines[i], lineIndex: i });
     if (rawLines[i].trim()) prevType = type;
   }

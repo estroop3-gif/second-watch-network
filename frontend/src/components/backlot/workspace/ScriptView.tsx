@@ -96,12 +96,17 @@ import {
   useLockScriptVersion,
   useScriptMutations,
   useExportScriptWithHighlights,
+  useScriptHighlights,
+  useScriptHighlightMutations,
+  useScriptPageNotes,
+  useScriptPageNotesSummary,
 } from '@/hooks/backlot';
 import {
   BacklotScript,
   BacklotScene,
   BacklotSceneCoverageStatus,
   BacklotIntExt,
+  BacklotBreakdownItemType,
   SCENE_COVERAGE_STATUS_LABELS,
   SCENE_COVERAGE_STATUS_COLORS,
   SCRIPT_COLOR_CODE_HEX,
@@ -116,6 +121,8 @@ import ScriptEditorPanel from './ScriptEditorPanel';
 import ScriptBreakdownPanel from './ScriptBreakdownPanel';
 import ScriptNotesPanel from './ScriptNotesPanel';
 import ScriptyWorkspace from './ScriptyWorkspace';
+import ScriptTextViewer from './ScriptTextViewer';
+import { ScriptExportModal } from './ScriptExportModal';
 
 interface ScriptViewProps {
   projectId: string;
@@ -462,6 +469,16 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const [intExtFilter, setIntExtFilter] = useState<BacklotIntExt | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
+  // View tab mode: PDF or live-updating Text view (Text is default - has notes/highlights)
+  const [pdfTextViewMode, setPdfTextViewMode] = useState<'pdf' | 'text'>('text');
+
+  // Lifted edit content state for real-time sync between editor and text viewer
+  const [liveEditContent, setLiveEditContent] = useState<string | null>(null);
+
+  // Highlight and notes visibility toggles
+  const [showHighlights, setShowHighlights] = useState(true);
+  const [showNotes, setShowNotes] = useState(false);
+
   const { scripts, isLoading: scriptsLoading, refetch: refetchScripts } = useScripts({ projectId });
   const { scenes, isLoading: scenesLoading, createScene } = useScenes({
     projectId,
@@ -477,6 +494,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const { exportScript, isExporting } = useExportScriptWithHighlights();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showTipsPanel, setShowTipsPanel] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   const handleCoverageChange = async (sceneId: string, status: BacklotSceneCoverageStatus) => {
     try {
@@ -549,6 +567,47 @@ const ScriptView: React.FC<ScriptViewProps> = ({
 
   // Get active script (selected or first available)
   const activeScript = scripts.find((s) => s.id === selectedScriptId) || scripts[0];
+
+  // Fetch highlights for the active script
+  const { data: scriptHighlights = [] } = useScriptHighlights(activeScript?.id || null);
+
+  // Highlight mutations for creating highlights in text view
+  const { createHighlight } = useScriptHighlightMutations();
+
+  // Fetch page notes for the active script
+  const { data: pageNotes = [] } = useScriptPageNotes({ scriptId: activeScript?.id || null });
+  const { data: notesSummary = [] } = useScriptPageNotesSummary(activeScript?.id || null);
+
+  // Handler for creating highlights from text selection in ScriptTextViewer
+  const handleCreateHighlight = async (
+    text: string,
+    startOffset: number,
+    endOffset: number,
+    category: BacklotBreakdownItemType
+  ) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await createHighlight.mutateAsync({
+        scriptId: activeScript.id,
+        text,
+        start_offset: startOffset,
+        end_offset: endOffset,
+        category,
+        status: 'pending',
+      });
+      toast({
+        title: 'Highlight Created',
+        description: `Added "${text}" as ${category}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to create highlight',
+        variant: 'destructive',
+      });
+    }
+  };
 
   // Empty state when no scripts
   if (!isLoading && scripts.length === 0) {
@@ -632,34 +691,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             {activeScript && (
               <Button
                 variant="outline"
-                onClick={() => {
-                  exportScript.mutate(
-                    { scriptId: activeScript.id },
-                    {
-                      onSuccess: () => {
-                        toast({
-                          title: 'Export Complete',
-                          description: 'Script PDF with highlights and notes has been downloaded',
-                        });
-                      },
-                      onError: (error) => {
-                        toast({
-                          title: 'Export Failed',
-                          description: error.message,
-                          variant: 'destructive',
-                        });
-                      },
-                    }
-                  );
-                }}
-                disabled={isExporting}
+                onClick={() => setShowExportModal(true)}
               >
-                {isExporting ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                ) : (
-                  <Download className="w-4 h-4 mr-2" />
-                )}
-                Export Marked Script
+                <Download className="w-4 h-4 mr-2" />
+                Export Script
               </Button>
             )}
             <Button
@@ -745,31 +780,131 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           <TabsTrigger value="locations">Location Needs</TabsTrigger>
         </TabsList>
 
-        {/* Script Viewer Tab */}
-        <TabsContent value="viewer" className="mt-6">
-          {activeScript?.file_url ? (
-            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
-              <ScriptPDFViewer
-                script={activeScript}
-                projectId={projectId}
+        {/* Script Viewer Tab - forceMount keeps PDF loaded to avoid reloading on tab switch */}
+        <TabsContent
+          value="viewer"
+          className="mt-6 data-[state=inactive]:hidden"
+          forceMount
+        >
+          {/* PDF/Text Toggle Toolbar */}
+          <div className="flex items-center justify-between mb-4 p-3 bg-charcoal-black rounded-lg border border-muted-gray/20">
+            <div className="flex items-center gap-2">
+              {/* View Mode Toggle */}
+              <div className="flex items-center border border-muted-gray/30 rounded-md overflow-hidden">
+                <Button
+                  variant={pdfTextViewMode === 'pdf' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setPdfTextViewMode('pdf')}
+                  disabled={!activeScript?.file_url}
+                  className={cn(
+                    'h-8 rounded-none border-0',
+                    pdfTextViewMode === 'pdf' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
+                  )}
+                >
+                  <FileText className="w-4 h-4 mr-1" />
+                  PDF
+                </Button>
+                <Button
+                  variant={pdfTextViewMode === 'text' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setPdfTextViewMode('text')}
+                  disabled={!activeScript?.text_content && !liveEditContent}
+                  className={cn(
+                    'h-8 rounded-none border-0',
+                    pdfTextViewMode === 'text' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
+                  )}
+                >
+                  <Edit className="w-4 h-4 mr-1" />
+                  Text
+                </Button>
+              </div>
+              {pdfTextViewMode === 'text' && liveEditContent !== null && (
+                <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
+                  <Zap className="w-3 h-3 mr-1" />
+                  Live Preview
+                </Badge>
+              )}
+
+              {/* Separator - only show if in text mode */}
+              {pdfTextViewMode === 'text' && (
+                <>
+                  <div className="h-6 w-px bg-muted-gray/30 mx-2" />
+
+                  {/* Highlight Toggle */}
+                  <Button
+                    variant={showHighlights ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowHighlights(!showHighlights)}
+                    className={cn(
+                      'h-8',
+                      showHighlights ? 'bg-yellow-500/20 text-yellow-400' : 'text-muted-gray'
+                    )}
+                  >
+                    <Highlighter className="w-4 h-4 mr-1" />
+                    Highlights
+                  </Button>
+
+                  {/* Notes Toggle */}
+                  <Button
+                    variant={showNotes ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setShowNotes(!showNotes)}
+                    className={cn(
+                      'h-8',
+                      showNotes ? 'bg-blue-500/20 text-blue-400' : 'text-muted-gray'
+                    )}
+                  >
+                    <StickyNote className="w-4 h-4 mr-1" />
+                    Notes
+                  </Button>
+                </>
+              )}
+            </div>
+            <div className="text-xs text-muted-gray">
+              {pdfTextViewMode === 'pdf' ? 'Original PDF document' : 'Formatted text view with live updates from editor'}
+            </div>
+          </div>
+
+          {/* Content based on view mode */}
+          {pdfTextViewMode === 'pdf' ? (
+            // PDF View
+            activeScript?.file_url ? (
+              <div className="h-[calc(100vh-340px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+                <ScriptPDFViewer script={activeScript} />
+              </div>
+            ) : (
+              <div className="text-center py-12 text-muted-gray">
+                <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-40" />
+                <p className="text-bone-white text-lg mb-2">No PDF Available</p>
+                <p className="text-sm mb-6">This script was imported before PDF storage was enabled.</p>
+                <p className="text-sm mb-4">To view the PDF, you need to re-import the script file.</p>
+                {canEdit && (
+                  <Button
+                    onClick={onImportClick}
+                    className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                  >
+                    <Upload className="w-4 h-4 mr-2" />
+                    Re-import Script
+                  </Button>
+                )}
+              </div>
+            )
+          ) : (
+            // Text View - shows live content from editor if available, otherwise saved content
+            <div className="h-[calc(100vh-340px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <ScriptTextViewer
+                content={liveEditContent ?? activeScript?.text_content ?? ''}
+                title={activeScript?.title || 'Script'}
+                isLive={liveEditContent !== null}
+                titlePageData={activeScript?.title_page_data}
+                highlights={scriptHighlights}
+                showHighlights={showHighlights}
+                onCreateHighlight={canEdit ? handleCreateHighlight : undefined}
+                pageNotes={pageNotes}
+                notesSummary={notesSummary}
+                showNotes={showNotes}
                 canEdit={canEdit}
               />
-            </div>
-          ) : (
-            <div className="text-center py-12 text-muted-gray">
-              <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-40" />
-              <p className="text-bone-white text-lg mb-2">No PDF Available</p>
-              <p className="text-sm mb-6">This script was imported before PDF storage was enabled.</p>
-              <p className="text-sm mb-4">To view the PDF, you need to re-import the script file.</p>
-              {canEdit && (
-                <Button
-                  onClick={onImportClick}
-                  className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-                >
-                  <Upload className="w-4 h-4 mr-2" />
-                  Re-import Script
-                </Button>
-              )}
             </div>
           )}
         </TabsContent>
@@ -792,6 +927,18 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 onScriptUpdated={() => {
                   // Refresh scripts when content is saved so viewer shows updated content
                   refetchScripts();
+                  // Clear live content since saved content is now current
+                  setLiveEditContent(null);
+                }}
+                onContentChange={(content) => {
+                  // Update live content for real-time sync with text viewer
+                  setLiveEditContent(content);
+                }}
+                onEditingChange={(isEditing) => {
+                  // Clear live content when editing stops
+                  if (!isEditing) {
+                    setLiveEditContent(null);
+                  }
                 }}
               />
             </div>
@@ -1042,6 +1189,15 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Export Script Modal */}
+      {activeScript && (
+        <ScriptExportModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          script={activeScript}
+        />
+      )}
 
       {/* Tips & Tricks Panel */}
       <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>

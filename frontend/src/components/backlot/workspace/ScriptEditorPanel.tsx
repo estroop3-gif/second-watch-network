@@ -62,12 +62,17 @@ import {
   AlignJustify,
 } from 'lucide-react';
 import ScriptPageView from './ScriptPageView';
+import { ScriptTitlePage } from './ScriptTitlePage';
+import { TitlePageEditForm } from './TitlePageEditForm';
 import {
   useScript,
   useUpdateScriptText,
   useCreateScriptVersion,
   useLockScriptVersion,
   useExtractScriptText,
+  useScriptTitlePage,
+  useUpdateScriptTitlePage,
+  useScriptHighlightMutations,
 } from '@/hooks/backlot';
 import {
   BacklotScript,
@@ -75,6 +80,7 @@ import {
   BacklotScriptColorCode,
   SCRIPT_COLOR_CODE_HEX,
   SCRIPT_COLOR_CODE_LABELS,
+  TitlePageData,
 } from '@/types/backlot';
 
 // Extended script type that includes versioning fields (what the API actually returns)
@@ -94,7 +100,14 @@ type ScriptElementType =
   | 'parenthetical'
   | 'transition'
   | 'shot'
-  | 'general';
+  | 'general'
+  // Title page elements
+  | 'title'
+  | 'author'
+  | 'contact'
+  | 'draft_info'
+  | 'copyright'
+  | 'title_page_text';
 
 interface ScriptElement {
   type: ScriptElementType;
@@ -109,48 +122,159 @@ const ELEMENT_PATTERNS = {
   shot: /^(CLOSE ON|ANGLE ON|POV|INSERT|FLASHBACK|FLASH FORWARD|BACK TO SCENE|CONTINUOUS|LATER|MOMENTS LATER|SAME TIME|INTERCUT)[\s\S]*/i,
   character: /^[A-Z][A-Z0-9\s\-'\.]+(\s*\(V\.O\.\)|\s*\(O\.S\.\)|\s*\(O\.C\.\)|\s*\(CONT'D\)|\s*\(CONTINUING\))?\s*$/,
   parenthetical: /^\([\s\S]*\)$/,
+  // Title page patterns
+  author: /^(written\s+by|screenplay\s+by|teleplay\s+by|story\s+by|by\s*$)/i,
+  draft_info: /^(draft|revision|version|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
+  copyright: /^(©|copyright|\(c\))/i,
+  contact: /(@[\w.-]+\.\w+|\(\d{3}\)\s*\d{3}[-.]?\d{4}|\d{3}[-.]?\d{3}[-.]?\d{4}|agent:|manager:|represented\s+by)/i,
 };
 
-// Element styling
+// Industry standard margins (in pixels at 72 DPI) - matching ScriptPageView
+const MARGIN_LEFT = 108;   // 1.5" left margin (for binding)
+const MARGIN_RIGHT = 72;   // 1" right margin
+const PAGE_WIDTH_PX = 612; // 8.5" at 72dpi
+const CONTENT_WIDTH = PAGE_WIDTH_PX - MARGIN_LEFT - MARGIN_RIGHT; // 432px = 6"
+
+// Element positioning from LEFT EDGE of page (in pixels at 72 DPI) - matching ScriptPageView
+const CHAR_LEFT = 266;     // 3.7" - Character name position
+const DIALOGUE_LEFT = 180; // 2.5" - Dialogue start
+const DIALOGUE_RIGHT = 432; // 6" - Dialogue end
+const PAREN_LEFT = 223;    // 3.1" - Parenthetical start
+const PAREN_RIGHT = 403;   // 5.6" - Parenthetical end
+
+// Helper function to calculate element positioning - matching ScriptPageView
+function getInlineElementPosition(type: ScriptElementType): { marginLeft?: string; marginRight?: string; width?: string; maxWidth?: string } {
+  switch (type) {
+    case 'scene_heading':
+    case 'action':
+    case 'shot':
+    case 'general':
+      // Full width from left margin to right margin - no additional margins
+      return {};
+    case 'character':
+      // Character: starts at 3.7" from page left (158px from content left)
+      // Convert to pixels: CHAR_LEFT - MARGIN_LEFT = 266 - 108 = 158px
+      return {
+        marginLeft: '158px',
+        width: 'auto',
+        maxWidth: `${CONTENT_WIDTH - 158}px` // 274px
+      };
+    case 'dialogue':
+      // Dialogue: 2.5" to 6" from page left (72px from content left, width 252px)
+      // DIALOGUE_LEFT - MARGIN_LEFT = 180 - 108 = 72px
+      // DIALOGUE_RIGHT - DIALOGUE_LEFT = 432 - 180 = 252px
+      return {
+        marginLeft: '72px',
+        width: '252px',
+        maxWidth: '252px'
+      };
+    case 'parenthetical':
+      // Parenthetical: 3.1" to 5.6" from page left (115px from content left, width 180px)
+      // PAREN_LEFT - MARGIN_LEFT = 223 - 108 = 115px
+      // PAREN_RIGHT - PAREN_LEFT = 403 - 223 = 180px
+      return {
+        marginLeft: '115px',
+        width: '180px',
+        maxWidth: '180px'
+      };
+    case 'transition':
+      // Right-aligned
+      return {};
+    // Title page elements - centered
+    case 'title':
+    case 'author':
+    case 'draft_info':
+    case 'copyright':
+    case 'title_page_text':
+      return {};
+    case 'contact':
+      // Contact info is left-aligned
+      return {};
+    default:
+      return {};
+  }
+}
+
+// Element styling - now matches ScriptPageView exact positioning
 const ELEMENT_STYLES: Record<ScriptElementType, React.CSSProperties> = {
   scene_heading: {
     fontWeight: 'bold',
     textTransform: 'uppercase',
     marginTop: '24px',
     marginBottom: '12px',
+    ...getInlineElementPosition('scene_heading'),
   },
   action: {
     marginBottom: '12px',
+    ...getInlineElementPosition('action'),
   },
   character: {
     textTransform: 'uppercase',
-    marginLeft: '35%',
     marginTop: '12px',
     marginBottom: '0',
+    ...getInlineElementPosition('character'),
   },
   dialogue: {
-    marginLeft: '15%',
-    marginRight: '15%',
     marginBottom: '0',
+    ...getInlineElementPosition('dialogue'),
   },
   parenthetical: {
-    marginLeft: '25%',
-    marginRight: '25%',
     fontStyle: 'italic',
+    ...getInlineElementPosition('parenthetical'),
   },
   transition: {
     textAlign: 'right',
     textTransform: 'uppercase',
     marginTop: '12px',
     marginBottom: '12px',
+    ...getInlineElementPosition('transition'),
   },
   shot: {
     textTransform: 'uppercase',
     marginTop: '12px',
     marginBottom: '12px',
+    ...getInlineElementPosition('shot'),
   },
   general: {
     marginBottom: '12px',
+    ...getInlineElementPosition('general'),
+  },
+  // Title page elements - centered formatting
+  title: {
+    textAlign: 'center',
+    fontSize: '18px',
+    fontWeight: 'bold',
+    textTransform: 'uppercase',
+    marginTop: '120px',
+    marginBottom: '24px',
+    ...getInlineElementPosition('title'),
+  },
+  author: {
+    textAlign: 'center',
+    marginBottom: '8px',
+    ...getInlineElementPosition('author'),
+  },
+  contact: {
+    textAlign: 'left',
+    fontSize: '12px',
+    marginTop: '48px',
+    ...getInlineElementPosition('contact'),
+  },
+  draft_info: {
+    textAlign: 'center',
+    marginTop: '24px',
+    fontSize: '12px',
+    ...getInlineElementPosition('draft_info'),
+  },
+  copyright: {
+    textAlign: 'center',
+    marginTop: '12px',
+    fontSize: '10px',
+    ...getInlineElementPosition('copyright'),
+  },
+  title_page_text: {
+    textAlign: 'center',
+    ...getInlineElementPosition('title_page_text'),
   },
 };
 
@@ -164,6 +288,13 @@ const ELEMENT_INFO: Record<ScriptElementType, { label: string; shortcut: string;
   transition: { label: 'Transition', shortcut: 'Ctrl+6', icon: ArrowRight },
   shot: { label: 'Shot', shortcut: 'Ctrl+7', icon: Type },
   general: { label: 'General', shortcut: 'Ctrl+0', icon: AlignLeft },
+  // Title page elements (auto-detected, no shortcuts)
+  title: { label: 'Title', shortcut: '', icon: Type },
+  author: { label: 'Author', shortcut: '', icon: Users },
+  contact: { label: 'Contact', shortcut: '', icon: AlignLeft },
+  draft_info: { label: 'Draft Info', shortcut: '', icon: AlignLeft },
+  copyright: { label: 'Copyright', shortcut: '', icon: AlignLeft },
+  title_page_text: { label: 'Title Page', shortcut: '', icon: AlignLeft },
 };
 
 // Element cycle order (Tab to advance)
@@ -176,10 +307,37 @@ const ELEMENT_CYCLE: ScriptElementType[] = [
 ];
 
 // Detect element type from content
-function detectElementType(line: string, prevLine?: string, prevType?: ScriptElementType): ScriptElementType {
+function detectElementType(line: string, prevLine?: string, prevType?: ScriptElementType, isTitlePage?: boolean): ScriptElementType {
   const trimmed = line.trim();
 
   if (!trimmed) return 'general';
+
+  // If we're in title page context, check for title page elements
+  if (isTitlePage) {
+    // Check for centered text (significant leading whitespace - at least 15 spaces suggests centering)
+    const leadingSpaces = line.length - line.trimStart().length;
+    const isCentered = leadingSpaces >= 15;
+
+    if (ELEMENT_PATTERNS.copyright.test(trimmed)) return 'copyright';
+    if (ELEMENT_PATTERNS.author.test(trimmed)) return 'author';
+    if (ELEMENT_PATTERNS.draft_info.test(trimmed)) return 'draft_info';
+    if (ELEMENT_PATTERNS.contact.test(trimmed)) return 'contact';
+
+    // Check if this looks like a title (all caps, short, no scene heading prefix)
+    // OR if it's centered and all caps (common for title page titles)
+    if ((trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !ELEMENT_PATTERNS.scene_heading.test(trimmed)) ||
+        (isCentered && trimmed === trimmed.toUpperCase() && !ELEMENT_PATTERNS.scene_heading.test(trimmed))) {
+      return 'title';
+    }
+
+    // If it's centered text, it's likely a title page element (author, etc.)
+    if (isCentered) {
+      return 'title_page_text';
+    }
+
+    // Otherwise it's generic title page text
+    return 'title_page_text';
+  }
 
   // Check for scene heading
   if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) {
@@ -223,10 +381,25 @@ function parseScriptElements(content: string): ScriptElement[] {
 
   let prevType: ScriptElementType | undefined;
 
+  // Determine where the title page ends (first scene heading or after first ~60 lines)
+  let titlePageEnds = -1;
+  for (let i = 0; i < Math.min(lines.length, 60); i++) {
+    const trimmed = lines[i].trim();
+    if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) {
+      titlePageEnds = i;
+      break;
+    }
+  }
+  // If no scene heading found in first 60 lines, assume first page is title page
+  if (titlePageEnds === -1) {
+    titlePageEnds = Math.min(55, lines.length); // ~55 lines = 1 page
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const prevLine = i > 0 ? lines[i - 1] : undefined;
-    const type = detectElementType(line, prevLine, prevType);
+    const isTitlePage = i < titlePageEnds;
+    const type = detectElementType(line, prevLine, prevType, isTitlePage);
 
     elements.push({
       type,
@@ -246,6 +419,10 @@ interface ScriptEditorPanelProps {
   onBack?: () => void;
   onVersionCreated?: (newScript: BacklotScript) => void;
   onScriptUpdated?: () => void;
+  /** Called on every content change for real-time sync with text viewer */
+  onContentChange?: (content: string) => void;
+  /** Called when editing mode changes */
+  onEditingChange?: (isEditing: boolean) => void;
 }
 
 // Industry-standard revision colors
@@ -270,6 +447,8 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   onBack,
   onVersionCreated,
   onScriptUpdated,
+  onContentChange,
+  onEditingChange,
 }) => {
   const { toast } = useToast();
   const { data: currentScript, refetch } = useScript(script.id);
@@ -277,6 +456,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   const createVersion = useCreateScriptVersion();
   const lockVersion = useLockScriptVersion();
   const extractText = useExtractScriptText();
+  const { relocateHighlights } = useScriptHighlightMutations();
 
   // Editor refs
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -290,7 +470,12 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   const [currentElementType, setCurrentElementType] = useState<ScriptElementType>('action');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showFormatted, setShowFormatted] = useState(true);
-  const [viewMode, setViewMode] = useState<'page' | 'inline'>('page'); // Default to page view
+  const [viewMode, setViewMode] = useState<'title' | 'page' | 'inline'>('page'); // Default to page view
+  const [showTitlePageEditForm, setShowTitlePageEditForm] = useState(false);
+
+  // Title page data hooks
+  const { data: titlePageData, isLoading: isTitlePageLoading } = useScriptTitlePage(script?.id || null);
+  const updateTitlePage = useUpdateScriptTitlePage();
 
   // New version modal
   const [showNewVersionModal, setShowNewVersionModal] = useState(false);
@@ -327,6 +512,18 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     }
   }, [editContent, activeScript?.text_content, isEditing]);
 
+  // Notify parent of content changes for real-time sync
+  useEffect(() => {
+    if (isEditing && onContentChange) {
+      onContentChange(editContent);
+    }
+  }, [editContent, isEditing, onContentChange]);
+
+  // Notify parent when editing state changes
+  useEffect(() => {
+    onEditingChange?.(isEditing);
+  }, [isEditing, onEditingChange]);
+
   const handleStartEditing = useCallback(() => {
     if (!canEdit || activeScript?.is_locked) return;
     setEditContent(activeScript?.text_content || '');
@@ -352,9 +549,52 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     return REVISION_COLORS[nextIndex];
   }, [activeScript]);
 
+  // In-place save (same version, same color)
   const handleSave = useCallback(async () => {
     try {
-      // Always create a new revision when saving, with the next color in sequence
+      await updateScriptText.mutateAsync({
+        scriptId: activeScript.id,
+        textContent: editContent,
+        createNewVersion: false, // In-place update
+      });
+      setIsEditing(false);
+      setHasUnsavedChanges(false);
+      await refetch();
+      onScriptUpdated?.();
+
+      // Relocate highlights after save to update positions
+      try {
+        const relocateResult = await relocateHighlights.mutateAsync({ scriptId: activeScript.id });
+        if (relocateResult.relocated > 0 || relocateResult.stale > 0) {
+          toast({
+            title: 'Script Saved',
+            description: `Changes saved. ${relocateResult.relocated > 0 ? `${relocateResult.relocated} highlight(s) relocated.` : ''} ${relocateResult.stale > 0 ? `${relocateResult.stale} highlight(s) need review.` : ''}`.trim(),
+          });
+        } else {
+          toast({
+            title: 'Script Saved',
+            description: 'Changes saved to current revision.',
+          });
+        }
+      } catch {
+        // Relocate failed but save succeeded
+        toast({
+          title: 'Script Saved',
+          description: 'Changes saved to current revision.',
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Save Failed',
+        description: error.message || 'Failed to save script',
+        variant: 'destructive',
+      });
+    }
+  }, [activeScript.id, editContent, updateScriptText, refetch, toast, onScriptUpdated, relocateHighlights]);
+
+  // Save as new revision (new version, new color)
+  const handleSaveAsRevision = useCallback(async () => {
+    try {
       const nextColor = getNextColor();
       const result = await updateScriptText.mutateAsync({
         scriptId: activeScript.id,
@@ -366,7 +606,6 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       setIsEditing(false);
       setHasUnsavedChanges(false);
       await refetch();
-      // Notify parent to refresh script data and switch to new version
       onScriptUpdated?.();
       if (result?.script && onVersionCreated) {
         onVersionCreated(result.script);
@@ -378,11 +617,31 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     } catch (error: any) {
       toast({
         title: 'Save Failed',
-        description: error.message || 'Failed to save script',
+        description: error.message || 'Failed to save as revision',
         variant: 'destructive',
       });
     }
-  }, [activeScript, editContent, updateScriptText, refetch, toast, onScriptUpdated, onVersionCreated, getNextColor]);
+  }, [activeScript.id, activeScript.color_code, editContent, updateScriptText, refetch, toast, onScriptUpdated, onVersionCreated, getNextColor]);
+
+  const handleSaveTitlePage = useCallback(async (data: TitlePageData) => {
+    try {
+      await updateTitlePage.mutateAsync({
+        scriptId: activeScript.id,
+        titlePageData: data,
+      });
+      setShowTitlePageEditForm(false);
+      toast({
+        title: 'Title Page Saved',
+        description: 'Title page has been updated successfully.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Save Failed',
+        description: error.message || 'Failed to save title page',
+        variant: 'destructive',
+      });
+    }
+  }, [activeScript.id, updateTitlePage, toast]);
 
   const handleCreateNewVersion = useCallback(async () => {
     try {
@@ -433,12 +692,12 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
   }, [activeScript, lockVersion, refetch, toast]);
 
   // Extract text from PDF
-  const handleExtractText = useCallback(async () => {
+  const handleExtractText = useCallback(async (force = false) => {
     try {
-      const result = await extractText.mutateAsync(activeScript.id);
+      const result = await extractText.mutateAsync({ scriptId: activeScript.id, force });
       await refetch();
       toast({
-        title: 'Text Extracted',
+        title: force ? 'Text Re-Extracted' : 'Text Extracted',
         description: result.message || `Extracted text from ${result.page_count || 0} pages`,
       });
       // After extraction, start editing with the new content
@@ -688,6 +947,18 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
           {/* View Mode Toggle */}
           <div className="flex items-center border border-muted-gray/30 rounded-md overflow-hidden">
             <Button
+              variant={viewMode === 'title' ? 'secondary' : 'ghost'}
+              size="sm"
+              onClick={() => setViewMode('title')}
+              className={cn(
+                'h-8 rounded-none border-0',
+                viewMode === 'title' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
+              )}
+            >
+              <FileText className="w-4 h-4 mr-1" />
+              Title
+            </Button>
+            <Button
               variant={viewMode === 'page' ? 'secondary' : 'ghost'}
               size="sm"
               onClick={() => setViewMode('page')}
@@ -712,6 +983,19 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               Inline
             </Button>
           </div>
+
+          {/* Edit Title Page Button - in toolbar */}
+          {titlePageData && canEdit && viewMode !== 'title' && !isEditing && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowTitlePageEditForm(true)}
+              className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+            >
+              <Edit className="w-4 h-4 mr-1" />
+              Title Page
+            </Button>
+          )}
 
           {/* Fullscreen Toggle */}
           <Button
@@ -765,6 +1049,33 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
             </Button>
           )}
 
+          {/* Re-extract from PDF Button - when content exists but might be truncated */}
+          {!isEditing && canEdit && !activeScript.is_locked && activeScript.file_url && activeScript.text_content && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleExtractText(true)}
+                    disabled={extractText.isPending}
+                    className="border-muted-gray/30 text-muted-gray hover:text-bone-white"
+                  >
+                    {extractText.isPending ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <FileText className="w-4 h-4 mr-2" />
+                    )}
+                    Re-extract
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>Re-extract text from PDF (use if content is truncated)</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
           {/* Edit/Save Buttons */}
           {isEditing ? (
             <>
@@ -777,10 +1088,11 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                 Cancel
               </Button>
               <Button
+                variant="outline"
                 size="sm"
                 onClick={handleSave}
                 disabled={updateScriptText.isPending || !hasUnsavedChanges}
-                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/10"
               >
                 {updateScriptText.isPending ? (
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -789,6 +1101,28 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                 )}
                 Save
               </Button>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size="sm"
+                      onClick={handleSaveAsRevision}
+                      disabled={updateScriptText.isPending || !hasUnsavedChanges}
+                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                    >
+                      {updateScriptText.isPending ? (
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      ) : (
+                        <GitBranch className="w-4 h-4 mr-2" />
+                      )}
+                      Save as Revision
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Save as new {SCRIPT_COLOR_CODE_LABELS[getNextColor()]} revision</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             </>
           ) : (
             canEdit && !activeScript.is_locked && (
@@ -878,7 +1212,32 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       )}
 
       {/* Editor Content */}
-      {viewMode === 'page' ? (
+      {viewMode === 'title' ? (
+        // Title Page View
+        <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center p-6 bg-muted/5">
+          {isTitlePageLoading ? (
+            <div className="flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-gray" />
+            </div>
+          ) : (
+            <div
+              className="bg-white shadow-xl rounded-sm"
+              style={{
+                width: '612px',
+                height: '792px',
+                minHeight: '792px',
+              }}
+            >
+              <ScriptTitlePage
+                data={titlePageData || null}
+                className="w-full h-full"
+                isEditable={canEdit}
+                onEdit={() => setShowTitlePageEditForm(true)}
+              />
+            </div>
+          )}
+        </div>
+      ) : viewMode === 'page' ? (
         // Page View Mode - give it explicit height so scroll works
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScriptPageView
@@ -897,23 +1256,29 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
           />
         </div>
       ) : (
-        // Inline View Mode
+        // Inline View Mode - constrained to page width to match PDF view
         <ScrollArea className="flex-1">
           <div className="p-6">
             {isEditing ? (
-              <div className="relative">
-                {/* Raw Editor (always present for input) */}
-                <Textarea
-                  ref={editorRef}
-                  value={editContent}
-                  onChange={(e) => {
-                    setEditContent(e.target.value);
-                    updateCurrentElement();
-                  }}
-                  onKeyDown={handleKeyDown}
-                  onClick={updateCurrentElement}
-                  onSelect={updateCurrentElement}
-                  placeholder="Start writing your script...
+              // Page-width container matching ScriptPageView (612px page, 108px + 72px margins = 432px content)
+              <div className="mx-auto" style={{ maxWidth: `${PAGE_WIDTH_PX}px` }}>
+                <div className="relative" style={{
+                  marginLeft: `${MARGIN_LEFT}px`,
+                  marginRight: `${MARGIN_RIGHT}px`,
+                  width: `${CONTENT_WIDTH}px`
+                }}>
+                  {/* Raw Editor (always present for input) */}
+                  <Textarea
+                    ref={editorRef}
+                    value={editContent}
+                    onChange={(e) => {
+                      setEditContent(e.target.value);
+                      updateCurrentElement();
+                    }}
+                    onKeyDown={handleKeyDown}
+                    onClick={updateCurrentElement}
+                    onSelect={updateCurrentElement}
+                    placeholder="Start writing your script...
 
 Use keyboard shortcuts:
   Ctrl+1: Scene Heading (INT./EXT.)
@@ -925,77 +1290,86 @@ Use keyboard shortcuts:
   Ctrl+S: Save
 
 Or Tab to cycle between element types on empty lines."
-                  className={cn(
-                    "min-h-[600px] font-mono text-sm bg-charcoal-black border-muted-gray/30 resize-none",
-                    !showFormatted && "text-bone-white"
-                  )}
-                  style={{
-                    lineHeight: 1.8,
-                    fontFamily: 'Courier New, monospace',
-                    opacity: showFormatted ? 0 : 1,
-                    position: showFormatted ? 'absolute' : 'relative',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    zIndex: showFormatted ? -1 : 1,
-                  }}
-                />
-
-                {/* Formatted Preview (overlay when showFormatted is true) */}
-                {showFormatted && (
-                  <div
-                    className="min-h-[600px] font-mono text-sm border border-muted-gray/30 rounded-md p-4 bg-charcoal-black cursor-text"
-                    onClick={() => editorRef.current?.focus()}
-                  >
-                    {scriptElements.map((element, idx) => {
-                      const style = ELEMENT_STYLES[element.type];
-                      const isEmptyLine = !element.content.trim();
-
-                      return (
-                        <div
-                          key={idx}
-                          className={cn(
-                            "text-bone-white",
-                            isEmptyLine && "h-6"
-                          )}
-                          style={{
-                            ...style,
-                            fontFamily: 'Courier New, monospace',
-                            lineHeight: 1.8,
-                          }}
-                        >
-                          {element.content || '\u00A0'}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            ) : activeScript.text_content ? (
-              // Read-only formatted view
-              <div className="max-w-[800px] mx-auto">
-                {scriptElements.map((element, idx) => {
-                  const style = ELEMENT_STYLES[element.type];
-                  const isEmptyLine = !element.content.trim();
-
-                return (
-                  <div
-                    key={idx}
                     className={cn(
-                      "text-bone-white font-mono text-sm",
-                      isEmptyLine && "h-6"
+                      "min-h-[600px] font-mono text-sm bg-charcoal-black border-muted-gray/30 resize-none",
+                      !showFormatted && "text-bone-white"
                     )}
                     style={{
-                      ...style,
-                      fontFamily: 'Courier New, monospace',
+                      width: '100%',
                       lineHeight: 1.8,
+                      fontFamily: 'Courier New, monospace',
+                      opacity: showFormatted ? 0 : 1,
+                      position: showFormatted ? 'absolute' : 'relative',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      zIndex: showFormatted ? -1 : 1,
                     }}
-                  >
-                    {element.content || '\u00A0'}
-                  </div>
-                );
-              })}
-            </div>
+                  />
+
+                  {/* Formatted Preview (overlay when showFormatted is true) */}
+                  {showFormatted && (
+                    <div
+                      className="min-h-[600px] font-mono text-sm border border-muted-gray/30 rounded-md p-4 bg-charcoal-black cursor-text"
+                      onClick={() => editorRef.current?.focus()}
+                      style={{ width: '100%' }}
+                    >
+                      {scriptElements.map((element, idx) => {
+                        const style = ELEMENT_STYLES[element.type];
+                        const isEmptyLine = !element.content.trim();
+
+                        return (
+                          <div
+                            key={idx}
+                            className={cn(
+                              "text-bone-white",
+                              isEmptyLine && "h-6"
+                            )}
+                            style={{
+                              ...style,
+                              fontFamily: 'Courier New, monospace',
+                              lineHeight: 1.8,
+                            }}
+                          >
+                            {element.content || '\u00A0'}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : activeScript.text_content ? (
+              // Read-only formatted view - page-width container matching ScriptPageView
+              <div className="mx-auto" style={{ maxWidth: `${PAGE_WIDTH_PX}px` }}>
+                <div style={{
+                  marginLeft: `${MARGIN_LEFT}px`,
+                  marginRight: `${MARGIN_RIGHT}px`,
+                  width: `${CONTENT_WIDTH}px`
+                }}>
+                  {scriptElements.map((element, idx) => {
+                    const style = ELEMENT_STYLES[element.type];
+                    const isEmptyLine = !element.content.trim();
+
+                  return (
+                    <div
+                      key={idx}
+                      className={cn(
+                        "text-bone-white font-mono text-sm",
+                        isEmptyLine && "h-6"
+                      )}
+                      style={{
+                        ...style,
+                        fontFamily: 'Courier New, monospace',
+                        lineHeight: 1.8,
+                      }}
+                    >
+                      {element.content || '\u00A0'}
+                    </div>
+                  );
+                })}
+                </div>
+              </div>
           ) : (
             <div className="text-center py-12">
               <FileText className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
@@ -1011,7 +1385,7 @@ Or Tab to cycle between element types on empty lines."
                 {/* Extract text from PDF */}
                 {canEdit && !activeScript.is_locked && activeScript.file_url && (
                   <Button
-                    onClick={handleExtractText}
+                    onClick={() => handleExtractText(false)}
                     disabled={extractText.isPending}
                     className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
                   >
@@ -1136,6 +1510,15 @@ Or Tab to cycle between element types on empty lines."
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Title Page Edit Form */}
+      <TitlePageEditForm
+        open={showTitlePageEditForm}
+        onOpenChange={setShowTitlePageEditForm}
+        initialData={titlePageData || null}
+        onSave={handleSaveTitlePage}
+        isSaving={updateTitlePage.isPending}
+      />
     </div>
   );
 };
