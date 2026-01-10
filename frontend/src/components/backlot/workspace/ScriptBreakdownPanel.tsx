@@ -54,8 +54,12 @@ import {
   Volume2,
   Clapperboard,
   ChevronRight,
+  ChevronDown,
   Loader2,
   AlertCircle,
+  Navigation,
+  Film,
+  Eye,
 } from "lucide-react";
 import {
   useProjectBreakdown,
@@ -82,6 +86,7 @@ interface ScriptBreakdownPanelProps {
   projectId: string;
   canEdit: boolean;
   onSceneClick?: (sceneId: string) => void;
+  onViewHighlight?: (highlightId: string) => void;
 }
 
 // Type icon mapping
@@ -105,65 +110,150 @@ const TYPE_ICONS: Record<BacklotBreakdownItemType, React.ReactNode> = {
   other: <FileText className="w-4 h-4" />,
 };
 
-// Breakdown Item Card
+// Breakdown Item Card - Expandable with full details
 const BreakdownItemCard: React.FC<{
   item: BacklotSceneBreakdownItem;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => void;
-}> = ({ item, canEdit, onEdit, onDelete }) => {
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
+  onViewInScript?: (highlightId: string) => void;
+}> = ({ item, canEdit, onEdit, onDelete, isExpanded = false, onToggleExpand, onViewInScript }) => {
   const color = BREAKDOWN_HIGHLIGHT_COLORS[item.type] || "#999";
   const icon = TYPE_ICONS[item.type] || <FileText className="w-4 h-4" />;
 
   return (
-    <div className="flex items-center gap-3 p-3 bg-charcoal-gray/30 rounded-lg border border-muted-gray/10 hover:border-muted-gray/30 transition-colors">
+    <div className="bg-charcoal-gray/30 rounded-lg border border-muted-gray/10 hover:border-muted-gray/30 transition-colors">
+      {/* Main row - clickable to expand */}
       <div
-        className="w-8 h-8 rounded flex items-center justify-center shrink-0"
-        style={{ backgroundColor: `${color}20`, color }}
+        className="flex items-center gap-3 p-3 cursor-pointer"
+        onClick={onToggleExpand}
       >
-        {icon}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-soft-white truncate">
-            {item.label}
-          </span>
-          {item.quantity > 1 && (
-            <Badge variant="secondary" className="text-xs">
-              x{item.quantity}
-            </Badge>
+        <div
+          className="w-8 h-8 rounded flex items-center justify-center shrink-0"
+          style={{ backgroundColor: `${color}20`, color }}
+        >
+          {icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-soft-white truncate">
+              {item.label}
+            </span>
+            {item.quantity > 1 && (
+              <Badge variant="secondary" className="text-xs">
+                x{item.quantity}
+              </Badge>
+            )}
+          </div>
+          {/* Show truncated notes only when collapsed */}
+          {item.notes && !isExpanded && (
+            <p className="text-xs text-muted-gray truncate mt-0.5">{item.notes}</p>
           )}
         </div>
-        {item.notes && (
-          <p className="text-xs text-muted-gray truncate mt-0.5">{item.notes}</p>
-        )}
-        {item.department && (
-          <Badge
-            variant="outline"
-            className="text-xs mt-1"
-          >
-            {BREAKDOWN_DEPARTMENT_LABELS[item.department]}
-          </Badge>
+
+        {/* Expand indicator */}
+        <ChevronDown
+          className={`w-4 h-4 text-muted-gray transition-transform ${
+            isExpanded ? "rotate-180" : ""
+          }`}
+        />
+
+        {/* Actions menu (stop propagation) */}
+        {canEdit && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+              <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(); }}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-red-400">
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
       </div>
-      {canEdit && (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-              <MoreVertical className="w-4 h-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onEdit}>
-              <Edit className="w-4 h-4 mr-2" />
-              Edit
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDelete} className="text-red-400">
-              <Trash2 className="w-4 h-4 mr-2" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+
+      {/* Expanded detail section */}
+      {isExpanded && (
+        <div className="px-4 pb-4 pt-2 border-t border-muted-gray/10 space-y-3">
+          {/* Full notes */}
+          {item.notes && (
+            <div>
+              <span className="text-xs text-muted-gray">Notes</span>
+              <p className="text-sm text-bone-white mt-1 whitespace-pre-wrap">{item.notes}</p>
+            </div>
+          )}
+
+          {/* Department */}
+          {item.department && (
+            <div>
+              <span className="text-xs text-muted-gray">Department</span>
+              <p className="text-sm text-bone-white mt-1">
+                {BREAKDOWN_DEPARTMENT_LABELS[item.department]}
+              </p>
+            </div>
+          )}
+
+          {/* Quantity */}
+          {item.quantity > 1 && (
+            <div>
+              <span className="text-xs text-muted-gray">Quantity</span>
+              <p className="text-sm text-bone-white mt-1">{item.quantity}</p>
+            </div>
+          )}
+
+          {/* Linked highlights */}
+          {item.highlight_ids && item.highlight_ids.length > 0 && (
+            <div>
+              <span className="text-xs text-muted-gray">Script Highlights</span>
+              <p className="text-sm text-bone-white mt-1">
+                {item.highlight_ids.length} linked highlight{item.highlight_ids.length !== 1 ? 's' : ''}
+              </p>
+            </div>
+          )}
+
+          {/* Quick actions in expanded view */}
+          <div className="flex gap-2 pt-2 border-t border-muted-gray/10 flex-wrap">
+            {/* View in Script button - shown if there are linked highlights */}
+            {item.highlight_ids && item.highlight_ids.length > 0 && onViewInScript && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onViewInScript(item.highlight_ids![0])}
+                className="text-blue-400 border-blue-500/30 hover:bg-blue-500/10"
+              >
+                <Eye className="w-3 h-3 mr-1" />
+                View in Script
+              </Button>
+            )}
+            {canEdit && (
+              <>
+                <Button variant="outline" size="sm" onClick={onEdit}>
+                  <Edit className="w-3 h-3 mr-1" />
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                  onClick={onDelete}
+                >
+                  <Trash2 className="w-3 h-3 mr-1" />
+                  Delete
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -180,6 +270,9 @@ const SceneBreakdownSection: React.FC<{
   onDelete: (item: BacklotSceneBreakdownItem) => void;
   onAddItem: (sceneId: string) => void;
   onSceneClick?: (sceneId: string) => void;
+  expandedItems: Set<string>;
+  onToggleItemExpand: (itemId: string) => void;
+  onViewInScript?: (highlightId: string) => void;
 }> = ({
   scene,
   items,
@@ -190,6 +283,9 @@ const SceneBreakdownSection: React.FC<{
   onDelete,
   onAddItem,
   onSceneClick,
+  expandedItems,
+  onToggleItemExpand,
+  onViewInScript,
 }) => {
   // Group items by type
   const groupedItems = useMemo(() => {
@@ -304,6 +400,9 @@ const SceneBreakdownSection: React.FC<{
                         canEdit={canEdit}
                         onEdit={() => onEdit(item)}
                         onDelete={() => onDelete(item)}
+                        isExpanded={expandedItems.has(item.id)}
+                        onToggleExpand={() => onToggleItemExpand(item.id)}
+                        onViewInScript={onViewInScript}
                       />
                     ))}
                   </div>
@@ -504,6 +603,7 @@ export default function ScriptBreakdownPanel({
   projectId,
   canEdit,
   onSceneClick,
+  onViewHighlight,
 }: ScriptBreakdownPanelProps) {
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
@@ -514,6 +614,10 @@ export default function ScriptBreakdownPanel({
     BacklotBreakdownDepartment | "all"
   >("all");
   const [expandedScenes, setExpandedScenes] = useState<Set<string>>(new Set());
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+
+  // Refs for scene sections (for quick navigation scrolling)
+  const sceneRefs = React.useRef<Map<string, HTMLDivElement>>(new Map());
 
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -601,6 +705,19 @@ export default function ScriptBreakdownPanel({
     });
   };
 
+  // Toggle breakdown item expansion
+  const toggleItemExpand = (itemId: string) => {
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
   // Expand all scenes with items
   const expandAll = () => {
     setExpandedScenes(new Set(Object.keys(groupedByScene)));
@@ -609,6 +726,19 @@ export default function ScriptBreakdownPanel({
   // Collapse all
   const collapseAll = () => {
     setExpandedScenes(new Set());
+  };
+
+  // Navigate to a specific scene
+  const navigateToScene = (sceneId: string) => {
+    // Expand the scene
+    setExpandedScenes((prev) => new Set([...prev, sceneId]));
+    // Scroll to it after a short delay (to allow expansion)
+    setTimeout(() => {
+      const sceneEl = sceneRefs.current.get(sceneId);
+      if (sceneEl) {
+        sceneEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }, 100);
   };
 
   // Handle add item
@@ -642,18 +772,19 @@ export default function ScriptBreakdownPanel({
   };
 
   // Handle PDF export
-  const handleExport = () => {
+  const handleExport = (includeNotes: boolean) => {
     exportProjectBreakdown.mutate(
       {
         typeFilter: typeFilter !== "all" ? typeFilter : undefined,
         departmentFilter:
           departmentFilter !== "all" ? departmentFilter : undefined,
+        includeNotes,
       },
       {
         onSuccess: () => {
           toast({
             title: "PDF Downloaded",
-            description: "Breakdown sheet has been downloaded",
+            description: `Breakdown sheet ${includeNotes ? "with notes" : "without notes"} has been downloaded`,
           });
         },
         onError: (err) => {
@@ -727,6 +858,48 @@ export default function ScriptBreakdownPanel({
         </Card>
       </div>
 
+      {/* Quick Scene Navigation */}
+      {scenes.length > 0 && (
+        <div className="flex items-center gap-3 p-3 bg-charcoal-gray/30 rounded-lg border border-muted-gray/20">
+          <Film className="w-5 h-5 text-accent-yellow" />
+          <span className="text-sm font-medium text-bone-white">Jump to Scene:</span>
+          <Select
+            value=""
+            onValueChange={(sceneId) => {
+              if (sceneId) navigateToScene(sceneId);
+            }}
+          >
+            <SelectTrigger className="w-[280px]">
+              <SelectValue placeholder="Select a scene..." />
+            </SelectTrigger>
+            <SelectContent>
+              {scenes.map((scene) => {
+                const sceneData = groupedByScene[scene.id];
+                const itemCount = sceneData?.items?.length || 0;
+                return (
+                  <SelectItem key={scene.id} value={scene.id}>
+                    <div className="flex items-center justify-between w-full gap-4">
+                      <span className="font-mono font-bold">Sc. {scene.scene_number}</span>
+                      <span className="text-muted-gray truncate max-w-[150px]">
+                        {scene.slugline || 'No slugline'}
+                      </span>
+                      {itemCount > 0 && (
+                        <Badge variant="secondary" className="text-xs ml-auto">
+                          {itemCount}
+                        </Badge>
+                      )}
+                    </div>
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-gray">
+            {scenesWithBreakdown} of {totalScenes} scenes have items
+          </span>
+        </div>
+      )}
+
       {/* Filters & Actions */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
@@ -791,19 +964,33 @@ export default function ScriptBreakdownPanel({
           <Button variant="ghost" size="sm" onClick={collapseAll}>
             Collapse All
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExport}
-            disabled={isExporting || totalItems === 0}
-          >
-            {isExporting ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4 mr-2" />
-            )}
-            Export PDF
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isExporting || totalItems === 0}
+              >
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Export PDF
+                <ChevronDown className="w-3 h-3 ml-1" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleExport(true)}>
+                <FileText className="w-4 h-4 mr-2" />
+                With Notes
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleExport(false)}>
+                <FileText className="w-4 h-4 mr-2" />
+                Without Notes
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 
@@ -821,18 +1008,27 @@ export default function ScriptBreakdownPanel({
             const items = sceneData?.items || [];
 
             return (
-              <SceneBreakdownSection
+              <div
                 key={scene.id}
-                scene={scene}
-                items={items}
-                canEdit={canEdit}
-                expanded={expandedScenes.has(scene.id)}
-                onToggle={() => toggleScene(scene.id)}
-                onEdit={handleEditItem}
-                onDelete={handleDeleteItem}
-                onAddItem={handleAddItem}
-                onSceneClick={onSceneClick}
-              />
+                ref={(el) => {
+                  if (el) sceneRefs.current.set(scene.id, el);
+                }}
+              >
+                <SceneBreakdownSection
+                  scene={scene}
+                  items={items}
+                  canEdit={canEdit}
+                  expanded={expandedScenes.has(scene.id)}
+                  onToggle={() => toggleScene(scene.id)}
+                  onEdit={handleEditItem}
+                  onDelete={handleDeleteItem}
+                  onAddItem={handleAddItem}
+                  onSceneClick={onSceneClick}
+                  expandedItems={expandedItems}
+                  onToggleItemExpand={toggleItemExpand}
+                  onViewInScript={onViewHighlight}
+                />
+              </div>
             );
           })}
         </div>

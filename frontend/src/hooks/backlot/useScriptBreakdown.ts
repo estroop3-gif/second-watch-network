@@ -339,6 +339,9 @@ export function useBreakdownMutations(options: UseBreakdownMutationsOptions) {
         queryKey: ["backlot-breakdown-summary", projectId],
       });
       queryClient.invalidateQueries({ queryKey: ["backlot-scene-breakdown"] });
+      // Also invalidate highlights since deleting a breakdown item also deletes its linked highlight
+      queryClient.invalidateQueries({ queryKey: ["backlot-script-highlights"] });
+      queryClient.invalidateQueries({ queryKey: ["backlot-script-highlight-summary"] });
       onSuccess?.();
     },
     onError: (error: Error) => {
@@ -369,6 +372,7 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
       sceneId?: string;
       typeFilter?: BacklotBreakdownItemType;
       departmentFilter?: BacklotBreakdownDepartment;
+      includeNotes?: boolean;
     }) => {
       if (!projectId) throw new Error("No project selected");
 
@@ -380,6 +384,8 @@ export function useBreakdownPdfExport(options: UseBreakdownPdfExportOptions) {
       if (params?.typeFilter) urlParams.append("type_filter", params.typeFilter);
       if (params?.departmentFilter)
         urlParams.append("department_filter", params.departmentFilter);
+      if (params?.includeNotes !== undefined)
+        urlParams.append("include_notes", String(params.includeNotes));
 
       const url = `${API_BASE}/api/v1/backlot/projects/${projectId}/script/breakdown/pdf${urlParams.toString() ? `?${urlParams.toString()}` : ""}`;
 

@@ -38,11 +38,16 @@ import {
   X,
   StickyNote,
   Plus,
+  List,
+  ChevronDown,
+  ChevronUp,
+  Film,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   BacklotScriptHighlightBreakdown,
   BacklotBreakdownItemType,
+  BacklotHighlightStatus,
   BREAKDOWN_HIGHLIGHT_COLORS,
   BREAKDOWN_ITEM_TYPE_LABELS,
   TitlePageData,
@@ -51,9 +56,13 @@ import {
   SCRIPT_PAGE_NOTE_TYPE_LABELS,
 } from '@/types/backlot';
 import { ScriptTitlePage } from './ScriptTitlePage';
+import ScriptViewerSidebar, { SidebarMode } from './ScriptViewerSidebar';
 
 // Screenplay page constants (industry standard at 72 DPI) - matching ScriptPageView
-const LINES_PER_PAGE = 55;
+// Page has 792px height - 72px top - 72px bottom = 648px for content
+// At 12px font with 1.0 line-height = 12px per line (matches PDF export)
+// Max lines = 648 / 12 = 54 lines per page
+const LINES_PER_PAGE = 54;
 const PAGE_WIDTH_PX = 612; // 8.5" at 72dpi
 const PAGE_HEIGHT_PX = 792; // 11" at 72dpi
 
@@ -71,22 +80,19 @@ const DIALOGUE_RIGHT = 432; // 6" - Dialogue end
 const PAREN_LEFT = 223;    // 3.1" - Parenthetical start
 const PAREN_RIGHT = 403;   // 5.6" - Parenthetical end
 
-// Element types
-type ScriptElementType =
-  | 'scene_heading'
-  | 'action'
-  | 'character'
-  | 'dialogue'
-  | 'parenthetical'
-  | 'transition'
-  | 'general'
-  | 'title'
-  | 'author'
-  | 'contact'
-  | 'draft_info'
-  | 'copyright'
-  | 'title_page_text';
+// Import centralized screenplay formatting
+import {
+  ScriptElementType,
+  ELEMENT_PATTERNS,
+  detectElementType,
+  FORGIVING_CONFIG,
+  parseSceneFromContent,
+  getSceneForOffset,
+  formatSluglineForDisplay,
+  ParsedScene,
+} from '@/utils/scriptFormatting';
 
+// Local interfaces for text viewer (with charOffset for highlights)
 interface ScriptLine {
   type: ScriptElementType;
   content: string;
@@ -100,18 +106,6 @@ interface ScriptPage {
   startLineIndex: number;
   endLineIndex: number;
 }
-
-// Element patterns for detection
-const ELEMENT_PATTERNS = {
-  scene_heading: /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.)[\s\S]*/i,
-  transition: /^(FADE IN:|FADE OUT:|FADE TO:|CUT TO:|DISSOLVE TO:|DISSOLVE:|SMASH CUT TO:|SMASH CUT:|MATCH CUT TO:|MATCH CUT:|JUMP CUT TO:|JUMP CUT:|TIME CUT:|IRIS IN:|IRIS OUT:|WIPE TO:|.+\s+TO:|THE END\.?)[\s\S]*/i,
-  character: /^[A-Z][A-Z0-9\s\-'\.]+(\s*\(V\.O\.\)|\s*\(O\.S\.\)|\s*\(O\.C\.\)|\s*\(CONT'D\))?$/,
-  parenthetical: /^\(.+\)$/,
-  author: /^(written\s+by|screenplay\s+by|teleplay\s+by|story\s+by|by\s*$)/i,
-  draft_info: /^(draft|revision|version|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
-  copyright: /^(©|copyright|\(c\))/i,
-  contact: /(@[\w.-]+\.\w+|\(\d{3}\)\s*\d{3}[-.]?\d{4}|\d{3}[-.]?\d{3}[-.]?\d{4}|agent:|manager:|represented\s+by)/i,
-};
 
 // Element text styling (positioning handled separately)
 const ELEMENT_TEXT_STYLES: Record<ScriptElementType, React.CSSProperties> = {
@@ -158,115 +152,35 @@ function getElementPosition(type: ScriptElementType): { left: number; width: num
   }
 }
 
-// Detect element type using indent-based detection (matches backend output)
-function detectElementType(line: string, prevType?: ScriptElementType, isTitlePage?: boolean): ScriptElementType {
-  const leadingSpaces = line.length - line.trimStart().length;
-  const trimmed = line.trim();
-
-  if (!trimmed) return 'general';
-
-  if (isTitlePage) {
-    const isCentered = leadingSpaces >= 15;
-    if (ELEMENT_PATTERNS.copyright.test(trimmed)) return 'copyright';
-    if (ELEMENT_PATTERNS.author.test(trimmed)) return 'author';
-    if (ELEMENT_PATTERNS.draft_info.test(trimmed)) return 'draft_info';
-    if (ELEMENT_PATTERNS.contact.test(trimmed)) return 'contact';
-    if ((trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !ELEMENT_PATTERNS.scene_heading.test(trimmed)) ||
-        (isCentered && trimmed === trimmed.toUpperCase() && !ELEMENT_PATTERNS.scene_heading.test(trimmed))) {
-      return 'title';
-    }
-    if (isCentered) return 'title_page_text';
-    return 'title_page_text';
-  }
-
-  // RIGHT-ALIGNED TRANSITIONS (35+ chars indent)
-  if (leadingSpaces >= 35) return 'transition';
-
-  // CENTERED CHARACTER NAME (15-30 chars indent, ALL CAPS)
-  if (leadingSpaces >= 15 && leadingSpaces <= 30) {
-    const namePart = trimmed.replace(/\s*\([^)]+\)\s*$/, '');
-    if (namePart === namePart.toUpperCase() && namePart.length > 1 && namePart.length < 50) {
-      return 'character';
-    }
-  }
-
-  // PARENTHETICAL (12-18 chars indent)
-  if (leadingSpaces >= 12 && leadingSpaces <= 18 && trimmed.startsWith('(')) {
-    if (ELEMENT_PATTERNS.parenthetical.test(trimmed)) return 'parenthetical';
-  }
-
-  // DIALOGUE (8-14 chars indent, after character/parenthetical/dialogue)
-  if (leadingSpaces >= 8 && leadingSpaces <= 14) {
-    if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
-      return 'dialogue';
-    }
-  }
-
-  // LEFT-ALIGNED (0-8 chars indent)
-  if (leadingSpaces < 8) {
-    if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
-    if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
-    return 'action';
-  }
-
-  // Fallback pattern matching
-  if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
-  if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
-  if (ELEMENT_PATTERNS.parenthetical.test(trimmed) &&
-      (prevType === 'character' || prevType === 'dialogue')) return 'parenthetical';
-  if (ELEMENT_PATTERNS.character.test(trimmed) && trimmed.length < 50) return 'character';
-  if (prevType === 'character' || prevType === 'parenthetical') return 'dialogue';
-
-  return 'action';
-}
-
-// Check if a line is just a page number (e.g., "1.", "2.", "123.")
-// These are often included in PDF imports and should be filtered out
-// since we render our own page numbers
-function isPageNumberLine(line: string): boolean {
-  const trimmed = line.trim();
-  return /^\d{1,3}\.$/.test(trimmed);
-}
+// Note: detectElementType is now imported from scriptFormatting with FORGIVING_CONFIG
+// for imported content display (uses indent + pattern detection)
 
 // Parse content into lines with types and character offsets
+// Note: Page number filtering is handled by the backend parser during import
 function parseScriptLines(content: string): ScriptLine[] {
   const rawLines = content.split('\n');
   const lines: ScriptLine[] = [];
   let prevType: ScriptElementType | undefined;
   let currentOffset = 0;
-  let skipNextBlankLines = false;
 
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i];
-    const isBlank = !line.trim();
 
-    // Skip standalone page number lines (from PDF imports)
-    // since we render our own page numbers
-    if (isPageNumberLine(line)) {
-      currentOffset += line.length + 1;
-      skipNextBlankLines = true; // Also skip blank lines after page numbers
-      continue;
-    }
+    // Use FORGIVING_CONFIG for imported content (indent + pattern detection)
+    // Pass the full line WITH indentation for detection
+    const type = detectElementType(line, undefined, prevType, false, FORGIVING_CONFIG);
 
-    // Skip blank lines that follow page numbers
-    if (skipNextBlankLines && isBlank) {
-      currentOffset += line.length + 1;
-      continue;
-    }
+    // IMPORTANT: Store trimmed content since positioning is handled by CSS marginLeft
+    // The original line has indentation which would double-indent if we kept it
+    const trimmedContent = line.trim();
 
-    // Stop skipping blank lines once we hit actual content
-    if (!isBlank) {
-      skipNextBlankLines = false;
-    }
-
-    const type = detectElementType(line, prevType, false);
     lines.push({
       type,
-      content: line,
+      content: trimmedContent,
       lineIndex: i,
       charOffset: currentOffset,
     });
-    if (line.trim()) prevType = type;
+    if (trimmedContent) prevType = type;
     currentOffset += line.length + 1; // +1 for newline
   }
 
@@ -328,6 +242,12 @@ function paginateScript(lines: ScriptLine[]): ScriptPage[] {
   }];
 }
 
+// Scene info passed when creating a highlight
+export interface HighlightSceneInfo {
+  sceneNumber: string;
+  slugline: string;
+}
+
 interface ScriptTextViewerProps {
   content: string;
   title: string;
@@ -336,13 +256,34 @@ interface ScriptTextViewerProps {
   highlights?: BacklotScriptHighlightBreakdown[];
   showHighlights?: boolean;
   onHighlightClick?: (highlight: BacklotScriptHighlightBreakdown) => void;
-  onCreateHighlight?: (text: string, startOffset: number, endOffset: number, category: BacklotBreakdownItemType) => void;
+  onCreateHighlight?: (
+    text: string,
+    startOffset: number,
+    endOffset: number,
+    category: BacklotBreakdownItemType,
+    scene?: HighlightSceneInfo,
+    notes?: string,
+    pageNumber?: number
+  ) => void;
   pageNotes?: BacklotScriptPageNote[];
   notesSummary?: ScriptPageNoteSummary[];
   showNotes?: boolean;
   onNoteClick?: (note: BacklotScriptPageNote) => void;
   onAddNote?: (pageNumber: number) => void;
   canEdit?: boolean;
+  // Sidebar props for highlight editing
+  scriptId?: string;
+  dbScenes?: { id: string; scene_number: string; slugline?: string }[];
+  onUpdateHighlight?: (highlightId: string, updates: {
+    category?: BacklotBreakdownItemType;
+    scene_id?: string | null;
+    suggested_label?: string;
+    status?: BacklotHighlightStatus;
+  }) => void;
+  onDeleteHighlight?: (highlightId: string) => void;
+  onViewBreakdownItem?: (breakdownItemId: string) => void;
+  // For scrolling to a specific highlight from other tabs
+  targetHighlightId?: string | null;
 }
 
 // Selection state for highlight creation
@@ -351,13 +292,40 @@ interface TextSelection {
   startOffset: number;
   endOffset: number;
   anchorRect: DOMRect | null;
+  scene: ParsedScene | null; // Auto-detected scene for the selection
 }
 
-// Highlight category picker
-const HIGHLIGHT_CATEGORIES: BacklotBreakdownItemType[] = [
-  'cast', 'background', 'stunt', 'location', 'prop', 'set_dressing',
-  'wardrobe', 'makeup', 'sfx', 'vfx', 'vehicle', 'animal', 'greenery',
-  'special_equipment', 'sound', 'music'
+// Highlight category picker - organized by type
+interface CategoryGroup {
+  label: string;
+  categories: BacklotBreakdownItemType[];
+}
+
+const CATEGORY_GROUPS: CategoryGroup[] = [
+  {
+    label: 'CAST & TALENT',
+    categories: ['cast', 'background', 'stunt'],
+  },
+  {
+    label: 'PROPS & WARDROBE',
+    categories: ['prop', 'wardrobe', 'set_dressing'],
+  },
+  {
+    label: 'EFFECTS & MAKEUP',
+    categories: ['makeup', 'sfx', 'vfx'],
+  },
+  {
+    label: 'LOCATIONS & SETS',
+    categories: ['location', 'greenery'],
+  },
+  {
+    label: 'VEHICLES & ANIMALS',
+    categories: ['vehicle', 'animal', 'special_equipment'],
+  },
+  {
+    label: 'SOUND',
+    categories: ['sound', 'music'],
+  },
 ];
 
 interface HighlightPickerProps {
@@ -367,40 +335,73 @@ interface HighlightPickerProps {
 }
 
 const HighlightPicker: React.FC<HighlightPickerProps> = ({ selection, onSelect, onClose }) => {
+  const sceneDisplay = selection.scene
+    ? `Scene ${selection.scene.sceneNumber}: ${formatSluglineForDisplay(selection.scene.slugline)}`
+    : 'Before first scene';
+
   return (
-    <div className="p-2 bg-charcoal-black border border-muted-gray/30 rounded-lg shadow-xl">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-1.5">
+    <div className="p-3 bg-charcoal-black border border-muted-gray/30 rounded-lg shadow-xl min-w-[300px]">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3 pb-2 border-b border-muted-gray/20">
+        <div className="flex items-center gap-2">
           <Highlighter className="w-4 h-4 text-accent-yellow" />
           <span className="text-sm font-medium text-bone-white">Add Breakdown Item</span>
         </div>
-        <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-gray" onClick={onClose}>
+        <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-gray hover:text-bone-white" onClick={onClose}>
           <X className="w-3 h-3" />
         </Button>
       </div>
-      <div className="text-xs text-muted-gray mb-2 max-w-[200px] truncate">
-        "{selection.text}"
+
+      {/* Selected text preview */}
+      <div className="text-xs mb-2 p-2 bg-muted-gray/10 rounded border border-muted-gray/20">
+        <span className="text-muted-gray">Selected: </span>
+        <span className="text-bone-white font-medium">"{selection.text.length > 40 ? selection.text.slice(0, 40) + '...' : selection.text}"</span>
       </div>
-      <div className="grid grid-cols-4 gap-1">
-        {HIGHLIGHT_CATEGORIES.map((category) => {
-          const color = BREAKDOWN_HIGHLIGHT_COLORS[category] || '#808080';
-          return (
-            <TooltipProvider key={category}>
-              <Tooltip>
-                <TooltipTrigger asChild>
+
+      {/* Detected scene */}
+      <div className="text-xs mb-3 p-2 bg-blue-500/10 rounded border border-blue-500/20">
+        <span className="text-blue-400">Scene: </span>
+        <span className="text-bone-white font-medium truncate block">{sceneDisplay}</span>
+      </div>
+
+      {/* Category groups */}
+      <div className="space-y-2 max-h-[280px] overflow-y-auto">
+        {CATEGORY_GROUPS.map((group) => (
+          <div key={group.label}>
+            <div className="text-[10px] font-semibold text-muted-gray/70 mb-1 tracking-wider">
+              {group.label}
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {group.categories.map((category) => {
+                const color = BREAKDOWN_HIGHLIGHT_COLORS[category] || '#808080';
+                const label = BREAKDOWN_ITEM_TYPE_LABELS[category] || category;
+                return (
                   <button
-                    className="w-8 h-8 rounded border border-muted-gray/30 hover:border-white transition-colors"
-                    style={{ backgroundColor: `${color}60` }}
+                    key={category}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-muted-gray/20 transition-colors group"
                     onClick={() => onSelect(category)}
-                  />
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  {BREAKDOWN_ITEM_TYPE_LABELS[category] || category}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          );
-        })}
+                  >
+                    <div
+                      className="w-4 h-4 rounded-full border-2 flex-shrink-0 group-hover:scale-110 transition-transform"
+                      style={{
+                        backgroundColor: `${color}40`,
+                        borderColor: color,
+                      }}
+                    />
+                    <span className="text-xs text-bone-white group-hover:text-accent-yellow transition-colors truncate">
+                      {label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Helper text */}
+      <div className="mt-3 pt-2 border-t border-muted-gray/20 text-[10px] text-muted-gray/60 text-center">
+        Click a category to create breakdown item in detected scene
       </div>
     </div>
   );
@@ -420,15 +421,25 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   onNoteClick,
   onAddNote,
   canEdit = false,
+  // Sidebar props
+  scriptId,
+  dbScenes = [],
+  onUpdateHighlight,
+  onDeleteHighlight,
+  onViewBreakdownItem,
+  targetHighlightId,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(70); // Start at 70% to fit page on screen
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [selection, setSelection] = useState<TextSelection | null>(null);
-  const [showPicker, setShowPicker] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>('hidden');
+  const [selectedHighlight, setSelectedHighlight] = useState<BacklotScriptHighlightBreakdown | null>(null);
+  const [showScenePanel, setShowScenePanel] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const lineRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   // Parse titlePageData if it's a JSON string (API might return it as string)
   const parsedTitlePageData = useMemo(() => {
@@ -449,6 +460,9 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   // Total is just the content pages (title page is unnumbered and shown separately)
   const totalPages = pages.length;
 
+  // Parse scenes for breakdown integration
+  const scenes = useMemo(() => parseSceneFromContent(content || ''), [content]);
+
   // Navigation handlers
   const goToPage = useCallback((page: number) => {
     const targetPage = Math.max(1, Math.min(page, totalPages));
@@ -456,6 +470,36 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     const pageEl = pageRefs.current.get(targetPage);
     pageEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [totalPages]);
+
+  // Jump to a scene by finding the page it's on
+  const goToScene = useCallback((scene: ParsedScene) => {
+    // Find which page contains this scene's line number
+    const pageWithScene = pages.find(
+      (page) => scene.lineNumber >= page.startLineIndex && scene.lineNumber <= page.endLineIndex
+    );
+    if (pageWithScene) {
+      goToPage(pageWithScene.pageNumber);
+    }
+  }, [pages, goToPage]);
+
+  // Find which page contains a character offset
+  const getPageForCharOffset = useCallback((charOffset: number): number | null => {
+    for (const page of pages) {
+      // Get the first and last line's character offsets for this page
+      if (page.lines.length === 0) continue;
+      const firstLine = page.lines[0];
+      const lastLine = page.lines[page.lines.length - 1];
+      const pageStartOffset = firstLine.charOffset;
+      // End offset is the last line's offset + its content length
+      const pageEndOffset = lastLine.charOffset + lastLine.content.length;
+
+      if (charOffset >= pageStartOffset && charOffset <= pageEndOffset) {
+        return page.pageNumber;
+      }
+    }
+    // If not found, return the last page (selection might be after last char)
+    return pages.length > 0 ? pages[pages.length - 1].pageNumber : null;
+  }, [pages]);
 
   // Zoom handlers
   const zoomIn = () => setZoom(z => Math.min(z + 10, 200));
@@ -485,15 +529,20 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
 
     const windowSelection = window.getSelection();
     if (!windowSelection || windowSelection.isCollapsed) {
-      setSelection(null);
-      setShowPicker(false);
+      // Don't close sidebar if in edit mode
+      if (sidebarMode === 'create') {
+        setSelection(null);
+        setSidebarMode('hidden');
+      }
       return;
     }
 
     const selectedText = windowSelection.toString().trim();
     if (!selectedText || selectedText.length < 2) {
-      setSelection(null);
-      setShowPicker(false);
+      if (sidebarMode === 'create') {
+        setSelection(null);
+        setSidebarMode('hidden');
+      }
       return;
     }
 
@@ -511,29 +560,64 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     const endOffset = startOffset + selectedText.length;
     const rect = range.getBoundingClientRect();
 
+    // Auto-detect which scene this selection belongs to
+    const detectedScene = getSceneForOffset(scenes, startOffset);
+
+    // Auto-detect which page this selection is on
+    const detectedPage = getPageForCharOffset(startOffset);
+
     setSelection({
       text: selectedText,
       startOffset,
       endOffset,
       anchorRect: rect,
+      scene: detectedScene,
+      pageNumber: detectedPage,
     });
-    setShowPicker(true);
-  }, [onCreateHighlight]);
+    setSidebarMode('create');
+    setSelectedHighlight(null);
+  }, [onCreateHighlight, scenes, sidebarMode, getPageForCharOffset]);
 
-  const handleCategorySelect = useCallback((category: BacklotBreakdownItemType) => {
+  const handleCategorySelect = useCallback((category: BacklotBreakdownItemType, notes?: string) => {
     if (selection && onCreateHighlight) {
-      onCreateHighlight(selection.text, selection.startOffset, selection.endOffset, category);
+      // Include scene info if detected
+      const sceneInfo = selection.scene
+        ? {
+            sceneNumber: selection.scene.sceneNumber,
+            slugline: formatSluglineForDisplay(selection.scene.slugline),
+          }
+        : undefined;
+
+      onCreateHighlight(
+        selection.text,
+        selection.startOffset,
+        selection.endOffset,
+        category,
+        sceneInfo,
+        notes,
+        selection.pageNumber || undefined
+      );
       window.getSelection()?.removeAllRanges();
       setSelection(null);
-      setShowPicker(false);
+      setSidebarMode('hidden');
     }
   }, [selection, onCreateHighlight]);
 
-  const handleClosePicker = useCallback(() => {
+  const handleCloseSidebar = useCallback(() => {
     window.getSelection()?.removeAllRanges();
     setSelection(null);
-    setShowPicker(false);
+    setSelectedHighlight(null);
+    setSidebarMode('hidden');
   }, []);
+
+  // Handle clicking on an existing highlight - open edit mode
+  const handleHighlightClickInternal = useCallback((highlight: BacklotScriptHighlightBreakdown) => {
+    setSelectedHighlight(highlight);
+    setSidebarMode('edit');
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
+    onHighlightClick?.(highlight);
+  }, [onHighlightClick]);
 
   // Render text with highlight overlays
   const renderTextWithHighlights = useCallback((
@@ -583,7 +667,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
               backgroundColor: `${highlightColor}40`,
               borderBottom: `2px solid ${highlightColor}`,
             }}
-            onClick={() => onHighlightClick?.(highlight)}
+            onClick={() => handleHighlightClickInternal(highlight)}
           >
             {text.slice(highlightStartInLine, highlightEndInLine)}
           </span>
@@ -618,14 +702,14 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     }
 
     return segments.length > 0 ? segments : (text || '\u00A0');
-  }, [highlights, showHighlights, onHighlightClick]);
+  }, [highlights, showHighlights, handleHighlightClickInternal]);
 
   // Render a single page - matching ScriptPageView exactly
   const renderPage = (page: ScriptPage) => {
     const scaledWidth = (PAGE_WIDTH_PX * zoom) / 100;
     const scaledHeight = (PAGE_HEIGHT_PX * zoom) / 100;
     const fontSize = (12 * zoom) / 100;
-    const lineHeight = 1.5;
+    const lineHeight = 1.0; // Single-spaced (matches PDF export)
 
     return (
       <div
@@ -730,6 +814,23 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [isFullscreen, currentPage, totalPages, goToPage]);
 
+  // Scroll to target highlight when navigating from breakdown tab
+  useEffect(() => {
+    if (!targetHighlightId || highlights.length === 0) return;
+
+    const targetHighlight = highlights.find(h => h.id === targetHighlightId);
+    if (!targetHighlight) return;
+
+    // Find the page containing this highlight
+    const page = getPageForCharOffset(targetHighlight.start_offset);
+    if (page) {
+      goToPage(page);
+      // Also select the highlight to show it in the sidebar
+      setSelectedHighlight(targetHighlight);
+      setSidebarMode('edit');
+    }
+  }, [targetHighlightId, highlights, getPageForCharOffset, goToPage]);
+
   if (!content && !parsedTitlePageData) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-muted-gray">
@@ -823,6 +924,29 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
 
         {/* Right: Zoom and actions */}
         <div className="flex items-center gap-2">
+          {/* Scene list toggle */}
+          {scenes.length > 0 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "text-muted-gray hover:text-accent-yellow",
+                      showScenePanel && "bg-muted-gray/20 text-accent-yellow"
+                    )}
+                    onClick={() => setShowScenePanel(!showScenePanel)}
+                  >
+                    <Film className="w-4 h-4 mr-1" />
+                    {scenes.length} Scenes
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Toggle Scene Navigator</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+
           {/* Add Note button */}
           {showNotes && canEdit && onAddNote && (
             <Button
@@ -892,17 +1016,85 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
         </div>
       </div>
 
-      {/* Page view area */}
-      <ScrollArea className="flex-1">
-        <div className="py-8">
-          {/* Title Page (if present) - no page number per screenplay standard */}
-          {parsedTitlePageData && (
-            <div
-              className="relative bg-white shadow-lg mx-auto mb-8"
-              style={{
-                width: (PAGE_WIDTH_PX * zoom) / 100,
-                height: (PAGE_HEIGHT_PX * zoom) / 100,
-              }}
+      {/* Page view area with optional scene panel */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Scene Navigator Panel */}
+        {showScenePanel && scenes.length > 0 && (
+          <div className="w-64 flex-shrink-0 bg-charcoal-black/80 border-r border-muted-gray/20 overflow-y-auto">
+            <div className="p-3 border-b border-muted-gray/20 sticky top-0 bg-charcoal-black/95 z-10">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Film className="w-4 h-4 text-accent-yellow" />
+                  <span className="text-sm font-medium text-bone-white">Scenes</span>
+                </div>
+                <Badge variant="outline" className="text-xs">
+                  {scenes.length}
+                </Badge>
+              </div>
+            </div>
+            <div className="p-2">
+              {scenes.map((scene, idx) => {
+                // Determine which page this scene is on
+                const pageWithScene = pages.find(
+                  (page) => scene.lineNumber >= page.startLineIndex && scene.lineNumber <= page.endLineIndex
+                );
+                const isCurrentPage = pageWithScene?.pageNumber === currentPage;
+
+                // Count highlights in this scene
+                const sceneHighlights = highlights.filter(h =>
+                  h.start_offset >= scene.startOffset && h.start_offset < scene.endOffset
+                );
+
+                return (
+                  <button
+                    key={idx}
+                    onClick={() => goToScene(scene)}
+                    className={cn(
+                      "w-full text-left p-2 rounded mb-1 transition-colors group",
+                      isCurrentPage
+                        ? "bg-accent-yellow/20 border border-accent-yellow/40"
+                        : "hover:bg-muted-gray/20 border border-transparent"
+                    )}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={cn(
+                        "text-xs font-bold",
+                        isCurrentPage ? "text-accent-yellow" : "text-bone-white"
+                      )}>
+                        Scene {scene.sceneNumber}
+                      </span>
+                      {sceneHighlights.length > 0 && (
+                        <Badge variant="outline" className="text-[10px] px-1 py-0">
+                          {sceneHighlights.length}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-gray truncate group-hover:text-bone-white/70">
+                      {formatSluglineForDisplay(scene.slugline)}
+                    </div>
+                    {pageWithScene && (
+                      <div className="text-[10px] text-muted-gray/60 mt-1">
+                        Page {pageWithScene.pageNumber}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Script pages */}
+        <ScrollArea className="flex-1">
+          <div className="py-8">
+            {/* Title Page (if present) - no page number per screenplay standard */}
+            {parsedTitlePageData && (
+              <div
+                className="relative bg-white shadow-lg mx-auto mb-8"
+                style={{
+                  width: (PAGE_WIDTH_PX * zoom) / 100,
+                  height: (PAGE_HEIGHT_PX * zoom) / 100,
+                }}
             >
               <ScriptTitlePage
                 data={parsedTitlePageData}
@@ -914,25 +1106,33 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
 
           {/* Script pages */}
           {pages.map((page) => renderPage(page))}
-        </div>
-      </ScrollArea>
+          </div>
+        </ScrollArea>
 
-      {/* Highlight Creation Popover */}
-      {showPicker && selection && selection.anchorRect && (
-        <div
-          className="fixed z-50"
-          style={{
-            left: selection.anchorRect.left + selection.anchorRect.width / 2 - 120,
-            top: selection.anchorRect.bottom + 8,
-          }}
-        >
-          <HighlightPicker
-            selection={selection}
-            onSelect={handleCategorySelect}
-            onClose={handleClosePicker}
-          />
-        </div>
-      )}
+        {/* Context-Aware Sidebar for highlight creation/editing */}
+        <ScriptViewerSidebar
+          mode={sidebarMode}
+          selection={selection}
+          onCategorySelect={handleCategorySelect}
+          onCancel={handleCloseSidebar}
+          highlight={selectedHighlight}
+          scenes={dbScenes.map(s => ({
+            id: s.id,
+            scene_number: s.scene_number,
+            slugline: s.slugline,
+          }))}
+          onUpdateHighlight={selectedHighlight && onUpdateHighlight ? (updates) => {
+            onUpdateHighlight(selectedHighlight.id, updates);
+            handleCloseSidebar(); // Close sidebar after update to refresh highlight state
+          } : undefined}
+          onDeleteHighlight={selectedHighlight && onDeleteHighlight ? () => {
+            onDeleteHighlight(selectedHighlight.id);
+            handleCloseSidebar();
+          } : undefined}
+          onViewBreakdown={onViewBreakdownItem}
+          onClose={handleCloseSidebar}
+        />
+      </div>
 
       {/* Notes Panel */}
       {showNotes && pageNotes.length > 0 && (

@@ -31,6 +31,7 @@ import {
   SceneFilters,
   ScriptPageNoteFilters,
   ScriptPageNoteSummary,
+  TitlePageData,
 } from '@/types/backlot';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -1463,24 +1464,28 @@ export function useUpdateScriptText() {
 
 /**
  * Extract text from a script's PDF for editing
+ * @param force - If true, forces re-extraction even if text already exists
  */
 export function useExtractScriptText() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (scriptId: string) => {
+    mutationFn: async ({ scriptId, force = false }: { scriptId: string; force?: boolean }) => {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
 
-      const response = await fetch(
-        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/extract-text`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
+      // Build URL with optional force parameter
+      let url = `${API_BASE}/api/v1/backlot/scripts/${scriptId}/extract-text`;
+      if (force) {
+        url += '?force=true';
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -1492,6 +1497,87 @@ export function useExtractScriptText() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-script'] });
+    },
+  });
+}
+
+// =============================================================================
+// SCRIPT TITLE PAGE
+// =============================================================================
+
+/**
+ * Get title page data for a script
+ */
+export function useScriptTitlePage(scriptId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-script-title-page', scriptId],
+    queryFn: async () => {
+      if (!scriptId) return null;
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/title-page`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to fetch title page data');
+      }
+
+      const result = await response.json();
+      return result.title_page_data as TitlePageData | null;
+    },
+    enabled: !!scriptId,
+  });
+}
+
+/**
+ * Update title page data for a script
+ */
+export function useUpdateScriptTitlePage() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      scriptId,
+      titlePageData,
+    }: {
+      scriptId: string;
+      titlePageData: TitlePageData;
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/title-page`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(titlePageData),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update title page');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-title-page', variables.scriptId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script', variables.scriptId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
     },
   });
 }
@@ -1733,12 +1819,14 @@ export function useScriptHighlightMutations() {
       scene_id,
       category,
       suggested_label,
+      status,
     }: {
       scriptId: string;
       highlightId: string;
       scene_id?: string;
       category?: string;
       suggested_label?: string;
+      status?: string;
     }) => {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
@@ -1747,6 +1835,7 @@ export function useScriptHighlightMutations() {
       if (scene_id !== undefined) body.scene_id = scene_id;
       if (category !== undefined) body.category = category;
       if (suggested_label !== undefined) body.suggested_label = suggested_label;
+      if (status !== undefined) body.status = status;
 
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/${highlightId}`,
@@ -1775,12 +1864,42 @@ export function useScriptHighlightMutations() {
     },
   });
 
+  const relocateHighlights = useMutation({
+    mutationFn: async ({ scriptId }: { scriptId: string }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/scripts/${scriptId}/highlights/relocate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to relocate highlights');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlights'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-script-highlight-summary'] });
+    },
+  });
+
   return {
     createHighlight,
     confirmHighlight,
     rejectHighlight,
     deleteHighlight,
     updateHighlight,
+    relocateHighlights,
   };
 }
 

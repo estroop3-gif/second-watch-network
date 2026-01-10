@@ -12465,6 +12465,10 @@ async def delete_breakdown_item(
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
                 raise HTTPException(status_code=403, detail="You don't have permission to delete breakdown items")
 
+        # Delete any highlights that are linked to this breakdown item
+        client.table("backlot_script_highlight_breakdowns").delete().eq("breakdown_item_id", item_id).execute()
+
+        # Delete the breakdown item
         client.table("backlot_scene_breakdown_items").delete().eq("id", item_id).execute()
         return {"success": True, "message": "Breakdown item deleted"}
 
@@ -13367,14 +13371,20 @@ async def update_script_page_note(
         # Convert Cognito ID to profile ID
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Get note and verify ownership/permissions
-        note_result = client.table("backlot_script_page_notes").select("*, backlot_scripts(project_id)").eq("id", note_id).eq("script_id", script_id).single().execute()
+        # Get note
+        note_result = client.table("backlot_script_page_notes").select("*").eq("id", note_id).eq("script_id", script_id).single().execute()
 
         if not note_result.data:
             raise HTTPException(status_code=404, detail="Note not found")
 
         note_data = note_result.data
-        project_id = note_data["backlot_scripts"]["project_id"]
+
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
         is_author = note_data["author_user_id"] == profile_id
 
         # Check if user can edit (author or editor role)
@@ -13569,10 +13579,11 @@ async def toggle_note_resolved(
 class ScriptHighlightInput(BaseModel):
     """Input for creating a script highlight"""
     scene_id: Optional[str] = None
-    page_number: int
+    page_number: Optional[int] = None  # Optional for text-based viewer
     start_offset: int
     end_offset: int
-    highlighted_text: str
+    highlighted_text: Optional[str] = None  # The selected text
+    text: Optional[str] = None  # Alias for highlighted_text (from text viewer)
     rect_x: Optional[float] = None
     rect_y: Optional[float] = None
     rect_width: Optional[float] = None
@@ -13580,6 +13591,15 @@ class ScriptHighlightInput(BaseModel):
     category: str  # breakdown item type
     color: Optional[str] = None
     suggested_label: Optional[str] = None
+    status: Optional[str] = None  # 'pending' or 'confirmed'
+    # Scene detection from text-based viewer (used to find scene_id)
+    scene_number: Optional[str] = None
+    scene_slugline: Optional[str] = None
+
+    @property
+    def get_highlighted_text(self) -> str:
+        """Get the highlighted text from either field"""
+        return self.highlighted_text or self.text or ""
 
 
 class ScriptHighlightUpdate(BaseModel):
@@ -13774,11 +13794,47 @@ async def create_script_highlight(
         }
         color = input.color or default_colors.get(input.category, "#808080")
 
-        # Determine scene_id from page number if not provided
+        # Get the highlighted text (supports both 'highlighted_text' and 'text' fields)
+        highlighted_text = input.get_highlighted_text
+        if not highlighted_text:
+            raise HTTPException(status_code=400, detail="Missing highlighted text")
+
+        # Determine scene_id from scene_number, page number, or mapping
         scene_id = input.scene_id
         print(f"DEBUG: Input scene_id from frontend: {scene_id}")
         print(f"DEBUG: Input page_number: {input.page_number}")
-        if not scene_id:
+        print(f"DEBUG: Input scene_number: {input.scene_number}")
+        print(f"DEBUG: Input scene_slugline: {input.scene_slugline}")
+
+        if not scene_id and input.scene_number:
+            # Try to find scene by scene_number (from text-based viewer scene detection)
+            scene_by_number = client.table("backlot_scenes").select(
+                "id"
+            ).eq("project_id", project_id).eq("scene_number", input.scene_number).execute()
+
+            if scene_by_number.data:
+                scene_id = scene_by_number.data[0]["id"]
+                print(f"DEBUG: Found scene_id from scene_number: {scene_id}")
+            elif input.scene_number == "PROLOGUE":
+                # Create a PROLOGUE scene for content before the first scene
+                prologue_data = {
+                    "id": str(uuid.uuid4()),
+                    "project_id": project_id,
+                    "scene_number": "PROLOGUE",
+                    "slugline": "PROLOGUE / COLD OPEN",
+                    "sequence": 0,  # Before all other scenes
+                    "int_ext": None,
+                    "time_of_day": None,
+                    "page_length": 1,
+                    "coverage_status": "not_scheduled",
+                    "is_omitted": False,
+                }
+                prologue_result = client.table("backlot_scenes").insert(prologue_data).execute()
+                if prologue_result.data:
+                    scene_id = prologue_result.data[0]["id"]
+                    print(f"DEBUG: Created PROLOGUE scene with id: {scene_id}")
+
+        if not scene_id and input.page_number:
             # Try to find scene from page mapping table first
             mapping_result = client.table("backlot_scene_page_mappings").select(
                 "scene_id"
@@ -13786,7 +13842,7 @@ async def create_script_highlight(
 
             if mapping_result.data:
                 scene_id = mapping_result.data[0]["scene_id"]
-            else:
+            elif input.page_number:
                 # Fallback: find scene based on page_start or calculate from page_length
                 scenes_result = client.table("backlot_scenes").select(
                     "id, page_start, page_end, page_length, sequence"
@@ -13847,7 +13903,7 @@ async def create_script_highlight(
 
         highlight_id = str(uuid.uuid4())
         breakdown_item_ids = []
-        label = input.suggested_label or input.highlighted_text
+        label = input.suggested_label or highlighted_text
 
         # Get script file URL to scan for all occurrences
         script_file_result = client.table("backlot_scripts").select("file_url").eq("id", script_id).single().execute()
@@ -13930,10 +13986,11 @@ async def create_script_highlight(
             except Exception as e:
                 # If PDF scanning fails, fall back to just the current page
                 print(f"PDF scanning failed: {e}")
-                pages_with_text.add(input.page_number)
+                if input.page_number:
+                    pages_with_text.add(input.page_number)
 
-        # If no pages found, at least use the current page
-        if not pages_with_text:
+        # If no pages found, at least use the current page if available
+        if not pages_with_text and input.page_number:
             pages_with_text.add(input.page_number)
 
         print(f"DEBUG: Total pages with text found: {len(pages_with_text)} - pages: {sorted(pages_with_text)}")
@@ -14028,10 +14085,10 @@ async def create_script_highlight(
             "id": highlight_id,
             "script_id": script_id,
             "scene_id": scene_id,
-            "page_number": input.page_number,
+            "page_number": input.page_number,  # May be None for text-based viewer
             "start_offset": input.start_offset,
             "end_offset": input.end_offset,
-            "highlighted_text": input.highlighted_text,
+            "highlighted_text": highlighted_text,
             "rect_x": input.rect_x,
             "rect_y": input.rect_y,
             "rect_width": input.rect_width,
@@ -14040,7 +14097,7 @@ async def create_script_highlight(
             "color": color,
             "suggested_label": label,
             "breakdown_item_id": breakdown_item_id,
-            "status": "confirmed" if breakdown_item_id else "pending",
+            "status": input.status if input.status else ("confirmed" if breakdown_item_id else "pending"),
             "created_by_user_id": profile_id,
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
@@ -14079,15 +14136,20 @@ async def update_script_highlight(
         # Convert Cognito ID to profile ID
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Verify highlight exists and access
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "*, backlot_scripts(project_id)"
+            "id, script_id, category, scene_id, suggested_label, breakdown_item_id"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
             raise HTTPException(status_code=404, detail="Highlight not found")
 
-        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -14103,7 +14165,8 @@ async def update_script_highlight(
         # Build update data
         update_data = {"updated_at": datetime.utcnow().isoformat()}
         if input.scene_id is not None:
-            update_data["scene_id"] = input.scene_id
+            # Convert empty string to None for proper null handling
+            update_data["scene_id"] = input.scene_id if input.scene_id else None
         if input.category is not None:
             update_data["category"] = input.category
         if input.color is not None:
@@ -14116,6 +14179,16 @@ async def update_script_highlight(
             update_data["status"] = input.status
 
         result = client.table("backlot_script_highlight_breakdowns").update(update_data).eq("id", highlight_id).execute()
+
+        # If category changed and there's a linked breakdown item, update it too
+        highlight_data = highlight_result.data
+        breakdown_item_id = highlight_data.get("breakdown_item_id")
+        if input.category is not None and breakdown_item_id:
+            breakdown_update = {"type": input.category, "updated_at": datetime.utcnow().isoformat()}
+            # Also update label if provided
+            if input.suggested_label is not None:
+                breakdown_update["label"] = input.suggested_label
+            client.table("backlot_scene_breakdown_items").update(breakdown_update).eq("id", breakdown_item_id).execute()
 
         return {"success": True, "highlight": result.data[0] if result.data else None}
 
@@ -14142,16 +14215,22 @@ async def confirm_script_highlight(
         # Convert Cognito ID to profile ID
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Verify highlight exists and access
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "*, backlot_scripts(project_id)"
+            "*"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
             raise HTTPException(status_code=404, detail="Highlight not found")
 
         highlight = highlight_result.data
-        project_id = highlight["backlot_scripts"]["project_id"]
+
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -14165,12 +14244,16 @@ async def confirm_script_highlight(
 
         # Create breakdown item if requested and doesn't exist
         if create_breakdown and not breakdown_item_id and highlight.get("scene_id"):
+            # Create notes with page reference if available
+            page_num = highlight.get('page_number')
+            notes = f"Found on page {page_num}" if page_num else "Created from script highlight"
+
             breakdown_data = {
                 "id": str(uuid.uuid4()),
                 "scene_id": highlight["scene_id"],
                 "type": highlight["category"],
                 "label": highlight.get("suggested_label") or highlight["highlighted_text"],
-                "notes": f"Created from script highlight on page {highlight['page_number']}",
+                "notes": notes,
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
             }
@@ -14216,15 +14299,20 @@ async def reject_script_highlight(
         # Convert Cognito ID to profile ID
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Verify highlight exists and access
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "*, backlot_scripts(project_id)"
+            "id, script_id"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
             raise HTTPException(status_code=404, detail="Highlight not found")
 
-        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -14330,15 +14418,20 @@ async def get_highlight_notes(
     try:
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Verify highlight exists and user has access
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "id, backlot_scripts(project_id)"
+            "id"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
             raise HTTPException(status_code=404, detail="Highlight not found")
 
-        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -14377,15 +14470,20 @@ async def create_highlight_note(
     try:
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Verify highlight exists and user has access
+        # Verify highlight exists
         highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-            "id, backlot_scripts(project_id)"
+            "id"
         ).eq("id", highlight_id).eq("script_id", script_id).single().execute()
 
         if not highlight_result.data:
             raise HTTPException(status_code=404, detail="Highlight not found")
 
-        project_id = highlight_result.data["backlot_scripts"]["project_id"]
+        # Get project_id from script
+        script_result = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = script_result.data["project_id"]
 
         # Check project membership
         project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
@@ -14452,18 +14550,21 @@ async def delete_highlight_note(
         if not is_author:
             # Check if user is admin of the project
             highlight_result = client.table("backlot_script_highlight_breakdowns").select(
-                "backlot_scripts(project_id)"
+                "script_id"
             ).eq("id", highlight_id).single().execute()
 
             if highlight_result.data:
-                project_id = highlight_result.data["backlot_scripts"]["project_id"]
-                project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-                is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
+                # Get project_id from script
+                script_result = client.table("backlot_scripts").select("project_id").eq("id", highlight_result.data["script_id"]).single().execute()
+                if script_result.data:
+                    project_id = script_result.data["project_id"]
+                    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+                    is_owner = project_response.data and str(project_response.data[0]["owner_id"]) == str(profile_id)
 
-                if not is_owner:
-                    member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
-                    if not member_response.data or member_response.data[0]["role"] != "admin":
-                        raise HTTPException(status_code=403, detail="Only note author or project admin can delete notes")
+                    if not is_owner:
+                        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", str(profile_id)).execute()
+                        if not member_response.data or member_response.data[0]["role"] != "admin":
+                            raise HTTPException(status_code=403, detail="Only note author or project admin can delete notes")
 
         # Delete note
         client.table("backlot_highlight_notes").delete().eq("id", note_id).execute()
@@ -26179,7 +26280,15 @@ async def get_project_breakdown(
             "id, scene_number, slugline, page_length, int_ext, time_of_day, sequence"
         ).eq("project_id", project_id).order("sequence").execute()
 
-        scenes = {s["id"]: s for s in (scenes_response.data or [])}
+        # Deduplicate scenes by scene_number (keep first by sequence order)
+        scenes_raw = scenes_response.data or []
+        seen_scene_numbers = set()
+        scenes = {}
+        for s in scenes_raw:
+            scene_num = s.get("scene_number")
+            if scene_num not in seen_scene_numbers:
+                seen_scene_numbers.add(scene_num)
+                scenes[s["id"]] = s
         scene_ids = list(scenes.keys())
 
         if not scene_ids:
@@ -26298,9 +26407,15 @@ async def get_project_breakdown_summary(
             raise HTTPException(status_code=403, detail="Access denied - not a project member")
 
     try:
-        # Get scene IDs
-        scenes_response = client.table("backlot_scenes").select("id").eq("project_id", project_id).execute()
-        scene_ids = [s["id"] for s in (scenes_response.data or [])]
+        # Get scenes and deduplicate by scene_number
+        scenes_response = client.table("backlot_scenes").select("id, scene_number").eq("project_id", project_id).order("sequence").execute()
+        seen_scene_numbers = set()
+        scene_ids = []
+        for s in (scenes_response.data or []):
+            scene_num = s.get("scene_number")
+            if scene_num not in seen_scene_numbers:
+                seen_scene_numbers.add(scene_num)
+                scene_ids.append(s["id"])
 
         if not scene_ids:
             return {
@@ -26354,6 +26469,7 @@ async def export_project_breakdown_pdf(
     scene_id: Optional[str] = None,
     type_filter: Optional[str] = None,
     department_filter: Optional[str] = None,
+    include_notes: bool = Query(True, description="Whether to include notes in the PDF"),
     authorization: str = Header(None)
 ):
     """Export project breakdown as PDF
@@ -26421,6 +26537,7 @@ async def export_project_breakdown_pdf(
                 project_title=project_title,
                 scene=scene,
                 breakdown_items=breakdown_items,
+                include_notes=include_notes,
             )
 
             filename = f"breakdown_scene_{scene.get('scene_number', scene_id)}.pdf"
@@ -26477,6 +26594,7 @@ async def export_project_breakdown_pdf(
             scenes_with_breakdown=scenes_with_breakdown,
             summary_stats=summary_stats,
             filter_info=filter_info,
+            include_notes=include_notes,
         )
 
         filename = f"breakdown_{project_title.replace(' ', '_')}.pdf"

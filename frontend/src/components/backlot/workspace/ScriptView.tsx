@@ -107,6 +107,8 @@ import {
   BacklotSceneCoverageStatus,
   BacklotIntExt,
   BacklotBreakdownItemType,
+  BacklotHighlightStatus,
+  BacklotScriptHighlightBreakdown,
   SCENE_COVERAGE_STATUS_LABELS,
   SCENE_COVERAGE_STATUS_COLORS,
   SCRIPT_COLOR_CODE_HEX,
@@ -479,6 +481,9 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const [showHighlights, setShowHighlights] = useState(true);
   const [showNotes, setShowNotes] = useState(false);
 
+  // Target highlight for navigation from breakdown tab
+  const [targetHighlightId, setTargetHighlightId] = useState<string | null>(null);
+
   const { scripts, isLoading: scriptsLoading, refetch: refetchScripts } = useScripts({ projectId });
   const { scenes, isLoading: scenesLoading, createScene } = useScenes({
     projectId,
@@ -571,19 +576,48 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   // Fetch highlights for the active script
   const { data: scriptHighlights = [] } = useScriptHighlights(activeScript?.id || null);
 
-  // Highlight mutations for creating highlights in text view
-  const { createHighlight } = useScriptHighlightMutations();
+  // Highlight mutations for creating/updating/deleting highlights in text view
+  const { createHighlight, updateHighlight, deleteHighlight } = useScriptHighlightMutations();
 
   // Fetch page notes for the active script
   const { data: pageNotes = [] } = useScriptPageNotes({ scriptId: activeScript?.id || null });
   const { data: notesSummary = [] } = useScriptPageNotesSummary(activeScript?.id || null);
+
+  // Handler for clicking on a highlight - shows info or navigates to breakdown
+  const handleHighlightClick = (highlight: BacklotScriptHighlightBreakdown) => {
+    // If the highlight is confirmed and has a breakdown item, go to breakdown tab
+    if (highlight.status === 'confirmed' && highlight.breakdown_item_id) {
+      setActiveTab('breakdown');
+      toast({
+        title: 'Navigated to Breakdown',
+        description: `Viewing "${highlight.highlighted_text}" in breakdown tab`,
+      });
+    } else {
+      // Show a toast with highlight info
+      toast({
+        title: `${highlight.status === 'pending' ? 'Pending' : 'Confirmed'} Highlight`,
+        description: `"${highlight.highlighted_text}" - ${highlight.category}`,
+      });
+    }
+  };
+
+  // Handler for navigating to a highlight from breakdown tab
+  const handleViewHighlightFromBreakdown = (highlightId: string) => {
+    setTargetHighlightId(highlightId);
+    setActiveTab('viewer');
+    // Clear the target after a short delay to allow scrolling
+    setTimeout(() => setTargetHighlightId(null), 2000);
+  };
 
   // Handler for creating highlights from text selection in ScriptTextViewer
   const handleCreateHighlight = async (
     text: string,
     startOffset: number,
     endOffset: number,
-    category: BacklotBreakdownItemType
+    category: BacklotBreakdownItemType,
+    scene?: { sceneNumber: string; slugline: string },
+    notes?: string,
+    pageNumber?: number
   ) => {
     if (!activeScript?.id) return;
 
@@ -595,15 +629,76 @@ const ScriptView: React.FC<ScriptViewProps> = ({
         end_offset: endOffset,
         category,
         status: 'pending',
+        // Scene detection from text-based viewer
+        scene_number: scene?.sceneNumber,
+        scene_slugline: scene?.slugline,
+        // Page number from text-based viewer
+        page_number: pageNumber,
+        // Optional notes
+        notes,
       });
+      const sceneInfo = scene ? ` in Scene ${scene.sceneNumber}` : '';
+      const pageInfo = pageNumber ? ` on page ${pageNumber}` : '';
       toast({
         title: 'Highlight Created',
-        description: `Added "${text}" as ${category}`,
+        description: `Added "${text}" as ${category}${sceneInfo}${pageInfo}`,
       });
     } catch (error) {
+      console.error('Failed to create highlight:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to create highlight';
       toast({
-        title: 'Error',
-        description: 'Failed to create highlight',
+        title: 'Error Creating Highlight',
+        description: errorMessage,
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handler for updating highlights
+  const handleUpdateHighlight = async (
+    highlightId: string,
+    updates: { category?: BacklotBreakdownItemType; scene_id?: string | null; suggested_label?: string; status?: BacklotHighlightStatus }
+  ) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await updateHighlight.mutateAsync({
+        scriptId: activeScript.id,
+        highlightId,
+        ...updates,
+      });
+      toast({
+        title: 'Highlight Updated',
+        description: 'Changes saved successfully',
+      });
+    } catch (error) {
+      console.error('Failed to update highlight:', error);
+      toast({
+        title: 'Error Updating Highlight',
+        description: error instanceof Error ? error.message : 'Failed to update highlight',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handler for deleting highlights
+  const handleDeleteHighlight = async (highlightId: string) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await deleteHighlight.mutateAsync({
+        scriptId: activeScript.id,
+        highlightId,
+      });
+      toast({
+        title: 'Highlight Deleted',
+        description: 'Highlight has been removed',
+      });
+    } catch (error) {
+      console.error('Failed to delete highlight:', error);
+      toast({
+        title: 'Error Deleting Highlight',
+        description: error instanceof Error ? error.message : 'Failed to delete highlight',
         variant: 'destructive',
       });
     }
@@ -869,7 +964,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           {pdfTextViewMode === 'pdf' ? (
             // PDF View
             activeScript?.file_url ? (
-              <div className="h-[calc(100vh-340px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
                 <ScriptPDFViewer script={activeScript} />
               </div>
             ) : (
@@ -891,7 +986,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             )
           ) : (
             // Text View - shows live content from editor if available, otherwise saved content
-            <div className="h-[calc(100vh-340px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
               <ScriptTextViewer
                 content={liveEditContent ?? activeScript?.text_content ?? ''}
                 title={activeScript?.title || 'Script'}
@@ -899,11 +994,26 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 titlePageData={activeScript?.title_page_data}
                 highlights={scriptHighlights}
                 showHighlights={showHighlights}
+                onHighlightClick={handleHighlightClick}
                 onCreateHighlight={canEdit ? handleCreateHighlight : undefined}
                 pageNotes={pageNotes}
                 notesSummary={notesSummary}
                 showNotes={showNotes}
                 canEdit={canEdit}
+                // Sidebar props for editing highlights
+                scriptId={activeScript?.id}
+                dbScenes={scenes.map(s => ({
+                  id: s.id,
+                  scene_number: s.scene_number,
+                  slugline: s.slugline,
+                }))}
+                onUpdateHighlight={canEdit ? handleUpdateHighlight : undefined}
+                onDeleteHighlight={canEdit ? handleDeleteHighlight : undefined}
+                onViewBreakdownItem={(breakdownItemId) => {
+                  setActiveTab('breakdown');
+                  // Could add state to highlight/scroll to specific item
+                }}
+                targetHighlightId={targetHighlightId}
               />
             </div>
           )}
@@ -1068,6 +1178,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 // The viewer will handle highlighting
               }
             }}
+            onViewHighlight={handleViewHighlightFromBreakdown}
           />
         </TabsContent>
 
