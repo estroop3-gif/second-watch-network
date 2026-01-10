@@ -11,6 +11,7 @@ import json
 
 from app.core.database import execute_query, execute_single, execute_insert, execute_update
 from app.core.logging import get_logger
+from app.core.storage import storage_client
 
 logger = get_logger(__name__)
 
@@ -1110,7 +1111,7 @@ def get_transaction(transaction_id: str) -> Optional[Dict[str, Any]]:
     )
 
     if tx:
-        # Get items with full asset details and scanner names
+        # Get items with full asset details, scanner names, and equipment package info
         items = execute_query(
             """
             SELECT ti.*,
@@ -1124,13 +1125,19 @@ def get_transaction(transaction_id: str) -> Optional[Dict[str, Any]]:
                    ki.name as kit_name,
                    ki.internal_id as kit_internal_id,
                    scanner_out.display_name as scanned_out_by_name,
-                   scanner_in.display_name as scanned_in_by_name
+                   scanner_in.display_name as scanned_in_by_name,
+                   a.parent_asset_id,
+                   parent_asset.name as parent_asset_name,
+                   parent_asset.internal_id as parent_asset_internal_id,
+                   COALESCE(a.is_equipment_package, false) as is_equipment_package,
+                   (SELECT COUNT(*) FROM gear_assets acc WHERE acc.parent_asset_id = a.id) as accessory_count
             FROM gear_transaction_items ti
             LEFT JOIN gear_assets a ON a.id = ti.asset_id
             LEFT JOIN gear_categories cat ON cat.id = a.category_id
             LEFT JOIN gear_kit_instances ki ON ki.id = ti.kit_instance_id
             LEFT JOIN profiles scanner_out ON scanner_out.id = ti.scanned_out_by
             LEFT JOIN profiles scanner_in ON scanner_in.id = ti.scanned_in_by
+            LEFT JOIN gear_assets parent_asset ON parent_asset.id = a.parent_asset_id
             WHERE ti.transaction_id = :tx_id
             ORDER BY ti.created_at
             """,
@@ -1464,12 +1471,14 @@ def create_incident(
             organization_id, incident_type, transaction_id, condition_report_id,
             asset_id, kit_instance_id, damage_tier, damage_description,
             last_seen_transaction_id, last_custodian_user_id, last_seen_at,
-            reported_by_user_id, responsible_party_user_id, photos, notes
+            reported_by_user_id, responsible_party_user_id, photos, notes,
+            reported_stage
         ) VALUES (
             :org_id, :type, :tx_id, :report_id,
             :asset_id, :kit_id, :damage_tier, :damage_desc,
             :last_tx_id, :last_custodian, :last_seen,
-            :reported_by, :responsible_party, :photos, :notes
+            :reported_by, :responsible_party, :photos, :notes,
+            :reported_stage
         )
         RETURNING *
         """,
@@ -1488,7 +1497,8 @@ def create_incident(
             "reported_by": reported_by,
             "responsible_party": kwargs.get("responsible_party_user_id"),
             "photos": json.dumps(kwargs.get("photos", [])),
-            "notes": kwargs.get("notes")
+            "notes": kwargs.get("notes"),
+            "reported_stage": kwargs.get("reported_stage", "checkout")
         }
     )
 
@@ -1610,6 +1620,445 @@ def resolve_incident(
         )
 
     return incident
+
+
+def get_incident_detail(incident_id: str) -> Dict[str, Any]:
+    """
+    Get comprehensive incident details including:
+    - Incident record with asset info
+    - Transaction history (last 30 days for this asset)
+    - Linked repair tickets
+    - Strikes issued from this incident
+    - Purchase requests linked to this incident
+    - Recommended custodian (last checkout before incident)
+    """
+    # Get the incident with enriched data
+    incident = execute_single(
+        """
+        SELECT i.*,
+               a.name as asset_name,
+               a.internal_id as asset_internal_id,
+               a.category_id,
+               a.purchase_price as asset_value,
+               a.status as asset_status,
+               c.name as category_name,
+               p.display_name as reported_by_name,
+               p2.display_name as assigned_to_name,
+               p3.display_name as resolved_by_name,
+               p4.display_name as write_off_by_name
+        FROM gear_incidents i
+        LEFT JOIN gear_assets a ON a.id = i.asset_id
+        LEFT JOIN gear_categories c ON c.id = a.category_id
+        LEFT JOIN profiles p ON p.id = i.reported_by_user_id
+        LEFT JOIN profiles p2 ON p2.id = i.assigned_to_user_id
+        LEFT JOIN profiles p3 ON p3.id = i.resolved_by_user_id
+        LEFT JOIN profiles p4 ON p4.id = i.write_off_by_user_id
+        WHERE i.id = :incident_id
+        """,
+        {"incident_id": incident_id}
+    )
+
+    if not incident:
+        return None
+
+    # Convert photo S3 keys to signed URLs
+    if incident.get("photos"):
+        bucket = storage_client.from_("backlot-files")
+        photo_urls = []
+        for photo_key in incident["photos"]:
+            if photo_key:
+                signed_result = bucket.create_signed_url(photo_key, expires_in=3600)
+                if signed_result.get("signedUrl"):
+                    photo_urls.append(signed_result["signedUrl"])
+        incident["photos"] = photo_urls
+
+    # Get transaction history for the asset (last 30 days before incident)
+    transactions = []
+    if incident.get("asset_id"):
+        raw_transactions = execute_query(
+            """
+            SELECT t.id as transaction_id,
+                   t.primary_custodian_user_id as user_id,
+                   p.display_name as user_name,
+                   t.handed_off_at as checkout_at,
+                   COALESCE(ti.scanned_in_at, t.returned_at) as checkin_at,
+                   ti.condition_in as return_condition,
+                   ti.notes as return_notes
+            FROM gear_transactions t
+            JOIN gear_transaction_items ti ON ti.transaction_id = t.id
+            LEFT JOIN profiles p ON p.id = t.primary_custodian_user_id
+            WHERE ti.asset_id = :asset_id
+              AND t.handed_off_at > (
+                  COALESCE(CAST(:reported_at AS TIMESTAMPTZ), NOW()) - INTERVAL '30 days'
+              )
+              AND t.handed_off_at <= COALESCE(CAST(:reported_at AS TIMESTAMPTZ), NOW())
+            ORDER BY t.handed_off_at DESC
+            LIMIT 20
+            """,
+            {
+                "asset_id": incident["asset_id"],
+                "reported_at": incident.get("reported_at")
+            }
+        )
+        # Add is_recommended flag (first one is recommended)
+        for i, t in enumerate(raw_transactions):
+            transactions.append({
+                **t,
+                "is_recommended": i == 0
+            })
+
+    # Get linked repair tickets
+    repairs = execute_query(
+        """
+        SELECT r.*, p.display_name as created_by_name
+        FROM gear_repair_tickets r
+        LEFT JOIN profiles p ON p.id = r.created_by_user_id
+        WHERE r.incident_id = :incident_id
+        ORDER BY r.created_at DESC
+        """,
+        {"incident_id": incident_id}
+    )
+
+    # Get strikes from this incident
+    strikes = execute_query(
+        """
+        SELECT s.*, p.display_name as user_name, p2.display_name as issued_by_name
+        FROM gear_incident_strikes gis
+        JOIN gear_strikes s ON s.id = gis.strike_id
+        LEFT JOIN profiles p ON p.id = s.user_id
+        LEFT JOIN profiles p2 ON p2.id = s.issued_by_user_id
+        WHERE gis.incident_id = :incident_id
+        ORDER BY s.created_at DESC
+        """,
+        {"incident_id": incident_id}
+    )
+
+    # Get purchase requests linked to this incident
+    purchase_requests = execute_query(
+        """
+        SELECT pr.*, p.display_name as requested_by_name, p2.display_name as approved_by_name
+        FROM gear_purchase_requests pr
+        LEFT JOIN profiles p ON p.id = pr.requested_by_user_id
+        LEFT JOIN profiles p2 ON p2.id = pr.approved_by_user_id
+        WHERE pr.incident_id = :incident_id
+        ORDER BY pr.created_at DESC
+        """,
+        {"incident_id": incident_id}
+    )
+
+    # Find recommended custodian (first in transaction list = most recent before incident)
+    recommended_custodian = None
+    if transactions:
+        recommended_custodian = {
+            "user_id": transactions[0]["user_id"],
+            "user_name": transactions[0]["user_name"],
+            "checkout_at": transactions[0]["checkout_at"],
+            "checkin_at": transactions[0]["checkin_at"],
+            "return_condition": transactions[0]["return_condition"],
+            "transaction_id": transactions[0]["transaction_id"],
+            "is_recommended": True
+        }
+
+    return {
+        "incident": incident,
+        "asset": {
+            "id": incident.get("asset_id"),
+            "name": incident.get("asset_name"),
+            "internal_id": incident.get("asset_internal_id"),
+            "category_name": incident.get("category_name"),
+            "value": incident.get("asset_value"),
+            "status": incident.get("asset_status")
+        } if incident.get("asset_id") else None,
+        "transactions": transactions,
+        "repairs": repairs,
+        "strikes": strikes,
+        "purchase_requests": purchase_requests,
+        "recommended_custodian": recommended_custodian
+    }
+
+
+def get_asset_custodians(
+    asset_id: str,
+    days: int = 30,
+    before_date: str = None
+) -> List[Dict[str, Any]]:
+    """Get list of users who had custody of asset in last N days."""
+    custodians = execute_query(
+        """
+        SELECT DISTINCT ON (t.primary_custodian_user_id)
+               t.primary_custodian_user_id as user_id,
+               p.display_name as user_name,
+               t.handed_off_at as checkout_at,
+               ti.scanned_in_at as checkin_at,
+               t.id as transaction_id,
+               ti.condition_in as return_condition,
+               ti.notes as return_notes
+        FROM gear_transactions t
+        JOIN gear_transaction_items ti ON ti.transaction_id = t.id
+        LEFT JOIN profiles p ON p.id = t.primary_custodian_user_id
+        WHERE ti.asset_id = :asset_id
+          AND t.handed_off_at > (
+              COALESCE(CAST(:before_date AS TIMESTAMPTZ), NOW()) - INTERVAL '1 day' * :days
+          )
+          AND t.handed_off_at <= COALESCE(CAST(:before_date AS TIMESTAMPTZ), NOW())
+        ORDER BY t.primary_custodian_user_id, t.handed_off_at DESC
+        """,
+        {
+            "asset_id": asset_id,
+            "days": days,
+            "before_date": before_date
+        }
+    )
+
+    # Mark the first one (most recent) as recommended
+    result = []
+    for i, c in enumerate(custodians):
+        result.append({
+            **c,
+            "is_recommended": i == 0
+        })
+
+    return result
+
+
+def check_incident_management_permission(org_id: str, user_id: str) -> bool:
+    """Check if user has permission to manage incidents based on org settings."""
+    # Get org settings
+    settings = execute_single(
+        """
+        SELECT incident_management_roles
+        FROM gear_organization_settings
+        WHERE organization_id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    allowed_roles = ["owner", "admin", "manager"]  # default
+    if settings and settings.get("incident_management_roles"):
+        allowed_roles = settings["incident_management_roles"]
+
+    # Check user's role in org
+    member = execute_single(
+        """
+        SELECT role FROM organization_members
+        WHERE organization_id = :org_id AND user_id = :user_id
+        """,
+        {"org_id": org_id, "user_id": user_id}
+    )
+
+    if member and member.get("role") in allowed_roles:
+        return True
+
+    return False
+
+
+def update_incident_status(
+    incident_id: str,
+    status: str,
+    resolution_type: str = None,
+    updated_by: str = None
+) -> Dict[str, Any]:
+    """Update incident status with optional resolution type."""
+    params = {
+        "incident_id": incident_id,
+        "status": status
+    }
+
+    extra_sets = []
+    if status == "resolved":
+        extra_sets.append("resolved_at = NOW()")
+        extra_sets.append("resolved_by_user_id = :updated_by")
+        params["updated_by"] = updated_by
+        if resolution_type:
+            extra_sets.append("resolution_type = :resolution_type")
+            params["resolution_type"] = resolution_type
+
+    extra_sql = ""
+    if extra_sets:
+        extra_sql = ", " + ", ".join(extra_sets)
+
+    incident = execute_insert(
+        f"""
+        UPDATE gear_incidents
+        SET status = :status{extra_sql}, updated_at = NOW()
+        WHERE id = :incident_id
+        RETURNING *
+        """,
+        params
+    )
+
+    if incident:
+        _log_audit(
+            incident["organization_id"], "update_status", "incident", incident_id,
+            updated_by, changes={"status": status, "resolution_type": resolution_type}
+        )
+
+    return incident
+
+
+def write_off_incident_asset(
+    incident_id: str,
+    write_off_by: str,
+    write_off_value: float,
+    write_off_reason: str,
+    create_purchase_request: bool = False,
+    purchase_request_title: str = None,
+    purchase_request_description: str = None,
+    estimated_replacement_cost: float = None
+) -> Dict[str, Any]:
+    """
+    Write off an asset from an incident.
+    Updates incident with write-off details and optionally creates a purchase request.
+    """
+    # Get the incident first
+    incident = get_incident(incident_id)
+    if not incident:
+        return None
+
+    # Update incident with write-off details
+    updated_incident = execute_insert(
+        """
+        UPDATE gear_incidents
+        SET write_off_value = :value,
+            write_off_reason = :reason,
+            write_off_at = NOW(),
+            write_off_by_user_id = :user_id,
+            status = 'replacement',
+            resolution_type = 'written_off',
+            updated_at = NOW()
+        WHERE id = :incident_id
+        RETURNING *
+        """,
+        {
+            "incident_id": incident_id,
+            "value": write_off_value,
+            "reason": write_off_reason,
+            "user_id": write_off_by
+        }
+    )
+
+    # Update asset status to retired/written_off
+    if incident.get("asset_id"):
+        execute_insert(
+            """
+            UPDATE gear_assets
+            SET status = 'retired', updated_at = NOW()
+            WHERE id = :asset_id
+            RETURNING id
+            """,
+            {"asset_id": incident["asset_id"]}
+        )
+
+    # Create purchase request if requested
+    purchase_request = None
+    if create_purchase_request:
+        org_id = incident["organization_id"]
+
+        # Generate request number
+        request_number = execute_single(
+            "SELECT generate_purchase_request_number(:org_id) as num",
+            {"org_id": org_id}
+        )["num"]
+
+        title = purchase_request_title or f"Replace {incident.get('asset_name', 'asset')} (written off)"
+
+        purchase_request = execute_insert(
+            """
+            INSERT INTO gear_purchase_requests (
+                organization_id, incident_id, original_asset_id,
+                request_number, title, description,
+                estimated_cost, requested_by_user_id
+            ) VALUES (
+                :org_id, :incident_id, :asset_id,
+                :request_number, :title, :description,
+                :estimated_cost, :user_id
+            )
+            RETURNING *
+            """,
+            {
+                "org_id": org_id,
+                "incident_id": incident_id,
+                "asset_id": incident.get("asset_id"),
+                "request_number": request_number,
+                "title": title,
+                "description": purchase_request_description,
+                "estimated_cost": estimated_replacement_cost,
+                "user_id": write_off_by
+            }
+        )
+
+    _log_audit(
+        incident["organization_id"], "write_off", "incident", incident_id,
+        write_off_by, changes={
+            "write_off_value": write_off_value,
+            "write_off_reason": write_off_reason,
+            "purchase_request_created": create_purchase_request
+        }
+    )
+
+    return {
+        "incident": updated_incident,
+        "purchase_request": purchase_request
+    }
+
+
+def assign_incident_strike(
+    incident_id: str,
+    user_id: str,
+    issued_by: str,
+    severity: str,
+    reason: str,
+    notes: str = None
+) -> Dict[str, Any]:
+    """
+    Assign a strike to a user for an incident.
+    Creates the strike and links it to the incident.
+    """
+    # Get the incident first
+    incident = get_incident(incident_id)
+    if not incident:
+        return None
+
+    org_id = incident["organization_id"]
+
+    # Get strike points based on severity
+    points_map = {
+        "warning": 1,
+        "minor": 1,
+        "major": 2,
+        "critical": 3
+    }
+    points = points_map.get(severity, 1)
+
+    # Create the strike
+    strike = create_strike(
+        org_id,
+        user_id,
+        issued_by,
+        severity,
+        reason,
+        incident_id=incident_id,
+        points=points,
+        notes=notes,
+        is_auto_applied=False
+    )
+
+    if strike:
+        # Link strike to incident
+        execute_insert(
+            """
+            INSERT INTO gear_incident_strikes (incident_id, strike_id)
+            VALUES (:incident_id, :strike_id)
+            ON CONFLICT (incident_id, strike_id) DO NOTHING
+            RETURNING id
+            """,
+            {"incident_id": incident_id, "strike_id": strike["id"]}
+        )
+
+    return {
+        "strike": strike,
+        "incident_id": incident_id
+    }
 
 
 def _apply_incident_strike(incident: Dict[str, Any]) -> None:
@@ -2042,6 +2491,7 @@ def _update_user_escalation_status(org_id: str, user_id: str) -> None:
             END,
             requires_manager_review = :escalated,
             updated_at = NOW()
+        RETURNING *
         """,
         {
             "org_id": org_id,
@@ -2084,6 +2534,70 @@ def void_strike(
         )
 
     return strike
+
+
+def get_users_with_strikes(
+    org_id: str,
+    include_clear: bool = False,
+    escalated_only: bool = False
+) -> List[Dict[str, Any]]:
+    """Get aggregated strike data grouped by user.
+
+    Returns users who have strikes (or escalation status records),
+    with their strike summaries and latest strike info.
+    """
+    conditions = ["ues.organization_id = :org_id"]
+    params = {"org_id": org_id}
+
+    if not include_clear:
+        # Only users with at least one strike ever
+        conditions.append("ues.total_strikes > 0")
+
+    if escalated_only:
+        conditions.append("ues.is_escalated = TRUE")
+
+    where_clause = " AND ".join(conditions)
+
+    # Get users with their escalation status and latest strike
+    users = execute_query(
+        f"""
+        SELECT
+            ues.user_id,
+            p.display_name as user_name,
+            p.avatar_url,
+            p.email,
+            ues.total_strikes as active_strikes,
+            ues.active_strike_points as active_points,
+            ues.is_escalated,
+            ues.requires_manager_review,
+            ues.review_decision,
+            ues.escalated_at,
+            -- Subquery for lifetime strikes count
+            (SELECT COUNT(*) FROM gear_strikes gs
+             WHERE gs.organization_id = ues.organization_id
+               AND gs.user_id = ues.user_id) as lifetime_strikes,
+            -- Subquery for latest strike
+            (SELECT json_build_object(
+                'severity', gs.severity,
+                'reason', gs.reason,
+                'issued_at', gs.issued_at
+            ) FROM gear_strikes gs
+            WHERE gs.organization_id = ues.organization_id
+              AND gs.user_id = ues.user_id
+            ORDER BY gs.issued_at DESC
+            LIMIT 1) as latest_strike
+        FROM gear_user_escalation_status ues
+        JOIN profiles p ON p.id = ues.user_id
+        WHERE {where_clause}
+        ORDER BY
+            ues.is_escalated DESC,
+            ues.active_strike_points DESC,
+            ues.total_strikes DESC
+        """,
+        params
+    )
+
+    return users
 
 
 # ============================================================================
@@ -2468,6 +2982,36 @@ def get_transaction_for_checkin(
     tx["items_pending_return"] = [i for i in items if not i.get("scanned_in_at")]
     tx["items_already_returned"] = [i for i in items if i.get("scanned_in_at")]
 
+    # Get existing UNRESOLVED damage incidents for this transaction
+    # Only show incidents that haven't been resolved yet (in incidents/repairs tab)
+    # Include incidents either:
+    # 1. Directly linked to this transaction (check-in damage)
+    # 2. For assets in this transaction with no transaction_id (checkout damage)
+    # Use a subquery to get asset IDs from transaction items to avoid type casting issues
+    incidents = execute_query(
+        """
+        SELECT DISTINCT i.id, i.asset_id, i.damage_tier, i.damage_description, i.photos,
+               i.reported_at, i.reported_stage, i.status,
+               a.name as asset_name, a.internal_id as asset_internal_id,
+               CASE WHEN rt.id IS NOT NULL THEN TRUE ELSE FALSE END as has_repair_ticket
+        FROM gear_incidents i
+        LEFT JOIN gear_assets a ON a.id = i.asset_id
+        LEFT JOIN gear_repair_tickets rt ON rt.incident_id = i.id
+        WHERE i.incident_type = 'damage'
+          AND i.status != 'resolved'
+          AND (
+              i.transaction_id = :tx_id
+              OR (
+                  i.asset_id IN (SELECT ti.asset_id FROM gear_transaction_items ti WHERE ti.transaction_id = :tx_id AND ti.asset_id IS NOT NULL)
+                  AND i.transaction_id IS NULL
+              )
+          )
+        ORDER BY i.reported_at DESC
+        """,
+        {"tx_id": tx_id}
+    )
+    tx["existing_incidents"] = incidents
+
     return tx
 
 
@@ -2640,12 +3184,12 @@ def create_late_return_incident(
         """
         INSERT INTO gear_incidents (
             organization_id, transaction_id, incident_type,
-            reported_by_user_id, assigned_user_id, status,
-            description, severity
+            reported_by_user_id, assigned_to_user_id, status,
+            damage_description, notes, reported_stage
         ) VALUES (
             :org_id, :tx_id, 'late_return',
             :reported_by, :custodian_id, 'open',
-            :description, 'low'
+            :description, :notes, 'checkin'
         )
         RETURNING *
         """,
@@ -2654,7 +3198,8 @@ def create_late_return_incident(
             "tx_id": transaction_id,
             "reported_by": reported_by,
             "custodian_id": tx.get("primary_custodian_user_id"),
-            "description": description
+            "description": description,
+            "notes": f"Late by {late_days} days"
         }
     )
 
@@ -2690,16 +3235,19 @@ def process_damage_on_checkin(
     photos: List[str],
     reported_by: str,
     transaction_id: str,
-    responsible_party_user_id: str = None
+    responsible_party_user_id: str = None,
+    create_repair_ticket: bool = False,
+    reported_stage: str = "checkin"
 ) -> Dict[str, Any]:
     """
     Process damage found during check-in.
-    - Creates incident
-    - Creates repair ticket for functional/unsafe
-    - Updates asset status based on tier
+    - Always creates incident
+    - Creates repair ticket only if create_repair_ticket=True
+    - Updates asset status to 'under_repair' if repair ticket is created
 
     Args:
         responsible_party_user_id: The custodian/renter responsible for the damage
+        create_repair_ticket: User's choice to create a repair ticket
 
     Returns: {incident, repair_ticket, asset_status}
     """
@@ -2720,7 +3268,7 @@ def process_damage_on_checkin(
     if not asset:
         return result
 
-    # Determine severity and asset status based on damage tier
+    # Determine severity based on damage tier
     severity_map = {
         "cosmetic": "low",
         "functional": "medium",
@@ -2728,10 +3276,8 @@ def process_damage_on_checkin(
     }
     severity = severity_map.get(damage_tier, "medium")
 
-    # Determine new asset status
-    if damage_tier == "cosmetic":
-        new_status = "available"  # Cosmetic damage doesn't prevent use
-    elif damage_tier in ("functional", "unsafe"):
+    # Determine new asset status - only mark as under_repair if repair ticket is being created
+    if create_repair_ticket:
         new_status = "under_repair"
     else:
         new_status = "available"
@@ -2743,12 +3289,12 @@ def process_damage_on_checkin(
         """
         INSERT INTO gear_incidents (
             organization_id, asset_id, transaction_id, incident_type,
-            reported_by_user_id, responsible_party_user_id, status, description, severity,
-            damage_tier, photos
+            reported_by_user_id, responsible_party_user_id, status,
+            damage_tier, damage_description, photos, reported_stage
         ) VALUES (
             :org_id, :asset_id, :tx_id, 'damage',
-            :reported_by, :responsible_party, 'open', :description, :severity,
-            :damage_tier, :photos
+            :reported_by, :responsible_party, 'open',
+            :damage_tier, :description, :photos, :reported_stage
         )
         RETURNING *
         """,
@@ -2759,27 +3305,28 @@ def process_damage_on_checkin(
             "reported_by": reported_by,
             "responsible_party": responsible_party_user_id,
             "description": description,
-            "severity": severity,
             "damage_tier": damage_tier,
-            "photos": photos
+            "photos": json.dumps(photos) if isinstance(photos, list) else photos,
+            "reported_stage": reported_stage
         }
     )
     result["incident"] = incident
 
-    # Create repair ticket for functional/unsafe damage
-    if damage_tier in ("functional", "unsafe"):
-        repair_priority = "urgent" if damage_tier == "unsafe" else "normal"
+    # Create repair ticket if user requested it
+    if create_repair_ticket:
+        # Set priority based on damage tier
+        repair_priority = "urgent" if damage_tier == "unsafe" else ("high" if damage_tier == "functional" else "normal")
 
         repair_ticket = execute_insert(
             """
             INSERT INTO gear_repair_tickets (
                 organization_id, asset_id, incident_id,
-                reported_by_user_id, status, priority,
-                description, photos
+                created_by_user_id, status, priority,
+                title, description
             ) VALUES (
                 :org_id, :asset_id, :incident_id,
                 :reported_by, 'open', :priority,
-                :description, :photos
+                :title, :description
             )
             RETURNING *
             """,
@@ -2789,8 +3336,8 @@ def process_damage_on_checkin(
                 "incident_id": incident["id"] if incident else None,
                 "reported_by": reported_by,
                 "priority": repair_priority,
-                "description": f"Damage found on check-in: {description}",
-                "photos": photos
+                "title": f"Damage: {asset['name']} ({damage_tier})",
+                "description": f"Damage found on check-in: {description}"
             }
         )
         result["repair_ticket"] = repair_ticket
@@ -3301,3 +3848,73 @@ def convert_to_equipment_package(
     )
 
     return get_asset(asset_id, include_accessories=True)
+
+
+# ============================================================================
+# PURCHASE REQUESTS
+# ============================================================================
+
+def generate_purchase_request_number(org_id: str) -> str:
+    """Generate a unique purchase request number for an organization."""
+    result = execute_single(
+        "SELECT generate_purchase_request_number(:org_id) as num",
+        {"org_id": org_id}
+    )
+    return result["num"] if result else "PR-00001"
+
+
+def list_purchase_requests(
+    org_id: str,
+    status: str = None,
+    incident_id: str = None,
+    limit: int = 50,
+    offset: int = 0
+) -> List[Dict[str, Any]]:
+    """List purchase requests for an organization."""
+    conditions = ["pr.organization_id = :org_id"]
+    params = {"org_id": org_id, "limit": limit, "offset": offset}
+
+    if status:
+        conditions.append("pr.status = :status")
+        params["status"] = status
+
+    if incident_id:
+        conditions.append("pr.incident_id = :incident_id")
+        params["incident_id"] = incident_id
+
+    where_clause = " AND ".join(conditions)
+
+    return execute_query(f"""
+        SELECT
+            pr.*,
+            req.display_name as requested_by_name,
+            appr.display_name as approved_by_name,
+            a.name as original_asset_name
+        FROM gear_purchase_requests pr
+        LEFT JOIN profiles req ON pr.requested_by_user_id = req.id
+        LEFT JOIN profiles appr ON pr.approved_by_user_id = appr.id
+        LEFT JOIN gear_assets a ON pr.original_asset_id = a.id
+        WHERE {where_clause}
+        ORDER BY pr.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """, params)
+
+
+def get_purchase_request(request_id: str) -> Optional[Dict[str, Any]]:
+    """Get a single purchase request by ID."""
+    return execute_single("""
+        SELECT
+            pr.*,
+            req.display_name as requested_by_name,
+            appr.display_name as approved_by_name,
+            recv.display_name as received_by_name,
+            a.name as original_asset_name,
+            na.name as new_asset_name
+        FROM gear_purchase_requests pr
+        LEFT JOIN profiles req ON pr.requested_by_user_id = req.id
+        LEFT JOIN profiles appr ON pr.approved_by_user_id = appr.id
+        LEFT JOIN profiles recv ON pr.received_by_user_id = recv.id
+        LEFT JOIN gear_assets a ON pr.original_asset_id = a.id
+        LEFT JOIN gear_assets na ON pr.new_asset_id = na.id
+        WHERE pr.id = :id
+    """, {"id": request_id})

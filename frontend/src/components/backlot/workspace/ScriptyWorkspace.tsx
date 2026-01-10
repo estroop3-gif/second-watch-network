@@ -50,7 +50,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useScripts, useScenes, useProductionDays } from '@/hooks/backlot';
+import { useScripts, useScenes, useProductionDays, ContinuityExportSceneMappings } from '@/hooks/backlot';
 import { BacklotScript, BacklotScene } from '@/types/backlot';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -69,6 +69,11 @@ import ContinuityPhotosPanel from './scripty/ContinuityPhotosPanel';
 interface ScriptyWorkspaceProps {
   projectId: string;
   canEdit: boolean;
+  continuityPdfUrl?: string;  // Override PDF from continuity exports
+  sceneMappings?: ContinuityExportSceneMappings;  // Scene-to-page mappings from export
+  // Annotation support (for Continuity tab)
+  continuityExportId?: string;  // If provided, enables annotation tools
+  showAnnotationToolbar?: boolean;
 }
 
 type RightPanelTab = 'takes' | 'notes' | 'photos';
@@ -76,6 +81,10 @@ type RightPanelTab = 'takes' | 'notes' | 'photos';
 const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
   projectId,
   canEdit,
+  continuityPdfUrl,
+  sceneMappings,
+  continuityExportId,
+  showAnnotationToolbar = false,
 }) => {
   const { toast } = useToast();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -83,6 +92,7 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [selectedDayId, setSelectedDayId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [scrollY, setScrollY] = useState<number | undefined>(undefined);
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>('takes');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isBrowserFullscreen, setIsBrowserFullscreen] = useState(false);
@@ -488,8 +498,19 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
                         data-testid={`scene-item-${scene.scene_number}`}
                         onClick={() => {
                           setSelectedSceneId(scene.id);
+                          // Use scene mappings from continuity export if available
+                          if (sceneMappings?.scenes) {
+                            const mapping = sceneMappings.scenes.find(m => m.scene_id === scene.id);
+                            if (mapping) {
+                              setCurrentPage(mapping.page_number);
+                              setScrollY(mapping.scroll_y);
+                              return;
+                            }
+                          }
+                          // Fallback to scene's page_start (no scroll_y available)
                           if (scene.page_start) {
                             setCurrentPage(scene.page_start);
+                            setScrollY(undefined);
                           }
                         }}
                         className={cn(
@@ -595,8 +616,11 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
                 sceneId={selectedSceneId}
                 pageNumber={currentPage}
                 canEdit={canEdit}
-                fileUrl={activeScript?.file_url}
+                fileUrl={continuityPdfUrl || activeScript?.file_url}
                 isFullscreen={isFullscreen}
+                scrollY={scrollY}
+                exportId={continuityExportId}
+                showAnnotationToolbar={showAnnotationToolbar}
               />
             </div>
           </Card>

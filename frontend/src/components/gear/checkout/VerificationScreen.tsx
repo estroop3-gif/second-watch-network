@@ -51,8 +51,10 @@ import {
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
-import { useGearScanLookup } from '@/hooks/gear';
+import { useGearScanLookup, useReportDamageAtCheckout } from '@/hooks/gear';
 import { CameraScannerModal } from '@/components/gear/scanner';
+import { DamageReportModal } from '@/components/gear/checkin/DamageReportModal';
+import { DamageReportsSection, type DamageReportItem } from '@/components/gear/shared/DamageReportsSection';
 import type { ScanResult } from '@/types/scanner';
 import type {
   VerificationItem,
@@ -61,6 +63,7 @@ import type {
   DiscrepancyAction,
   KitVerificationMode,
   ItemVerificationStatus,
+  CheckinDamageTier,
 } from '@/types/gear';
 
 // ============================================================================
@@ -130,6 +133,14 @@ export function VerificationScreen({
   const [discrepancyNotes, setDiscrepancyNotes] = useState('');
   const [isReportingDiscrepancy, setIsReportingDiscrepancy] = useState(false);
 
+  // Damage modal state (for detailed damage reporting with incident/repair tickets)
+  const [damageModalOpen, setDamageModalOpen] = useState(false);
+  const [damageAssetId, setDamageAssetId] = useState<string | null>(null);
+  const [damageAssetName, setDamageAssetName] = useState<string>('');
+
+  // Damage reports section state (dedicated visible section)
+  const [damageReports, setDamageReports] = useState<DamageReportItem[]>([]);
+
   // Expanded kits state
   const [expandedKits, setExpandedKits] = useState<Set<string>>(new Set());
   // Expanded packages state
@@ -141,6 +152,9 @@ export function VerificationScreen({
 
   // Lookup hook
   const { lookupAsset } = useGearScanLookup(orgId);
+
+  // Damage reporting mutation
+  const reportDamageMutation = useReportDamageAtCheckout(orgId);
 
   // Calculate progress
   const verifiedIds = new Set(verifiedItems.map((v) => v.id));
@@ -261,9 +275,55 @@ export function VerificationScreen({
     setDiscrepancyDialogOpen(true);
   };
 
+  // Open damage modal for detailed damage reporting
+  const openDamageModal = (itemId: string) => {
+    const item = items.find((i) => i.id === itemId);
+    setDamageAssetId(itemId);
+    setDamageAssetName(item?.name || 'Unknown Asset');
+    setDamageModalOpen(true);
+    setDiscrepancyDialogOpen(false);
+  };
+
+  // Handle damage report submission
+  const handleDamageReport = async (
+    assetId: string,
+    tier: CheckinDamageTier,
+    description: string,
+    photoKeys: string[],
+    createRepairTicket: boolean
+  ) => {
+    try {
+      await reportDamageMutation.mutateAsync({
+        asset_id: assetId,
+        damage_tier: tier,
+        description,
+        photos: photoKeys,
+        create_repair_ticket: createRepairTicket,
+      });
+
+      // Also report as discrepancy to mark the item
+      await onReportDiscrepancy(assetId, 'damaged', `${tier} damage: ${description}`);
+
+      setDamageModalOpen(false);
+      setDamageAssetId(null);
+      setDamageAssetName('');
+    } catch (error) {
+      console.error('Damage report error:', error);
+      // Modal will handle showing the error state
+      throw error;
+    }
+  };
+
   // Submit discrepancy report
   const handleSubmitDiscrepancy = async () => {
     if (!selectedItemForDiscrepancy) return;
+
+    // If damaged, open the damage modal for detailed reporting
+    if (discrepancyType === 'damaged') {
+      openDamageModal(selectedItemForDiscrepancy);
+      return;
+    }
+
     setIsReportingDiscrepancy(true);
 
     try {
@@ -274,6 +334,51 @@ export function VerificationScreen({
     } finally {
       setIsReportingDiscrepancy(false);
     }
+  };
+
+  // Handle adding a damage report from the dedicated section
+  const handleAddDamageReport = async (
+    assetId: string,
+    assetName: string,
+    tier: CheckinDamageTier,
+    description: string,
+    photoKeys: string[],
+    createRepairTicket: boolean
+  ) => {
+    try {
+      // Call the API to create incident + optional repair ticket
+      await reportDamageMutation.mutateAsync({
+        asset_id: assetId,
+        damage_tier: tier,
+        description,
+        photos: photoKeys,
+        create_repair_ticket: createRepairTicket,
+      });
+
+      // Add to local state for display
+      const newReport: DamageReportItem = {
+        id: `damage-${assetId}-${Date.now()}`,
+        assetId,
+        assetName,
+        tier,
+        description,
+        photoKeys,
+        createRepairTicket,
+      };
+      setDamageReports((prev) => [...prev, newReport]);
+
+      // Also report as discrepancy to mark the item in verification
+      await onReportDiscrepancy(assetId, 'damaged', `${tier} damage: ${description}`);
+    } catch (error) {
+      console.error('Damage report error:', error);
+      throw error;
+    }
+  };
+
+  // Handle removing a damage report
+  const handleRemoveDamageReport = (assetId: string) => {
+    setDamageReports((prev) => prev.filter((r) => r.assetId !== assetId));
+    // Note: The incident is already created in the backend, this just removes from local display
   };
 
   // Toggle kit expansion
@@ -570,6 +675,23 @@ export function VerificationScreen({
           </div>
         </ScrollArea>
 
+        {/* Damage Reports Section */}
+        {items.length > 0 && (
+          <div className="px-6 py-4 border-t border-muted-gray/20 bg-charcoal-black/30">
+            <DamageReportsSection
+              orgId={orgId}
+              items={items.map((item) => ({
+                id: item.id,
+                name: item.name,
+                internal_id: item.internal_id,
+              }))}
+              reports={damageReports}
+              onAddReport={handleAddDamageReport}
+              onRemoveReport={handleRemoveDamageReport}
+            />
+          </div>
+        )}
+
         {/* Footer */}
         <div className="p-6 pt-4 border-t space-y-4">
           {/* Warnings */}
@@ -653,7 +775,7 @@ export function VerificationScreen({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="missing">Missing</SelectItem>
-                  <SelectItem value="damaged">Damaged</SelectItem>
+                  <SelectItem value="damaged">Damaged (opens detailed report)</SelectItem>
                   <SelectItem value="wrong_item">Wrong Item</SelectItem>
                   <SelectItem value="extra_item">Extra Item</SelectItem>
                 </SelectContent>
@@ -699,6 +821,22 @@ export function VerificationScreen({
         audioFeedback
         hapticFeedback
       />
+
+      {/* Damage Report Modal */}
+      {damageAssetId && (
+        <DamageReportModal
+          isOpen={damageModalOpen}
+          onClose={() => {
+            setDamageModalOpen(false);
+            setDamageAssetId(null);
+            setDamageAssetName('');
+          }}
+          assetId={damageAssetId}
+          assetName={damageAssetName}
+          orgId={orgId}
+          onSubmit={handleDamageReport}
+        />
+      )}
     </Dialog>
   );
 }

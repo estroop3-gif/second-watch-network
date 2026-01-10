@@ -550,6 +550,11 @@ function TransactionItemCard({ item }: { item: GearTransactionItem }) {
 
   const hasExtendedDetails = item.serial_number || item.make || item.model || item.barcode || item.category_name;
   const hasScanInfo = item.scanned_out_by_name || item.scanned_in_by_name;
+  const hasPackageInfo = item.parent_asset_id || item.is_equipment_package;
+
+  // Determine icon based on package/accessory status
+  const isAccessory = !!item.parent_asset_id;
+  const isPackage = item.is_equipment_package && (item.accessory_count || 0) > 0;
 
   return (
     <Collapsible open={isExpanded} onOpenChange={setIsExpanded}>
@@ -558,13 +563,48 @@ function TransactionItemCard({ item }: { item: GearTransactionItem }) {
         <CollapsibleTrigger asChild>
           <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-charcoal-black/40 transition-colors">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded bg-purple-500/20 flex items-center justify-center">
-                <Package className="w-5 h-5 text-purple-400" />
+              <div className={cn(
+                "w-10 h-10 rounded flex items-center justify-center",
+                isAccessory ? "bg-blue-500/20" : isPackage ? "bg-amber-500/20" : "bg-purple-500/20"
+              )}>
+                <Package className={cn(
+                  "w-5 h-5",
+                  isAccessory ? "text-blue-400" : isPackage ? "text-amber-400" : "text-purple-400"
+                )} />
               </div>
               <div>
-                <p className="text-bone-white font-medium">
-                  {item.asset_name || item.kit_name || 'Unknown Item'}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-bone-white font-medium">
+                    {item.asset_name || item.kit_name || 'Unknown Item'}
+                  </p>
+                  {/* Accessory badge */}
+                  {isAccessory && (
+                    <Badge
+                      variant="outline"
+                      className="text-xs py-0 px-1.5 bg-blue-500/10 text-blue-400 border-blue-500/30"
+                    >
+                      Accessory
+                    </Badge>
+                  )}
+                  {/* Equipment Package badge */}
+                  {isPackage && (
+                    <Badge
+                      variant="outline"
+                      className="text-xs py-0 px-1.5 bg-amber-500/10 text-amber-400 border-amber-500/30"
+                    >
+                      Package ({item.accessory_count})
+                    </Badge>
+                  )}
+                </div>
+                {/* Parent package info for accessories */}
+                {isAccessory && item.parent_asset_name && (
+                  <p className="text-xs text-blue-400 mt-0.5">
+                    Part of: {item.parent_asset_name}
+                    {item.parent_asset_internal_id && (
+                      <span className="text-muted-gray ml-1">({item.parent_asset_internal_id})</span>
+                    )}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 mt-0.5">
                   {item.asset_internal_id && (
                     <code className="text-xs text-muted-gray bg-charcoal-black/50 px-1.5 py-0.5 rounded">
@@ -595,7 +635,7 @@ function TransactionItemCard({ item }: { item: GearTransactionItem }) {
                   In
                 </Badge>
               )}
-              {(hasExtendedDetails || hasScanInfo) && (
+              {(hasExtendedDetails || hasScanInfo || hasPackageInfo) && (
                 isExpanded ? (
                   <ChevronDown className="w-4 h-4 text-muted-gray" />
                 ) : (

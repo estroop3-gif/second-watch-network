@@ -88,195 +88,16 @@ type ScriptWithVersioning = BacklotScript & Partial<BacklotScriptVersion>;
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
-// ============================================================================
-// SCREENPLAY ELEMENT TYPES
-// ============================================================================
-
-type ScriptElementType =
-  | 'scene_heading'
-  | 'action'
-  | 'character'
-  | 'dialogue'
-  | 'parenthetical'
-  | 'transition'
-  | 'shot'
-  | 'general'
-  // Title page elements
-  | 'title'
-  | 'author'
-  | 'contact'
-  | 'draft_info'
-  | 'copyright'
-  | 'title_page_text';
-
-interface ScriptElement {
-  type: ScriptElementType;
-  content: string;
-  lineIndex: number;
-}
-
-// Element detection patterns
-const ELEMENT_PATTERNS = {
-  scene_heading: /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.)[\s\S]*/i,
-  transition: /^(FADE IN:|FADE OUT:|FADE TO:|CUT TO:|DISSOLVE TO:|SMASH CUT TO:|MATCH CUT TO:|JUMP CUT TO:|TIME CUT:|IRIS IN:|IRIS OUT:|WIPE TO:)[\s\S]*/i,
-  shot: /^(CLOSE ON|ANGLE ON|POV|INSERT|FLASHBACK|FLASH FORWARD|BACK TO SCENE|CONTINUOUS|LATER|MOMENTS LATER|SAME TIME|INTERCUT)[\s\S]*/i,
-  character: /^[A-Z][A-Z0-9\s\-'\.]+(\s*\(V\.O\.\)|\s*\(O\.S\.\)|\s*\(O\.C\.\)|\s*\(CONT'D\)|\s*\(CONTINUING\))?\s*$/,
-  parenthetical: /^\([\s\S]*\)$/,
-  // Title page patterns
-  author: /^(written\s+by|screenplay\s+by|teleplay\s+by|story\s+by|by\s*$)/i,
-  draft_info: /^(draft|revision|version|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
-  copyright: /^(©|copyright|\(c\))/i,
-  contact: /(@[\w.-]+\.\w+|\(\d{3}\)\s*\d{3}[-.]?\d{4}|\d{3}[-.]?\d{3}[-.]?\d{4}|agent:|manager:|represented\s+by)/i,
-};
-
-// Industry standard margins (in pixels at 72 DPI) - matching ScriptPageView
-const MARGIN_LEFT = 108;   // 1.5" left margin (for binding)
-const MARGIN_RIGHT = 72;   // 1" right margin
-const PAGE_WIDTH_PX = 612; // 8.5" at 72dpi
-const CONTENT_WIDTH = PAGE_WIDTH_PX - MARGIN_LEFT - MARGIN_RIGHT; // 432px = 6"
-
-// Element positioning from LEFT EDGE of page (in pixels at 72 DPI) - matching ScriptPageView
-const CHAR_LEFT = 266;     // 3.7" - Character name position
-const DIALOGUE_LEFT = 180; // 2.5" - Dialogue start
-const DIALOGUE_RIGHT = 432; // 6" - Dialogue end
-const PAREN_LEFT = 223;    // 3.1" - Parenthetical start
-const PAREN_RIGHT = 403;   // 5.6" - Parenthetical end
-
-// Helper function to calculate element positioning - matching ScriptPageView
-function getInlineElementPosition(type: ScriptElementType): { marginLeft?: string; marginRight?: string; width?: string; maxWidth?: string } {
-  switch (type) {
-    case 'scene_heading':
-    case 'action':
-    case 'shot':
-    case 'general':
-      // Full width from left margin to right margin - no additional margins
-      return {};
-    case 'character':
-      // Character: starts at 3.7" from page left (158px from content left)
-      // Convert to pixels: CHAR_LEFT - MARGIN_LEFT = 266 - 108 = 158px
-      return {
-        marginLeft: '158px',
-        width: 'auto',
-        maxWidth: `${CONTENT_WIDTH - 158}px` // 274px
-      };
-    case 'dialogue':
-      // Dialogue: 2.5" to 6" from page left (72px from content left, width 252px)
-      // DIALOGUE_LEFT - MARGIN_LEFT = 180 - 108 = 72px
-      // DIALOGUE_RIGHT - DIALOGUE_LEFT = 432 - 180 = 252px
-      return {
-        marginLeft: '72px',
-        width: '252px',
-        maxWidth: '252px'
-      };
-    case 'parenthetical':
-      // Parenthetical: 3.1" to 5.6" from page left (115px from content left, width 180px)
-      // PAREN_LEFT - MARGIN_LEFT = 223 - 108 = 115px
-      // PAREN_RIGHT - PAREN_LEFT = 403 - 223 = 180px
-      return {
-        marginLeft: '115px',
-        width: '180px',
-        maxWidth: '180px'
-      };
-    case 'transition':
-      // Right-aligned
-      return {};
-    // Title page elements - centered
-    case 'title':
-    case 'author':
-    case 'draft_info':
-    case 'copyright':
-    case 'title_page_text':
-      return {};
-    case 'contact':
-      // Contact info is left-aligned
-      return {};
-    default:
-      return {};
-  }
-}
-
-// Element styling - now matches ScriptPageView exact positioning
-const ELEMENT_STYLES: Record<ScriptElementType, React.CSSProperties> = {
-  scene_heading: {
-    fontWeight: 'bold',
-    textTransform: 'uppercase',
-    marginTop: '24px',
-    marginBottom: '12px',
-    ...getInlineElementPosition('scene_heading'),
-  },
-  action: {
-    marginBottom: '12px',
-    ...getInlineElementPosition('action'),
-  },
-  character: {
-    textTransform: 'uppercase',
-    marginTop: '12px',
-    marginBottom: '0',
-    ...getInlineElementPosition('character'),
-  },
-  dialogue: {
-    marginBottom: '0',
-    ...getInlineElementPosition('dialogue'),
-  },
-  parenthetical: {
-    fontStyle: 'italic',
-    ...getInlineElementPosition('parenthetical'),
-  },
-  transition: {
-    textAlign: 'right',
-    textTransform: 'uppercase',
-    marginTop: '12px',
-    marginBottom: '12px',
-    ...getInlineElementPosition('transition'),
-  },
-  shot: {
-    textTransform: 'uppercase',
-    marginTop: '12px',
-    marginBottom: '12px',
-    ...getInlineElementPosition('shot'),
-  },
-  general: {
-    marginBottom: '12px',
-    ...getInlineElementPosition('general'),
-  },
-  // Title page elements - centered formatting
-  title: {
-    textAlign: 'center',
-    fontSize: '18px',
-    fontWeight: 'bold',
-    textTransform: 'uppercase',
-    marginTop: '120px',
-    marginBottom: '24px',
-    ...getInlineElementPosition('title'),
-  },
-  author: {
-    textAlign: 'center',
-    marginBottom: '8px',
-    ...getInlineElementPosition('author'),
-  },
-  contact: {
-    textAlign: 'left',
-    fontSize: '12px',
-    marginTop: '48px',
-    ...getInlineElementPosition('contact'),
-  },
-  draft_info: {
-    textAlign: 'center',
-    marginTop: '24px',
-    fontSize: '12px',
-    ...getInlineElementPosition('draft_info'),
-  },
-  copyright: {
-    textAlign: 'center',
-    marginTop: '12px',
-    fontSize: '10px',
-    ...getInlineElementPosition('copyright'),
-  },
-  title_page_text: {
-    textAlign: 'center',
-    ...getInlineElementPosition('title_page_text'),
-  },
-};
+// Import centralized screenplay formatting from scriptFormatting
+import {
+  ScriptElementType,
+  ScriptElement,
+  ELEMENT_PATTERNS,
+  ELEMENT_STYLES,
+  detectElementType,
+  parseScriptElements,
+  STRICT_CONFIG,
+} from '@/utils/scriptFormatting';
 
 // Element info for toolbar
 const ELEMENT_INFO: Record<ScriptElementType, { label: string; shortcut: string; icon: any }> = {
@@ -297,7 +118,7 @@ const ELEMENT_INFO: Record<ScriptElementType, { label: string; shortcut: string;
   title_page_text: { label: 'Title Page', shortcut: '', icon: AlignLeft },
 };
 
-// Element cycle order (Tab to advance)
+// Element cycle order (Tab to advance) - UI-specific
 const ELEMENT_CYCLE: ScriptElementType[] = [
   'action',
   'character',
@@ -306,112 +127,7 @@ const ELEMENT_CYCLE: ScriptElementType[] = [
   'action',
 ];
 
-// Detect element type from content
-function detectElementType(line: string, prevLine?: string, prevType?: ScriptElementType, isTitlePage?: boolean): ScriptElementType {
-  const trimmed = line.trim();
-
-  if (!trimmed) return 'general';
-
-  // If we're in title page context, check for title page elements
-  if (isTitlePage) {
-    // Check for centered text (significant leading whitespace - at least 15 spaces suggests centering)
-    const leadingSpaces = line.length - line.trimStart().length;
-    const isCentered = leadingSpaces >= 15;
-
-    if (ELEMENT_PATTERNS.copyright.test(trimmed)) return 'copyright';
-    if (ELEMENT_PATTERNS.author.test(trimmed)) return 'author';
-    if (ELEMENT_PATTERNS.draft_info.test(trimmed)) return 'draft_info';
-    if (ELEMENT_PATTERNS.contact.test(trimmed)) return 'contact';
-
-    // Check if this looks like a title (all caps, short, no scene heading prefix)
-    // OR if it's centered and all caps (common for title page titles)
-    if ((trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !ELEMENT_PATTERNS.scene_heading.test(trimmed)) ||
-        (isCentered && trimmed === trimmed.toUpperCase() && !ELEMENT_PATTERNS.scene_heading.test(trimmed))) {
-      return 'title';
-    }
-
-    // If it's centered text, it's likely a title page element (author, etc.)
-    if (isCentered) {
-      return 'title_page_text';
-    }
-
-    // Otherwise it's generic title page text
-    return 'title_page_text';
-  }
-
-  // Check for scene heading
-  if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) {
-    return 'scene_heading';
-  }
-
-  // Check for transition
-  if (ELEMENT_PATTERNS.transition.test(trimmed)) {
-    return 'transition';
-  }
-
-  // Check for shot
-  if (ELEMENT_PATTERNS.shot.test(trimmed)) {
-    return 'shot';
-  }
-
-  // Check for parenthetical (must be after character or dialogue)
-  if (ELEMENT_PATTERNS.parenthetical.test(trimmed) &&
-      (prevType === 'character' || prevType === 'dialogue')) {
-    return 'parenthetical';
-  }
-
-  // Check for character (all caps, possibly with extensions)
-  if (ELEMENT_PATTERNS.character.test(trimmed) && trimmed.length < 50) {
-    return 'character';
-  }
-
-  // Check for dialogue (after character or parenthetical)
-  if (prevType === 'character' || prevType === 'parenthetical') {
-    return 'dialogue';
-  }
-
-  // Default to action
-  return 'action';
-}
-
-// Parse script into elements
-function parseScriptElements(content: string): ScriptElement[] {
-  const lines = content.split('\n');
-  const elements: ScriptElement[] = [];
-
-  let prevType: ScriptElementType | undefined;
-
-  // Determine where the title page ends (first scene heading or after first ~60 lines)
-  let titlePageEnds = -1;
-  for (let i = 0; i < Math.min(lines.length, 60); i++) {
-    const trimmed = lines[i].trim();
-    if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) {
-      titlePageEnds = i;
-      break;
-    }
-  }
-  // If no scene heading found in first 60 lines, assume first page is title page
-  if (titlePageEnds === -1) {
-    titlePageEnds = Math.min(55, lines.length); // ~55 lines = 1 page
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const prevLine = i > 0 ? lines[i - 1] : undefined;
-    const isTitlePage = i < titlePageEnds;
-    const type = detectElementType(line, prevLine, prevType, isTitlePage);
-
-    elements.push({
-      type,
-      content: line,
-      lineIndex: i,
-    });
-
-    prevType = type;
-  }
-
-  return elements;
-}
+// Note: detectElementType and parseScriptElements are now imported from scriptFormatting
 
 interface ScriptEditorPanelProps {
   script: ScriptWithVersioning;
@@ -763,10 +479,10 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
     const prevLine = currentLineIndex > 0 ? lines[currentLineIndex - 1] : undefined;
     let prevType: ScriptElementType | undefined;
     if (prevLine !== undefined) {
-      prevType = detectElementType(prevLine, undefined, undefined);
+      prevType = detectElementType(prevLine, undefined, undefined, false, STRICT_CONFIG);
     }
 
-    const elementType = detectElementType(currentLine, prevLine, prevType);
+    const elementType = detectElementType(currentLine, prevLine, prevType, false, STRICT_CONFIG);
     setCurrentElementType(elementType);
     setCursorPosition(cursorPos);
   }, []);

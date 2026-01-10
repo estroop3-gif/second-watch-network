@@ -1,17 +1,17 @@
 /**
- * Strikes View
- * Manage user strikes and escalation
+ * Strikes View - User-Centric
+ * Shows users with strike summaries, click to see full details
  */
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Shield,
   Plus,
-  AlertTriangle,
   CheckCircle2,
-  XCircle,
-  User,
+  Search,
+  Filter,
   Loader2,
-  Eye,
+  Users,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -19,9 +19,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -37,19 +36,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 
-import { useGearStrikes, useGearPendingReviews, useGearVoidStrike } from '@/hooks/gear';
-import type { GearStrike, GearUserEscalationStatus, StrikeSeverity } from '@/types/gear';
-import { cn } from '@/lib/utils';
-import { format } from 'date-fns';
+import { useUsersWithStrikes, useCreateStrike } from '@/hooks/gear/useGearStrikes';
+import { UserStrikeCard } from '@/components/gear/strikes';
+import type { StrikeSeverity } from '@/types/gear';
 
 const SEVERITY_CONFIG: Record<StrikeSeverity, { label: string; color: string; points: number }> = {
   warning: { label: 'Warning', color: 'bg-blue-500/20 text-blue-400 border-blue-500/30', points: 0 },
@@ -58,83 +48,113 @@ const SEVERITY_CONFIG: Record<StrikeSeverity, { label: string; color: string; po
   critical: { label: 'Critical', color: 'bg-red-500/20 text-red-400 border-red-500/30', points: 3 },
 };
 
+type FilterType = 'all' | 'escalated' | 'active';
+
 interface StrikesViewProps {
   orgId: string;
 }
 
 export function StrikesView({ orgId }: StrikesViewProps) {
-  const [activeTab, setActiveTab] = useState<'strikes' | 'reviews'>('strikes');
+  const navigate = useNavigate();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [filter, setFilter] = useState<FilterType>('active');
+  const [searchTerm, setSearchTerm] = useState('');
 
-  const { strikes, isLoading, createStrike } = useGearStrikes({ orgId });
-  const { pendingReviews, isLoading: reviewsLoading, reviewEscalation } = useGearPendingReviews(orgId);
-  const voidStrike = useGearVoidStrike();
+  const createStrike = useCreateStrike(orgId);
 
-  const handleVoidStrike = async (strikeId: string) => {
-    const reason = window.prompt('Enter reason for voiding this strike:');
-    if (reason) {
-      await voidStrike.mutateAsync({ strikeId, reason });
-    }
-  };
+  const { data: users = [], isLoading } = useUsersWithStrikes({
+    orgId,
+    includeClear: filter === 'all',
+    escalatedOnly: filter === 'escalated',
+  });
+
+  // Filter users by search term
+  const filteredUsers = users.filter((user) =>
+    searchTerm
+      ? user.user_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.email?.toLowerCase().includes(searchTerm.toLowerCase())
+      : true
+  );
+
+  // Count escalated users
+  const escalatedCount = users.filter((u) => u.is_escalated && u.requires_manager_review).length;
 
   return (
     <div className="space-y-6">
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'strikes' | 'reviews')}>
-        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-          <TabsList className="bg-charcoal-black/50 border border-muted-gray/30">
-            <TabsTrigger value="strikes">Active Strikes ({strikes.length})</TabsTrigger>
-            <TabsTrigger value="reviews">
-              Pending Reviews
-              {pendingReviews.length > 0 && (
-                <Badge className="ml-2 bg-red-500/20 text-red-400">{pendingReviews.length}</Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-
-          <Button onClick={() => setIsCreateModalOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" />
-            Issue Strike
-          </Button>
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold text-bone-white flex items-center gap-2">
+            <Users className="w-5 h-5 text-muted-gray" />
+            User Strikes
+          </h2>
+          {escalatedCount > 0 && (
+            <Badge className="bg-red-500/20 text-red-400 border-red-500/30">
+              {escalatedCount} Escalated
+            </Badge>
+          )}
         </div>
 
-        <TabsContent value="strikes" className="mt-6">
-          {isLoading ? (
-            <TableSkeleton />
-          ) : strikes.length === 0 ? (
-            <EmptyState message="No active strikes" icon={<CheckCircle2 className="w-12 h-12 text-green-400" />} />
-          ) : (
-            <StrikesTable strikes={strikes} onVoid={handleVoidStrike} />
-          )}
-        </TabsContent>
+        <Button onClick={() => setIsCreateModalOpen(true)}>
+          <Plus className="w-4 h-4 mr-2" />
+          Issue Strike
+        </Button>
+      </div>
 
-        <TabsContent value="reviews" className="mt-6">
-          {reviewsLoading ? (
-            <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <Skeleton key={i} className="h-24" />
-              ))}
-            </div>
-          ) : pendingReviews.length === 0 ? (
-            <EmptyState message="No pending reviews" icon={<CheckCircle2 className="w-12 h-12 text-green-400" />} />
-          ) : (
-            <div className="space-y-4">
-              {pendingReviews.map((review) => (
-                <PendingReviewCard
-                  key={review.id}
-                  review={review}
-                  onReview={async (decision) => {
-                    await reviewEscalation.mutateAsync({
-                      userId: review.user_id,
-                      decision,
-                    });
-                  }}
-                  isSubmitting={reviewEscalation.isPending}
-                />
-              ))}
-            </div>
-          )}
-        </TabsContent>
-      </Tabs>
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+          <Input
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search by name or email..."
+            className="pl-9 bg-charcoal-black/50 border-muted-gray/30"
+          />
+        </div>
+
+        <Select value={filter} onValueChange={(v) => setFilter(v as FilterType)}>
+          <SelectTrigger className="w-[180px] bg-charcoal-black/50 border-muted-gray/30">
+            <Filter className="w-4 h-4 mr-2 text-muted-gray" />
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">With Active Strikes</SelectItem>
+            <SelectItem value="escalated">Escalated Only</SelectItem>
+            <SelectItem value="all">All Users</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* User List */}
+      {isLoading ? (
+        <div className="space-y-3">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Skeleton key={i} className="h-24 w-full" />
+          ))}
+        </div>
+      ) : filteredUsers.length === 0 ? (
+        <EmptyState
+          message={
+            searchTerm
+              ? 'No users match your search'
+              : filter === 'escalated'
+                ? 'No escalated users'
+                : 'No users with strikes'
+          }
+          icon={<CheckCircle2 className="w-12 h-12 text-green-400" />}
+        />
+      ) : (
+        <div className="space-y-3">
+          {filteredUsers.map((user) => (
+            <UserStrikeCard
+              key={user.user_id}
+              user={user}
+              onClick={() => navigate(`/gear/${orgId}/strikes/${user.user_id}`)}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Create Strike Modal */}
       <CreateStrikeModal
@@ -146,134 +166,6 @@ export function StrikesView({ orgId }: StrikesViewProps) {
         }}
         isSubmitting={createStrike.isPending}
       />
-    </div>
-  );
-}
-
-function StrikesTable({ strikes, onVoid }: { strikes: GearStrike[]; onVoid: (id: string) => void }) {
-  return (
-    <Card className="bg-charcoal-black/50 border-muted-gray/30">
-      <Table>
-        <TableHeader>
-          <TableRow className="border-muted-gray/30 hover:bg-transparent">
-            <TableHead>User</TableHead>
-            <TableHead>Severity</TableHead>
-            <TableHead>Points</TableHead>
-            <TableHead>Reason</TableHead>
-            <TableHead>Issued By</TableHead>
-            <TableHead>Date</TableHead>
-            <TableHead className="w-20"></TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {strikes.map((strike) => {
-            const severityConfig = SEVERITY_CONFIG[strike.severity];
-
-            return (
-              <TableRow key={strike.id} className="border-muted-gray/30 hover:bg-charcoal-black/30">
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <User className="w-4 h-4 text-muted-gray" />
-                    <span className="text-bone-white">{strike.user_name || strike.user_id.slice(0, 8)}</span>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge className={cn('border', severityConfig.color)}>{severityConfig.label}</Badge>
-                </TableCell>
-                <TableCell>
-                  <span className="font-mono">{strike.points}</span>
-                </TableCell>
-                <TableCell>
-                  <span className="text-muted-gray line-clamp-1 max-w-[200px]">{strike.reason}</span>
-                </TableCell>
-                <TableCell>
-                  <span className="text-muted-gray">{strike.issued_by_name || '—'}</span>
-                </TableCell>
-                <TableCell>
-                  <span className="text-sm text-muted-gray">
-                    {format(new Date(strike.issued_at), 'MMM d, yyyy')}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <Button variant="ghost" size="sm" onClick={() => onVoid(strike.id)}>
-                    <XCircle className="w-4 h-4 text-muted-gray hover:text-red-400" />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            );
-          })}
-        </TableBody>
-      </Table>
-    </Card>
-  );
-}
-
-function PendingReviewCard({
-  review,
-  onReview,
-  isSubmitting,
-}: {
-  review: GearUserEscalationStatus;
-  onReview: (decision: string) => Promise<void>;
-  isSubmitting: boolean;
-}) {
-  return (
-    <Card className="bg-charcoal-black/50 border-orange-500/30">
-      <CardContent className="p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-lg bg-orange-500/20 flex items-center justify-center">
-              <AlertTriangle className="w-6 h-6 text-orange-400" />
-            </div>
-            <div>
-              <p className="font-medium text-bone-white">{review.user_name || 'User'}</p>
-              <p className="text-sm text-muted-gray">
-                {review.total_active_strikes} strikes • {review.total_active_points} points
-              </p>
-              <p className="text-sm text-orange-400">Level: {review.escalation_level}</p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReview('approved')}
-              disabled={isSubmitting}
-              className="border-green-500/30 text-green-400 hover:bg-green-500/20"
-            >
-              Approve
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReview('probation')}
-              disabled={isSubmitting}
-              className="border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/20"
-            >
-              Probation
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReview('suspended')}
-              disabled={isSubmitting}
-              className="border-red-500/30 text-red-400 hover:bg-red-500/20"
-            >
-              Suspend
-            </Button>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function TableSkeleton() {
-  return (
-    <div className="space-y-2">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <Skeleton key={i} className="h-14 w-full" />
-      ))}
     </div>
   );
 }
@@ -340,13 +232,14 @@ function CreateStrikeModal({
               value={userId}
               onChange={(e) => setUserId(e.target.value)}
               placeholder="Enter user ID"
+              className="bg-charcoal-black/50 border-muted-gray/30"
             />
           </div>
 
           <div>
             <Label>Severity</Label>
             <Select value={severity} onValueChange={(v) => setSeverity(v as StrikeSeverity)}>
-              <SelectTrigger>
+              <SelectTrigger className="bg-charcoal-black/50 border-muted-gray/30">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -366,6 +259,7 @@ function CreateStrikeModal({
               onChange={(e) => setReason(e.target.value)}
               placeholder="Describe the violation..."
               rows={3}
+              className="bg-charcoal-black/50 border-muted-gray/30"
             />
           </div>
 
@@ -376,6 +270,7 @@ function CreateStrikeModal({
               value={customPoints}
               onChange={(e) => setCustomPoints(e.target.value)}
               placeholder="Override default points"
+              className="bg-charcoal-black/50 border-muted-gray/30"
             />
           </div>
 

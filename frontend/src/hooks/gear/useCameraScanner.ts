@@ -249,7 +249,8 @@ export function useCameraScanner(options: CameraScannerOptions = {}) {
   const startScanning = useCallback(
     async (elementId: string, onScan: (result: ScanResult) => void) => {
       try {
-        setState((prev) => ({ ...prev, error: null }));
+        // Reset error and permission states for fresh attempt
+        setState((prev) => ({ ...prev, error: null, permissionDenied: false }));
         onScanCallbackRef.current = onScan;
 
         // Get cameras

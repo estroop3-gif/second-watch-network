@@ -1165,6 +1165,37 @@ export function useGearIncidentStats(orgId: string | null) {
   });
 }
 
+/**
+ * Report damage at checkout - creates incident and optionally repair ticket
+ */
+export interface DamageReportInput {
+  asset_id: string;
+  damage_tier: 'cosmetic' | 'functional' | 'unsafe';
+  description: string;
+  photos: string[];
+  create_repair_ticket: boolean;
+}
+
+export function useReportDamageAtCheckout(orgId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: DamageReportInput) =>
+      fetchWithAuth(`/api/v1/gear/transactions/${orgId}/damage`, token!, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      // Invalidate related queries
+      queryClient.invalidateQueries({ queryKey: ['gear-assets'] });
+      queryClient.invalidateQueries({ queryKey: ['gear-incidents'] });
+      queryClient.invalidateQueries({ queryKey: ['gear-repairs'] });
+    },
+  });
+}
+
 // ============================================================================
 // REPAIR HOOKS
 // ============================================================================

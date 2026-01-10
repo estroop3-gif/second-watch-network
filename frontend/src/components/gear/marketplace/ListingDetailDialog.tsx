@@ -18,6 +18,9 @@ import {
   ChevronRight,
   Info,
   Truck,
+  Tag,
+  MessageSquare,
+  Flag,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -40,6 +43,8 @@ interface ListingDetailDialogProps {
   onRequestQuote: () => void;
   onAddToQuote: () => void;
   isInQuote: boolean;
+  onMessageSeller?: (listing: GearMarketplaceListing) => void;
+  onReportListing?: (listing: GearMarketplaceListing) => void;
 }
 
 export function ListingDetailDialog({
@@ -49,6 +54,8 @@ export function ListingDetailDialog({
   onRequestQuote,
   onAddToQuote,
   isInQuote,
+  onMessageSeller,
+  onReportListing,
 }: ListingDetailDialogProps) {
   const [activeImageIndex, setActiveImageIndex] = useState(0);
 
@@ -63,6 +70,16 @@ export function ListingDetailDialog({
     : asset?.image_url
       ? [asset.image_url]
       : [];
+
+  // Detect listing type
+  const isSaleOnly = listing.listing_type === 'sale';
+  const hasSalePrice = listing.sale_price && listing.sale_price > 0;
+
+  // Format condition for display
+  const formatCondition = (condition: string | undefined) => {
+    if (!condition) return 'Not specified';
+    return condition.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  };
 
   // Format price display
   const formatPrice = (price: number | undefined) => {
@@ -178,12 +195,6 @@ export function ListingDetailDialog({
                     <p className="text-bone-white">{asset.model}</p>
                   </div>
                 )}
-                {asset?.serial_number && (
-                  <div>
-                    <span className="text-muted-gray">Serial Number</span>
-                    <p className="text-bone-white">{asset.serial_number}</p>
-                  </div>
-                )}
                 {asset?.condition && (
                   <div>
                     <span className="text-muted-gray">Condition</span>
@@ -236,133 +247,222 @@ export function ListingDetailDialog({
               )}
             </div>
 
-            {/* Pricing */}
-            <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-              <h4 className="mb-4 font-medium text-bone-white">Rental Rates</h4>
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-muted-gray">Daily Rate</span>
-                  <span className="text-xl font-semibold text-bone-white">
-                    {formatPrice(listing.daily_rate)}
-                  </span>
-                </div>
-                {listing.weekly_rate && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-gray">Weekly Rate</span>
-                    <div className="text-right">
-                      <span className="font-medium text-bone-white">
-                        {formatPrice(listing.weekly_rate)}
-                      </span>
-                      {listing.weekly_discount_percent > 0 && (
-                        <Badge className="ml-2 bg-green-500/20 text-green-400">
-                          {listing.weekly_discount_percent}% off
-                        </Badge>
-                      )}
-                    </div>
+            {isSaleOnly && hasSalePrice ? (
+              /* SALE LISTING UI */
+              <>
+                {/* Sale Price */}
+                <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Tag className="h-5 w-5 text-green-400" />
+                    <span className="font-medium text-green-400">For Sale</span>
                   </div>
-                )}
-                {listing.monthly_rate && (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-gray">Monthly Rate</span>
-                    <div className="text-right">
-                      <span className="font-medium text-bone-white">
-                        {formatPrice(listing.monthly_rate)}
-                      </span>
-                      {listing.monthly_discount_percent > 0 && (
-                        <Badge className="ml-2 bg-green-500/20 text-green-400">
-                          {listing.monthly_discount_percent}% off
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Requirements */}
-            <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-              <h4 className="mb-3 font-medium text-bone-white">Requirements</h4>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm">
-                  <Calendar className="h-4 w-4 text-muted-gray" />
-                  <span className="text-muted-gray">Minimum rental:</span>
-                  <span className="text-bone-white">
-                    {listing.min_rental_days} {listing.min_rental_days === 1 ? 'day' : 'days'}
-                  </span>
-                </div>
-                {listing.advance_booking_days > 1 && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <Calendar className="h-4 w-4 text-muted-gray" />
-                    <span className="text-muted-gray">Advance booking:</span>
-                    <span className="text-bone-white">
-                      {listing.advance_booking_days} days
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-3xl font-bold text-green-400">
+                      {formatPrice(listing.sale_price)}
                     </span>
-                  </div>
-                )}
-                {listing.insurance_required && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <Shield className="h-4 w-4 text-accent-yellow" />
-                    <span className="text-accent-yellow">Insurance required</span>
-                    {listing.insurance_daily_rate && (
-                      <span className="text-muted-gray">
-                        ({formatPrice(listing.insurance_daily_rate)}/day)
-                      </span>
+                    {listing.sale_negotiable && (
+                      <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                        Negotiable
+                      </Badge>
                     )}
                   </div>
-                )}
-                {listing.deposit_amount && listing.deposit_amount > 0 && (
-                  <div className="flex items-center gap-2 text-sm">
-                    <DollarSign className="h-4 w-4 text-muted-gray" />
-                    <span className="text-muted-gray">Deposit:</span>
-                    <span className="text-bone-white">
-                      {formatPrice(listing.deposit_amount)}
-                    </span>
+                </div>
+
+                {/* Sale Details */}
+                <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                  <h4 className="mb-3 font-medium text-bone-white">Sale Details</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-gray">Condition</span>
+                      <span className="text-bone-white">
+                        {formatCondition(listing.sale_condition)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-muted-gray">Location</span>
+                      <span className="text-bone-white">
+                        {organization?.marketplace_location || 'Contact seller'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* What's Included */}
+                {listing.sale_includes && (
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                    <h4 className="mb-2 flex items-center gap-2 font-medium text-bone-white">
+                      <Package className="h-4 w-4" />
+                      What's Included
+                    </h4>
+                    <p className="text-sm text-muted-gray">{listing.sale_includes}</p>
                   </div>
                 )}
-              </div>
-            </div>
 
-            {/* Rental Notes */}
-            {listing.rental_notes && (
-              <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-                <h4 className="mb-2 flex items-center gap-2 font-medium text-bone-white">
-                  <Info className="h-4 w-4" />
-                  Rental Notes
-                </h4>
-                <p className="text-sm text-muted-gray">{listing.rental_notes}</p>
-              </div>
+                <Separator className="bg-white/10" />
+
+                {/* Sale Actions */}
+                <div className="space-y-3">
+                  <Button
+                    className="w-full gap-2 bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                    onClick={() => onMessageSeller?.(listing)}
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                    Message Seller
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full gap-2 text-primary-red hover:bg-primary-red/10"
+                    onClick={() => onReportListing?.(listing)}
+                  >
+                    <Flag className="h-4 w-4" />
+                    Report Listing
+                  </Button>
+                </div>
+              </>
+            ) : (
+              /* RENTAL LISTING UI */
+              <>
+                {/* Pricing */}
+                <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                  <h4 className="mb-4 font-medium text-bone-white">Rental Rates</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-muted-gray">Daily Rate</span>
+                      <span className="text-xl font-semibold text-bone-white">
+                        {formatPrice(listing.daily_rate)}
+                      </span>
+                    </div>
+                    {listing.weekly_rate && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-gray">Weekly Rate</span>
+                        <div className="text-right">
+                          <span className="font-medium text-bone-white">
+                            {formatPrice(listing.weekly_rate)}
+                          </span>
+                          {listing.weekly_discount_percent > 0 && (
+                            <Badge className="ml-2 bg-green-500/20 text-green-400">
+                              {listing.weekly_discount_percent}% off
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {listing.monthly_rate && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-gray">Monthly Rate</span>
+                        <div className="text-right">
+                          <span className="font-medium text-bone-white">
+                            {formatPrice(listing.monthly_rate)}
+                          </span>
+                          {listing.monthly_discount_percent > 0 && (
+                            <Badge className="ml-2 bg-green-500/20 text-green-400">
+                              {listing.monthly_discount_percent}% off
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Requirements */}
+                <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                  <h4 className="mb-3 font-medium text-bone-white">Requirements</h4>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Calendar className="h-4 w-4 text-muted-gray" />
+                      <span className="text-muted-gray">Minimum rental:</span>
+                      <span className="text-bone-white">
+                        {listing.min_rental_days} {listing.min_rental_days === 1 ? 'day' : 'days'}
+                      </span>
+                    </div>
+                    {listing.advance_booking_days > 1 && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Calendar className="h-4 w-4 text-muted-gray" />
+                        <span className="text-muted-gray">Advance booking:</span>
+                        <span className="text-bone-white">
+                          {listing.advance_booking_days} days
+                        </span>
+                      </div>
+                    )}
+                    {listing.insurance_required && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Shield className="h-4 w-4 text-accent-yellow" />
+                        <span className="text-accent-yellow">Insurance required</span>
+                        {listing.insurance_daily_rate && (
+                          <span className="text-muted-gray">
+                            ({formatPrice(listing.insurance_daily_rate)}/day)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {listing.deposit_amount && listing.deposit_amount > 0 && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <DollarSign className="h-4 w-4 text-muted-gray" />
+                        <span className="text-muted-gray">Deposit:</span>
+                        <span className="text-bone-white">
+                          {formatPrice(listing.deposit_amount)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Rental Notes */}
+                {listing.rental_notes && (
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                    <h4 className="mb-2 flex items-center gap-2 font-medium text-bone-white">
+                      <Info className="h-4 w-4" />
+                      Rental Notes
+                    </h4>
+                    <p className="text-sm text-muted-gray">{listing.rental_notes}</p>
+                  </div>
+                )}
+
+                {/* Pickup Instructions */}
+                {listing.pickup_instructions && (
+                  <div className="rounded-lg border border-white/10 bg-white/5 p-4">
+                    <h4 className="mb-2 flex items-center gap-2 font-medium text-bone-white">
+                      <Truck className="h-4 w-4" />
+                      Pickup Instructions
+                    </h4>
+                    <p className="text-sm text-muted-gray">{listing.pickup_instructions}</p>
+                  </div>
+                )}
+
+                <Separator className="bg-white/10" />
+
+                {/* Rental Actions */}
+                <div className="space-y-3">
+                  <div className="flex gap-3">
+                    {isInQuote ? (
+                      <Button variant="outline" className="flex-1 gap-2" disabled>
+                        <Check className="h-4 w-4" />
+                        Added to Quote
+                      </Button>
+                    ) : (
+                      <Button variant="outline" className="flex-1 gap-2" onClick={onAddToQuote}>
+                        <Plus className="h-4 w-4" />
+                        Add to Quote
+                      </Button>
+                    )}
+                    <Button className="flex-1" onClick={onRequestQuote}>
+                      Request Quote
+                    </Button>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full gap-2 text-primary-red hover:bg-primary-red/10"
+                    onClick={() => onReportListing?.(listing)}
+                  >
+                    <Flag className="h-4 w-4" />
+                    Report Listing
+                  </Button>
+                </div>
+              </>
             )}
-
-            {/* Pickup Instructions */}
-            {listing.pickup_instructions && (
-              <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-                <h4 className="mb-2 flex items-center gap-2 font-medium text-bone-white">
-                  <Truck className="h-4 w-4" />
-                  Pickup Instructions
-                </h4>
-                <p className="text-sm text-muted-gray">{listing.pickup_instructions}</p>
-              </div>
-            )}
-
-            <Separator className="bg-white/10" />
-
-            {/* Actions */}
-            <div className="flex gap-3">
-              {isInQuote ? (
-                <Button variant="outline" className="flex-1 gap-2" disabled>
-                  <Check className="h-4 w-4" />
-                  Added to Quote
-                </Button>
-              ) : (
-                <Button variant="outline" className="flex-1 gap-2" onClick={onAddToQuote}>
-                  <Plus className="h-4 w-4" />
-                  Add to Quote
-                </Button>
-              )}
-              <Button className="flex-1" onClick={onRequestQuote}>
-                Request Quote
-              </Button>
-            </div>
           </div>
         </div>
       </DialogContent>

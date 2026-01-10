@@ -16,6 +16,7 @@ import {
   AlertCircle,
   BadgeCheck,
   Calendar,
+  Tag,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -51,18 +52,27 @@ import type { GearMarketplaceListing } from '@/types/gear';
 interface MyListingsTabProps {
   orgId: string;
   onAddListing: () => void;
+  onListForSale?: () => void;
   onGoToSettings?: () => void;
 }
 
-export function MyListingsTab({ orgId, onAddListing, onGoToSettings }: MyListingsTabProps) {
+export function MyListingsTab({ orgId, onAddListing, onListForSale, onGoToSettings }: MyListingsTabProps) {
   const { listings, isLoading: listingsLoading, deleteListing, updateListing } = useMyListings(orgId);
   const { settings, isLoading: settingsLoading } = useMarketplaceSettings(orgId);
 
   const isLoading = listingsLoading || settingsLoading;
 
   // State
+  const [listingsMode, setListingsMode] = useState<'rent' | 'sale'>('rent');
   const [editingListing, setEditingListing] = useState<GearMarketplaceListing | null>(null);
   const [deletingListingId, setDeletingListingId] = useState<string | null>(null);
+
+  // Filter listings by mode
+  const filteredListings = listings.filter((listing) => {
+    if (listing.listing_type === 'both') return true;
+    if (listingsMode === 'rent') return listing.listing_type === 'rent' || !listing.listing_type;
+    return listing.listing_type === 'sale';
+  });
 
   const handleToggleListed = async (listing: GearMarketplaceListing) => {
     try {
@@ -145,10 +155,32 @@ export function MyListingsTab({ orgId, onAddListing, onGoToSettings }: MyListing
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-4">
+          {/* Listings Mode Toggle */}
+          <div className="inline-flex rounded-lg border border-white/10 bg-white/5 p-1">
+            <Button
+              variant={listingsMode === 'rent' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setListingsMode('rent')}
+              className="gap-2"
+            >
+              <Tag className="h-4 w-4" />
+              For Rent
+            </Button>
+            <Button
+              variant={listingsMode === 'sale' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setListingsMode('sale')}
+              className="gap-2"
+            >
+              <DollarSign className="h-4 w-4" />
+              For Sale
+            </Button>
+          </div>
+
           <p className="text-sm text-muted-gray">
-            {listings.length} listing{listings.length !== 1 ? 's' : ''}
+            {filteredListings.length} listing{filteredListings.length !== 1 ? 's' : ''}
             {settings?.is_verified && (
               <span className="ml-2 inline-flex items-center gap-1 text-green-400">
                 <BadgeCheck className="h-3.5 w-3.5" />
@@ -157,26 +189,61 @@ export function MyListingsTab({ orgId, onAddListing, onGoToSettings }: MyListing
             )}
           </p>
         </div>
-        <Button onClick={onAddListing} size="sm" className="gap-2">
-          <Plus className="h-4 w-4" />
-          Add Listing
-        </Button>
+
+        {listingsMode === 'rent' ? (
+          <Button onClick={onAddListing} size="sm" className="gap-2">
+            <Plus className="h-4 w-4" />
+            Add Rental Listing
+          </Button>
+        ) : (
+          <Button onClick={onListForSale} size="sm" className="gap-2">
+            <Plus className="h-4 w-4" />
+            List Asset for Sale
+          </Button>
+        )}
       </div>
 
       {/* Listings Grid */}
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {listings.map((listing) => (
-          <ListingCard
-            key={listing.id}
-            listing={listing}
-            onEdit={() => setEditingListing(listing)}
-            onDelete={() => setDeletingListingId(listing.id)}
-            onToggleListed={() => handleToggleListed(listing)}
-            isUpdating={updateListing.isPending}
-            formatPrice={formatPrice}
-          />
-        ))}
-      </div>
+      {filteredListings.length === 0 ? (
+        <Card className="border-white/10 bg-white/5">
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Package className="mb-4 h-12 w-12 text-muted-gray" />
+            <h3 className="mb-2 text-lg font-medium text-bone-white">
+              No {listingsMode === 'rent' ? 'Rental' : 'Sale'} Listings
+            </h3>
+            <p className="mb-4 text-center text-sm text-muted-gray">
+              {listingsMode === 'rent'
+                ? 'You have no equipment listed for rent.'
+                : 'You have no equipment listed for sale.'}
+            </p>
+            {listingsMode === 'rent' ? (
+              <Button onClick={onAddListing} className="gap-2">
+                <Plus className="h-4 w-4" />
+                Add Rental Listing
+              </Button>
+            ) : (
+              <Button onClick={onListForSale} className="gap-2">
+                <Plus className="h-4 w-4" />
+                List Asset for Sale
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {filteredListings.map((listing) => (
+            <ListingCard
+              key={listing.id}
+              listing={listing}
+              onEdit={() => setEditingListing(listing)}
+              onDelete={() => setDeletingListingId(listing.id)}
+              onToggleListed={() => handleToggleListed(listing)}
+              isUpdating={updateListing.isPending}
+              formatPrice={formatPrice}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Edit Dialog */}
       {editingListing && (

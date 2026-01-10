@@ -355,6 +355,7 @@ class CognitoAuth:
         try:
             if not jwks_client:
                 # Fallback: verify with Cognito directly
+                print("[COGNITO] No JWKS client, falling back to direct verification")
                 return CognitoAuth.get_user_from_token(token)
 
             signing_key = jwks_client.get_signing_key_from_jwt(token)
@@ -371,6 +372,7 @@ class CognitoAuth:
 
             # Verify client_id for access tokens
             if claims.get('client_id') != COGNITO_CLIENT_ID:
+                print(f"[COGNITO] Client ID mismatch: {claims.get('client_id')} != {COGNITO_CLIENT_ID}")
                 return None
 
             return {
@@ -381,11 +383,14 @@ class CognitoAuth:
             }
 
         except jwt.ExpiredSignatureError:
+            print("[COGNITO] Token expired")
             return None
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            print(f"[COGNITO] Invalid token: {e}")
             return None
-        except Exception:
+        except Exception as e:
             # Fallback to direct verification
+            print(f"[COGNITO] Exception {type(e).__name__}: {e}, trying fallback")
             return CognitoAuth.get_user_from_token(token)
 
     @staticmethod

@@ -18,6 +18,8 @@ import {
   Plus,
   Layers,
   LayoutList,
+  Tag,
+  DollarSign,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -46,7 +48,10 @@ import { ListingDetailDialog } from './ListingDetailDialog';
 import { RequestQuoteDialog } from './RequestQuoteDialog';
 import { MyListingsTab } from './MyListingsTab';
 import { AssetPickerDialog } from './AssetPickerDialog';
-import type { GearMarketplaceListing, GearMarketplaceSearchFilters, ListerType, MarketplaceOrganizationGroup } from '@/types/gear';
+import { ListForSaleDialog } from './ListForSaleDialog';
+import { MessageSellerModal } from './MessageSellerModal';
+import { ReportListingModal } from './ReportListingModal';
+import type { GearMarketplaceListing, GearMarketplaceSearchFilters, ListerType, ListingType, MarketplaceOrganizationGroup } from '@/types/gear';
 
 interface MarketplaceViewProps {
   orgId: string;
@@ -64,8 +69,10 @@ export function MarketplaceView({
   // View state
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [groupByOrg, setGroupByOrg] = useState(true); // Default to grouped view
-  const [activeTab, setActiveTab] = useState<'listings' | 'rental_houses' | 'my_listings'>('listings');
+  const [activeTab, setActiveTab] = useState<'browse' | 'rental_houses' | 'my_listings'>('browse');
+  const [browseMode, setBrowseMode] = useState<'rentals' | 'for_sale'>('rentals');
   const [isAssetPickerOpen, setIsAssetPickerOpen] = useState(false);
+  const [isListForSaleOpen, setIsListForSaleOpen] = useState(false);
 
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -79,6 +86,9 @@ export function MarketplaceView({
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [isQuoteDialogOpen, setIsQuoteDialogOpen] = useState(false);
   const [quoteItems, setQuoteItems] = useState<GearMarketplaceListing[]>([]);
+  const [isMessageSellerOpen, setIsMessageSellerOpen] = useState(false);
+  const [isReportListingOpen, setIsReportListingOpen] = useState(false);
+  const [messageReportListing, setMessageReportListing] = useState<GearMarketplaceListing | null>(null);
 
   // Build filters
   const filters: GearMarketplaceSearchFilters = {
@@ -88,6 +98,8 @@ export function MarketplaceView({
     min_price: priceRange.min,
     max_price: priceRange.max,
     verified_only: verifiedOnly || undefined,
+    // Filter by listing type based on browse mode
+    listing_type: browseMode === 'rentals' ? 'rent' : 'sale',
   };
 
   // Get org IDs from quote items for prioritization
@@ -145,6 +157,16 @@ export function MarketplaceView({
     onRentalRequested?.();
   };
 
+  const handleMessageSeller = (listing: GearMarketplaceListing) => {
+    setMessageReportListing(listing);
+    setIsMessageSellerOpen(true);
+  };
+
+  const handleReportListing = (listing: GearMarketplaceListing) => {
+    setMessageReportListing(listing);
+    setIsReportListingOpen(true);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -167,13 +189,13 @@ export function MarketplaceView({
       {/* Tab Navigation */}
       <div className="flex items-center gap-4 border-b border-white/10 pb-4">
         <Button
-          variant={activeTab === 'listings' ? 'default' : 'ghost'}
+          variant={activeTab === 'browse' ? 'default' : 'ghost'}
           size="sm"
-          onClick={() => setActiveTab('listings')}
+          onClick={() => setActiveTab('browse')}
           className="gap-2"
         >
           <Package className="h-4 w-4" />
-          Browse Listings
+          Browse
         </Button>
         <Button
           variant={activeTab === 'rental_houses' ? 'default' : 'ghost'}
@@ -195,103 +217,132 @@ export function MarketplaceView({
         </Button>
       </div>
 
-      {/* Search & Filters - Only show for listings/rental_houses tabs */}
+      {/* Search & Filters - Only show for browse/rental_houses tabs */}
       {activeTab !== 'my_listings' && (
-        <div className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-gray" />
-            <Input
-              placeholder="Search equipment..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
-            />
-          </div>
+        <div className="space-y-4">
+          {/* Browse Mode Toggle - Only show in browse tab */}
+          {activeTab === 'browse' && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-gray">Show:</span>
+              <div className="inline-flex rounded-lg border border-white/10 bg-white/5 p-1">
+                <Button
+                  variant={browseMode === 'rentals' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setBrowseMode('rentals')}
+                  className="gap-2"
+                >
+                  <Tag className="h-4 w-4" />
+                  Rentals
+                </Button>
+                <Button
+                  variant={browseMode === 'for_sale' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setBrowseMode('for_sale')}
+                  className="gap-2"
+                >
+                  <DollarSign className="h-4 w-4" />
+                  For Sale
+                </Button>
+              </div>
+            </div>
+          )}
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Select
-              value={categoryFilter}
-              onValueChange={(value) => setCategoryFilter(value === 'all' ? '' : value)}
-            >
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="Category" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select
-              value={listerTypeFilter}
-              onValueChange={(value) => setListerTypeFilter(value === 'all' ? '' : value as ListerType)}
-            >
-              <SelectTrigger className="w-[160px]">
-                <SelectValue placeholder="Lister Type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="rental_house">Rental Houses</SelectItem>
-                <SelectItem value="production_company">Production Companies</SelectItem>
-                <SelectItem value="individual">Individuals</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Button
-              variant={verifiedOnly ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setVerifiedOnly(!verifiedOnly)}
-              className="gap-1.5"
-            >
-              <BadgeCheck className="h-4 w-4" />
-              Verified Only
-            </Button>
-
-            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-              <Button
-                variant={groupByOrg ? 'default' : 'ghost'}
-                size="icon"
-                onClick={() => setGroupByOrg(true)}
-                title="Group by rental house"
-              >
-                <Layers className="h-4 w-4" />
-              </Button>
-              <Button
-                variant={!groupByOrg ? 'default' : 'ghost'}
-                size="icon"
-                onClick={() => setGroupByOrg(false)}
-                title="Flat list"
-              >
-                <LayoutList className="h-4 w-4" />
-              </Button>
+          <div className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-gray" />
+              <Input
+                placeholder={browseMode === 'rentals' ? 'Search rentals...' : 'Search items for sale...'}
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
             </div>
 
-            <div className="flex items-center gap-1 border-l border-white/10 pl-2">
-              <Button
-                variant={viewMode === 'grid' ? 'default' : 'ghost'}
-                size="icon"
-                onClick={() => setViewMode('grid')}
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={categoryFilter}
+                onValueChange={(value) => setCategoryFilter(value === 'all' ? '' : value)}
               >
-                <Grid className="h-4 w-4" />
-              </Button>
-              <Button
-                variant={viewMode === 'list' ? 'default' : 'ghost'}
-                size="icon"
-                onClick={() => setViewMode('list')}
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Categories</SelectItem>
+                  {categories.map((cat) => (
+                    <SelectItem key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select
+                value={listerTypeFilter}
+                onValueChange={(value) => setListerTypeFilter(value === 'all' ? '' : value as ListerType)}
               >
-                <List className="h-4 w-4" />
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="Lister Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  <SelectItem value="rental_house">Rental Houses</SelectItem>
+                  <SelectItem value="production_company">Production Companies</SelectItem>
+                  <SelectItem value="individual">Individuals</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Button
+                variant={verifiedOnly ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setVerifiedOnly(!verifiedOnly)}
+                className="gap-1.5"
+              >
+                <BadgeCheck className="h-4 w-4" />
+                Verified Only
               </Button>
+
+              <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+                <Button
+                  variant={groupByOrg ? 'default' : 'ghost'}
+                  size="icon"
+                  onClick={() => setGroupByOrg(true)}
+                  title="Group by rental house"
+                >
+                  <Layers className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={!groupByOrg ? 'default' : 'ghost'}
+                  size="icon"
+                  onClick={() => setGroupByOrg(false)}
+                  title="Flat list"
+                >
+                  <LayoutList className="h-4 w-4" />
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-1 border-l border-white/10 pl-2">
+                <Button
+                  variant={viewMode === 'grid' ? 'default' : 'ghost'}
+                  size="icon"
+                  onClick={() => setViewMode('grid')}
+                >
+                  <Grid className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant={viewMode === 'list' ? 'default' : 'ghost'}
+                  size="icon"
+                  onClick={() => setViewMode('list')}
+                >
+                  <List className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
       {/* Content */}
-      {activeTab === 'listings' ? (
+      {activeTab === 'browse' ? (
         groupByOrg ? (
           <GroupedListingsContent
             organizations={groupedOrgs}
@@ -324,6 +375,7 @@ export function MarketplaceView({
         <MyListingsTab
           orgId={orgId}
           onAddListing={() => setIsAssetPickerOpen(true)}
+          onListForSale={() => setIsListForSaleOpen(true)}
           onGoToSettings={onGoToSettings}
         />
       )}
@@ -340,6 +392,8 @@ export function MarketplaceView({
           }
         }}
         isInQuote={selectedListing ? quoteItems.some((item) => item.id === selectedListing.id) : false}
+        onMessageSeller={handleMessageSeller}
+        onReportListing={handleReportListing}
       />
 
       {/* Request Quote Dialog */}
@@ -358,6 +412,36 @@ export function MarketplaceView({
         isOpen={isAssetPickerOpen}
         onClose={() => setIsAssetPickerOpen(false)}
         orgId={orgId}
+      />
+
+      {/* List For Sale Dialog */}
+      <ListForSaleDialog
+        isOpen={isListForSaleOpen}
+        onClose={() => setIsListForSaleOpen(false)}
+        orgId={orgId}
+      />
+
+      {/* Message Seller Modal */}
+      <MessageSellerModal
+        listing={messageReportListing}
+        isOpen={isMessageSellerOpen}
+        onClose={() => {
+          setIsMessageSellerOpen(false);
+          setMessageReportListing(null);
+        }}
+        onSuccess={() => {
+          setIsDetailOpen(false);
+        }}
+      />
+
+      {/* Report Listing Modal */}
+      <ReportListingModal
+        listing={messageReportListing}
+        isOpen={isReportListingOpen}
+        onClose={() => {
+          setIsReportListingOpen(false);
+          setMessageReportListing(null);
+        }}
       />
     </div>
   );

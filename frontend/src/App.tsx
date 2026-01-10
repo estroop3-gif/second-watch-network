@@ -130,12 +130,34 @@ const ClearanceViewPage = React.lazy(() =>
   import("./pages/ClearanceViewPage")
 );
 
+// Lazy load moodboard print page
+const MoodboardPrintPage = React.lazy(() =>
+  import("./pages/backlot/MoodboardPrintPage")
+);
+
+// Lazy load story print page
+const StoryPrintPage = React.lazy(() =>
+  import("./pages/backlot/StoryPrintPage")
+);
+
+// Lazy load sides print page
+const SidesPrintPage = React.lazy(() =>
+  import("./pages/backlot/SidesPrintPage")
+);
+
+// Lazy load stripboard print page
+const StripboardPrintPage = React.lazy(() =>
+  import("./pages/backlot/StripboardPrintPage")
+);
+
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 
 // Gear House Pages
 import GearHousePage from "./pages/gear/GearHousePage";
 import GearWorkspacePage from "./pages/gear/GearWorkspacePage";
+import IncidentDetailPage from "./pages/gear/IncidentDetailPage";
+import UserStrikeDetailPage from "./pages/gear/UserStrikeDetailPage";
 import { AsyncVerificationPage } from "./pages/gear/AsyncVerificationPage";
 import MyGearLite from "./pages/MyGearLite";
 
@@ -278,6 +300,26 @@ const App = () => (
                     {/* Backlot Production Hub Routes */}
                     <Route path="/backlot" element={<BacklotHome />} />
                     <Route path="/backlot/projects/:projectId" element={<ProjectWorkspace />} />
+                    <Route path="/backlot/:projectId/moodboards/:moodboardId/print" element={
+                      <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
+                        <MoodboardPrintPage />
+                      </Suspense>
+                    } />
+                    <Route path="/backlot/:projectId/stories/:storyId/print" element={
+                      <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
+                        <StoryPrintPage />
+                      </Suspense>
+                    } />
+                    <Route path="/backlot/:projectId/sides/:packetId/print" element={
+                      <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
+                        <SidesPrintPage />
+                      </Suspense>
+                    } />
+                    <Route path="/backlot/:projectId/stripboard/:stripboardId/print" element={
+                      <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
+                        <StripboardPrintPage />
+                      </Suspense>
+                    } />
 
                     {/* Church Production Tools Routes */}
                     <Route path="/church" element={<ChurchToolsHome />} />
@@ -287,6 +329,8 @@ const App = () => (
                     <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium']} redirectTo="/my-gear" />}>
                       <Route path="/gear" element={<GearHousePage />} />
                       <Route path="/gear/:orgId" element={<GearWorkspacePage />} />
+                      <Route path="/gear/:orgId/incidents/:incidentId" element={<IncidentDetailPage />} />
+                      <Route path="/gear/:orgId/strikes/:userId" element={<UserStrikeDetailPage />} />
                     </Route>
                     {/* Public verification route - no auth required */}
                     <Route path="/gear/verify/:token" element={<AsyncVerificationPage />} />

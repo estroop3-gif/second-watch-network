@@ -8,3 +8,4 @@ export * from './useGearCheckin';
 export * from './useGearMarketplace';
 export * from './usePersonalGear';
 export * from './useGearWorkOrders';
+export * from './useGearIncidentDetail';

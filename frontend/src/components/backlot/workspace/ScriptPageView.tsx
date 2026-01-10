@@ -45,7 +45,10 @@ import {
 import { cn } from '@/lib/utils';
 
 // Screenplay page constants (industry standard at 72 DPI)
-const LINES_PER_PAGE = 55;
+// Page has 792px height - 72px top - 72px bottom = 648px for content
+// At 12px font with 1.0 line-height = 12px per line (matches PDF export)
+// Max lines = 648 / 12 = 54 lines per page
+const LINES_PER_PAGE = 54;
 const PAGE_WIDTH_PX = 612; // 8.5" at 72dpi
 const PAGE_HEIGHT_PX = 792; // 11" at 72dpi
 
@@ -65,48 +68,40 @@ const PAREN_LEFT = 223;    // 3.1" - Parenthetical start
 const PAREN_RIGHT = 403;   // 5.6" - Parenthetical end
 const TRANSITION_RIGHT = MARGIN_RIGHT; // Right-aligned to 1" margin
 
-// Element types
-type ScriptElementType =
-  | 'scene_heading'
-  | 'action'
-  | 'character'
-  | 'dialogue'
-  | 'parenthetical'
-  | 'transition'
-  | 'general'
-  // Title page elements
-  | 'title'
-  | 'author'
-  | 'contact'
-  | 'draft_info'
-  | 'copyright'
-  | 'title_page_text';
+// Import centralized screenplay formatting
+import {
+  ScriptElementType,
+  ELEMENT_PATTERNS,
+  detectElementType,
+  FORGIVING_CONFIG,
+} from '@/utils/scriptFormatting';
 
+// Local interfaces for page view - ELEMENT-BASED storage
+// Each ScriptElement represents a logical screenplay element (dialogue block, action block, etc.)
+// that can span multiple visual lines but is edited as one unit
+interface ScriptElement {
+  id: string; // Unique ID for React keys
+  type: ScriptElementType;
+  content: string; // Full content of the element (may contain multiple visual lines worth of text)
+  startLineIndex: number; // First line index in original content
+  endLineIndex: number; // Last line index in original content
+  originalIndent: number; // Indentation for this element type
+}
+
+// Legacy line interface (kept for pagination calculations)
 interface ScriptLine {
   type: ScriptElementType;
   content: string;
   lineIndex: number;
+  originalIndent?: number;
 }
 
 interface ScriptPage {
   pageNumber: number;
-  lines: ScriptLine[];
+  elements: ScriptElement[]; // Changed from lines to elements
   startLineIndex: number;
   endLineIndex: number;
 }
-
-// Element patterns for detection
-const ELEMENT_PATTERNS = {
-  scene_heading: /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.)[\s\S]*/i,
-  transition: /^(FADE IN:|FADE OUT:|FADE TO:|CUT TO:|DISSOLVE TO:|DISSOLVE:|SMASH CUT TO:|SMASH CUT:|MATCH CUT TO:|MATCH CUT:|JUMP CUT TO:|JUMP CUT:|TIME CUT:|IRIS IN:|IRIS OUT:|WIPE TO:|.+\s+TO:|THE END\.?)[\s\S]*/i,
-  character: /^[A-Z][A-Z0-9\s\-'\.]+(\s*\(V\.O\.\)|\s*\(O\.S\.\)|\s*\(O\.C\.\)|\s*\(CONT'D\))?$/,
-  parenthetical: /^\(.+\)$/,
-  // Title page patterns
-  author: /^(written\s+by|screenplay\s+by|teleplay\s+by|story\s+by|by\s*$)/i,
-  draft_info: /^(draft|revision|version|\d{1,2}\/\d{1,2}\/\d{2,4})/i,
-  copyright: /^(©|copyright|\(c\))/i,
-  contact: /(@[\w.-]+\.\w+|\(\d{3}\)\s*\d{3}[-.]?\d{4}|\d{3}[-.]?\d{3}[-.]?\d{4}|agent:|manager:|represented\s+by)/i,
-};
 
 // Element styling config (positioning is calculated separately based on page measurements)
 const ELEMENT_CONFIG: Record<ScriptElementType, {
@@ -245,130 +240,128 @@ function getElementPosition(type: ScriptElementType): { left: number; width: num
   }
 }
 
-// Detect element type from content using indent-based detection (matches backend output)
-// Backend format_screenplay_text() outputs these indentation levels:
-// - Scene Heading: 0 chars (left-aligned)
-// - Action: 0 chars (left-aligned)
-// - Dialogue: 10 chars (detected at 8-14)
-// - Parenthetical: 15 chars (detected at 12-18)
-// - Character: 20 chars (detected at 15-30)
-// - Transition: 40 chars (detected at 35+)
-function detectElementType(line: string, prevType?: ScriptElementType, isTitlePage?: boolean): ScriptElementType {
-  // Measure indentation BEFORE trimming - this is critical for accurate detection
-  const leadingSpaces = line.length - line.trimStart().length;
-  const trimmed = line.trim();
-
-  if (!trimmed) return 'general';
-
-  // If we're in title page context, check for title page elements
-  if (isTitlePage) {
-    const isCentered = leadingSpaces >= 15;
-
-    if (ELEMENT_PATTERNS.copyright.test(trimmed)) return 'copyright';
-    if (ELEMENT_PATTERNS.author.test(trimmed)) return 'author';
-    if (ELEMENT_PATTERNS.draft_info.test(trimmed)) return 'draft_info';
-    if (ELEMENT_PATTERNS.contact.test(trimmed)) return 'contact';
-
-    if ((trimmed === trimmed.toUpperCase() && trimmed.length < 80 && !ELEMENT_PATTERNS.scene_heading.test(trimmed)) ||
-        (isCentered && trimmed === trimmed.toUpperCase() && !ELEMENT_PATTERNS.scene_heading.test(trimmed))) {
-      return 'title';
-    }
-
-    if (isCentered) {
-      return 'title_page_text';
-    }
-
-    return 'title_page_text';
+// Get the standard indentation (in spaces) for each element type
+// This matches the backend formatting and ensures consistent re-detection
+function getElementIndent(type: ScriptElementType): number {
+  switch (type) {
+    case 'scene_heading':
+    case 'action':
+    case 'general':
+    case 'shot':
+      return 0; // Left-aligned
+    case 'dialogue':
+      return 10; // 10 spaces - within dialogue range (8-14)
+    case 'parenthetical':
+      return 15; // 15 spaces - within parenthetical range (12-18)
+    case 'character':
+      return 22; // 22 spaces - within character range (15-30)
+    case 'transition':
+      return 40; // 40 spaces - right-aligned (35+)
+    // Title page elements
+    case 'title':
+    case 'author':
+    case 'draft_info':
+    case 'copyright':
+    case 'title_page_text':
+      return 20; // Centered
+    case 'contact':
+      return 0; // Left-aligned
+    default:
+      return 0;
   }
-
-  // RIGHT-ALIGNED TRANSITIONS (35+ chars indent) - backend outputs 40 spaces
-  if (leadingSpaces >= 35) {
-    return 'transition';
-  }
-
-  // CENTERED CHARACTER NAME (15-30 chars indent, ALL CAPS) - backend outputs 20 spaces
-  if (leadingSpaces >= 15 && leadingSpaces <= 30) {
-    // Remove parenthetical extensions like (V.O.), (O.S.), (CONT'D)
-    const namePart = trimmed.replace(/\s*\([^)]+\)\s*$/, '');
-    if (namePart === namePart.toUpperCase() && namePart.length > 1 && namePart.length < 50) {
-      return 'character';
-    }
-  }
-
-  // PARENTHETICAL (12-18 chars indent, starts with () - backend outputs 15 spaces
-  if (leadingSpaces >= 12 && leadingSpaces <= 18 && trimmed.startsWith('(')) {
-    if (ELEMENT_PATTERNS.parenthetical.test(trimmed)) {
-      return 'parenthetical';
-    }
-  }
-
-  // DIALOGUE (8-14 chars indent, after character/parenthetical/dialogue) - backend outputs 10 spaces
-  if (leadingSpaces >= 8 && leadingSpaces <= 14) {
-    if (prevType === 'character' || prevType === 'parenthetical' || prevType === 'dialogue') {
-      return 'dialogue';
-    }
-  }
-
-  // LEFT-ALIGNED (0-8 chars indent) - scene headings, action, and left-aligned transitions
-  if (leadingSpaces < 8) {
-    if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
-    if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
-    return 'action';
-  }
-
-  // Fallback to pattern matching for edge cases (unusual indentation)
-  if (ELEMENT_PATTERNS.scene_heading.test(trimmed)) return 'scene_heading';
-  if (ELEMENT_PATTERNS.transition.test(trimmed)) return 'transition';
-  if (ELEMENT_PATTERNS.parenthetical.test(trimmed) &&
-      (prevType === 'character' || prevType === 'dialogue')) return 'parenthetical';
-  if (ELEMENT_PATTERNS.character.test(trimmed) && trimmed.length < 50) return 'character';
-  if (prevType === 'character' || prevType === 'parenthetical') return 'dialogue';
-
-  return 'action';
 }
 
-// Check if a line is just a page number (e.g., "1.", "2.", "123.")
-// These are often included in PDF imports and should be filtered out
-// since we render our own page numbers
-function isPageNumberLine(line: string): boolean {
-  const trimmed = line.trim();
-  return /^\d{1,3}\.$/.test(trimmed);
+// Note: detectElementType is now imported from scriptFormatting with FORGIVING_CONFIG
+// for imported content display (uses indent + pattern detection)
+
+// Parse content into ELEMENTS (groups of consecutive same-type lines)
+// This enables element-based editing where dialogue, action, etc. flow as single blocks
+function parseScriptElements(content: string): ScriptElement[] {
+  const rawLines = content.split('\n');
+  const elements: ScriptElement[] = [];
+  let prevType: ScriptElementType | undefined;
+  let currentElement: ScriptElement | null = null;
+  let elementId = 0;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const type = detectElementType(line, undefined, prevType, false, FORGIVING_CONFIG);
+    const trimmedContent = line.trimStart();
+    const indent = line.length - trimmedContent.length;
+
+    // Determine if this line should continue the current element or start a new one
+    // Group consecutive lines of the same type (except character names which are always single)
+    const shouldGroup = currentElement &&
+      currentElement.type === type &&
+      type !== 'character' && // Character names are always single line
+      type !== 'scene_heading' && // Scene headings are always single line
+      type !== 'transition' && // Transitions are always single line
+      trimmedContent.trim() !== ''; // Don't group empty lines
+
+    if (shouldGroup && currentElement) {
+      // Continue the current element - append content with newline
+      currentElement.content += '\n' + trimmedContent;
+      currentElement.endLineIndex = i;
+    } else {
+      // Start a new element
+      if (currentElement) {
+        elements.push(currentElement);
+      }
+      currentElement = {
+        id: `el-${elementId++}`,
+        type,
+        content: trimmedContent,
+        startLineIndex: i,
+        endLineIndex: i,
+        originalIndent: indent,
+      };
+    }
+
+    if (trimmedContent.trim()) prevType = type;
+  }
+
+  // Don't forget the last element
+  if (currentElement) {
+    elements.push(currentElement);
+  }
+
+  return elements;
 }
 
-// Parse content into lines with types
+// Convert elements back to line-based content for storage
+function elementsToContent(elements: ScriptElement[]): string {
+  const lines: string[] = [];
+
+  for (const element of elements) {
+    const indent = ' '.repeat(element.originalIndent);
+    // Split element content by newlines (for multi-line elements like dialogue)
+    const contentLines = element.content.split('\n');
+    for (const line of contentLines) {
+      lines.push(indent + line);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// Legacy function for backward compatibility with pagination
 function parseScriptLines(content: string): ScriptLine[] {
   const rawLines = content.split('\n');
   const lines: ScriptLine[] = [];
   let prevType: ScriptElementType | undefined;
-  let skipNextBlankLines = false;
 
-  // Note: Title page content is now handled separately (stored in title_page_data JSON)
-  // The text_content passed here should only contain the script body, not title page
-  // So we don't need to detect title pages - treat everything as script body
   for (let i = 0; i < rawLines.length; i++) {
     const line = rawLines[i];
-    const isBlank = !line.trim();
+    const type = detectElementType(line, undefined, prevType, false, FORGIVING_CONFIG);
+    const trimmedContent = line.trimStart();
 
-    // Skip standalone page number lines (from PDF imports)
-    // since we render our own page numbers
-    if (isPageNumberLine(line)) {
-      skipNextBlankLines = true; // Also skip blank lines after page numbers
-      continue;
-    }
-
-    // Skip blank lines that follow page numbers
-    if (skipNextBlankLines && isBlank) {
-      continue;
-    }
-
-    // Stop skipping blank lines once we hit actual content
-    if (!isBlank) {
-      skipNextBlankLines = false;
-    }
-
-    const type = detectElementType(line, prevType, false);
-    lines.push({ type, content: line, lineIndex: i });
-    if (line.trim()) prevType = type;
+    lines.push({
+      type,
+      content: trimmedContent,
+      lineIndex: i,
+      originalIndent: line.length - trimmedContent.length
+    });
+    if (trimmedContent.trim()) prevType = type;
   }
 
   return lines;
@@ -456,14 +449,15 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
   const [zoom, setZoom] = useState(70); // Start at 70% to fit page on screen
   const [viewMode, setViewMode] = useState<'single' | 'continuous'>('continuous');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [editingLineIndex, setEditingLineIndex] = useState<number | null>(null);
+  const [editingElementId, setEditingElementId] = useState<string | null>(null);
   const [currentElementType, setCurrentElementType] = useState<ScriptElementType>('action');
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const lineInputRefs = useRef<Map<number, HTMLTextAreaElement>>(new Map());
+  const elementInputRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
 
-  // Parse and paginate content
+  // Parse content into elements (for editing) and lines (for pagination)
+  const elements = useMemo(() => parseScriptElements(content || ''), [content]);
   const lines = useMemo(() => parseScriptLines(content || ''), [content]);
   const pages = useMemo(() => paginateScript(lines), [lines]);
   const totalPages = pages.length;
@@ -501,30 +495,68 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     }
   }, []);
 
-  // Update content for a specific line
-  const updateLine = useCallback((lineIndex: number, newContent: string) => {
-    const rawLines = content.split('\n');
-    rawLines[lineIndex] = newContent;
-    onContentChange?.(rawLines.join('\n'));
-  }, [content, onContentChange]);
+  // Update content for a specific element (element-based editing)
+  const updateElement = useCallback((elementId: string, newContent: string) => {
+    // Find the element being updated
+    const elementIndex = elements.findIndex(el => el.id === elementId);
+    if (elementIndex === -1) return;
 
-  // Insert a new line after the current one
-  const insertLine = useCallback((afterIndex: number, newContent: string = '') => {
-    const rawLines = content.split('\n');
-    rawLines.splice(afterIndex + 1, 0, newContent);
-    onContentChange?.(rawLines.join('\n'));
-    setEditingLineIndex(afterIndex + 1);
-  }, [content, onContentChange]);
+    // Create a new elements array with the updated content
+    const updatedElements = elements.map(el =>
+      el.id === elementId ? { ...el, content: newContent } : el
+    );
 
-  // Delete a line
-  const deleteLine = useCallback((lineIndex: number) => {
-    const rawLines = content.split('\n');
-    if (rawLines.length > 1) {
-      rawLines.splice(lineIndex, 1);
-      onContentChange?.(rawLines.join('\n'));
-      setEditingLineIndex(Math.max(0, lineIndex - 1));
-    }
-  }, [content, onContentChange]);
+    // Convert elements back to line-based content for storage
+    const newContentStr = elementsToContent(updatedElements);
+    onContentChange?.(newContentStr);
+  }, [elements, onContentChange]);
+
+  // Insert a new element after the current one
+  const insertElement = useCallback((afterElementId: string, elementType: ScriptElementType, newContent: string = '') => {
+    const elementIndex = elements.findIndex(el => el.id === afterElementId);
+    if (elementIndex === -1) return;
+
+    const afterElement = elements[elementIndex];
+    const indent = getElementIndent(elementType);
+
+    // Create new element
+    const newElement: ScriptElement = {
+      id: `el-new-${Date.now()}`,
+      type: elementType,
+      content: newContent,
+      startLineIndex: afterElement.endLineIndex + 1,
+      endLineIndex: afterElement.endLineIndex + 1,
+      originalIndent: indent,
+    };
+
+    // Insert the new element
+    const updatedElements = [
+      ...elements.slice(0, elementIndex + 1),
+      newElement,
+      ...elements.slice(elementIndex + 1),
+    ];
+
+    const newContentStr = elementsToContent(updatedElements);
+    onContentChange?.(newContentStr);
+    setEditingElementId(newElement.id);
+    setCurrentElementType(elementType);
+  }, [elements, onContentChange]);
+
+  // Delete an element
+  const deleteElement = useCallback((elementId: string) => {
+    if (elements.length <= 1) return;
+
+    const elementIndex = elements.findIndex(el => el.id === elementId);
+    if (elementIndex === -1) return;
+
+    const updatedElements = elements.filter(el => el.id !== elementId);
+    const newContentStr = elementsToContent(updatedElements);
+    onContentChange?.(newContentStr);
+
+    // Move to previous element
+    const prevIndex = Math.max(0, elementIndex - 1);
+    setEditingElementId(updatedElements[prevIndex]?.id || null);
+  }, [elements, onContentChange]);
 
   // Element type cycle order (like Celtx)
   const ELEMENT_CYCLE: ScriptElementType[] = [
@@ -536,190 +568,297 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     'transition',
   ];
 
-  // Format current line as specific element type
-  const formatAsElement = useCallback((lineIndex: number, elementType: ScriptElementType) => {
-    const rawLines = content.split('\n');
-    let lineContent = rawLines[lineIndex] || '';
-    const trimmedContent = lineContent.trim();
+  // Format current element as specific element type
+  const formatElementAs = useCallback((elementId: string, elementType: ScriptElementType) => {
+    const element = elements.find(el => el.id === elementId);
+    if (!element) return;
+
+    const trimmedContent = element.content.trim();
 
     // Apply formatting based on element type
+    let formattedContent = '';
     switch (elementType) {
       case 'scene_heading':
-        // Add INT. prefix if not already a scene heading
         if (trimmedContent && !ELEMENT_PATTERNS.scene_heading.test(trimmedContent)) {
-          lineContent = 'INT. ' + trimmedContent.toUpperCase() + ' - DAY';
+          formattedContent = 'INT. ' + trimmedContent.toUpperCase() + ' - DAY';
         } else if (trimmedContent) {
-          lineContent = trimmedContent.toUpperCase();
+          formattedContent = trimmedContent.toUpperCase();
         } else {
-          lineContent = 'INT. ';
+          formattedContent = 'INT. ';
         }
         break;
       case 'action':
-        // Action is plain text, just use content as-is
-        lineContent = trimmedContent;
+        formattedContent = trimmedContent;
         break;
       case 'character':
-        // Character names are uppercase
-        lineContent = trimmedContent.toUpperCase();
+        formattedContent = trimmedContent.toUpperCase();
         break;
       case 'dialogue':
-        // Dialogue is plain text
-        lineContent = trimmedContent;
+        formattedContent = trimmedContent;
         break;
       case 'parenthetical':
-        // Wrap in parentheses if not already
         if (trimmedContent) {
-          if (!trimmedContent.startsWith('(')) {
-            lineContent = '(' + trimmedContent;
-          }
-          if (!lineContent.endsWith(')')) {
-            lineContent = lineContent + ')';
-          }
+          formattedContent = trimmedContent.startsWith('(') ? trimmedContent : '(' + trimmedContent;
+          formattedContent = formattedContent.endsWith(')') ? formattedContent : formattedContent + ')';
         } else {
-          lineContent = '()';
+          formattedContent = '()';
         }
         break;
       case 'transition':
-        // Transitions end with colon and are uppercase
         if (trimmedContent) {
-          lineContent = trimmedContent.toUpperCase();
-          if (!lineContent.endsWith(':')) {
-            lineContent = lineContent + ':';
-          }
+          formattedContent = trimmedContent.toUpperCase();
+          if (!formattedContent.endsWith(':')) formattedContent += ':';
         } else {
-          lineContent = 'CUT TO:';
+          formattedContent = 'CUT TO:';
         }
         break;
+      default:
+        formattedContent = trimmedContent;
     }
 
-    rawLines[lineIndex] = lineContent;
-    onContentChange?.(rawLines.join('\n'));
+    // Update the element with new type and formatted content
+    const updatedElements = elements.map(el =>
+      el.id === elementId
+        ? { ...el, type: elementType, content: formattedContent, originalIndent: getElementIndent(elementType) }
+        : el
+    );
+
+    onContentChange?.(elementsToContent(updatedElements));
     setCurrentElementType(elementType);
 
-    // Focus back on the input after formatting
+    // Focus back on the input
     setTimeout(() => {
-      const input = lineInputRefs.current.get(lineIndex);
+      const input = elementInputRefs.current.get(elementId);
       if (input) {
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
       }
     }, 0);
-  }, [content, onContentChange]);
+  }, [elements, onContentChange]);
 
   // Cycle to next element type (Tab behavior like Celtx)
-  const cycleElementType = useCallback((lineIndex: number) => {
+  const cycleElementType = useCallback((elementId: string) => {
     const currentIdx = ELEMENT_CYCLE.indexOf(currentElementType);
     const nextIdx = (currentIdx + 1) % ELEMENT_CYCLE.length;
-    const nextType = ELEMENT_CYCLE[nextIdx];
-    formatAsElement(lineIndex, nextType);
-  }, [currentElementType, formatAsElement]);
+    formatElementAs(elementId, ELEMENT_CYCLE[nextIdx]);
+  }, [currentElementType, formatElementAs]);
 
-  // Handle keyboard shortcuts
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>, lineIndex: number) => {
+  // Handle keyboard shortcuts for element-based editing
+  const handleElementKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>, elementId: string) => {
+    const elementIndex = elements.findIndex(el => el.id === elementId);
+    if (elementIndex === -1) return;
+
     // Ctrl+Number shortcuts for element types
     if (e.ctrlKey || e.metaKey) {
-      if (e.key === '1') { e.preventDefault(); formatAsElement(lineIndex, 'scene_heading'); }
-      else if (e.key === '2') { e.preventDefault(); formatAsElement(lineIndex, 'action'); }
-      else if (e.key === '3') { e.preventDefault(); formatAsElement(lineIndex, 'character'); }
-      else if (e.key === '4') { e.preventDefault(); formatAsElement(lineIndex, 'dialogue'); }
-      else if (e.key === '5') { e.preventDefault(); formatAsElement(lineIndex, 'parenthetical'); }
-      else if (e.key === '6') { e.preventDefault(); formatAsElement(lineIndex, 'transition'); }
+      if (e.key === '1') { e.preventDefault(); formatElementAs(elementId, 'scene_heading'); }
+      else if (e.key === '2') { e.preventDefault(); formatElementAs(elementId, 'action'); }
+      else if (e.key === '3') { e.preventDefault(); formatElementAs(elementId, 'character'); }
+      else if (e.key === '4') { e.preventDefault(); formatElementAs(elementId, 'dialogue'); }
+      else if (e.key === '5') { e.preventDefault(); formatElementAs(elementId, 'parenthetical'); }
+      else if (e.key === '6') { e.preventDefault(); formatElementAs(elementId, 'transition'); }
       else if (e.key === 's') { e.preventDefault(); onSave?.(); }
     }
 
-    // Enter to create new line with smart element type (like Celtx)
+    // Enter to create new element with smart type (like Celtx)
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const textarea = e.currentTarget;
-      const cursorPos = textarea.selectionStart;
-      const currentContent = textarea.value;
 
       // Determine next element type based on current type (Celtx behavior)
       let nextElementType: ScriptElementType = 'action';
       switch (currentElementType) {
-        case 'scene_heading':
-          nextElementType = 'action';
-          break;
-        case 'action':
-          nextElementType = 'action';
-          break;
-        case 'character':
-          nextElementType = 'dialogue';
-          break;
-        case 'dialogue':
-          nextElementType = 'character'; // Ready for next speaker
-          break;
-        case 'parenthetical':
-          nextElementType = 'dialogue';
-          break;
-        case 'transition':
-          nextElementType = 'scene_heading';
-          break;
+        case 'scene_heading': nextElementType = 'action'; break;
+        case 'action': nextElementType = 'action'; break;
+        case 'character': nextElementType = 'dialogue'; break;
+        case 'dialogue': nextElementType = 'character'; break;
+        case 'parenthetical': nextElementType = 'dialogue'; break;
+        case 'transition': nextElementType = 'scene_heading'; break;
       }
 
-      // If cursor is at end, just create new line
-      if (cursorPos === currentContent.length) {
-        insertLine(lineIndex, '');
-        setCurrentElementType(nextElementType);
-      } else {
-        // Split the line at cursor
-        const before = currentContent.substring(0, cursorPos);
-        const after = currentContent.substring(cursorPos);
-        updateLine(lineIndex, before);
-        insertLine(lineIndex, after);
-      }
+      insertElement(elementId, nextElementType, '');
     }
 
-    // Backspace at start of line to merge with previous
+    // Backspace at start to merge with previous element
     if (e.key === 'Backspace') {
       const textarea = e.currentTarget;
-      if (textarea.selectionStart === 0 && textarea.selectionEnd === 0 && lineIndex > 0) {
-        e.preventDefault();
-        const rawLines = content.split('\n');
-        const prevContent = rawLines[lineIndex - 1] || '';
-        const currentContent = rawLines[lineIndex] || '';
-        rawLines[lineIndex - 1] = prevContent + currentContent;
-        rawLines.splice(lineIndex, 1);
-        onContentChange?.(rawLines.join('\n'));
-        setEditingLineIndex(lineIndex - 1);
+      if (textarea.selectionStart === 0 && textarea.selectionEnd === 0 && elementIndex > 0) {
+        const currentElement = elements[elementIndex];
+        const prevElement = elements[elementIndex - 1];
+
+        // Only merge if same type or current is empty
+        if (currentElement.content.trim() === '' || currentElement.type === prevElement.type) {
+          e.preventDefault();
+          // Merge with previous element
+          const mergedContent = prevElement.content + (currentElement.content.trim() ? '\n' + currentElement.content : '');
+          const updatedElements = elements
+            .filter(el => el.id !== currentElement.id)
+            .map(el => el.id === prevElement.id ? { ...el, content: mergedContent } : el);
+
+          onContentChange?.(elementsToContent(updatedElements));
+          setEditingElementId(prevElement.id);
+        }
       }
     }
 
-    // Arrow up/down to navigate lines
-    if (e.key === 'ArrowUp' && lineIndex > 0) {
-      e.preventDefault();
-      setEditingLineIndex(lineIndex - 1);
+    // Arrow up/down to navigate elements
+    if (e.key === 'ArrowUp' && elementIndex > 0) {
+      const textarea = e.currentTarget;
+      // Only navigate if at the start of the element
+      if (textarea.selectionStart === 0) {
+        e.preventDefault();
+        setEditingElementId(elements[elementIndex - 1].id);
+      }
     }
-    if (e.key === 'ArrowDown' && lineIndex < lines.length - 1) {
-      e.preventDefault();
-      setEditingLineIndex(lineIndex + 1);
+    if (e.key === 'ArrowDown' && elementIndex < elements.length - 1) {
+      const textarea = e.currentTarget;
+      // Only navigate if at the end of the element
+      if (textarea.selectionStart === textarea.value.length) {
+        e.preventDefault();
+        setEditingElementId(elements[elementIndex + 1].id);
+      }
     }
 
     // Tab to cycle element types (like Celtx)
     if (e.key === 'Tab') {
       e.preventDefault();
       if (e.shiftKey) {
-        // Shift+Tab goes backwards
         const currentIdx = ELEMENT_CYCLE.indexOf(currentElementType);
         const prevIdx = (currentIdx - 1 + ELEMENT_CYCLE.length) % ELEMENT_CYCLE.length;
-        formatAsElement(lineIndex, ELEMENT_CYCLE[prevIdx]);
+        formatElementAs(elementId, ELEMENT_CYCLE[prevIdx]);
       } else {
-        // Tab goes forwards
-        cycleElementType(lineIndex);
+        cycleElementType(elementId);
       }
     }
-  }, [content, formatAsElement, insertLine, updateLine, onSave, onContentChange, lines.length, currentElementType, cycleElementType]);
+  }, [elements, formatElementAs, insertElement, onSave, onContentChange, currentElementType, cycleElementType]);
 
-  // Focus on editing line when it changes
+  // Focus on editing element when it changes
   useEffect(() => {
-    if (editingLineIndex !== null) {
-      const input = lineInputRefs.current.get(editingLineIndex);
+    if (editingElementId !== null) {
+      const input = elementInputRefs.current.get(editingElementId);
       if (input) {
         input.focus();
         input.setSelectionRange(input.value.length, input.value.length);
       }
     }
-  }, [editingLineIndex]);
+  }, [editingElementId]);
+
+  // Render element-based editor (for editing mode - elements flow naturally)
+  const renderElementEditor = () => {
+    const scaledWidth = (PAGE_WIDTH_PX * zoom) / 100;
+    const fontSize = (12 * zoom) / 100;
+    const lineHeight = 1.5; // Slightly more spacing for editing comfort
+
+    return (
+      <div
+        className="bg-white shadow-lg mx-auto"
+        style={{
+          width: scaledWidth,
+          minHeight: '100%',
+          paddingTop: (MARGIN_TOP * zoom) / 100,
+          paddingLeft: (MARGIN_LEFT * zoom) / 100,
+          paddingRight: (MARGIN_RIGHT * zoom) / 100,
+          paddingBottom: (MARGIN_BOTTOM * zoom) / 100,
+        }}
+      >
+        {elements.map((element) => {
+          const isEditingThis = editingElementId === element.id;
+          const effectiveType = isEditingThis ? currentElementType : element.type;
+          const config = ELEMENT_CONFIG[effectiveType] || ELEMENT_CONFIG.general;
+          const position = getElementPosition(effectiveType);
+
+          const scaledLeft = (position.left * zoom) / 100;
+          const scaledElementWidth = (position.width * zoom) / 100;
+
+          return (
+            <div
+              key={element.id}
+              className={cn(
+                "relative cursor-text mb-1",
+                isEditingThis && "bg-yellow-100/50 rounded"
+              )}
+              style={{
+                ...config.textStyle,
+                marginLeft: `${scaledLeft}px`,
+                width: `${scaledElementWidth}px`,
+                fontSize: `${fontSize}px`,
+                lineHeight: lineHeight,
+                minHeight: `${fontSize * lineHeight}px`,
+                fontFamily: 'Courier New, Courier, monospace',
+                textAlign: position.textAlign || 'left',
+              }}
+              onClick={() => {
+                const detectedType = element.type === 'general' ? 'action' : element.type;
+                setEditingElementId(element.id);
+                setCurrentElementType(detectedType);
+              }}
+            >
+              {isEditingThis ? (
+                <textarea
+                  ref={(el) => {
+                    if (el) {
+                      elementInputRefs.current.set(element.id, el);
+                      el.style.height = '0px';
+                      el.style.height = `${el.scrollHeight}px`;
+                    }
+                  }}
+                  value={element.content}
+                  onChange={(e) => {
+                    updateElement(element.id, e.target.value);
+                    const textarea = e.target as HTMLTextAreaElement;
+                    textarea.style.height = '0px';
+                    textarea.style.height = `${textarea.scrollHeight}px`;
+                  }}
+                  onKeyDown={(e) => handleElementKeyDown(e, element.id)}
+                  placeholder={config.placeholder}
+                  className="w-full bg-transparent border-none outline-none resize-none"
+                  style={{
+                    fontSize: `${fontSize}px`,
+                    lineHeight: lineHeight,
+                    fontFamily: 'Courier New, Courier, monospace',
+                    color: '#000',
+                    textAlign: position.textAlign || 'left',
+                    padding: 0,
+                    margin: 0,
+                    border: 'none',
+                    boxSizing: 'border-box',
+                    display: 'block',
+                    whiteSpace: 'pre-wrap',
+                    wordWrap: 'break-word',
+                    overflowWrap: 'break-word',
+                    minHeight: `${fontSize * lineHeight}px`,
+                    height: 'auto',
+                    overflow: 'hidden',
+                  }}
+                />
+              ) : (
+                <span
+                  style={{
+                    display: 'block',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {element.content || '\u00A0'}
+                </span>
+              )}
+            </div>
+          );
+        })}
+
+        {/* Add new element button */}
+        <div
+          className="mt-4 text-gray-500 cursor-pointer hover:text-gray-700 text-center"
+          style={{ fontSize: `${fontSize}px` }}
+          onClick={() => {
+            if (elements.length > 0) {
+              insertElement(elements[elements.length - 1].id, 'action', '');
+            }
+          }}
+        >
+          + Click to add new element
+        </div>
+      </div>
+    );
+  };
 
   // Render a single page
   const renderPage = (page: ScriptPage, isVisible: boolean = true) => {
@@ -735,27 +874,38 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           viewMode === 'continuous' && "mb-8",
           !isVisible && viewMode === 'single' && "hidden"
         )}
-        style={{ width: scaledWidth, minHeight: scaledHeight }}
+        style={{
+          width: scaledWidth,
+          minHeight: scaledHeight,
+          height: 'auto', // CRITICAL FIX: Allow page to expand when content wraps
+          overflow: 'visible', // CRITICAL: Allow content to flow beyond min height
+        }}
       >
-        {/* Page content area with margins */}
+        {/* Page content area with margins - using flow layout instead of absolute positioning */}
         <div
-          className="absolute overflow-hidden"
+          className="relative"
           style={{
-            top: (MARGIN_TOP * zoom) / 100,
-            left: (MARGIN_LEFT * zoom) / 100,
-            right: (MARGIN_RIGHT * zoom) / 100,
-            bottom: (MARGIN_BOTTOM * zoom) / 100,
+            paddingTop: (MARGIN_TOP * zoom) / 100,
+            paddingLeft: (MARGIN_LEFT * zoom) / 100,
+            paddingRight: (MARGIN_RIGHT * zoom) / 100,
+            paddingBottom: (MARGIN_BOTTOM * zoom) / 100,
             color: '#000',
-            position: 'absolute',
+            overflow: 'visible', // CRITICAL: Allow content to flow naturally and expand beyond min height
           }}
         >
           {page.lines.map((line, idx) => {
             const globalLineIndex = page.startLineIndex + idx;
-            const config = ELEMENT_CONFIG[line.type] || ELEMENT_CONFIG.general;
-            const position = getElementPosition(line.type);
             const isEditingThis = isEditing && editingLineIndex === globalLineIndex;
+
+            // When editing this line, use currentElementType to maintain position
+            // This prevents the line from jumping when the user types and the
+            // auto-detection would change the element type
+            const effectiveType = isEditingThis ? currentElementType : line.type;
+            const config = ELEMENT_CONFIG[effectiveType] || ELEMENT_CONFIG.general;
+            const position = getElementPosition(effectiveType);
+
             const fontSize = (12 * zoom) / 100;
-            const lineHeight = 1.5; // Standard screenplay line height
+            const lineHeight = 1.0; // Single-spaced (matches PDF export)
 
             // Calculate scaled position values
             const scaledLeft = (position.left * zoom) / 100;
@@ -765,14 +915,13 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
               <div
                 key={idx}
                 className={cn(
-                  "absolute cursor-text",
+                  "relative cursor-text",
                   isEditingThis && "bg-yellow-100/50"
                 )}
                 style={{
                   ...config.textStyle,
-                  left: `${scaledLeft}px`,
+                  marginLeft: `${scaledLeft}px`,
                   width: `${scaledWidth}px`,
-                  top: `${idx * fontSize * lineHeight}px`,
                   fontSize: `${fontSize}px`,
                   lineHeight: lineHeight,
                   minHeight: `${fontSize * lineHeight}px`,
@@ -780,37 +929,86 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                   textAlign: position.textAlign || 'left',
                 }}
                 onClick={() => {
-                  if (isEditing) {
-                    setEditingLineIndex(globalLineIndex);
-                    // Set current element type based on the line's detected type
+                  // When clicking to edit, find the element containing this line
+                  // and switch to element-based editing
+                  if (canEdit && onStartEdit) {
+                    // Find the element that contains this line
+                    const element = elements.find(el =>
+                      globalLineIndex >= el.startLineIndex && globalLineIndex <= el.endLineIndex
+                    );
                     const detectedType = line.type === 'general' ? 'action' : line.type;
-                    setCurrentElementType(detectedType);
-                  } else if (canEdit && onStartEdit) {
-                    // Start editing if not already editing
+
                     onStartEdit();
-                    setTimeout(() => setEditingLineIndex(globalLineIndex), 100);
+                    setTimeout(() => {
+                      if (element) {
+                        setEditingElementId(element.id);
+                      }
+                      setCurrentElementType(detectedType);
+                    }, 100);
                   }
                 }}
               >
                 {isEditingThis ? (
                   <textarea
-                    ref={(el) => { if (el) lineInputRefs.current.set(globalLineIndex, el); }}
+                    ref={(el) => {
+                      if (el) {
+                        lineInputRefs.current.set(globalLineIndex, el);
+                        // Auto-resize textarea height based on content
+                        // Force a reflow by setting height to 0 first, then to scrollHeight
+                        el.style.height = '0px';
+                        el.style.height = `${el.scrollHeight}px`;
+                      }
+                    }}
                     value={line.content}
-                    onChange={(e) => updateLine(globalLineIndex, e.target.value)}
+                    onChange={(e) => {
+                      updateLine(globalLineIndex, e.target.value);
+                      // Auto-resize on content change
+                      const textarea = e.target as HTMLTextAreaElement;
+                      // Force a reflow by setting height to 0 first
+                      textarea.style.height = '0px';
+                      // Then set to actual scrollHeight to fit content
+                      textarea.style.height = `${textarea.scrollHeight}px`;
+                    }}
                     onKeyDown={(e) => handleKeyDown(e, globalLineIndex)}
                     placeholder={config.placeholder}
-                    className="w-full bg-transparent border-none outline-none resize-none overflow-hidden p-0 m-0"
+                    className="w-full bg-transparent border-none outline-none resize-none overflow-y-hidden"
                     style={{
                       fontSize: `${fontSize}px`,
                       lineHeight: lineHeight,
                       fontFamily: 'Courier New, Courier, monospace',
                       color: '#000',
                       textAlign: position.textAlign || 'left',
+                      // Reset all browser default spacing to match static span exactly
+                      padding: 0,
+                      margin: 0,
+                      border: 'none',
+                      boxSizing: 'border-box',
+                      // Enable text wrapping (this is the key fix!)
+                      display: 'block',
+                      whiteSpace: 'pre-wrap',
+                      wordWrap: 'break-word',
+                      overflowWrap: 'break-word',
+                      wordBreak: 'break-word',
+                      // Ensure text starts at exact same position as span
+                      textIndent: 0,
+                      letterSpacing: 'normal',
+                      wordSpacing: 'normal',
+                      // Allow height to expand vertically (no horizontal overflow)
+                      minHeight: `${fontSize * lineHeight}px`,
+                      height: 'auto',
+                      overflowX: 'hidden',
                     }}
-                    rows={1}
                   />
                 ) : (
-                  <span>{line.content || '\u00A0'}</span>
+                  <span
+                    style={{
+                      display: 'block',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {line.content || '\u00A0'}
+                  </span>
                 )}
               </div>
             );
@@ -868,8 +1066,8 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     const handleGlobalKeyDown = (e: globalThis.KeyboardEvent) => {
       if (!isFullscreen) return;
 
-      // Page navigation with arrow keys when not editing a specific line
-      if (editingLineIndex === null) {
+      // Page navigation with arrow keys when not editing a specific element
+      if (editingElementId === null) {
         if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
           e.preventDefault();
           goToPage(currentPage - 1);
@@ -893,7 +1091,7 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
 
     document.addEventListener('keydown', handleGlobalKeyDown);
     return () => document.removeEventListener('keydown', handleGlobalKeyDown);
-  }, [isFullscreen, editingLineIndex, currentPage, totalPages, goToPage]);
+  }, [isFullscreen, editingElementId, currentPage, totalPages, goToPage]);
 
   return (
     <div
@@ -985,8 +1183,8 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                         variant={isActive ? 'default' : 'ghost'}
                         size="sm"
                         onClick={() => {
-                          if (editingLineIndex !== null) {
-                            formatAsElement(editingLineIndex, type);
+                          if (editingElementId !== null) {
+                            formatElementAs(editingElementId, type);
                           }
                           setCurrentElementType(type);
                         }}
@@ -1120,13 +1318,18 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
         </div>
       )}
 
-      {/* Page view area */}
+      {/* Page view area - use element editor when editing, paginated view otherwise */}
       <ScrollArea className="flex-1">
-        <div className={cn("py-8", viewMode === 'single' && "flex items-start justify-center min-h-full")}>
-          {viewMode === 'single'
-            ? renderPage(pages[currentPage - 1] || pages[0], true)
-            : pages.map((page) => renderPage(page, true))
-          }
+        <div className={cn("py-8", !isEditing && viewMode === 'single' && "flex items-start justify-center min-h-full")}>
+          {isEditing ? (
+            // Element-based editor for editing mode - flows naturally like a word processor
+            renderElementEditor()
+          ) : (
+            // Paginated view for reading mode
+            viewMode === 'single'
+              ? renderPage(pages[currentPage - 1] || pages[0], true)
+              : pages.map((page) => renderPage(page, true))
+          )}
         </div>
       </ScrollArea>
 
@@ -1136,9 +1339,9 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
         isFullscreen ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"
       )}>
         <div>
-          {lines.length} lines | {totalPages} pages
-          {isEditing && editingLineIndex !== null && (
-            <span className="ml-2">| Editing line {editingLineIndex + 1}</span>
+          {elements.length} elements | {lines.length} lines | {totalPages} pages
+          {isEditing && editingElementId !== null && (
+            <span className="ml-2">| Editing element</span>
           )}
         </div>
         <div className="flex items-center gap-4">

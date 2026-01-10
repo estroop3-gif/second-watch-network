@@ -57,6 +57,26 @@ def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> No
 # STRIKE ENDPOINTS
 # ============================================================================
 
+@router.get("/{org_id}/users")
+async def list_users_with_strikes(
+    org_id: str,
+    include_clear: bool = Query(False, description="Include users with 0 active strikes"),
+    escalated_only: bool = Query(False, description="Only show escalated users"),
+    user=Depends(get_current_user)
+):
+    """List users with strike summaries grouped by user."""
+    profile_id = get_profile_id(user)
+    require_org_access(org_id, profile_id, ["owner", "admin", "manager"])
+
+    users = gear_service.get_users_with_strikes(
+        org_id,
+        include_clear=include_clear,
+        escalated_only=escalated_only
+    )
+
+    return {"users": users}
+
+
 @router.get("/{org_id}")
 async def list_strikes(
     org_id: str,

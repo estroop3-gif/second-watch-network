@@ -47,9 +47,13 @@ export type IncidentType =
   | 'policy_violation'
   | 'unsafe_behavior';
 
-export type IncidentStatus = 'open' | 'investigating' | 'resolved' | 'escalated' | 'closed';
+export type IncidentStatus = 'open' | 'investigating' | 'repair' | 'replacement' | 'resolved';
+
+export type IncidentResolutionType = 'repaired' | 'replaced' | 'written_off' | 'no_action_needed';
 
 export type DamageTier = 'cosmetic' | 'functional' | 'unsafe' | 'out_of_service';
+
+export type PurchaseRequestStatus = 'pending' | 'approved' | 'ordered' | 'received' | 'cancelled';
 
 export type RepairStatus =
   | 'open'
@@ -516,6 +520,25 @@ export interface GearTransaction {
   items?: GearTransactionItem[];
   item_count?: number;
   condition_reports?: TransactionConditionReportItem[];
+  existing_incidents?: ExistingIncident[];
+}
+
+// Stage where damage was reported
+export type IncidentReportedStage = 'checkout' | 'checkin' | 'work_order' | 'inventory';
+
+// Incident data returned with transaction for check-in
+export interface ExistingIncident {
+  id: string;
+  asset_id: string;
+  asset_name?: string;
+  asset_internal_id?: string;
+  damage_tier: CheckinDamageTier;
+  damage_description?: string;
+  photos?: string[];
+  has_repair_ticket: boolean;
+  reported_at?: string;
+  reported_stage?: IncidentReportedStage;
+  status?: string; // 'open' | 'in_progress' | 'resolved'
 }
 
 export interface GearTransactionItem {
@@ -544,6 +567,12 @@ export interface GearTransactionItem {
   condition_out?: AssetCondition;
   condition_in?: AssetCondition;
   notes?: string;
+  // Equipment package / accessory fields
+  parent_asset_id?: string;
+  parent_asset_name?: string;
+  parent_asset_internal_id?: string;
+  is_equipment_package?: boolean;
+  accessory_count?: number;
 }
 
 export interface TransactionConditionReportItem {
@@ -605,11 +634,13 @@ export interface GearIncident {
   status: IncidentStatus;
   asset_id?: string;
   asset_name?: string;
+  asset_internal_id?: string;
   kit_instance_id?: string;
   transaction_id?: string;
   reported_by_user_id: string;
   reported_by_name?: string;
   reported_at: string;
+  reported_stage?: 'checkout' | 'checkin' | 'work_order' | 'inventory';
   assigned_to_user_id?: string;
   assigned_to_name?: string;
   damage_tier?: DamageTier;
@@ -618,9 +649,17 @@ export interface GearIncident {
   notes?: string;
   estimated_cost?: number;
   actual_cost?: number;
+  resolution_type?: IncidentResolutionType;
   resolution_notes?: string;
   resolved_by_user_id?: string;
+  resolved_by_name?: string;
   resolved_at?: string;
+  // Write-off fields
+  write_off_value?: number;
+  write_off_reason?: string;
+  write_off_at?: string;
+  write_off_by_user_id?: string;
+  write_off_by_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -788,6 +827,100 @@ export interface GearRepairTicketsResponse {
 
 export interface GearStrikesResponse {
   strikes: GearStrike[];
+}
+
+export interface UserStrikeSummary {
+  user_id: string;
+  user_name: string;
+  avatar_url?: string;
+  email?: string;
+  active_strikes: number;
+  active_points: number;
+  lifetime_strikes: number;
+  is_escalated: boolean;
+  requires_manager_review: boolean;
+  review_decision?: 'approved' | 'probation' | 'suspended';
+  escalated_at?: string;
+  latest_strike?: {
+    severity: StrikeSeverity;
+    reason: string;
+    issued_at: string;
+  };
+}
+
+export interface UsersWithStrikesResponse {
+  users: UserStrikeSummary[];
+}
+
+// ============================================================================
+// PURCHASE REQUEST TYPES
+// ============================================================================
+
+export interface GearPurchaseRequest {
+  id: string;
+  organization_id: string;
+  incident_id?: string;
+  original_asset_id?: string;
+  request_number: string;
+  title: string;
+  description?: string;
+  estimated_cost?: number;
+  quantity: number;
+  status: PurchaseRequestStatus;
+  requested_by_user_id: string;
+  requested_by_name?: string;
+  requested_at: string;
+  approved_by_user_id?: string;
+  approved_by_name?: string;
+  approved_at?: string;
+  vendor_name?: string;
+  order_reference?: string;
+  actual_cost?: number;
+  received_at?: string;
+  received_by_user_id?: string;
+  new_asset_id?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ============================================================================
+// INCIDENT DETAIL TYPES
+// ============================================================================
+
+export interface AssetCustodianHistory {
+  user_id: string;
+  user_name: string;
+  checkout_at: string;
+  checkin_at?: string;
+  transaction_id: string;
+  return_condition?: string;
+  return_notes?: string;
+  is_recommended: boolean;
+}
+
+export interface IncidentAssetInfo {
+  id: string;
+  name?: string;
+  internal_id?: string;
+  category_name?: string;
+  value?: number;
+  status?: string;
+}
+
+export interface IncidentDetailResponse {
+  incident: GearIncident;
+  asset: IncidentAssetInfo | null;
+  transactions: AssetCustodianHistory[];
+  repairs: GearRepairTicket[];
+  strikes: GearStrike[];
+  purchase_requests: GearPurchaseRequest[];
+  recommended_custodian: AssetCustodianHistory | null;
+}
+
+export interface IncidentCustodiansResponse {
+  custodians: AssetCustodianHistory[];
+  recommended: AssetCustodianHistory | null;
 }
 
 // ============================================================================
@@ -1183,6 +1316,7 @@ export interface CheckinConditionReport {
   damage_tier?: CheckinDamageTier;
   damage_description?: string;
   damage_photo_keys?: string[];  // S3 keys for damage photos
+  create_repair_ticket?: boolean;  // User's choice to create repair ticket
   notes?: string;
 }
 

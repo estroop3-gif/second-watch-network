@@ -83,7 +83,7 @@ export function CameraScanner({
           setIsInitializing(false);
         }
       });
-    }, 50);
+    }, 150); // Increased from 50ms for slower devices
 
     return () => {
       clearTimeout(timer);
@@ -102,6 +102,13 @@ export function CameraScanner({
     await switchCamera(nextCamera.id, elementId, handleScan);
   }, [availableCameras, selectedCameraId, switchCamera, handleScan, elementId]);
 
+  // Handle retry permission request
+  const handleRetryPermission = useCallback(() => {
+    setIsInitializing(true);
+    // Generate new element ID to force fresh start
+    setElementId(`camera-scanner-${Date.now()}`);
+  }, []);
+
   // Render permission denied state
   if (permissionDenied) {
     return (
@@ -112,12 +119,18 @@ export function CameraScanner({
             <CameraOff className="w-8 h-8 text-primary-red" />
           </div>
           <h3 className="text-lg font-semibold text-bone-white mb-2">Camera Access Denied</h3>
-          <p className="text-muted-gray text-sm max-w-xs mb-6">
-            Please allow camera access in your browser settings to scan barcodes.
+          <p className="text-muted-gray text-sm max-w-xs mb-4">
+            Camera access was denied. Please allow camera access in your browser settings, then try again.
           </p>
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={handleRetryPermission}>
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Try Again
+            </Button>
+            <Button variant="ghost" onClick={onClose}>
+              Close
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -255,22 +268,30 @@ export function CameraScanner({
           </Button>
         </div>
 
-        {/* Status and camera switch */}
+        {/* Status and camera info */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {isScanning ? (
-              <>
-                <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500" />
-                </span>
-                <span className="text-sm text-bone-white">Scanning...</span>
-              </>
-            ) : (
-              <>
-                <Camera className="w-4 h-4 text-muted-gray" />
-                <span className="text-sm text-muted-gray">Camera ready</span>
-              </>
+          <div className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              {isScanning ? (
+                <>
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500" />
+                  </span>
+                  <span className="text-sm text-bone-white">Scanning...</span>
+                </>
+              ) : (
+                <>
+                  <Camera className="w-4 h-4 text-muted-gray" />
+                  <span className="text-sm text-muted-gray">Camera ready</span>
+                </>
+              )}
+            </div>
+            {/* Active camera name */}
+            {selectedCameraId && availableCameras.length > 0 && (
+              <span className="text-xs text-muted-gray/70 truncate max-w-[180px]">
+                {availableCameras.find(c => c.id === selectedCameraId)?.label || 'Unknown camera'}
+              </span>
             )}
           </div>
 
@@ -282,7 +303,7 @@ export function CameraScanner({
               className="text-bone-white hover:bg-white/10"
             >
               <RefreshCw className="w-4 h-4 mr-2" />
-              Switch Camera
+              Switch
             </Button>
           )}
         </div>

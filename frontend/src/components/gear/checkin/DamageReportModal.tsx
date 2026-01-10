@@ -16,6 +16,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Checkbox } from '@/components/ui/checkbox';
 import { cn } from '@/lib/utils';
 
 import { useUploadIncidentPhoto } from '@/hooks/gear/useGearCheckin';
@@ -59,7 +60,7 @@ interface DamageReportModalProps {
   orgId: string;
   assetId: string;
   assetName: string;
-  onSubmit: (tier: CheckinDamageTier, description: string, photoKeys: string[]) => void;
+  onSubmit: (tier: CheckinDamageTier, description: string, photoKeys: string[], createRepairTicket: boolean) => void;
 }
 
 export function DamageReportModal({
@@ -74,13 +75,32 @@ export function DamageReportModal({
   const [description, setDescription] = useState('');
   const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
   const [isUploading, setIsUploading] = useState(false);
+  const [createRepairTicket, setCreateRepairTicket] = useState(false);
 
   const { uploadPhoto } = useUploadIncidentPhoto(orgId);
 
+  // Update repair ticket default when tier changes
+  const handleTierChange = (newTier: CheckinDamageTier) => {
+    setTier(newTier);
+    // Default: checked for functional/unsafe, unchecked for cosmetic
+    setCreateRepairTicket(newTier !== 'cosmetic');
+  };
+
   const handleSubmit = () => {
-    if (!tier || !description.trim() || uploadedPhotos.length === 0) return;
+    console.log('[DamageReportModal] handleSubmit called:', {
+      tier,
+      description: description.trim(),
+      uploadedPhotos: uploadedPhotos.length,
+      createRepairTicket,
+    });
+
+    if (!tier || !description.trim() || uploadedPhotos.length === 0) {
+      console.log('[DamageReportModal] Validation failed - missing required fields');
+      return;
+    }
     const photoKeys = uploadedPhotos.map((p) => p.s3_key);
-    onSubmit(tier, description.trim(), photoKeys);
+    console.log('[DamageReportModal] Calling onSubmit with photoKeys:', photoKeys);
+    onSubmit(tier, description.trim(), photoKeys, createRepairTicket);
     handleClose();
   };
 
@@ -88,6 +108,7 @@ export function DamageReportModal({
     setTier('');
     setDescription('');
     setUploadedPhotos([]);
+    setCreateRepairTicket(false);
     onClose();
   };
 
@@ -132,15 +153,15 @@ export function DamageReportModal({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] flex flex-col bg-charcoal-black border-muted-gray/30">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2 text-bone-white">
             <AlertTriangle className="h-5 w-5 text-red-500" />
             Report Damage
           </DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 overflow-y-auto flex-1 pr-2">
           {/* Asset Info */}
           <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3">
             <p className="text-sm text-muted-gray">Asset</p>
@@ -152,7 +173,7 @@ export function DamageReportModal({
             <Label className="text-bone-white">Damage Severity *</Label>
             <RadioGroup
               value={tier}
-              onValueChange={(v) => setTier(v as CheckinDamageTier)}
+              onValueChange={(v) => handleTierChange(v as CheckinDamageTier)}
               className="space-y-2"
             >
               {DAMAGE_TIERS.map((t) => (
@@ -249,25 +270,48 @@ export function DamageReportModal({
             )}
           </div>
 
+          {/* Create Repair Ticket Option */}
+          {tier && (
+            <div className="flex items-start space-x-3 p-3 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+              <Checkbox
+                id="create-repair"
+                checked={createRepairTicket}
+                onCheckedChange={(checked) => setCreateRepairTicket(checked === true)}
+                className="mt-0.5"
+              />
+              <div className="flex-1">
+                <Label htmlFor="create-repair" className="text-bone-white cursor-pointer">
+                  Create repair ticket
+                </Label>
+                <p className="text-xs text-muted-gray mt-0.5">
+                  {createRepairTicket
+                    ? 'A repair ticket will be created and the item marked for repair'
+                    : 'Only an incident will be logged, no repair ticket will be created'}
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Action Info */}
           {tier && (
             <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 text-sm">
               <p className="font-medium text-bone-white mb-1">What happens next:</p>
-              {tier === 'cosmetic' ? (
-                <p className="text-muted-gray">
-                  An incident will be logged. The item will remain available for checkout.
-                </p>
-              ) : (
-                <p className="text-muted-gray">
-                  An incident and repair ticket will be created. The item will be marked for
-                  repair and unavailable for checkout until fixed.
-                </p>
-              )}
+              <ul className="text-muted-gray space-y-1 text-sm">
+                <li>• An incident will be logged for this damage</li>
+                {createRepairTicket ? (
+                  <>
+                    <li>• A repair ticket will be created</li>
+                    <li>• The item will be marked as "under repair" and unavailable</li>
+                  </>
+                ) : (
+                  <li>• The item will remain available for checkout</li>
+                )}
+              </ul>
             </div>
           )}
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0 border-t border-muted-gray/20 pt-4">
+        <DialogFooter className="gap-2 sm:gap-0 border-t border-muted-gray/20 pt-4 flex-shrink-0">
           <Button
             variant="outline"
             onClick={handleClose}

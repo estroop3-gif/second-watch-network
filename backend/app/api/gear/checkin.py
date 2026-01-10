@@ -29,6 +29,7 @@ class ConditionReportItem(BaseModel):
     damage_tier: Optional[str] = None  # cosmetic, functional, unsafe
     damage_description: Optional[str] = None
     damage_photo_keys: List[str] = []  # S3 keys for damage photos
+    create_repair_ticket: bool = False  # User's choice to create repair ticket
     notes: Optional[str] = None
 
 
@@ -37,6 +38,7 @@ class DamageReportCreate(BaseModel):
     damage_tier: str  # cosmetic, functional, unsafe
     description: str
     photos: List[str] = []
+    create_repair_ticket: bool = False  # User's choice to create repair ticket
 
 
 class CheckinCompleteRequest(BaseModel):
@@ -204,7 +206,8 @@ async def report_damage(
         data.description,
         data.photos,
         profile_id,
-        transaction_id
+        transaction_id,
+        create_repair_ticket=data.create_repair_ticket
     )
 
     return result

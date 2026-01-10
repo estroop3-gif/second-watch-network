@@ -521,3 +521,121 @@ export function useCreditPreferences(userId: string | null, projectId?: string |
     deletePreference,
   };
 }
+
+// =============================================================================
+// Credit Settings & Sync Hooks
+// =============================================================================
+
+export interface CreditSettings {
+  show_character_name: boolean;
+}
+
+export interface SyncCreditsResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  message: string;
+}
+
+/**
+ * Get credit settings for a project
+ */
+export function useCreditSettings(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'credit-settings', projectId],
+    queryFn: async (): Promise<CreditSettings> => {
+      if (!projectId) return { show_character_name: true };
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/credit-settings`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        // Return default if endpoint fails
+        return { show_character_name: true };
+      }
+
+      return await response.json();
+    },
+    enabled: !!projectId,
+    staleTime: 60000, // 1 minute
+  });
+}
+
+/**
+ * Update credit settings for a project
+ */
+export function useUpdateCreditSettings(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (settings: Partial<CreditSettings>): Promise<CreditSettings> => {
+      if (!projectId) throw new Error('Project ID required');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/credit-settings`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(settings),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update credit settings' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credit-settings', projectId],
+      });
+    },
+  });
+}
+
+/**
+ * Sync credits from booked project roles
+ */
+export function useSyncCredits(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (): Promise<SyncCreditsResult> => {
+      if (!projectId) throw new Error('Project ID required');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/projects/${projectId}/credits/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync credits' }));
+        throw new Error(error.detail);
+      }
+
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: ['backlot', 'credits', projectId],
+      });
+    },
+  });
+}

@@ -100,6 +100,7 @@ import {
   useScriptHighlightMutations,
   useScriptPageNotes,
   useScriptPageNotesSummary,
+  useScriptPageNoteMutations,
 } from '@/hooks/backlot';
 import {
   BacklotScript,
@@ -109,10 +110,12 @@ import {
   BacklotBreakdownItemType,
   BacklotHighlightStatus,
   BacklotScriptHighlightBreakdown,
+  BacklotScriptPageNoteType,
   SCENE_COVERAGE_STATUS_LABELS,
   SCENE_COVERAGE_STATUS_COLORS,
   SCRIPT_COLOR_CODE_HEX,
   SCRIPT_COLOR_CODE_LABELS,
+  SCRIPT_PAGE_NOTE_TYPE_LABELS,
   BacklotScriptColorCode,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
@@ -122,7 +125,6 @@ import ScenePageMapper from './ScenePageMapper';
 import ScriptEditorPanel from './ScriptEditorPanel';
 import ScriptBreakdownPanel from './ScriptBreakdownPanel';
 import ScriptNotesPanel from './ScriptNotesPanel';
-import ScriptyWorkspace from './ScriptyWorkspace';
 import ScriptTextViewer from './ScriptTextViewer';
 import { ScriptExportModal } from './ScriptExportModal';
 
@@ -483,6 +485,10 @@ const ScriptView: React.FC<ScriptViewProps> = ({
 
   // Target highlight for navigation from breakdown tab
   const [targetHighlightId, setTargetHighlightId] = useState<string | null>(null);
+  // Target note for navigation from notes panel
+  const [targetNoteId, setTargetNoteId] = useState<string | null>(null);
+  // Target scene for navigation from breakdown tab
+  const [targetSceneId, setTargetSceneId] = useState<string | null>(null);
 
   const { scripts, isLoading: scriptsLoading, refetch: refetchScripts } = useScripts({ projectId });
   const { scenes, isLoading: scenesLoading, createScene } = useScenes({
@@ -580,8 +586,89 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const { createHighlight, updateHighlight, deleteHighlight } = useScriptHighlightMutations();
 
   // Fetch page notes for the active script
-  const { data: pageNotes = [] } = useScriptPageNotes({ scriptId: activeScript?.id || null });
+  const { notes: pageNotes = [], refetch: refetchPageNotes } = useScriptPageNotes({ scriptId: activeScript?.id || null });
   const { data: notesSummary = [] } = useScriptPageNotesSummary(activeScript?.id || null);
+
+  // Note mutations for creating/updating/deleting page notes
+  const { createNote, updateNote, deleteNote } = useScriptPageNoteMutations();
+
+  // Handler for creating notes from click placement in ScriptTextViewer
+  const handleCreateNote = async (input: {
+    page_number: number;
+    position_x: number;
+    position_y: number;
+    note_text: string;
+    note_type: BacklotScriptPageNoteType;
+    scene_id: string | null;
+  }) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await createNote.mutateAsync({
+        scriptId: activeScript.id,
+        ...input,
+      });
+      toast({
+        title: 'Note Added',
+        description: `Added note on page ${input.page_number}`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to add note',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handler for updating notes
+  const handleUpdateNote = async (noteId: string, updates: {
+    note_text?: string;
+    note_type?: BacklotScriptPageNoteType;
+    scene_id?: string | null;
+  }) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await updateNote.mutateAsync({
+        scriptId: activeScript.id,
+        noteId,
+        ...updates,
+      });
+      toast({
+        title: 'Note Updated',
+        description: 'Your note has been updated',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to update note',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handler for deleting notes
+  const handleDeleteNote = async (noteId: string) => {
+    if (!activeScript?.id) return;
+
+    try {
+      await deleteNote.mutateAsync({
+        scriptId: activeScript.id,
+        noteId,
+      });
+      toast({
+        title: 'Note Deleted',
+        description: 'The note has been removed',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to delete note',
+        variant: 'destructive',
+      });
+    }
+  };
 
   // Handler for clicking on a highlight - shows info or navigates to breakdown
   const handleHighlightClick = (highlight: BacklotScriptHighlightBreakdown) => {
@@ -864,10 +951,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           </TabsTrigger>
           <TabsTrigger value="scenes">Scenes</TabsTrigger>
           <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
-          <TabsTrigger value="continuity" className="flex items-center gap-1">
-            <ClipboardCheck className="w-3 h-3" />
-            Continuity
-          </TabsTrigger>
           <TabsTrigger value="notes" className="flex items-center gap-1">
             <StickyNote className="w-3 h-3" />
             Notes
@@ -929,7 +1012,14 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   <Button
                     variant={showHighlights ? 'secondary' : 'ghost'}
                     size="sm"
-                    onClick={() => setShowHighlights(!showHighlights)}
+                    onClick={() => {
+                      if (!showHighlights) {
+                        setShowHighlights(true);
+                        setShowNotes(false); // Turn off notes
+                      } else {
+                        setShowHighlights(false);
+                      }
+                    }}
                     className={cn(
                       'h-8',
                       showHighlights ? 'bg-yellow-500/20 text-yellow-400' : 'text-muted-gray'
@@ -943,7 +1033,14 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   <Button
                     variant={showNotes ? 'secondary' : 'ghost'}
                     size="sm"
-                    onClick={() => setShowNotes(!showNotes)}
+                    onClick={() => {
+                      if (!showNotes) {
+                        setShowNotes(true);
+                        setShowHighlights(false); // Turn off highlights
+                      } else {
+                        setShowNotes(false);
+                      }
+                    }}
                     className={cn(
                       'h-8',
                       showNotes ? 'bg-blue-500/20 text-blue-400' : 'text-muted-gray'
@@ -1000,6 +1097,11 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 notesSummary={notesSummary}
                 showNotes={showNotes}
                 canEdit={canEdit}
+                // Note placement mode props
+                notePlacementMode={showNotes}
+                onCreateNote={canEdit ? handleCreateNote : undefined}
+                onUpdateNote={canEdit ? handleUpdateNote : undefined}
+                onDeleteNote={canEdit ? handleDeleteNote : undefined}
                 // Sidebar props for editing highlights
                 scriptId={activeScript?.id}
                 dbScenes={scenes.map(s => ({
@@ -1014,7 +1116,62 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   // Could add state to highlight/scroll to specific item
                 }}
                 targetHighlightId={targetHighlightId}
+                targetNoteId={targetNoteId}
+                targetSceneId={targetSceneId}
               />
+            </div>
+          )}
+
+          {/* Notes Panel - Below Script Viewer */}
+          {showNotes && pageNotes.length > 0 && (
+            <div className="mt-4 bg-charcoal-black rounded-lg border border-muted-gray/20 max-h-[250px] overflow-y-auto">
+              <div className="p-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <StickyNote className="w-4 h-4 text-blue-400" />
+                  <span className="text-sm font-medium text-bone-white">
+                    Script Notes ({pageNotes.length})
+                  </span>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {pageNotes.map((note) => (
+                    <div
+                      key={note.id}
+                      className={cn(
+                        'p-3 rounded border cursor-pointer transition-colors',
+                        note.resolved
+                          ? 'bg-green-500/10 border-green-500/20 hover:border-green-500/40'
+                          : 'bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40'
+                      )}
+                      onClick={() => {
+                        // Navigate to note's page and open edit sidebar
+                        setTargetNoteId(note.id);
+                        // Clear after a short delay to allow effect to run
+                        setTimeout(() => setTargetNoteId(null), 500);
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">
+                            {SCRIPT_PAGE_NOTE_TYPE_LABELS[note.note_type] || note.note_type}
+                          </Badge>
+                          <span className="text-xs text-muted-gray">Page {note.page_number}</span>
+                        </div>
+                        {note.resolved && (
+                          <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
+                            Resolved
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-sm text-bone-white line-clamp-2">{note.note_text}</p>
+                      {note.author && (
+                        <p className="text-xs text-muted-gray mt-1">
+                          — {note.author.display_name || 'Unknown'}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </TabsContent>
@@ -1171,22 +1328,13 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             projectId={projectId}
             canEdit={canEdit}
             onSceneClick={(sceneId) => {
-              // Find the scene and navigate to viewer
-              const scene = scenes.find((s) => s.id === sceneId);
-              if (scene) {
-                setActiveTab('viewer');
-                // The viewer will handle highlighting
-              }
+              // Navigate to the scene in viewer
+              setTargetSceneId(sceneId);
+              setActiveTab('viewer');
+              // Clear the target after a short delay to allow navigation
+              setTimeout(() => setTargetSceneId(null), 2000);
             }}
             onViewHighlight={handleViewHighlightFromBreakdown}
-          />
-        </TabsContent>
-
-        {/* Continuity Tab - Script Supervisor Workspace */}
-        <TabsContent value="continuity" className="mt-6">
-          <ScriptyWorkspace
-            projectId={projectId}
-            canEdit={canEdit}
           />
         </TabsContent>
 

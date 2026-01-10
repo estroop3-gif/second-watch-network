@@ -3,7 +3,7 @@
  * Contains sidebar navigation and content area for different views
  * Uses lazy loading for view components to improve initial page load performance
  */
-import React, { useState, Suspense, lazy, startTransition } from 'react';
+import React, { useState, useEffect, Suspense, lazy, startTransition } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { VoiceProvider } from '@/context/VoiceContext';
 import { Button } from '@/components/ui/button';
@@ -38,6 +38,15 @@ import {
   Film,
   BarChart3,
   Radio,
+  CalendarRange,
+  Columns3,
+  Images,
+  Palette,
+  Tv,
+  FolderOpen,
+  BookOpen,
+  PanelLeftClose,
+  PanelLeft,
 } from 'lucide-react';
 import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, useCanApprove, BACKLOT_ROLES, useTodayShootDay } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -49,6 +58,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 
 // Lazy loading fallback component
@@ -110,6 +124,16 @@ const InvoicesView = lazy(() => import('@/components/backlot/workspace/InvoicesV
 const ComsView = lazy(() => import('@/components/backlot/workspace/ComsView'));
 const ApprovalsView = lazy(() => import('@/components/backlot/workspace/ApprovalsView'));
 const BudgetComparisonView = lazy(() => import('@/components/backlot/workspace/BudgetComparisonView'));
+const DoodView = lazy(() => import('@/components/backlot/workspace/DoodView'));
+const StoryboardView = lazy(() => import('@/components/backlot/workspace/StoryboardView'));
+const EpisodeManagementView = lazy(() => import('@/components/backlot/workspace/EpisodeManagementView'));
+const EpisodeDetailView = lazy(() => import('@/components/backlot/workspace/EpisodeDetailView'));
+const MoodboardView = lazy(() => import('@/components/backlot/workspace/MoodboardView'));
+const StoryManagementView = lazy(() => import('@/components/backlot/workspace/StoryManagementView'));
+const ScriptSidesView = lazy(() => import('@/components/backlot/workspace/ScriptSidesView'));
+const StripboardView = lazy(() => import('@/components/backlot/workspace/StripboardView'));
+const FilesView = lazy(() => import('@/components/backlot/workspace/FilesView'));
+const ContinuityView = lazy(() => import('@/components/backlot/workspace/ContinuityView'));
 
 // Lazy loaded named exports (need wrapper)
 const CastingCrewTab = lazy(() =>
@@ -181,6 +205,18 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'scenes', label: 'Scenes', icon: Layers },
       { id: 'shot-lists', label: 'Shot Lists', icon: Camera },
       { id: 'coverage', label: 'Coverage', icon: Target },
+      { id: 'episode-management', label: 'Episodes', icon: Tv },
+      { id: 'script-sides', label: 'Script Sides', icon: FileText },
+      { id: 'story-management', label: 'Story', icon: BookOpen },
+    ],
+  },
+  {
+    title: 'Pre-Production',
+    items: [
+      { id: 'day-out-of-days', label: 'Day out of Days', icon: CalendarRange },
+      { id: 'strip-board', label: 'Strip Board', icon: Columns3 },
+      { id: 'storyboard', label: 'Storyboard', icon: Images },
+      { id: 'moodboard', label: 'Moodboard', icon: Palette },
     ],
   },
   {
@@ -199,7 +235,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { id: 'hot-set', label: 'Production Day', icon: Flame },
       { id: 'camera', label: 'Camera', icon: Aperture },
-      // { id: 'scripty', label: 'Scripty', icon: ClipboardList },  // Hidden for now
+      { id: 'continuity', label: 'Continuity', icon: ClipboardCheck },
       { id: 'dailies', label: 'Dailies', icon: Video },
       // { id: 'checkin', label: 'Check-In', icon: QrCode },  // Hidden for now
     ],
@@ -253,6 +289,12 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    title: 'Resources',
+    items: [
+      { id: 'files', label: 'Files', icon: FolderOpen },
+    ],
+  },
+  {
     title: 'Project',
     items: [
       { id: 'access', label: 'Team & Access', icon: Shield, adminOnly: true },
@@ -265,11 +307,22 @@ const NAV_SECTIONS: NavSection[] = [
 // Flatten for filtering (maintain backward compatibility)
 const NAV_ITEMS: NavItem[] = NAV_SECTIONS.flatMap(section => section.items);
 
+// Sidebar cookie for persistence
+const SIDEBAR_COOKIE_NAME = 'backlot-sidebar:state';
+const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
+
+const getInitialSidebarState = (): boolean => {
+  if (typeof document === 'undefined') return true;
+  const cookie = document.cookie.split('; ').find(row => row.startsWith(SIDEBAR_COOKIE_NAME));
+  return cookie ? cookie.split('=')[1] !== 'collapsed' : true;
+};
+
 const ProjectWorkspace: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const [activeView, setActiveView] = useState<BacklotWorkspaceView>('overview');
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false); // Mobile drawer state
+  const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarState); // Desktop collapse state
   const [copilotOpen, setCopilotOpen] = useState(false);
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [showScriptImportModal, setShowScriptImportModal] = useState(false);
@@ -285,6 +338,8 @@ const ProjectWorkspace: React.FC = () => {
   // Clearances person filter state (from Casting & Crew navigation)
   const [clearancePersonFilter, setClearancePersonFilter] = useState<string | null>(null);
   const [clearancePersonFilterName, setClearancePersonFilterName] = useState<string | undefined>(undefined);
+  // Episode management state
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
 
   const { data: project, isLoading: projectLoading } = useProject(projectId || null);
   const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
@@ -296,6 +351,27 @@ const ProjectWorkspace: React.FC = () => {
 
   // Check if the alpha tester banner is visible (to adjust sidebar height)
   const isAlphaTester = profile?.is_alpha_tester === true;
+
+  // Toggle sidebar expanded/collapsed state
+  const toggleSidebar = () => {
+    setSidebarExpanded(prev => {
+      const newState = !prev;
+      document.cookie = `${SIDEBAR_COOKIE_NAME}=${newState ? 'expanded' : 'collapsed'}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+      return newState;
+    });
+  };
+
+  // Keyboard shortcut for sidebar toggle (Ctrl+B / Cmd+B)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const isLoading = projectLoading || permissionLoading || viewConfigLoading;
 
@@ -527,12 +603,29 @@ const ProjectWorkspace: React.FC = () => {
             When alpha tester banner is visible, reduce height by 4rem (~64px) to avoid overlap */}
         <aside
           className={cn(
-            'fixed top-[8.5rem] left-0 z-30 w-64 bg-charcoal-black border-r border-muted-gray/20 transition-transform overflow-y-auto',
+            'fixed top-[8.5rem] left-0 z-30 bg-charcoal-black border-r border-muted-gray/20 overflow-y-auto transition-all duration-200',
+            sidebarExpanded ? 'w-64' : 'lg:w-16',
             isAlphaTester ? 'h-[calc(100vh-8.5rem-4rem)]' : 'h-[calc(100vh-8.5rem)]',
-            sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+            sidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'
           )}
         >
-          <nav className="p-4 pb-8">
+          {/* Sidebar collapse toggle (desktop only) */}
+          <div className="hidden lg:flex items-center justify-end p-2 border-b border-muted-gray/20">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={toggleSidebar}
+                  className="p-1.5 rounded hover:bg-white/10 text-muted-gray hover:text-bone-white transition-colors"
+                >
+                  {sidebarExpanded ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                {sidebarExpanded ? 'Collapse sidebar (Ctrl+B)' : 'Expand sidebar (Ctrl+B)'}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+          <nav className={cn('p-4 pb-8', !sidebarExpanded && 'lg:p-2 lg:pb-8')}>
             {NAV_SECTIONS.map((section, sectionIndex) => {
               // Filter items based on permissions and view config
               const visibleItems = section.items.filter((item) => {
@@ -544,28 +637,43 @@ const ProjectWorkspace: React.FC = () => {
               if (visibleItems.length === 0) return null;
 
               return (
-                <div key={section.title} className={cn(sectionIndex > 0 && 'mt-4')}>
-                  {/* Section title - hide for Overview */}
+                <div key={section.title} className={cn(sectionIndex > 0 && 'mt-4', !sidebarExpanded && 'lg:mt-2')}>
+                  {/* Section title - hide for Overview and when collapsed */}
+                  {section.title !== 'Overview' && sidebarExpanded && (
+                    <h3 className="px-3 mb-1 text-xs font-medium text-muted-gray/60 uppercase tracking-wider hidden lg:block">
+                      {section.title}
+                    </h3>
+                  )}
+                  {/* Mobile always shows section titles */}
                   {section.title !== 'Overview' && (
-                    <h3 className="px-3 mb-1 text-xs font-medium text-muted-gray/60 uppercase tracking-wider">
+                    <h3 className="px-3 mb-1 text-xs font-medium text-muted-gray/60 uppercase tracking-wider lg:hidden">
                       {section.title}
                     </h3>
                   )}
                   <div className="space-y-0.5">
                     {visibleItems.map((item) => (
-                      <button
-                        key={item.id}
-                        onClick={() => handleNavClick(item.id)}
-                        className={cn(
-                          'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
-                          activeView === item.id
-                            ? 'bg-accent-yellow/10 text-accent-yellow'
-                            : 'text-muted-gray hover:text-bone-white hover:bg-muted-gray/10'
+                      <Tooltip key={item.id}>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => handleNavClick(item.id)}
+                            className={cn(
+                              'w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors',
+                              !sidebarExpanded && 'lg:justify-center lg:px-2',
+                              activeView === item.id
+                                ? 'bg-accent-yellow/10 text-accent-yellow'
+                                : 'text-muted-gray hover:text-bone-white hover:bg-muted-gray/10'
+                            )}
+                          >
+                            <item.icon className="w-4 h-4 flex-shrink-0" />
+                            <span className={cn(!sidebarExpanded && 'lg:hidden')}>{item.label}</span>
+                          </button>
+                        </TooltipTrigger>
+                        {!sidebarExpanded && (
+                          <TooltipContent side="right" className="hidden lg:block">
+                            {item.label}
+                          </TooltipContent>
                         )}
-                      >
-                        <item.icon className="w-4 h-4" />
-                        {item.label}
-                      </button>
+                      </Tooltip>
                     ))}
                   </div>
                 </div>
@@ -574,8 +682,11 @@ const ProjectWorkspace: React.FC = () => {
           </nav>
         </aside>
 
-        {/* Main Content - add lg:ml-64 to account for fixed sidebar */}
-        <main className="flex-1 min-w-0 p-4 lg:p-6 lg:ml-64">
+        {/* Main Content - margin adjusts based on sidebar state */}
+        <main className={cn(
+          'flex-1 min-w-0 p-4 lg:p-6 transition-all duration-200',
+          sidebarExpanded ? 'lg:ml-64' : 'lg:ml-16'
+        )}>
           <Suspense fallback={<ViewSkeleton />}>
           {activeView === 'overview' && (
             <ProjectOverview project={project} permission={permission} />
@@ -696,6 +807,9 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'camera' && (
             <CameraLogView projectId={project.id} canEdit={permission?.canEdit || false} />
+          )}
+          {activeView === 'continuity' && (
+            <ContinuityView projectId={project.id} canEdit={permission?.canEdit || false} />
           )}
           {activeView === 'scripty' && (
             <div className="space-y-6">
@@ -826,6 +940,45 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'church-tools' && (
             <ChurchToolsView projectId={project.id} />
+          )}
+
+          {/* Coming Soon Placeholder Tabs */}
+          {activeView === 'day-out-of-days' && (
+            <DoodView projectId={project.id} canEdit={isTabEditable('day-out-of-days')} />
+          )}
+          {activeView === 'strip-board' && (
+            <StripboardView projectId={project.id} canEdit={isTabEditable('strip-board')} />
+          )}
+          {activeView === 'storyboard' && (
+            <StoryboardView projectId={project.id} canEdit={isTabEditable('storyboard')} />
+          )}
+          {activeView === 'moodboard' && (
+            <MoodboardView projectId={project.id} canEdit={isTabEditable('moodboard')} />
+          )}
+          {activeView === 'episode-management' && (
+            selectedEpisodeId ? (
+              <EpisodeDetailView
+                projectId={project.id}
+                episodeId={selectedEpisodeId}
+                canEdit={isTabEditable('episode-management')}
+                onBack={() => setSelectedEpisodeId(null)}
+              />
+            ) : (
+              <EpisodeManagementView
+                projectId={project.id}
+                canEdit={isTabEditable('episode-management')}
+                onSelectEpisode={(episodeId) => setSelectedEpisodeId(episodeId)}
+              />
+            )
+          )}
+          {activeView === 'files' && (
+            <FilesView projectId={project.id} canEdit={isTabEditable('files')} />
+          )}
+          {activeView === 'script-sides' && (
+            <ScriptSidesView projectId={project.id} canEdit={isTabEditable('script-sides')} />
+          )}
+          {activeView === 'story-management' && (
+            <StoryManagementView projectId={project.id} canEdit={isTabEditable('story-management')} />
           )}
           </Suspense>
         </main>

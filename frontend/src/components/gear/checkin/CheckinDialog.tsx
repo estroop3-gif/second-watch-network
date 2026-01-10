@@ -69,6 +69,7 @@ import type {
 import { ConditionRatingCard } from './ConditionRatingCard';
 import { DamageReportModal } from './DamageReportModal';
 import { CheckinReceiptDialog } from './CheckinReceiptDialog';
+import { DamageReportsSection, type DamageReportItem } from '@/components/gear/shared/DamageReportsSection';
 
 interface CheckinDialogProps {
   isOpen: boolean;
@@ -100,6 +101,9 @@ export function CheckinDialog({
   // Damage modal state
   const [damageAssetId, setDamageAssetId] = useState<string | null>(null);
   const [damageAssetName, setDamageAssetName] = useState('');
+
+  // Dedicated damage reports section state
+  const [damageReports, setDamageReports] = useState<DamageReportItem[]>([]);
 
   // Receipt state
   const [showReceipt, setShowReceipt] = useState(false);
@@ -143,6 +147,28 @@ export function CheckinDialog({
     }
   }, [checkinData]);
 
+  // Pre-populate damage reports from existing incidents (e.g., from checkout)
+  useEffect(() => {
+    const existingIncidents = checkinData?.transaction?.existing_incidents;
+    if (existingIncidents && existingIncidents.length > 0) {
+      const mappedReports: DamageReportItem[] = existingIncidents.map((incident) => ({
+        id: incident.id,
+        assetId: incident.asset_id,
+        assetName: incident.asset_name || 'Unknown Asset',
+        tier: incident.damage_tier,
+        description: incident.damage_description || '',
+        photoKeys: incident.photos || [],
+        createRepairTicket: incident.has_repair_ticket,
+        isExisting: true, // Mark as existing so UI knows it came from a previous stage
+        reportedAt: incident.reported_at,
+        reportedStage: incident.reported_stage,
+      }));
+      setDamageReports(mappedReports);
+      // Auto-expand damage section if there are existing incidents
+      setExpandedSections((prev) => prev.includes('damage') ? prev : [...prev, 'damage']);
+    }
+  }, [checkinData?.transaction?.existing_incidents]);
+
   // Handlers
   const handleItemToggle = useCallback((assetId: string, checked: boolean) => {
     setSelectedItems((prev) => {
@@ -177,7 +203,7 @@ export function CheckinDialog({
   );
 
   const handleDamageReport = useCallback(
-    (assetId: string, tier: CheckinDamageTier, description: string, photoKeys: string[]) => {
+    (assetId: string, tier: CheckinDamageTier, description: string, photoKeys: string[], createRepairTicket: boolean) => {
       setConditionReports((prev) => {
         const next = new Map(prev);
         const existing = next.get(assetId);
@@ -188,6 +214,7 @@ export function CheckinDialog({
           damage_tier: tier,
           damage_description: description,
           damage_photo_keys: photoKeys,
+          create_repair_ticket: createRepairTicket,
           notes: existing?.notes,
         });
         return next;
@@ -202,6 +229,76 @@ export function CheckinDialog({
     setDamageAssetName(assetName);
   }, []);
 
+  // Handle adding damage report from dedicated section
+  const handleAddDamageFromSection = useCallback(
+    (
+      assetId: string,
+      assetName: string,
+      tier: CheckinDamageTier,
+      description: string,
+      photoKeys: string[],
+      createRepairTicket: boolean
+    ) => {
+      console.log('[CheckinDialog] handleAddDamageFromSection called:', {
+        assetId,
+        assetName,
+        tier,
+        description,
+        photoKeys: photoKeys.length,
+        createRepairTicket,
+      });
+
+      // Add to local damage reports for display
+      const newReport: DamageReportItem = {
+        id: `damage-${assetId}-${Date.now()}`,
+        assetId,
+        assetName,
+        tier,
+        description,
+        photoKeys,
+        createRepairTicket,
+      };
+      setDamageReports((prev) => [...prev, newReport]);
+
+      // Also update condition reports for submission
+      setConditionReports((prev) => {
+        const next = new Map(prev);
+        next.set(assetId, {
+          asset_id: assetId,
+          condition_grade: 'poor',
+          has_damage: true,
+          damage_tier: tier,
+          damage_description: description,
+          damage_photo_keys: photoKeys,
+          create_repair_ticket: createRepairTicket,
+        });
+        return next;
+      });
+    },
+    []
+  );
+
+  // Handle removing damage report from dedicated section
+  const handleRemoveDamageFromSection = useCallback((assetId: string) => {
+    setDamageReports((prev) => prev.filter((r) => r.assetId !== assetId));
+    // Also remove from condition reports
+    setConditionReports((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(assetId);
+      if (existing) {
+        next.set(assetId, {
+          ...existing,
+          has_damage: false,
+          damage_tier: undefined,
+          damage_description: undefined,
+          damage_photo_keys: undefined,
+          create_repair_ticket: undefined,
+        });
+      }
+      return next;
+    });
+  }, []);
+
   // Handle barcode/QR scan verification - accepts optional direct code for camera scans
   const handleScanSubmit = useCallback((directCode?: string) => {
     const codeToUse = directCode ?? scanInput;
@@ -210,18 +307,31 @@ export function CheckinDialog({
     setScanError(null);
     setScanSuccess(null);
 
-    const code = codeToUse.trim().toLowerCase();
-    console.log('[CheckinDialog] Processing scan code:', code);
+    const rawCode = codeToUse.trim().toLowerCase();
 
-    // Find matching item in the transaction by barcode or internal_id
+    // Normalize QR codes: strip GH: or GHKIT: prefix
+    let code = rawCode;
+    if (code.startsWith('gh:')) {
+      code = code.slice(3); // Remove "gh:"
+    } else if (code.startsWith('ghkit:')) {
+      code = code.slice(6); // Remove "ghkit:"
+    }
+
+    console.log('[CheckinDialog] Processing scan - raw:', rawCode, 'normalized:', code);
+
+    // Find matching item by barcode, internal_id, OR kit_internal_id
     const matchingItem = items.find(
       (item) =>
-        item.asset_id &&
-        (item.barcode?.toLowerCase() === code ||
-          item.asset_internal_id?.toLowerCase() === code)
+        // Asset match
+        (item.asset_id &&
+          (item.barcode?.toLowerCase() === code ||
+            item.asset_internal_id?.toLowerCase() === code)) ||
+        // Kit match
+        (item.kit_instance_id &&
+          item.kit_internal_id?.toLowerCase() === code)
     );
 
-    if (!matchingItem || !matchingItem.asset_id) {
+    if (!matchingItem) {
       const errorMsg = `No item found with code: ${codeToUse}`;
       console.warn('[CheckinDialog] Scan failed:', errorMsg);
       setScanError(errorMsg);
@@ -229,9 +339,21 @@ export function CheckinDialog({
       return;
     }
 
+    // Get the unique identifier for this item (asset_id for assets, kit_instance_id for kits)
+    const itemId = matchingItem.asset_id || matchingItem.kit_instance_id;
+    const itemName = matchingItem.asset_name || matchingItem.kit_name || 'Unknown item';
+
+    if (!itemId) {
+      const errorMsg = `Item has no valid identifier: ${codeToUse}`;
+      console.warn('[CheckinDialog] Scan failed:', errorMsg);
+      setScanError(errorMsg);
+      setScanInput('');
+      return;
+    }
+
     // Check if already selected
-    if (selectedItems.has(matchingItem.asset_id)) {
-      const errorMsg = `"${matchingItem.asset_name}" is already checked`;
+    if (selectedItems.has(itemId)) {
+      const errorMsg = `"${itemName}" is already checked`;
       console.warn('[CheckinDialog] Scan failed:', errorMsg);
       setScanError(errorMsg);
       setScanInput('');
@@ -241,11 +363,11 @@ export function CheckinDialog({
     // Auto-select the item
     setSelectedItems((prev) => {
       const next = new Set(prev);
-      next.add(matchingItem.asset_id!);
+      next.add(itemId);
       return next;
     });
 
-    const successMsg = `Verified: ${matchingItem.asset_name}`;
+    const successMsg = `Verified: ${itemName}`;
     console.log('[CheckinDialog] Scan success:', successMsg);
     setScanSuccess(successMsg);
     setScanInput('');
@@ -574,6 +696,36 @@ export function CheckinDialog({
               </AccordionItem>
             )}
 
+            {/* Damage Reports Section - Always visible */}
+            <AccordionItem value="damage" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
+              <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-red-400" />
+                  <span>Damage Reports</span>
+                  {damageReports.length > 0 && (
+                    <Badge className="ml-2 bg-red-500/20 text-red-400 border-red-500/30">
+                      {damageReports.length}
+                    </Badge>
+                  )}
+                </div>
+              </AccordionTrigger>
+              <AccordionContent className="px-4 pb-4">
+                <DamageReportsSection
+                  orgId={orgId}
+                  items={items
+                    .filter((item) => item.asset_id && selectedItems.has(item.asset_id))
+                    .map((item) => ({
+                      id: item.asset_id!,
+                      name: item.asset_name ?? 'Unknown',
+                      internal_id: item.asset_internal_id,
+                    }))}
+                  reports={damageReports}
+                  onAddReport={handleAddDamageFromSection}
+                  onRemoveReport={handleRemoveDamageFromSection}
+                />
+              </AccordionContent>
+            </AccordionItem>
+
             {/* Location & Notes Section */}
             <AccordionItem value="details" className="border border-muted-gray/30 rounded-lg bg-charcoal-black/50">
               <AccordionTrigger className="px-4 hover:no-underline text-bone-white">
@@ -770,8 +922,8 @@ export function CheckinDialog({
           orgId={orgId}
           assetId={damageAssetId}
           assetName={damageAssetName}
-          onSubmit={(tier, description, photoKeys) =>
-            handleDamageReport(damageAssetId, tier, description, photoKeys)
+          onSubmit={(tier, description, photoKeys, createRepairTicket) =>
+            handleDamageReport(damageAssetId, tier, description, photoKeys, createRepairTicket)
           }
         />
       )}

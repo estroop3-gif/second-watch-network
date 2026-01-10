@@ -60,6 +60,7 @@ def generate_breakdown_sheet_html(
     breakdown_items: List[Dict[str, Any]],
     script_title: Optional[str] = None,
     generated_date: Optional[str] = None,
+    include_notes: bool = True,
 ) -> str:
     """
     Generate a single scene breakdown sheet HTML for PDF conversion
@@ -96,7 +97,7 @@ def generate_breakdown_sheet_html(
         for item in items:
             qty = item.get("quantity", 1)
             qty_str = f" ({qty})" if qty and qty > 1 else ""
-            notes_str = f" - {item.get('notes')}" if item.get("notes") else ""
+            notes_str = f" - {item.get('notes')}" if include_notes and item.get("notes") else ""
             items_html += f'<div class="breakdown-item">{item.get("label", "")}{qty_str}{notes_str}</div>'
 
         type_sections_html += f"""
@@ -310,6 +311,7 @@ def generate_project_breakdown_pdf_html(
     script_title: Optional[str] = None,
     generated_date: Optional[str] = None,
     filter_info: Optional[str] = None,
+    include_notes: bool = True,
 ) -> str:
     """
     Generate a multi-page breakdown summary PDF
@@ -348,7 +350,8 @@ def generate_project_breakdown_pdf_html(
             project_title=project_title,
             scene=scene,
             breakdown_items=items,
-            script_title=script_title
+            script_title=script_title,
+            include_notes=include_notes,
         )
         scene_pages_html += f'<div class="page-break">{scene_page}</div>'
 
@@ -577,6 +580,7 @@ def generate_scene_section_html(
     scene: Dict[str, Any],
     breakdown_items: List[Dict[str, Any]],
     script_title: Optional[str] = None,
+    include_notes: bool = True,
 ) -> str:
     """Generate HTML for a single scene section (used in multi-page PDF)"""
     # Group items by type
@@ -609,7 +613,7 @@ def generate_scene_section_html(
         for item in items:
             qty = item.get("quantity", 1)
             qty_str = f" ({qty})" if qty and qty > 1 else ""
-            notes_str = f" - {item.get('notes')}" if item.get("notes") else ""
+            notes_str = f" - {item.get('notes')}" if include_notes and item.get("notes") else ""
             items_html += f'<div class="breakdown-item">{item.get("label", "")}{qty_str}{notes_str}</div>'
 
         type_sections_html += f"""
@@ -701,6 +705,7 @@ def generate_breakdown_pdf(
     scene: Dict[str, Any],
     breakdown_items: List[Dict[str, Any]],
     script_title: Optional[str] = None,
+    include_notes: bool = True,
 ) -> bytes:
     """Generate a single scene breakdown PDF"""
     if HTML is None:
@@ -711,6 +716,7 @@ def generate_breakdown_pdf(
         scene=scene,
         breakdown_items=breakdown_items,
         script_title=script_title,
+        include_notes=include_notes,
     )
 
     html = HTML(string=html_content)
@@ -723,6 +729,7 @@ def generate_project_breakdown_pdf(
     summary_stats: Dict[str, Any],
     script_title: Optional[str] = None,
     filter_info: Optional[str] = None,
+    include_notes: bool = True,
 ) -> bytes:
     """Generate a multi-page project breakdown PDF"""
     if HTML is None:
@@ -734,6 +741,7 @@ def generate_project_breakdown_pdf(
         summary_stats=summary_stats,
         script_title=script_title,
         filter_info=filter_info,
+        include_notes=include_notes,
     )
 
     html = HTML(string=html_content)

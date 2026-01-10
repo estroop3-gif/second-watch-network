@@ -65,6 +65,15 @@ class ConditionReportCreate(BaseModel):
     items: List[ConditionReportItem] = []
 
 
+class CheckoutDamageReport(BaseModel):
+    """Damage report during checkout verification"""
+    asset_id: str
+    damage_tier: str  # cosmetic, functional, unsafe
+    description: str
+    photos: List[str] = []  # S3 keys
+    create_repair_ticket: bool = False
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -312,6 +321,52 @@ async def quick_checkout(
         tx = gear_service.complete_checkout(str(tx["id"]), profile_id)
 
     return {"transaction": tx}
+
+
+@router.post("/{org_id}/damage")
+async def report_damage_at_checkout(
+    org_id: str,
+    data: CheckoutDamageReport,
+    user=Depends(get_current_user)
+):
+    """
+    Report damage discovered during checkout verification.
+
+    Creates an incident ticket and optionally a repair ticket
+    based on user's choice.
+    """
+    profile_id = get_profile_id(user)
+    require_org_access(org_id, profile_id, ["owner", "admin", "manager", "member"])
+
+    # Validate damage tier
+    if data.damage_tier not in ["cosmetic", "functional", "unsafe"]:
+        raise HTTPException(status_code=400, detail="damage_tier must be 'cosmetic', 'functional', or 'unsafe'")
+
+    # Verify asset belongs to this org
+    asset = gear_service.get_asset(data.asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if asset.get("organization_id") != org_id:
+        raise HTTPException(status_code=403, detail="Asset does not belong to this organization")
+
+    # Create incident and optionally repair ticket
+    result = gear_service.process_damage_on_checkin(
+        org_id,
+        data.asset_id,
+        data.damage_tier,
+        data.description,
+        data.photos,
+        profile_id,
+        transaction_id=None,  # No transaction during checkout
+        create_repair_ticket=data.create_repair_ticket
+    )
+
+    return {
+        "success": True,
+        "incident": result.get("incident"),
+        "repair_ticket": result.get("repair_ticket"),
+        "asset_status": result.get("asset_status")
+    }
 
 
 @router.post("/{org_id}/quick-checkin")

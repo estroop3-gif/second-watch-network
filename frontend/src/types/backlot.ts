@@ -1352,7 +1352,15 @@ export type BacklotWorkspaceView =
   | 'expenses'
   | 'approvals'
   | 'camera'
-  | 'budget-comparison';
+  | 'budget-comparison'
+  | 'day-out-of-days'
+  | 'strip-board'
+  | 'storyboard'
+  | 'moodboard'
+  | 'episode-management'
+  | 'files'
+  | 'script-sides'
+  | 'story-management';
 
 // =============================================================================
 // HOT SET (Production Day) TYPES
@@ -2405,6 +2413,30 @@ export type BacklotBreakdownItemType =
 // Budget suggestion status
 export type BacklotBudgetSuggestionStatus = 'pending' | 'accepted' | 'rejected' | 'modified';
 
+// Title Page Data Types
+export interface TitlePageContact {
+  name?: string;
+  company?: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+}
+
+export interface TitlePageDraftInfo {
+  date?: string;
+  revision?: string;
+}
+
+export interface TitlePageData {
+  title?: string;
+  written_by?: string[];
+  based_on?: string;
+  contact?: TitlePageContact;
+  draft_info?: TitlePageDraftInfo;
+  copyright?: string;
+  additional_lines?: string[];
+}
+
 // Script
 export interface BacklotScript {
   id: string;
@@ -2421,6 +2453,7 @@ export interface BacklotScript {
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
+  title_page_data?: TitlePageData | null;  // Structured title page metadata
   // Joined data
   scenes?: BacklotScene[];
   scene_count?: number;
@@ -3002,6 +3035,7 @@ export interface BacklotScriptHighlightBreakdown {
   rect_width: number | null;
   rect_height: number | null;
   category: BacklotBreakdownItemType;
+  department: BacklotBreakdownDepartment | null;
   color: string;
   suggested_label: string | null;
   breakdown_item_id: string | null;
@@ -3018,17 +3052,23 @@ export interface BacklotScriptHighlightBreakdown {
 // Input for creating a highlight
 export interface ScriptHighlightInput {
   scene_id?: string;
-  page_number: number;
+  page_number?: number;
   start_offset: number;
   end_offset: number;
-  highlighted_text: string;
+  highlighted_text?: string;
+  text?: string; // Alias for highlighted_text (used in text-based viewer)
   rect_x?: number;
   rect_y?: number;
   rect_width?: number;
   rect_height?: number;
   category: BacklotBreakdownItemType;
+  department?: BacklotBreakdownDepartment;
   color?: string;
   suggested_label?: string;
+  status?: string;
+  // Scene detection info (for auto-linking to scenes by scene number)
+  scene_number?: string;
+  scene_slugline?: string;
 }
 
 // Highlight summary by category
@@ -5859,6 +5899,27 @@ export const BREAKDOWN_ITEM_TYPES: BacklotBreakdownItemType[] = [
   'music',
   'other',
 ];
+
+// Default department mapping for each breakdown type
+export const TYPE_TO_DEPARTMENT: Record<BacklotBreakdownItemType, BacklotBreakdownDepartment> = {
+  cast: 'cast',
+  background: 'background',
+  stunt: 'stunts',
+  location: 'locations',
+  prop: 'props',
+  set_dressing: 'props',
+  wardrobe: 'wardrobe',
+  makeup: 'makeup',
+  sfx: 'sfx',
+  vfx: 'vfx',
+  vehicle: 'props',
+  animal: 'props',
+  greenery: 'props',
+  special_equipment: 'camera',
+  sound: 'sound',
+  music: 'sound',
+  other: 'props',
+};
 
 // =============================================================================
 // DAILIES SYSTEM TYPES

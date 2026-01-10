@@ -47,15 +47,22 @@ import {
   Loader2,
   Sparkles,
   Link,
+  RefreshCw,
+  Settings,
+  Users,
 } from 'lucide-react';
 import {
   useCredits,
   useCreditsByDepartment,
+  useSyncCredits,
+  useCreditSettings,
+  useUpdateCreditSettings,
   CREDIT_DEPARTMENTS,
   CREDIT_ROLES,
 } from '@/hooks/backlot';
 import { BacklotProjectCredit, ProjectCreditInput } from '@/types/backlot';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface CreditsViewProps {
   projectId: string;
@@ -65,8 +72,12 @@ interface CreditsViewProps {
 const CreditsView: React.FC<CreditsViewProps> = ({ projectId, canEdit }) => {
   const { credits, isLoading, createCredit, updateCredit, deleteCredit, togglePrimary, togglePublic } = useCredits(projectId);
   const { groupedCredits, departments } = useCreditsByDepartment(projectId);
+  const syncCredits = useSyncCredits(projectId);
+  const { data: creditSettings } = useCreditSettings(projectId);
+  const updateCreditSettings = useUpdateCreditSettings(projectId);
 
   const [showForm, setShowForm] = useState(false);
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [editingCredit, setEditingCredit] = useState<BacklotProjectCredit | null>(null);
   const [formData, setFormData] = useState<ProjectCreditInput>({
     name: '',
@@ -77,6 +88,30 @@ const CreditsView: React.FC<CreditsViewProps> = ({ projectId, canEdit }) => {
     endorsement_note: '',
     imdb_id: '',
   });
+
+  // Handle sync from crew/cast
+  const handleSync = async () => {
+    try {
+      const result = await syncCredits.mutateAsync();
+      if (result.created > 0 || result.updated > 0) {
+        toast.success(`Credits synced: ${result.created} created, ${result.updated} updated`);
+      } else {
+        toast.info('Credits are already up to date');
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to sync credits');
+    }
+  };
+
+  // Handle settings update
+  const handleToggleCharacterName = async (showCharacterName: boolean) => {
+    try {
+      await updateCreditSettings.mutateAsync({ show_character_name: showCharacterName });
+      toast.success('Settings updated');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update settings');
+    }
+  };
 
   const handleSubmit = async () => {
     if (!formData.name || !formData.credit_role) return;
@@ -167,27 +202,53 @@ const CreditsView: React.FC<CreditsViewProps> = ({ projectId, canEdit }) => {
             {credits.length} credit{credits.length !== 1 ? 's' : ''} listed
           </p>
         </div>
-        {canEdit && (
-          <Button
-            onClick={() => {
-              setEditingCredit(null);
-              setFormData({
-                name: '',
-                credit_role: '',
-                department: '',
-                is_primary: false,
-                is_public: true,
-                endorsement_note: '',
-                imdb_id: '',
-              });
-              setShowForm(true);
-            }}
-            className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Add Credit
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {canEdit && (
+            <>
+              <Button
+                variant="outline"
+                onClick={handleSync}
+                disabled={syncCredits.isPending}
+                className="border-muted-gray/30"
+              >
+                <RefreshCw className={cn("w-4 h-4 mr-2", syncCredits.isPending && "animate-spin")} />
+                Sync from Crew/Cast
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" className="border-muted-gray/30">
+                    <Settings className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>
+                    <Settings className="w-4 h-4 mr-2" />
+                    Credit Settings
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button
+                onClick={() => {
+                  setEditingCredit(null);
+                  setFormData({
+                    name: '',
+                    credit_role: '',
+                    department: '',
+                    is_primary: false,
+                    is_public: true,
+                    endorsement_note: '',
+                    imdb_id: '',
+                  });
+                  setShowForm(true);
+                }}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Credit
+              </Button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Credits by Department */}
@@ -398,6 +459,41 @@ const CreditsView: React.FC<CreditsViewProps> = ({ projectId, canEdit }) => {
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
               )}
               {editingCredit ? 'Save Changes' : 'Add Credit'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Credit Settings Dialog */}
+      <Dialog open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
+        <DialogContent className="bg-charcoal-gray border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <Settings className="w-5 h-5 text-accent-yellow" />
+              Credit Settings
+            </DialogTitle>
+            <DialogDescription>
+              Configure how credits are generated from crew and cast
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-bone-white">Show character names for cast</Label>
+                <p className="text-sm text-muted-gray">
+                  When enabled, cast credits will show character names (e.g., "John as Hero")
+                </p>
+              </div>
+              <Switch
+                checked={creditSettings?.show_character_name ?? true}
+                onCheckedChange={handleToggleCharacterName}
+                disabled={updateCreditSettings.isPending}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSettingsDialog(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

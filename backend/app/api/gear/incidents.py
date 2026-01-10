@@ -51,6 +51,27 @@ class IncidentResolve(BaseModel):
     resolution_notes: str
 
 
+class IncidentStatusUpdate(BaseModel):
+    status: str  # open, investigating, repair, replacement, resolved
+    resolution_type: Optional[str] = None  # Required when status='resolved': repaired, replaced, written_off, no_action_needed
+
+
+class WriteOffRequest(BaseModel):
+    write_off_value: float
+    write_off_reason: str
+    create_purchase_request: bool = False
+    purchase_request_title: Optional[str] = None
+    purchase_request_description: Optional[str] = None
+    estimated_replacement_cost: Optional[float] = None
+
+
+class StrikeAssignment(BaseModel):
+    user_id: str
+    severity: str  # warning, minor, major, critical
+    reason: str
+    notes: Optional[str] = None
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -351,3 +372,201 @@ async def upload_incident_photo(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+# ============================================================================
+# ENHANCED INCIDENT DETAIL ENDPOINTS
+# ============================================================================
+
+@router.get("/item/{incident_id}/detail")
+async def get_incident_detail(
+    incident_id: str,
+    user=Depends(get_current_user)
+):
+    """
+    Get comprehensive incident details including:
+    - Incident record with asset info
+    - Transaction history (last 30 days for this asset)
+    - Linked repair tickets
+    - Strikes issued from this incident
+    - Purchase requests linked to this incident
+    - Recommended custodian (last checkout before incident)
+    """
+    profile_id = get_profile_id(user)
+
+    incident = gear_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    org_id = incident["organization_id"]
+    require_org_access(org_id, profile_id)
+
+    # Get full detail from service
+    detail = gear_service.get_incident_detail(incident_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    return detail
+
+
+@router.get("/item/{incident_id}/custodians")
+async def get_incident_custodians(
+    incident_id: str,
+    days: int = Query(30, le=365),
+    user=Depends(get_current_user)
+):
+    """Get list of users who had custody of the asset in the last N days."""
+    profile_id = get_profile_id(user)
+
+    incident = gear_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    require_org_access(incident["organization_id"], profile_id)
+
+    if not incident.get("asset_id"):
+        return {"custodians": [], "recommended": None}
+
+    custodians = gear_service.get_asset_custodians(
+        incident["asset_id"],
+        days=days,
+        before_date=incident.get("reported_at")
+    )
+
+    # The first custodian is the recommended one (most recent before incident)
+    recommended = custodians[0] if custodians else None
+
+    return {
+        "custodians": custodians,
+        "recommended": recommended
+    }
+
+
+@router.patch("/item/{incident_id}/status")
+async def update_incident_status(
+    incident_id: str,
+    data: IncidentStatusUpdate,
+    user=Depends(get_current_user)
+):
+    """Update incident status with validation."""
+    profile_id = get_profile_id(user)
+
+    incident = gear_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    org_id = incident["organization_id"]
+
+    # Check incident management permission
+    if not gear_service.check_incident_management_permission(org_id, profile_id):
+        raise HTTPException(status_code=403, detail="You don't have permission to manage incidents")
+
+    # Validate status
+    valid_statuses = ["open", "investigating", "repair", "replacement", "resolved"]
+    if data.status not in valid_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Must be one of: {valid_statuses}"
+        )
+
+    # If resolving, resolution_type is required
+    if data.status == "resolved":
+        valid_resolution_types = ["repaired", "replaced", "written_off", "no_action_needed"]
+        if not data.resolution_type or data.resolution_type not in valid_resolution_types:
+            raise HTTPException(
+                status_code=400,
+                detail=f"resolution_type is required when resolving. Must be one of: {valid_resolution_types}"
+            )
+
+    # Update the incident
+    updated = gear_service.update_incident_status(
+        incident_id,
+        data.status,
+        resolution_type=data.resolution_type,
+        updated_by=profile_id
+    )
+
+    return {"incident": updated}
+
+
+@router.post("/item/{incident_id}/write-off")
+async def write_off_incident_asset(
+    incident_id: str,
+    data: WriteOffRequest,
+    user=Depends(get_current_user)
+):
+    """
+    Write off an asset and optionally create a purchase request for replacement.
+    Updates the incident with write-off details and can create a linked purchase request.
+    """
+    profile_id = get_profile_id(user)
+
+    incident = gear_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    org_id = incident["organization_id"]
+
+    # Check incident management permission
+    if not gear_service.check_incident_management_permission(org_id, profile_id):
+        raise HTTPException(status_code=403, detail="You don't have permission to manage incidents")
+
+    if not incident.get("asset_id"):
+        raise HTTPException(status_code=400, detail="Incident has no associated asset to write off")
+
+    # Perform write-off
+    result = gear_service.write_off_incident_asset(
+        incident_id=incident_id,
+        write_off_by=profile_id,
+        write_off_value=data.write_off_value,
+        write_off_reason=data.write_off_reason,
+        create_purchase_request=data.create_purchase_request,
+        purchase_request_title=data.purchase_request_title,
+        purchase_request_description=data.purchase_request_description,
+        estimated_replacement_cost=data.estimated_replacement_cost
+    )
+
+    return result
+
+
+@router.post("/item/{incident_id}/strike")
+async def assign_incident_strike(
+    incident_id: str,
+    data: StrikeAssignment,
+    user=Depends(get_current_user)
+):
+    """
+    Assign a strike to a user for this incident.
+    Creates a strike record and links it to the incident.
+    """
+    profile_id = get_profile_id(user)
+
+    incident = gear_service.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    org_id = incident["organization_id"]
+
+    # Check incident management permission
+    if not gear_service.check_incident_management_permission(org_id, profile_id):
+        raise HTTPException(status_code=403, detail="You don't have permission to assign strikes")
+
+    # Validate severity
+    valid_severities = ["warning", "minor", "major", "critical"]
+    if data.severity not in valid_severities:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid severity. Must be one of: {valid_severities}"
+        )
+
+    # Create the strike
+    result = gear_service.assign_incident_strike(
+        incident_id=incident_id,
+        user_id=data.user_id,
+        issued_by=profile_id,
+        severity=data.severity,
+        reason=data.reason,
+        notes=data.notes
+    )
+
+    return result

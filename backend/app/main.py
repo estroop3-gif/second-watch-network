@@ -52,6 +52,14 @@ from app.api import (
     ops,  # Phase 6C: Operational resilience and feature flags
     geocoding,  # Nominatim geocoding integration
     client_metrics,  # Performance diagnostics - client-side timing
+    dood,  # Day Out of Days
+    storyboard,  # Storyboard visual planning
+    episodes,  # Episode management
+    moodboard,  # Moodboard visual reference
+    story_management,  # Story management with beats, characters, arcs
+    script_sides,  # Script sides auto generator
+    stripboard,  # Stripboard schedule planning
+    project_files,  # Project file management
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
 
@@ -259,6 +267,14 @@ app.include_router(continuity.router, prefix=f"{settings.API_V1_PREFIX}/backlot"
 app.include_router(utilities.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Utilities"])
 app.include_router(hot_set.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Hot Set"])
 app.include_router(invoices.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Invoices"])
+app.include_router(dood.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Day Out of Days"])
+app.include_router(storyboard.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Storyboard"])
+app.include_router(episodes.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Episodes"])
+app.include_router(moodboard.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Moodboard"])
+app.include_router(story_management.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Story Management"])
+app.include_router(script_sides.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Script Sides"])
+app.include_router(stripboard.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Stripboard"])
+app.include_router(project_files.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Project Files"])
 app.include_router(coms.router, prefix=f"{settings.API_V1_PREFIX}/coms", tags=["Coms"])
 app.include_router(dm_adapter.router, prefix=f"{settings.API_V1_PREFIX}/dm", tags=["Direct Messages"])
 app.include_router(uploads.router, prefix=f"{settings.API_V1_PREFIX}/uploads", tags=["Uploads"])

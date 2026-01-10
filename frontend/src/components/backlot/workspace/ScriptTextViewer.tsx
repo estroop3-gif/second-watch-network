@@ -52,8 +52,10 @@ import {
   BREAKDOWN_ITEM_TYPE_LABELS,
   TitlePageData,
   BacklotScriptPageNote,
+  BacklotScriptPageNoteType,
   ScriptPageNoteSummary,
   SCRIPT_PAGE_NOTE_TYPE_LABELS,
+  SCRIPT_PAGE_NOTE_TYPE_COLORS,
 } from '@/types/backlot';
 import { ScriptTitlePage } from './ScriptTitlePage';
 import ScriptViewerSidebar, { SidebarMode } from './ScriptViewerSidebar';
@@ -98,6 +100,7 @@ interface ScriptLine {
   content: string;
   lineIndex: number;
   charOffset: number; // Character offset from start of document for highlights
+  trimOffset: number; // Number of leading whitespace chars trimmed from display
 }
 
 interface ScriptPage {
@@ -152,6 +155,28 @@ function getElementPosition(type: ScriptElementType): { left: number; width: num
   }
 }
 
+// Note marker colors by type
+function getNoteMarkerColor(type: BacklotScriptPageNoteType): string {
+  const colors: Record<BacklotScriptPageNoteType, string> = {
+    general: 'bg-gray-500',
+    direction: 'bg-purple-500',
+    production: 'bg-blue-500',
+    character: 'bg-red-500',
+    blocking: 'bg-orange-500',
+    camera: 'bg-cyan-500',
+    continuity: 'bg-yellow-500',
+    sound: 'bg-sky-500',
+    vfx: 'bg-fuchsia-500',
+    prop: 'bg-violet-500',
+    wardrobe: 'bg-indigo-500',
+    makeup: 'bg-pink-500',
+    location: 'bg-amber-500',
+    safety: 'bg-rose-500',
+    other: 'bg-slate-500',
+  };
+  return colors[type] || colors.general;
+}
+
 // Note: detectElementType is now imported from scriptFormatting with FORGIVING_CONFIG
 // for imported content display (uses indent + pattern detection)
 
@@ -174,11 +199,16 @@ function parseScriptLines(content: string): ScriptLine[] {
     // The original line has indentation which would double-indent if we kept it
     const trimmedContent = line.trim();
 
+    // Calculate how many leading whitespace chars were trimmed
+    // This is needed for accurate highlight offset calculation
+    const trimOffset = line.length - line.trimStart().length;
+
     lines.push({
       type,
       content: trimmedContent,
       lineIndex: i,
       charOffset: currentOffset,
+      trimOffset,
     });
     if (trimmedContent) prevType = type;
     currentOffset += line.length + 1; // +1 for newline
@@ -271,6 +301,22 @@ interface ScriptTextViewerProps {
   onNoteClick?: (note: BacklotScriptPageNote) => void;
   onAddNote?: (pageNumber: number) => void;
   canEdit?: boolean;
+  // Note placement mode (for click-to-place notes)
+  notePlacementMode?: boolean;
+  onCreateNote?: (input: {
+    page_number: number;
+    position_x: number;
+    position_y: number;
+    note_text: string;
+    note_type: BacklotScriptPageNoteType;
+    scene_id: string | null;
+  }) => void;
+  onUpdateNote?: (noteId: string, updates: {
+    note_text?: string;
+    note_type?: BacklotScriptPageNoteType;
+    scene_id?: string | null;
+  }) => void;
+  onDeleteNote?: (noteId: string) => void;
   // Sidebar props for highlight editing
   scriptId?: string;
   dbScenes?: { id: string; scene_number: string; slugline?: string }[];
@@ -284,6 +330,10 @@ interface ScriptTextViewerProps {
   onViewBreakdownItem?: (breakdownItemId: string) => void;
   // For scrolling to a specific highlight from other tabs
   targetHighlightId?: string | null;
+  // For scrolling to a specific note and opening edit sidebar
+  targetNoteId?: string | null;
+  // For scrolling to a specific scene from breakdown tab
+  targetSceneId?: string | null;
 }
 
 // Selection state for highlight creation
@@ -421,6 +471,11 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   onNoteClick,
   onAddNote,
   canEdit = false,
+  // Note placement mode props
+  notePlacementMode = false,
+  onCreateNote,
+  onUpdateNote,
+  onDeleteNote,
   // Sidebar props
   scriptId,
   dbScenes = [],
@@ -428,6 +483,8 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   onDeleteHighlight,
   onViewBreakdownItem,
   targetHighlightId,
+  targetNoteId,
+  targetSceneId,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(70); // Start at 70% to fit page on screen
@@ -436,6 +493,14 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('hidden');
   const [selectedHighlight, setSelectedHighlight] = useState<BacklotScriptHighlightBreakdown | null>(null);
   const [showScenePanel, setShowScenePanel] = useState(false);
+  // Note placement state
+  const [pendingNotePosition, setPendingNotePosition] = useState<{
+    pageNumber: number;
+    x: number;
+    y: number;
+    scene: ParsedScene | null;
+  } | null>(null);
+  const [selectedNote, setSelectedNote] = useState<BacklotScriptPageNote | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -523,9 +588,50 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     }
   }, []);
 
+  // Handle page click for placing notes
+  const handlePageClick = useCallback((e: React.MouseEvent, pageNumber: number) => {
+    if (!notePlacementMode || !canEdit) return;
+
+    // Don't open create if clicking on existing note marker
+    if ((e.target as HTMLElement).closest('[data-note-marker]')) return;
+
+    // Don't open if clicking on text for selection
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+
+    const pageEl = e.currentTarget as HTMLElement;
+    const rect = pageEl.getBoundingClientRect();
+
+    // Calculate position as percentage of page (0-100)
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+    // Detect scene for this page
+    const pageData = pages.find(p => p.pageNumber === pageNumber);
+    const firstLineOffset = pageData?.lines[0]?.charOffset || 0;
+    const scene = getSceneForOffset(scenes, firstLineOffset);
+
+    setPendingNotePosition({ pageNumber, x, y, scene });
+    setSelectedNote(null);
+    setSelection(null);
+    setSelectedHighlight(null);
+    setSidebarMode('create-note');
+  }, [notePlacementMode, canEdit, pages, scenes]);
+
+  // Handle note marker click
+  const handleNoteMarkerClick = useCallback((note: BacklotScriptPageNote, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedNote(note);
+    setPendingNotePosition(null);
+    setSelection(null);
+    setSelectedHighlight(null);
+    setSidebarMode('edit-note');
+  }, []);
+
   // Handle text selection for creating highlights
   const handleMouseUp = useCallback(() => {
-    if (!onCreateHighlight) return;
+    // Don't process highlight selection when in note placement mode
+    if (!onCreateHighlight || notePlacementMode) return;
 
     const windowSelection = window.getSelection();
     if (!windowSelection || windowSelection.isCollapsed) {
@@ -556,7 +662,10 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     if (!startEl) return;
 
     const lineOffset = parseInt(startEl.getAttribute('data-char-offset') || '0', 10);
-    const startOffset = lineOffset + range.startOffset;
+    // Add trimOffset to account for leading whitespace that was removed from display
+    // This ensures the offset points to the actual text position in the original content
+    const trimOffset = parseInt(startEl.getAttribute('data-trim-offset') || '0', 10);
+    const startOffset = lineOffset + trimOffset + range.startOffset;
     const endOffset = startOffset + selectedText.length;
     const rect = range.getBoundingClientRect();
 
@@ -576,7 +685,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     });
     setSidebarMode('create');
     setSelectedHighlight(null);
-  }, [onCreateHighlight, scenes, sidebarMode, getPageForCharOffset]);
+  }, [onCreateHighlight, notePlacementMode, scenes, sidebarMode, getPageForCharOffset]);
 
   const handleCategorySelect = useCallback((category: BacklotBreakdownItemType, notes?: string) => {
     if (selection && onCreateHighlight) {
@@ -607,6 +716,8 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     window.getSelection()?.removeAllRanges();
     setSelection(null);
     setSelectedHighlight(null);
+    setPendingNotePosition(null);
+    setSelectedNote(null);
     setSidebarMode('hidden');
   }, []);
 
@@ -715,9 +826,13 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
       <div
         key={page.pageNumber}
         ref={(el) => { if (el) pageRefs.current.set(page.pageNumber, el); }}
-        className="relative bg-white shadow-lg mx-auto mb-8 select-text"
+        className={cn(
+          "relative bg-white shadow-lg mx-auto mb-8 select-text",
+          notePlacementMode && canEdit && "cursor-crosshair"
+        )}
         style={{ width: scaledWidth, minHeight: scaledHeight }}
         onMouseUp={handleMouseUp}
+        onClick={(e) => handlePageClick(e, page.pageNumber)}
       >
         {/* Page content area with margins */}
         <div
@@ -752,8 +867,9 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
                   textAlign: position.textAlign || 'left',
                 }}
                 data-char-offset={line.charOffset}
+                data-trim-offset={line.trimOffset}
               >
-                {renderTextWithHighlights(line.content, line.charOffset, fontSize)}
+                {renderTextWithHighlights(line.content, line.charOffset + line.trimOffset, fontSize)}
               </div>
             );
           })}
@@ -786,6 +902,32 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             {title}
           </div>
         )}
+
+        {/* Note markers */}
+        {showNotes && pageNotes
+          .filter(note => note.page_number === page.pageNumber && note.position_x != null && note.position_y != null)
+          .map(note => (
+            <div
+              key={note.id}
+              data-note-marker
+              className={cn(
+                "absolute w-6 h-6 -translate-x-1/2 -translate-y-1/2 cursor-pointer z-20",
+                "rounded-full flex items-center justify-center",
+                "shadow-lg border-2 border-white/80 hover:scale-110 transition-transform",
+                getNoteMarkerColor(note.note_type),
+                selectedNote?.id === note.id && "ring-2 ring-accent-yellow ring-offset-2 ring-offset-white"
+              )}
+              style={{
+                left: `${note.position_x}%`,
+                top: `${note.position_y}%`,
+              }}
+              onClick={(e) => handleNoteMarkerClick(note, e)}
+              title={note.note_text.slice(0, 50) + (note.note_text.length > 50 ? '...' : '')}
+            >
+              <StickyNote className="w-3 h-3 text-white" />
+            </div>
+          ))
+        }
       </div>
     );
   };
@@ -830,6 +972,41 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
       setSidebarMode('edit');
     }
   }, [targetHighlightId, highlights, getPageForCharOffset, goToPage]);
+
+  // Effect to handle external navigation to a specific note
+  useEffect(() => {
+    if (!targetNoteId || !pageNotes.length) return;
+
+    const targetNote = pageNotes.find(n => n.id === targetNoteId);
+    if (!targetNote) return;
+
+    // Navigate to the note's page
+    goToPage(targetNote.page_number);
+
+    // Open the edit sidebar for this note
+    setSelectedNote(targetNote);
+    setPendingNotePosition(null);
+    setSelection(null);
+    setSelectedHighlight(null);
+    setSidebarMode('edit-note');
+  }, [targetNoteId, pageNotes, goToPage]);
+
+  // Effect to handle external navigation to a specific scene from breakdown tab
+  useEffect(() => {
+    if (!targetSceneId || scenes.length === 0) return;
+
+    // Find the parsed scene that matches the database scene ID
+    // The parsed scenes don't have IDs, so we match by scene number from dbScenes
+    const dbScene = dbScenes.find(s => s.id === targetSceneId);
+    if (!dbScene) return;
+
+    // Find the parsed scene with matching scene number
+    const targetScene = scenes.find(s => s.sceneNumber === dbScene.scene_number);
+    if (!targetScene) return;
+
+    // Navigate to the scene
+    goToScene(targetScene);
+  }, [targetSceneId, scenes, dbScenes, goToScene]);
 
   if (!content && !parsedTitlePageData) {
     return (
@@ -1109,7 +1286,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
           </div>
         </ScrollArea>
 
-        {/* Context-Aware Sidebar for highlight creation/editing */}
+        {/* Context-Aware Sidebar for highlight creation/editing and notes */}
         <ScriptViewerSidebar
           mode={sidebarMode}
           selection={selection}
@@ -1131,71 +1308,15 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
           } : undefined}
           onViewBreakdown={onViewBreakdownItem}
           onClose={handleCloseSidebar}
+          // Note props
+          pendingNotePosition={pendingNotePosition}
+          onCreateNote={onCreateNote}
+          selectedNote={selectedNote}
+          onUpdateNote={onUpdateNote}
+          onDeleteNote={onDeleteNote}
         />
       </div>
 
-      {/* Notes Panel */}
-      {showNotes && pageNotes.length > 0 && (
-        <div className="border-t border-muted-gray/20 bg-charcoal-black/50 max-h-[200px] overflow-y-auto">
-          <div className="p-2">
-            <div className="flex items-center gap-2 mb-2">
-              <StickyNote className="w-4 h-4 text-blue-400" />
-              <span className="text-sm font-medium text-bone-white">
-                Script Notes ({pageNotes.length})
-              </span>
-            </div>
-            <div className="space-y-2">
-              {pageNotes.map((note) => (
-                <div
-                  key={note.id}
-                  className={cn(
-                    'p-2 rounded border cursor-pointer transition-colors',
-                    note.resolved
-                      ? 'bg-green-500/10 border-green-500/20 hover:border-green-500/40'
-                      : 'bg-blue-500/10 border-blue-500/20 hover:border-blue-500/40'
-                  )}
-                  onClick={() => onNoteClick?.(note)}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-xs">
-                        {SCRIPT_PAGE_NOTE_TYPE_LABELS[note.note_type] || note.note_type}
-                      </Badge>
-                      <span className="text-xs text-muted-gray">Page {note.page_number}</span>
-                    </div>
-                    {note.resolved && (
-                      <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
-                        Resolved
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="text-sm text-bone-white line-clamp-2">{note.note_text}</p>
-                  {note.author && (
-                    <p className="text-xs text-muted-gray mt-1">
-                      — {note.author.display_name || 'Unknown'}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Footer status bar */}
-      <div className={cn(
-        "flex items-center justify-between bg-charcoal-black border-t border-muted-gray/20 text-muted-gray",
-        isFullscreen ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"
-      )}>
-        <div>
-          {lines.length} lines | {totalPages} pages
-          {onCreateHighlight && <span className="ml-2">| Select text to create highlights</span>}
-        </div>
-        <div className="flex items-center gap-4">
-          {isFullscreen && <span className="text-muted-gray/60">← → or PageUp/PageDown to navigate</span>}
-          <span>Page {currentPage} of {totalPages}</span>
-        </div>
-      </div>
     </div>
   );
 };
