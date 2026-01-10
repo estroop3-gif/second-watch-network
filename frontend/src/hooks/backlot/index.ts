@@ -150,9 +150,13 @@ export {
   usePublicCredits,
   useCreditsByDepartment,
   useCreditPreferences,
+  useCreditSettings,
+  useUpdateCreditSettings,
+  useSyncCredits,
   CREDIT_DEPARTMENTS,
   CREDIT_ROLES,
 } from './useCredits';
+export type { CreditSettings, SyncCreditsResult } from './useCredits';
 
 // Budget System
 export {
@@ -292,6 +296,9 @@ export {
   useSetCurrentScriptVersion,
   useUpdateScriptText,
   useExtractScriptText,
+  // Script Title Page
+  useScriptTitlePage,
+  useUpdateScriptTitlePage,
   // Script Highlight Breakdowns
   useScriptHighlights,
   useScriptHighlightSummary,
@@ -1144,3 +1151,372 @@ export type {
   BudgetAlert,
   BudgetSummaryWidget,
 } from './useDashboardSummaries';
+
+// Day Out of Days (DOOD)
+export {
+  useDoodRange,
+  useGenerateDoodDays,
+  useCreateDoodSubject,
+  useUpdateDoodSubject,
+  useDeleteDoodSubject,
+  useUpsertDoodAssignment,
+  usePublishDood,
+  useDoodVersions,
+  getDoodExportUrl,
+  calculateSubjectTotals,
+  getCodeInfo,
+  DOOD_CODES,
+  SUBJECT_TYPES,
+} from './useDood';
+export type {
+  DoodDay,
+  DoodSubject,
+  DoodAssignment,
+  DoodVersion,
+  DoodRangeData,
+} from './useDood';
+
+// Storyboard
+export {
+  useStoryboards,
+  useStoryboard,
+  useCreateStoryboard,
+  useUpdateStoryboard,
+  useDeleteStoryboard,
+  useCreateSection,
+  useUpdateSection,
+  useDeleteSection,
+  useCreatePanel,
+  useUpdatePanel,
+  useDeletePanel,
+  useReorderSections,
+  useReorderPanels,
+  useStoryboardPrint,
+  getStoryboardExportUrl,
+  calculateTotalDuration,
+  formatDuration,
+  getShotSizeInfo,
+  getCameraMoveInfo,
+  SHOT_SIZES,
+  CAMERA_MOVES,
+  ASPECT_RATIOS,
+} from './useStoryboard';
+export type {
+  Storyboard,
+  StoryboardSection,
+  StoryboardPanel,
+  StoryboardPrintData,
+} from './useStoryboard';
+
+// Episodes
+export {
+  // Seasons
+  useSeasons,
+  useCreateSeason,
+  useUpdateSeason,
+  useDeleteSeason,
+  // Episodes
+  useEpisodes,
+  useEpisode,
+  useCreateEpisode,
+  useUpdateEpisode,
+  useDeleteEpisode,
+  // Subjects
+  useCreateSubject,
+  useUpdateSubject,
+  useDeleteSubject,
+  // Locations
+  useCreateLocation,
+  useUpdateLocation,
+  useDeleteLocation,
+  // List Items
+  useCreateListItem,
+  useUpdateListItem,
+  useDeleteListItem,
+  useReorderListItem,
+  // Milestones
+  useCreateMilestone,
+  useUpdateMilestone,
+  useDeleteMilestone,
+  // Deliverables
+  useEpisodeDeliverableTemplates,
+  useCreateDeliverableTemplate,
+  useCreateDeliverable,
+  useUpdateDeliverable,
+  useDeleteDeliverable,
+  useApplyDeliverableTemplate,
+  // Asset Links
+  useCreateAssetLink,
+  useDeleteAssetLink,
+  // Shoot Days
+  useProjectDays,
+  useTagShootDay,
+  useUntagShootDay,
+  // Storyboard Linking
+  useProjectStoryboards,
+  useLinkStoryboard,
+  useUnlinkStoryboard,
+  // Approvals
+  useRequestApproval,
+  useDecideApproval,
+  useUnlockEpisode,
+  // Settings
+  useEpisodeSettings,
+  useUpdateEpisodeSettings,
+  // Import/Export
+  useImportEpisodes,
+  usePrintData,
+  // Helpers
+  getEpisodeExportUrl,
+  getImportTemplateUrl,
+  getPipelineStageInfo,
+  getEditStatusInfo,
+  getDeliveryStatusInfo,
+  getDeliverableStatusInfo,
+  formatEpisodeCode,
+  // Constants
+  PIPELINE_STAGES,
+  EDIT_STATUSES,
+  DELIVERY_STATUSES,
+  SUBJECT_TYPES as EPISODE_SUBJECT_TYPES,
+  LIST_ITEM_KINDS,
+  DELIVERABLE_STATUSES_CONFIG,
+} from './useEpisodes';
+export type {
+  Season,
+  Episode,
+  EpisodeDetail,
+  EpisodeSubject,
+  EpisodeLocation,
+  EpisodeListItem,
+  EpisodeMilestone,
+  EpisodeDeliverable,
+  EpisodeAssetLink,
+  EpisodeShootDay,
+  EpisodeApproval,
+  EpisodeStoryboard,
+  DeliverableTemplate,
+  ProjectDay,
+  EpisodeSettings,
+  PrintData as EpisodePrintData,
+  EpisodePipelineStage,
+  EpisodeEditStatus,
+  EpisodeDeliveryStatus,
+  EpisodeSubjectType,
+  EpisodeListItemKind,
+  DeliverableStatus,
+  ApprovalType,
+  ApprovalStatus,
+} from './useEpisodes';
+
+// Moodboard
+export {
+  useMoodboards,
+  useMoodboard,
+  useCreateMoodboard,
+  useUpdateMoodboard,
+  useDeleteMoodboard,
+  useCreateSection as useCreateMoodboardSection,
+  useUpdateSection as useUpdateMoodboardSection,
+  useDeleteSection as useDeleteMoodboardSection,
+  useReorderSections as useReorderMoodboardSections,
+  useCreateItem as useCreateMoodboardItem,
+  useUpdateItem as useUpdateMoodboardItem,
+  useDeleteItem as useDeleteMoodboardItem,
+  useReorderItems as useReorderMoodboardItems,
+  useMoodboardPrintData,
+  getMoodboardExportUrl,
+} from './useMoodboard';
+export type {
+  Moodboard,
+  MoodboardSection,
+  MoodboardItem,
+  MoodboardPrintData,
+} from './useMoodboard';
+
+// Story Management
+export {
+  useStories,
+  useStory,
+  useCreateStory,
+  useUpdateStory,
+  useDeleteStory,
+  useCreateBeat,
+  useUpdateBeat,
+  useDeleteBeat,
+  useReorderBeats,
+  useCharacters,
+  useCreateCharacter,
+  useUpdateCharacter,
+  useDeleteCharacter,
+  useCreateCharacterArc,
+  useUpdateCharacterArc,
+  useDeleteCharacterArc,
+  useStoryPrintData,
+  getStoryExportUrl,
+} from './useStoryManagement';
+export type {
+  Story,
+  StoryBeat,
+  StoryCharacter,
+  CharacterArc,
+  StoryPrintData,
+} from './useStoryManagement';
+
+// Script Sides
+export {
+  useActiveScript,
+  useCreateScript,
+  useUpdateScript,
+  useScriptScenes,
+  useProductionDaysForSides,
+  useSidesPackets,
+  useSidesPacket,
+  useCreateSidesPacket,
+  useUpdateSidesPacket,
+  useDeleteSidesPacket,
+  useAddSceneToPacket,
+  useUpdatePacketScene,
+  useRemoveSceneFromPacket,
+  useReorderPacketScene,
+  useSyncPacketFromSchedule,
+  useSidesPrintData,
+  useScheduleDayScenes,
+  useAddSceneToSchedule,
+  useRemoveSceneFromSchedule,
+} from './useScriptSides';
+export type {
+  ScriptDocument,
+  ScriptScene,
+  ProductionDay as SidesProductionDay,
+  SidesPacket,
+  PacketScene,
+  SidesPacketDetail,
+  SidesPrintData,
+} from './useScriptSides';
+
+// Stripboard
+export {
+  useActiveStripboard,
+  useCreateStripboard,
+  useUpdateStripboard,
+  useStripboardView,
+  useStripboardPrintData,
+  useGenerateStripsFromScript,
+  useCreateStrip,
+  useUpdateStrip,
+  useDeleteStrip,
+  useReorderStrip,
+  getStripboardExportUrl,
+  STRIP_UNITS,
+  STRIP_STATUSES,
+} from './useStripboard';
+export type {
+  Stripboard,
+  Strip,
+  ProductionDay as StripboardProductionDay,
+  CastMismatch,
+  DayColumn,
+  StripboardViewData,
+  StripboardSummary,
+  StripboardPrintData,
+} from './useStripboard';
+
+// Project Files
+export {
+  // Folders
+  useProjectFolders,
+  useCreateFolder,
+  useUpdateFolder,
+  useDeleteFolder,
+  // Files
+  useProjectFiles as useProjectFilesList,
+  useUpdateFile,
+  useDeleteFile,
+  useFileDownloadUrl,
+  // File Links
+  useFilesByTarget,
+  useFileLinks,
+  useCreateFileLink,
+  useDeleteFileLink,
+  // Upload
+  useInitiateUpload,
+  useGetPartUrl,
+  useCompleteUpload,
+  useAbortUpload,
+  useFinalizeUpload,
+  useProjectFileTags as useFileTags,
+  // Upload Manager
+  FileUploadManager,
+  // Utilities
+  getFileIcon,
+  formatFileSize,
+  getFileTypeFilter,
+  FILE_TYPE_FILTERS,
+  LINK_TARGET_TYPES,
+} from './useProjectFiles';
+export type {
+  ProjectFolder,
+  ProjectFile,
+  FileLink,
+  InitiateUploadResponse,
+  UploadProgress,
+  FileTypeFilter,
+  LinkTargetType,
+} from './useProjectFiles';
+
+// Continuity Exports (PDF version history)
+export {
+  useContinuityExports,
+  useContinuityExport,
+  useSaveContinuityExport,
+  useUpdateContinuityExport,
+  useDeleteContinuityExport,
+} from './useContinuityExports';
+export type {
+  ContinuityExport,
+  ContinuityExportSceneMapping,
+  ContinuityExportSceneMappings,
+  SaveContinuityExportInput,
+} from './useContinuityExports';
+
+// Continuity Export Annotations (Version-Specific PDF Annotations)
+export {
+  // Highlights
+  useExportHighlights,
+  useCreateExportHighlight,
+  useUpdateExportHighlight,
+  useDeleteExportHighlight,
+  // Notes
+  useExportNotes,
+  useCreateExportNote,
+  useUpdateExportNote,
+  useDeleteExportNote,
+  // Drawings
+  useExportDrawings,
+  useCreateExportDrawing,
+  useUpdateExportDrawing,
+  useDeleteExportDrawing,
+  // Combined
+  useExportAnnotations,
+} from './useContinuityExportAnnotations';
+export type {
+  ExportHighlight,
+  ExportNote,
+  ExportDrawing,
+  DrawingToolType,
+  PathData,
+  PathPoint,
+  PenPathData,
+  LinePathData,
+  ArrowPathData,
+  RectanglePathData,
+  CirclePathData,
+  TextPathData,
+  CreateHighlightInput,
+  UpdateHighlightInput,
+  CreateNoteInput,
+  UpdateNoteInput,
+  CreateDrawingInput,
+  UpdateDrawingInput,
+} from './useContinuityExportAnnotations';

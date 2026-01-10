@@ -13589,6 +13589,7 @@ class ScriptHighlightInput(BaseModel):
     rect_width: Optional[float] = None
     rect_height: Optional[float] = None
     category: str  # breakdown item type
+    department: Optional[str] = None  # department for filtering (auto-set based on category if not provided)
     color: Optional[str] = None
     suggested_label: Optional[str] = None
     status: Optional[str] = None  # 'pending' or 'confirmed'
@@ -13602,10 +13603,33 @@ class ScriptHighlightInput(BaseModel):
         return self.highlighted_text or self.text or ""
 
 
+# Default department mapping for breakdown types
+TYPE_TO_DEPARTMENT = {
+    'cast': 'cast',
+    'background': 'background',
+    'stunt': 'stunts',
+    'location': 'locations',
+    'prop': 'props',
+    'set_dressing': 'props',
+    'wardrobe': 'wardrobe',
+    'makeup': 'makeup',
+    'sfx': 'sfx',
+    'vfx': 'vfx',
+    'vehicle': 'props',
+    'animal': 'props',
+    'greenery': 'props',
+    'special_equipment': 'camera',
+    'sound': 'sound',
+    'music': 'sound',
+    'other': 'props',
+}
+
+
 class ScriptHighlightUpdate(BaseModel):
     """Input for updating a highlight"""
     scene_id: Optional[str] = None
     category: Optional[str] = None
+    department: Optional[str] = None
     color: Optional[str] = None
     suggested_label: Optional[str] = None
     breakdown_item_id: Optional[str] = None
@@ -13770,27 +13794,29 @@ async def create_script_highlight(
             if role not in ["admin", "editor", "coordinator"]:
                 raise HTTPException(status_code=403, detail="Insufficient permissions to create highlights")
 
-        # Determine default color based on category
+        # Determine default color based on category (synced with frontend BREAKDOWN_HIGHLIGHT_COLORS)
         default_colors = {
-            "cast": "#FF6B6B",
-            "extra": "#FFA07A",
-            "stunt": "#FF4500",
-            "vehicle": "#4ECDC4",
-            "prop": "#45B7D1",
-            "set_dressing": "#96CEB4",
-            "wardrobe": "#DDA0DD",
-            "makeup": "#FFB6C1",
-            "hair": "#D2691E",
-            "livestock": "#8B4513",
-            "animal": "#228B22",
-            "sfx": "#9932CC",
-            "vfx": "#00CED1",
-            "sound": "#1E90FF",
-            "music": "#FF1493",
-            "greenery": "#32CD32",
-            "special_equipment": "#FFD700",
-            "security": "#DC143C",
-            "other": "#808080",
+            "cast": "#FF0000",           # Red
+            "background": "#00FF00",     # Green
+            "stunt": "#FFA500",          # Orange
+            "location": "#8B4513",       # Brown
+            "prop": "#800080",           # Purple
+            "set_dressing": "#00FFFF",   # Cyan
+            "wardrobe": "#0000FF",       # Blue
+            "makeup": "#FF69B4",         # Pink
+            "sfx": "#FFFF00",            # Yellow
+            "vfx": "#FF00FF",            # Magenta
+            "vehicle": "#A52A2A",        # Brown
+            "animal": "#32CD32",         # Lime green
+            "greenery": "#228B22",       # Forest green
+            "special_equipment": "#4B0082", # Indigo
+            "sound": "#87CEEB",          # Sky blue
+            "music": "#DA70D6",          # Orchid
+            "extra": "#FFA07A",          # Light salmon
+            "hair": "#D2691E",           # Chocolate
+            "livestock": "#8B4513",      # Saddle brown
+            "security": "#DC143C",       # Crimson
+            "other": "#808080",          # Gray
         }
         color = input.color or default_colors.get(input.category, "#808080")
 
@@ -14081,6 +14107,9 @@ async def create_script_highlight(
         # Use the first breakdown item id for the highlight link
         breakdown_item_id = breakdown_item_ids[0] if breakdown_item_ids else None
 
+        # Auto-set department based on category if not provided
+        department = input.department or TYPE_TO_DEPARTMENT.get(input.category, 'props')
+
         highlight_data = {
             "id": highlight_id,
             "script_id": script_id,
@@ -14094,6 +14123,7 @@ async def create_script_highlight(
             "rect_width": input.rect_width,
             "rect_height": input.rect_height,
             "category": input.category,
+            "department": department,
             "color": color,
             "suggested_label": label,
             "breakdown_item_id": breakdown_item_id,
@@ -14169,6 +14199,11 @@ async def update_script_highlight(
             update_data["scene_id"] = input.scene_id if input.scene_id else None
         if input.category is not None:
             update_data["category"] = input.category
+            # Auto-update department if category changes and no explicit department provided
+            if input.department is None:
+                update_data["department"] = TYPE_TO_DEPARTMENT.get(input.category, 'props')
+        if input.department is not None:
+            update_data["department"] = input.department
         if input.color is not None:
             update_data["color"] = input.color
         if input.suggested_label is not None:
@@ -14185,6 +14220,11 @@ async def update_script_highlight(
         breakdown_item_id = highlight_data.get("breakdown_item_id")
         if input.category is not None and breakdown_item_id:
             breakdown_update = {"type": input.category, "updated_at": datetime.utcnow().isoformat()}
+            # Also update department on breakdown item if provided
+            if input.department is not None:
+                breakdown_update["department"] = input.department
+            elif input.category is not None:
+                breakdown_update["department"] = TYPE_TO_DEPARTMENT.get(input.category, 'props')
             # Also update label if provided
             if input.suggested_label is not None:
                 breakdown_update["label"] = input.suggested_label
@@ -14757,14 +14797,24 @@ async def relocate_script_highlights(
 @router.get("/scripts/{script_id}/export-with-highlights")
 async def export_script_with_highlights(
     script_id: str,
+    include_highlights: bool = True,
+    include_notes: bool = True,
+    include_addendums: bool = True,
     authorization: str = Header(None)
 ):
     """
     Export script PDF with highlights overlaid and notes addendum.
 
+    Args:
+        include_highlights: Include highlight overlays on pages and highlights addendum
+        include_notes: Include note markers on pages and notes addendum
+        include_addendums: Include addendum pages at the end
+
     Returns a PDF with:
-    - Original script pages with colored highlight overlays
-    - Addendum page(s) listing all notes with page references
+    - Original script pages with colored highlight overlays (if include_highlights)
+    - Note markers on pages (if include_notes)
+    - Addendum page(s) listing all notes with page references (if include_addendums)
+    - Addendum page(s) listing all highlights by category (if include_addendums)
     """
     user = await get_current_user_from_token(authorization)
     cognito_user_id = user.get("user_id") or user.get("id")
@@ -14783,9 +14833,9 @@ async def export_script_with_highlights(
 
         profile_id = get_profile_id_from_cognito_id(cognito_user_id)
 
-        # Get script and verify access
+        # Get script and verify access (include text_content for highlight offset matching)
         script_result = client.table("backlot_scripts").select(
-            "id, title, file_url, project_id"
+            "id, title, file_url, project_id, text_content"
         ).eq("id", script_id).single().execute()
 
         if not script_result.data:
@@ -14806,16 +14856,70 @@ async def export_script_with_highlights(
             if not member_response.data:
                 raise HTTPException(status_code=403, detail="You don't have access to this project")
 
+        # Get scenes for the project to map page numbers to scenes
+        # Include page_start and page_end directly from scenes table
+        scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, int_ext, location_hint, set_name, page_start, page_end"
+        ).eq("project_id", project_id).execute()
+        scenes_list = scenes_result.data or []
+        print(f"[EXPORT DEBUG] Found {len(scenes_list)} scenes for project {project_id}")
+
+        # Build page -> scene info map AND export scene mappings for PDF bookmarks
+        # Use page_start directly from scenes table (not the separate mappings table)
+        scene_map = {}  # page_number -> " • Scene X - INT/EXT LOCATION"
+        export_scene_mappings = []  # For PDF bookmarks and frontend navigation
+        for scene in scenes_list:
+            # page_start might be stored as decimal string like "4.00", convert to int
+            raw_page_start = scene.get("page_start")
+            raw_page_end = scene.get("page_end")
+
+            if raw_page_start is None:
+                print(f"[EXPORT DEBUG] Scene {scene.get('scene_number')} has no page_start, skipping")
+                continue  # Skip scenes without page mapping
+
+            try:
+                start_page = int(float(raw_page_start))
+                end_page = int(float(raw_page_end)) if raw_page_end else start_page
+                print(f"[EXPORT DEBUG] Scene {scene.get('scene_number')} -> page {start_page}")
+            except (ValueError, TypeError) as e:
+                print(f"[EXPORT DEBUG] Scene {scene.get('scene_number')} page conversion failed: {e}")
+                continue
+
+            int_ext = (scene.get("int_ext") or "").upper()
+            # Use location_hint or set_name for location display
+            location = scene.get("location_hint") or scene.get("set_name") or ""
+            scene_info = f" • Scene {scene.get('scene_number', '?')}"
+            bookmark_title = f"Scene {scene.get('scene_number', '?')}"
+            if int_ext or location:
+                scene_info += f" - {int_ext} {location}".strip()
+                bookmark_title += f" - {int_ext} {location}".strip()
+
+            # Build page -> scene map for addendum display
+            for page in range(start_page, end_page + 1):
+                scene_map[page] = scene_info
+
+            # Build export scene mapping for bookmarks (one entry per scene)
+            export_scene_mappings.append({
+                "scene_number": scene.get("scene_number"),
+                "scene_id": str(scene.get("id")),
+                "page_number": start_page,
+                "bookmark_title": bookmark_title
+            })
+
+        # Sort scene mappings by page number
+        export_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+        print(f"[EXPORT DEBUG] Final export_scene_mappings has {len(export_scene_mappings)} entries")
+
         # Get all highlights for the script
         highlights_result = client.table("backlot_script_highlight_breakdowns").select(
-            "id, page_number, rect_x, rect_y, rect_width, rect_height, category, color, highlighted_text, suggested_label, status"
+            "id, page_number, rect_x, rect_y, rect_width, rect_height, category, color, highlighted_text, suggested_label, status, start_offset, end_offset"
         ).eq("script_id", script_id).order("page_number").execute()
         highlights = highlights_result.data or []
 
-        # Get all script page notes
+        # Get all script page notes (ordered by document position: page first, then y position)
         notes_result = client.table("backlot_script_page_notes").select(
             "id, page_number, position_x, position_y, note_text, note_type, resolved, created_at, author_user_id"
-        ).eq("script_id", script_id).order("page_number").order("created_at").execute()
+        ).eq("script_id", script_id).order("page_number").order("position_y").execute()
         notes = notes_result.data or []
 
         # Get author names for notes
@@ -14883,6 +14987,340 @@ async def export_script_with_highlights(
         original_pdf = PdfReader(BytesIO(pdf_content))
         num_pages = len(original_pdf.pages)
 
+        # Use PyMuPDF to extract text positions for highlight rect calculation
+        import fitz  # PyMuPDF
+        fitz_doc = fitz.open(stream=pdf_content, filetype="pdf")
+
+        # Find Y positions of scene headings for scroll-to-top functionality
+        for scene_mapping in export_scene_mappings:
+            page_num = scene_mapping.get("page_number", 1)
+            if page_num < 1 or page_num > len(fitz_doc):
+                continue
+
+            fitz_page = fitz_doc[page_num - 1]  # 0-indexed
+            page_height = fitz_page.rect.height
+
+            # Build search patterns for scene heading
+            bookmark_title = scene_mapping.get("bookmark_title", "")
+            # Extract just the INT/EXT LOCATION part (after "Scene X - ")
+            search_patterns = []
+            if " - " in bookmark_title:
+                # Get the INT/EXT LOCATION part
+                location_part = bookmark_title.split(" - ", 1)[1].strip()
+                if location_part:
+                    search_patterns.append(location_part)
+                    # Also try without the INT/EXT prefix
+                    for prefix in ["INT ", "EXT ", "INT. ", "EXT. ", "I/E ", "I/E. "]:
+                        if location_part.upper().startswith(prefix):
+                            search_patterns.append(location_part[len(prefix):].strip())
+                            break
+
+            # Search for scene heading on the page
+            best_y = None
+            for pattern in search_patterns:
+                if not pattern:
+                    continue
+                # Case insensitive search
+                text_instances = fitz_page.search_for(pattern, quads=False)
+                if text_instances:
+                    # Get the topmost occurrence (smallest y0)
+                    topmost = min(text_instances, key=lambda r: r.y0)
+                    # Convert to PDF points from top (for #page=N&zoom=auto,0,Y format)
+                    # But browser PDF viewers typically measure from bottom, so we may need to adjust
+                    y_from_top = topmost.y0
+                    if best_y is None or y_from_top < best_y:
+                        best_y = y_from_top
+                    break  # Found it, stop searching
+
+            if best_y is not None:
+                # Store scroll position - subtract some padding to show context above
+                scroll_y = max(0, best_y - 20)  # 20 points padding above
+                scene_mapping["scroll_y"] = round(scroll_y)
+                print(f"[EXPORT DEBUG] Scene {scene_mapping.get('scene_number')} scroll_y={scroll_y:.0f}")
+
+        def find_text_rects_on_page(page_num, search_text):
+            """Find all occurrences of text on a page and return their rects as percentages"""
+            if page_num < 1 or page_num > len(fitz_doc):
+                return [], page_num
+
+            fitz_page = fitz_doc[page_num - 1]  # 0-indexed
+            page_rect = fitz_page.rect
+            page_width = page_rect.width
+            page_height = page_rect.height
+
+            # Search for the text
+            text_instances = fitz_page.search_for(search_text)
+
+            rects = []
+            for inst in text_instances:
+                # Convert to percentages (0-1 range)
+                rect_x = inst.x0 / page_width
+                rect_y = inst.y0 / page_height
+                rect_width = (inst.x1 - inst.x0) / page_width
+                rect_height = (inst.y1 - inst.y0) / page_height
+                rects.append({
+                    "rect_x": rect_x,
+                    "rect_y": rect_y,
+                    "rect_width": rect_width,
+                    "rect_height": rect_height
+                })
+            return rects, page_num
+
+        def find_text_in_document(search_text, preferred_page=None):
+            """Find text in document, checking preferred page first, then all pages"""
+            # Try preferred page first
+            if preferred_page:
+                rects, found_page = find_text_rects_on_page(preferred_page, search_text)
+                if rects:
+                    return rects, found_page
+
+            # Search all pages
+            for page_idx in range(len(fitz_doc)):
+                page_num = page_idx + 1
+                fitz_page = fitz_doc[page_idx]
+                page_rect = fitz_page.rect
+                page_width = page_rect.width
+                page_height = page_rect.height
+
+                text_instances = fitz_page.search_for(search_text)
+                if text_instances:
+                    rects = []
+                    for inst in text_instances:
+                        rect_x = inst.x0 / page_width
+                        rect_y = inst.y0 / page_height
+                        rect_width = (inst.x1 - inst.x0) / page_width
+                        rect_height = (inst.y1 - inst.y0) / page_height
+                        rects.append({
+                            "rect_x": rect_x,
+                            "rect_y": rect_y,
+                            "rect_width": rect_width,
+                            "rect_height": rect_height
+                        })
+                    return rects, page_num
+
+            return [], None
+
+        def find_text_by_offset(start_offset, end_offset, search_text, hint_page=None):
+            """Find text position using character offsets and context from script's text_content.
+
+            Uses surrounding context (BEFORE and AFTER) from text_content to find the exact match in PDF.
+            Searches ALL pages and returns the best global match, not just the first match.
+            """
+            script_text = script.get("text_content") or ""
+
+            if not script_text:
+                print(f"[EXPORT DEBUG] No text_content available for offset matching")
+                return None, None
+
+            # Find the text in text_content at the given offset
+            search_start = max(0, start_offset - 50)
+            search_end = min(len(script_text), start_offset + len(search_text) + 100)
+            window = script_text[search_start:search_end]
+
+            text_pos = window.find(search_text)
+            if text_pos == -1:
+                print(f"[EXPORT DEBUG] Could not find '{search_text}' near offset {start_offset} in text_content")
+                return None, None
+
+            actual_pos = search_start + text_pos
+            print(f"[EXPORT DEBUG] Found '{search_text}' at offset {actual_pos} in text_content")
+
+            # Get context BEFORE the target text (last 4 words before)
+            before_text = script_text[max(0, actual_pos - 100):actual_pos]
+            before_words = ' '.join(before_text.split()[-4:])  # Last 4 words before
+            print(f"[EXPORT DEBUG] Context before '{search_text}': '{before_words}'")
+
+            # Get context AFTER the target text (first 6 words after)
+            after_text = script_text[actual_pos + len(search_text):actual_pos + len(search_text) + 100]
+            after_words = ' '.join(after_text.split()[:6])  # First 6 words after
+            print(f"[EXPORT DEBUG] Context after '{search_text}': '{after_words}'")
+
+            def count_consecutive_matches(expected_words, actual_words):
+                """Count consecutive matching words from the start."""
+                if not expected_words or not actual_words:
+                    return 0
+                exp_list = expected_words.lower().split()
+                act_list = actual_words.lower().split()
+                count = 0
+                for i in range(min(len(exp_list), len(act_list))):
+                    if exp_list[i] == act_list[i]:
+                        count += 1
+                    else:
+                        break
+                return count
+
+            def search_page_for_match(page_idx):
+                """Search a single page for the text with matching context. Returns (rect, page_num, score)."""
+                page_num = page_idx + 1
+                fitz_page = fitz_doc[page_idx]
+                page_rect = fitz_page.rect
+                page_width = page_rect.width
+                page_height = page_rect.height
+
+                # search_for() is CASE-INSENSITIVE, so filter to exact case matches
+                all_rects = fitz_page.search_for(search_text)
+                if not all_rects:
+                    return None, None, 0
+
+                # Filter rects to only those with exact case match
+                text_instances = []
+                for rect in all_rects:
+                    text_at_rect = fitz_page.get_text("text", clip=rect).strip()
+                    if text_at_rect == search_text:
+                        text_instances.append(rect)
+                    else:
+                        print(f"[EXPORT DEBUG] Skipping rect at y={rect.y0:.1f} - text '{text_at_rect}' != '{search_text}'")
+
+                if not text_instances:
+                    print(f"[EXPORT DEBUG] No exact case matches for '{search_text}' on page {page_num}")
+                    return None, None, 0
+
+                page_text = fitz_page.get_text()
+
+                search_pos = 0
+                best_match = None
+                best_match_score = 0
+
+                for inst_idx, inst in enumerate(text_instances):
+                    found_pos = page_text.find(search_text, search_pos)
+                    if found_pos == -1:
+                        continue
+
+                    # Get context BEFORE this instance in PDF
+                    pdf_before = page_text[max(0, found_pos - 100):found_pos]
+                    pdf_before_words = ' '.join(pdf_before.split()[-4:])
+
+                    # Get context AFTER this instance in PDF
+                    pdf_after = page_text[found_pos + len(search_text):found_pos + len(search_text) + 100]
+                    pdf_after_words = ' '.join(pdf_after.split()[:6])
+
+                    # Score = before matches + after matches
+                    before_score = count_consecutive_matches(before_words, pdf_before_words)
+                    after_score = count_consecutive_matches(after_words, pdf_after_words)
+                    total_score = before_score + after_score
+
+                    print(f"[EXPORT DEBUG] PDF page {page_num} instance {inst_idx}: before='{pdf_before_words}' after='{pdf_after_words}' score={before_score}+{after_score}={total_score}")
+
+                    # Keep the best match on this page
+                    if total_score > best_match_score:
+                        best_match_score = total_score
+                        best_match = {
+                            "rect": {
+                                "rect_x": inst.x0 / page_width,
+                                "rect_y": inst.y0 / page_height,
+                                "rect_width": (inst.x1 - inst.x0) / page_width,
+                                "rect_height": (inst.y1 - inst.y0) / page_height
+                            },
+                            "page_num": page_num
+                        }
+
+                    search_pos = found_pos + 1
+
+                if best_match:
+                    return best_match["rect"], best_match["page_num"], best_match_score
+
+                return None, None, 0
+
+            # Search ALL pages and find the BEST global match
+            best_global_match = None
+            best_global_page = None
+            best_global_score = 0
+
+            # Search hint page first (if provided)
+            if hint_page is not None and 1 <= hint_page <= len(fitz_doc):
+                print(f"[EXPORT DEBUG] Searching hint page {hint_page} first")
+                rect, page_num, score = search_page_for_match(hint_page - 1)
+                if rect and score > best_global_score:
+                    best_global_match = rect
+                    best_global_page = page_num
+                    best_global_score = score
+
+            # Search all other pages
+            for page_idx in range(len(fitz_doc)):
+                if hint_page and page_idx == hint_page - 1:
+                    continue  # Already searched
+                rect, page_num, score = search_page_for_match(page_idx)
+                if rect and score > best_global_score:
+                    best_global_match = rect
+                    best_global_page = page_num
+                    best_global_score = score
+
+            # Require minimum score of 3 (e.g., 1 before + 2 after, or 0 before + 3 after)
+            if best_global_match and best_global_score >= 3:
+                print(f"[EXPORT DEBUG] Best GLOBAL match: page {best_global_page} with score {best_global_score}")
+                return best_global_match, best_global_page
+
+            # Fallback: return first instance on hint page or first page with matches
+            print(f"[EXPORT DEBUG] No strong context match (score={best_global_score}), using first instance")
+            pages_to_check = [hint_page - 1] if hint_page else []
+            pages_to_check.extend(range(len(fitz_doc)))
+
+            for page_idx in pages_to_check:
+                if page_idx < 0 or page_idx >= len(fitz_doc):
+                    continue
+                fitz_page = fitz_doc[page_idx]
+                text_instances = fitz_page.search_for(search_text)
+                if text_instances:
+                    inst = text_instances[0]
+                    page_rect = fitz_page.rect
+                    return {
+                        "rect_x": inst.x0 / page_rect.width,
+                        "rect_y": inst.y0 / page_rect.height,
+                        "rect_width": (inst.x1 - inst.x0) / page_rect.width,
+                        "rect_height": (inst.y1 - inst.y0) / page_rect.height
+                    }, page_idx + 1
+
+            return None, None
+
+        # Calculate missing rect coordinates for highlights
+        print(f"[EXPORT DEBUG] Processing {len(highlights)} highlights")
+        for highlight in highlights:
+            # Skip if already has rect coordinates
+            if highlight.get("rect_x") is not None and highlight.get("rect_y") is not None:
+                print(f"[EXPORT DEBUG] Highlight already has rects: {highlight.get('suggested_label')}")
+                continue
+
+            # Need highlighted_text to calculate rect
+            search_text = highlight.get("highlighted_text") or highlight.get("suggested_label")
+            start_offset = highlight.get("start_offset")
+            end_offset = highlight.get("end_offset")
+            page_num = highlight.get("page_number")
+
+            if not search_text:
+                print(f"[EXPORT DEBUG] Skipping highlight - no search_text")
+                continue
+
+            # If we have start_offset, use it to find the exact instance
+            if start_offset is not None and end_offset is not None:
+                print(f"[EXPORT DEBUG] Using offset search for '{search_text}' (offset {start_offset}-{end_offset}, hint page {page_num})")
+                rect, found_page = find_text_by_offset(start_offset, end_offset, search_text, hint_page=page_num)
+                if rect and found_page:
+                    highlight["page_number"] = found_page
+                    highlight["rect_x"] = rect["rect_x"]
+                    highlight["rect_y"] = rect["rect_y"]
+                    highlight["rect_width"] = rect["rect_width"]
+                    highlight["rect_height"] = rect["rect_height"]
+                    print(f"[EXPORT DEBUG] Set rect via offset: page={found_page}, x={rect['rect_x']:.4f}, y={rect['rect_y']:.4f}")
+                    continue
+
+            # Fallback: Find text in document (searches preferred page first if given, then all pages)
+            print(f"[EXPORT DEBUG] Fallback search for '{search_text}' starting on page {page_num or 'any'}")
+            rects, found_page = find_text_in_document(search_text, page_num)
+            print(f"[EXPORT DEBUG] Found {len(rects)} matches on page {found_page}")
+
+            if rects and found_page:
+                # Update page_number if text was found on a different page or if page_num was missing
+                if found_page != page_num or page_num is None:
+                    print(f"[EXPORT DEBUG] Text found on page {found_page} (was {page_num}), updating highlight")
+                    highlight["page_number"] = found_page
+
+                # Use the first match
+                highlight["rect_x"] = rects[0]["rect_x"]
+                highlight["rect_y"] = rects[0]["rect_y"]
+                highlight["rect_width"] = rects[0]["rect_width"]
+                highlight["rect_height"] = rects[0]["rect_height"]
+                print(f"[EXPORT DEBUG] Set rect: x={rects[0]['rect_x']:.4f}, y={rects[0]['rect_y']:.4f}, w={rects[0]['rect_width']:.4f}, h={rects[0]['rect_height']:.4f}")
+
         # Category colors mapping
         CATEGORY_COLORS = {
             "cast": "#3B82F6",      # Blue
@@ -14916,68 +15354,78 @@ async def export_script_with_highlights(
             page_width = float(original_page.mediabox.width)
             page_height = float(original_page.mediabox.height)
 
-            # Get highlights for this page
-            page_highlights = [h for h in highlights if h.get("page_number") == page_num + 1]
-            # Get notes for this page
-            page_notes = [n for n in notes if n.get("page_number") == page_num + 1]
+            # Get highlights for this page (only if highlights are included)
+            page_highlights = [h for h in highlights if h.get("page_number") == page_num + 1] if include_highlights else []
+            # Get notes for this page (only if notes are included)
+            page_notes = [n for n in notes if n.get("page_number") == page_num + 1] if include_notes else []
 
             if page_highlights or page_notes:
                 # Create overlay for this page
                 overlay_buffer = BytesIO()
                 c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
 
-                # Draw highlight rectangles
-                for highlight in page_highlights:
-                    # Get color
-                    color_hex = highlight.get("color") or CATEGORY_COLORS.get(highlight.get("category"), "#FFFF00")
-                    r, g, b = hex_to_rgb(color_hex)
+                # Draw highlight rectangles (if highlights are included)
+                if include_highlights:
+                    print(f"[EXPORT DEBUG] Drawing {len(page_highlights)} highlights on page {page_num + 1}")
+                    for highlight in page_highlights:
+                        # Skip highlights without rect coordinates
+                        if highlight.get("rect_x") is None or highlight.get("rect_y") is None:
+                            print(f"[EXPORT DEBUG] Skipping highlight without rects: {highlight.get('suggested_label')}")
+                            continue
 
-                    # Calculate position (rect values are 0-1 percentages)
-                    # Convert Decimal to float for math operations
-                    rect_x = float(highlight.get("rect_x") or 0)
-                    rect_y = float(highlight.get("rect_y") or 0)
-                    rect_w = float(highlight.get("rect_width") or 0.1)
-                    rect_h = float(highlight.get("rect_height") or 0.02)
+                        # Get color
+                        color_hex = highlight.get("color") or CATEGORY_COLORS.get(highlight.get("category"), "#FFFF00")
+                        r, g, b = hex_to_rgb(color_hex)
 
-                    x = rect_x * page_width
-                    # PDF coordinates are from bottom, so invert y
-                    y = page_height - (rect_y * page_height) - (rect_h * page_height)
-                    w = rect_w * page_width
-                    h = rect_h * page_height
+                        # Calculate position (rect values are 0-1 percentages)
+                        # Convert Decimal to float for math operations
+                        rect_x = float(highlight.get("rect_x") or 0)
+                        rect_y = float(highlight.get("rect_y") or 0)
+                        rect_w = float(highlight.get("rect_width") or 0.1)
+                        rect_h = float(highlight.get("rect_height") or 0.02)
 
-                    # Draw semi-transparent highlight rectangle
-                    c.setFillColor(Color(r, g, b, alpha=0.3))
-                    c.setStrokeColor(Color(r, g, b, alpha=0.8))
-                    c.setLineWidth(0.5)
-                    c.rect(x, y, w, h, fill=True, stroke=True)
+                        x = rect_x * page_width
+                        # PDF coordinates are from bottom, so invert y
+                        y = page_height - (rect_y * page_height) - (rect_h * page_height)
+                        w = rect_w * page_width
+                        h = rect_h * page_height
 
-                # Draw note markers (circled numbers)
-                for note in page_notes:
-                    note_num = note_index_map.get(note.get("id"), 0)
-                    if note_num == 0:
-                        continue
+                        print(f"[EXPORT DEBUG] Drawing highlight '{highlight.get('suggested_label')}' at x={x:.1f}, y={y:.1f}, w={w:.1f}, h={h:.1f}")
 
-                    # Get note position (0-1 percentages)
-                    pos_x = float(note.get("position_x") or 0)
-                    pos_y = float(note.get("position_y") or 0)
+                        # Draw semi-transparent highlight rectangle
+                        c.setFillColor(Color(r, g, b, alpha=0.3))
+                        c.setStrokeColor(Color(r, g, b, alpha=0.8))
+                        c.setLineWidth(0.5)
+                        c.rect(x, y, w, h, fill=True, stroke=True)
 
-                    # Convert to PDF coordinates
-                    marker_x = pos_x * page_width
-                    marker_y = page_height - (pos_y * page_height)
+                # Draw note markers (circled numbers) - if notes are included
+                if include_notes:
+                    for note in page_notes:
+                        note_num = note_index_map.get(note.get("id"), 0)
+                        if note_num == 0:
+                            continue
 
-                    # Draw marker - red circle with white number
-                    marker_radius = 8
-                    c.setFillColor(Color(0.9, 0.2, 0.2, alpha=0.9))  # Red
-                    c.setStrokeColor(Color(1, 1, 1, alpha=1))  # White border
-                    c.setLineWidth(1)
-                    c.circle(marker_x, marker_y, marker_radius, fill=True, stroke=True)
+                        # Get note position (0-100 percentages)
+                        pos_x = float(note.get("position_x") or 0) / 100.0  # Convert 0-100 to 0-1
+                        pos_y = float(note.get("position_y") or 0) / 100.0  # Convert 0-100 to 0-1
 
-                    # Draw number in white
-                    c.setFillColor(Color(1, 1, 1, alpha=1))
-                    c.setFont("Helvetica-Bold", 7)
-                    # Center the text in the circle
-                    text_width = c.stringWidth(str(note_num), "Helvetica-Bold", 7)
-                    c.drawString(marker_x - text_width/2, marker_y - 2.5, str(note_num))
+                        # Convert to PDF coordinates
+                        marker_x = pos_x * page_width
+                        marker_y = page_height - (pos_y * page_height)
+
+                        # Draw marker - red circle with white number
+                        marker_radius = 8
+                        c.setFillColor(Color(0.9, 0.2, 0.2, alpha=0.9))  # Red
+                        c.setStrokeColor(Color(1, 1, 1, alpha=1))  # White border
+                        c.setLineWidth(1)
+                        c.circle(marker_x, marker_y, marker_radius, fill=True, stroke=True)
+
+                        # Draw number in white
+                        c.setFillColor(Color(1, 1, 1, alpha=1))
+                        c.setFont("Helvetica-Bold", 7)
+                        # Center the text in the circle
+                        text_width = c.stringWidth(str(note_num), "Helvetica-Bold", 7)
+                        c.drawString(marker_x - text_width/2, marker_y - 2.5, str(note_num))
 
                 c.save()
                 overlay_buffer.seek(0)
@@ -15038,12 +15486,14 @@ async def export_script_with_highlights(
                     # Note header
                     c.setFont("Helvetica-Bold", 9)
                     note_type = note_type_labels.get(note.get("note_type"), note.get("note_type", "Note"))
-                    page_ref = f"Page {note.get('page_number', '?')}"
+                    page_num = note.get("page_number", 0)
+                    page_ref = f"Page {page_num}"
+                    scene_info = scene_map.get(page_num, "")
                     author_info = note.get("author") or {}
                     author_name = author_info.get("display_name") or author_info.get("full_name") or author_info.get("username") or "Unknown"
                     resolved_marker = " [RESOLVED]" if note.get("resolved") else ""
 
-                    header_text = f"[{i}] {note_type} - {page_ref} - by {author_name}{resolved_marker}"
+                    header_text = f"[{i}] {note_type} - {page_ref}{scene_info} - by {author_name}{resolved_marker}"
                     c.drawString(1 * inch, y_position, header_text)
                     y_position -= 0.15 * inch
 
@@ -15090,8 +15540,10 @@ async def export_script_with_highlights(
                     c.setFont("Helvetica-Bold", 9)
                     label = highlight.get("suggested_label") or highlight.get("highlighted_text", "")
                     category = highlight.get("category", "other").capitalize()
-                    page_ref = f"Page {highlight.get('page_number', '?')}"
-                    c.drawString(1 * inch, y_position, f"{category}: \"{label}\" - {page_ref}")
+                    hl_page_num = highlight.get("page_number", 0)
+                    page_ref = f"Page {hl_page_num}"
+                    hl_scene_info = scene_map.get(hl_page_num, "")
+                    c.drawString(1 * inch, y_position, f"{category}: \"{label}\" - {page_ref}{hl_scene_info}")
                     y_position -= 0.15 * inch
 
                     # Notes for this highlight
@@ -15132,17 +15584,148 @@ async def export_script_with_highlights(
             buffer.seek(0)
             return buffer
 
-        # Add notes addendum if there are any notes or highlight notes
-        if notes or any(h.get("id") in highlight_notes_map for h in highlights):
+        # Create highlights addendum page(s)
+        def create_highlights_addendum():
+            """Create addendum pages listing all highlights with scene info, grouped by category"""
+            buffer = BytesIO()
+            c = canvas.Canvas(buffer, pagesize=letter)
+            page_width, page_height = letter
+
+            y_position = page_height - 1 * inch
+
+            # Title
+            c.setFont("Helvetica-Bold", 16)
+            c.drawString(1 * inch, y_position, f"Breakdown Highlights - {script.get('title', 'Untitled')}")
+            y_position -= 0.3 * inch
+
+            c.setFont("Helvetica", 10)
+            c.setFillColor(Color(0.4, 0.4, 0.4))
+            c.drawString(1 * inch, y_position, f"Project: {project.get('title', 'Unknown')}")
+            y_position -= 0.2 * inch
+            c.drawString(1 * inch, y_position, f"Generated: {datetime.utcnow().strftime('%B %d, %Y at %H:%M UTC')}")
+            y_position -= 0.4 * inch
+            c.setFillColor(Color(0, 0, 0))
+
+            # Group highlights by category
+            highlights_by_category = {}
+            for h in highlights:
+                cat = h.get("category", "other")
+                if cat not in highlights_by_category:
+                    highlights_by_category[cat] = []
+                highlights_by_category[cat].append(h)
+
+            for category, cat_highlights in sorted(highlights_by_category.items()):
+                if y_position < 1.5 * inch:
+                    c.showPage()
+                    y_position = page_height - 1 * inch
+
+                # Category header with color swatch - use highlight's actual color if available
+                # Get color from first highlight in category, or fall back to CATEGORY_COLORS
+                first_highlight_color = cat_highlights[0].get("color") if cat_highlights else None
+                color_hex = first_highlight_color or CATEGORY_COLORS.get(category, "#6B7280")
+                r, g, b = hex_to_rgb(color_hex)
+                c.setFillColor(Color(r, g, b, alpha=1))
+                c.rect(1 * inch, y_position - 0.05 * inch, 0.15 * inch, 0.15 * inch, fill=True)
+                c.setFillColor(Color(0, 0, 0))
+                c.setFont("Helvetica-Bold", 12)
+                c.drawString(1.25 * inch, y_position, f"{category.upper()} ({len(cat_highlights)})")
+                y_position -= 0.25 * inch
+
+                c.setFont("Helvetica", 9)
+                for h in sorted(cat_highlights, key=lambda x: (x.get("page_number") or 0, float(x.get("rect_y") or 0))):
+                    if y_position < 1.5 * inch:
+                        c.showPage()
+                        y_position = page_height - 1 * inch
+                        c.setFont("Helvetica", 9)
+
+                    label = h.get("suggested_label") or (h.get("highlighted_text") or "")[:50]
+                    hl_page = h.get("page_number", 0)
+                    hl_scene = scene_map.get(hl_page, "")
+
+                    c.drawString(1.2 * inch, y_position, f"• \"{label}\" - Page {hl_page}{hl_scene}")
+                    y_position -= 0.15 * inch
+
+                y_position -= 0.15 * inch
+
+            # Summary at the end
+            y_position -= 0.2 * inch
+            if y_position < 1.5 * inch:
+                c.showPage()
+                y_position = page_height - 1 * inch
+
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(1 * inch, y_position, "Summary")
+            y_position -= 0.25 * inch
+
+            c.setFont("Helvetica", 10)
+            c.drawString(1 * inch, y_position, f"Total Highlights: {len(highlights)}")
+            y_position -= 0.15 * inch
+
+            # Category breakdown
+            for cat, cat_items in sorted(highlights_by_category.items()):
+                # Use actual highlight color if available
+                first_item_color = cat_items[0].get("color") if cat_items else None
+                color_hex = first_item_color or CATEGORY_COLORS.get(cat, "#6B7280")
+                r, g, b = hex_to_rgb(color_hex)
+                c.setFillColor(Color(r, g, b, alpha=1))
+                c.rect(1 * inch, y_position - 0.03 * inch, 0.1 * inch, 0.1 * inch, fill=True)
+                c.setFillColor(Color(0, 0, 0))
+                c.drawString(1.15 * inch, y_position, f"{cat.capitalize()}: {len(cat_items)}")
+                y_position -= 0.15 * inch
+
+            c.save()
+            buffer.seek(0)
+            return buffer
+
+        # Add notes addendum if there are notes and notes are included in export
+        notes_addendum_page_start = None
+        if include_addendums and include_notes and (notes or any(h.get("id") in highlight_notes_map for h in highlights)):
+            notes_addendum_page_start = len(output.pages) + 1  # 1-indexed for frontend
             addendum_buffer = create_notes_addendum()
             addendum_pdf = PdfReader(addendum_buffer)
             for page in addendum_pdf.pages:
                 output.add_page(page)
 
+        # Add highlights addendum if there are highlights and highlights are included in export
+        highlights_addendum_page_start = None
+        if include_addendums and include_highlights and highlights:
+            highlights_addendum_page_start = len(output.pages) + 1  # 1-indexed for frontend
+            highlights_addendum_buffer = create_highlights_addendum()
+            highlights_addendum_pdf = PdfReader(highlights_addendum_buffer)
+            for page in highlights_addendum_pdf.pages:
+                output.add_page(page)
+
+        # Add PDF bookmarks for scene navigation
+        for scene_mapping in export_scene_mappings:
+            page_num = scene_mapping.get("page_number", 1) - 1  # 0-indexed for pypdf
+            if 0 <= page_num < len(output.pages):
+                output.add_outline_item(
+                    title=scene_mapping.get("bookmark_title", f"Scene {scene_mapping.get('scene_number')}"),
+                    page_number=page_num
+                )
+
+        # Add addendum bookmarks
+        addendums_info = {}
+        if notes_addendum_page_start:
+            output.add_outline_item(title="Notes Addendum", page_number=notes_addendum_page_start - 1)
+            addendums_info["notes"] = {"page_number": notes_addendum_page_start, "title": "Notes Addendum"}
+        if highlights_addendum_page_start:
+            output.add_outline_item(title="Highlights Addendum", page_number=highlights_addendum_page_start - 1)
+            addendums_info["highlights"] = {"page_number": highlights_addendum_page_start, "title": "Highlights Addendum"}
+
+        # Build final scene mappings JSON for response header
+        scene_mappings_json = json.dumps({
+            "scenes": export_scene_mappings,
+            "addendums": addendums_info
+        })
+
         # Write final PDF to buffer
         final_buffer = BytesIO()
         output.write(final_buffer)
         final_buffer.seek(0)
+
+        # Close PyMuPDF document
+        fitz_doc.close()
 
         # Generate filename
         script_title = script.get("title", "script").replace(" ", "_")[:30]
@@ -15152,7 +15735,9 @@ async def export_script_with_highlights(
             content=final_buffer.getvalue(),
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Scene-Mappings": scene_mappings_json,
+                "Access-Control-Expose-Headers": "X-Scene-Mappings"
             }
         )
 
@@ -15272,6 +15857,860 @@ async def export_script_multi_format(
         print(f"Error exporting script: {e}")
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CONTINUITY PDF EXPORTS
+# =====================================================
+
+class ContinuityExportInput(BaseModel):
+    """Input for creating a continuity export"""
+    script_id: Optional[str] = None
+    export_type: str = "script"  # 'script', 'breakdown', 'sides', etc.
+    content_type: Optional[str] = None  # 'clean', 'highlights', 'notes', 'both'
+    version_label: Optional[str] = None
+
+
+@router.post("/projects/{project_id}/continuity/exports")
+async def save_continuity_export(
+    project_id: str,
+    file: UploadFile = File(...),
+    script_id: Optional[str] = Form(None),
+    export_type: str = Form("script"),
+    content_type: Optional[str] = Form(None),
+    version_label: Optional[str] = Form(None),
+    scene_mappings: Optional[str] = Form(None),  # JSON string with scene-to-page mappings
+    authorization: Optional[str] = Header(None)
+):
+    """Save an exported PDF to continuity storage for version history"""
+    try:
+        # Get current user
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify project access
+        project = client.table("backlot_projects").select("id, title").eq("id", project_id).single().execute()
+        if not project.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Get user profile ID (current_user from socketio_app returns 'user_id' not 'sub')
+        from app.api.users import get_profile_id_from_cognito_id
+        profile_id = get_profile_id_from_cognito_id(current_user["user_id"])
+
+        # Read file content
+        file_content = await file.read()
+        file_size = len(file_content)
+
+        # Generate unique filename for S3
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safe_title = project.data.get("title", "export")[:30].replace(" ", "_")
+        s3_key = f"continuity/{project_id}/{timestamp}_{safe_title}.pdf"
+
+        # Upload to S3
+        import boto3
+        s3_client = boto3.client("s3")
+        s3_client.put_object(
+            Bucket=BACKLOT_FILES_BUCKET,
+            Key=s3_key,
+            Body=file_content,
+            ContentType="application/pdf"
+        )
+
+        s3_uri = f"s3://{BACKLOT_FILES_BUCKET}/{s3_key}"
+
+        # Get next version number
+        version_result = execute_single(
+            """
+            SELECT COALESCE(MAX(version_number), 0) + 1 as next_version
+            FROM backlot_continuity_exports
+            WHERE project_id = :project_id
+            """,
+            {"project_id": project_id}
+        )
+        next_version = version_result["next_version"] if version_result else 1
+
+        # Mark all previous exports as not current
+        client.table("backlot_continuity_exports").update(
+            {"is_current": False}
+        ).eq("project_id", project_id).execute()
+
+        # Get page count from PDF
+        page_count = None
+        try:
+            import io
+            from pypdf import PdfReader
+            pdf_reader = PdfReader(io.BytesIO(file_content))
+            page_count = len(pdf_reader.pages)
+        except Exception:
+            pass  # Page count is optional
+
+        # Parse scene_mappings JSON if provided
+        parsed_scene_mappings = None
+        if scene_mappings:
+            try:
+                parsed_scene_mappings = json.loads(scene_mappings)
+            except json.JSONDecodeError:
+                pass  # Ignore invalid JSON, scene_mappings is optional
+
+        # Insert new export record
+        export_data = {
+            "id": str(uuid.uuid4()),
+            "project_id": project_id,
+            "script_id": script_id,
+            "file_url": s3_uri,
+            "file_name": file.filename or f"{safe_title}.pdf",
+            "file_size": file_size,
+            "export_type": export_type,
+            "content_type": content_type,
+            "page_count": page_count,
+            "version_number": next_version,
+            "version_label": version_label,
+            "created_by": profile_id,
+            "is_current": True,
+            "scene_mappings": parsed_scene_mappings,
+        }
+
+        result = client.table("backlot_continuity_exports").insert(export_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to save export")
+
+        # Add signed URL for response
+        export_record = result.data[0]
+        # Parse S3 URI (s3://bucket/path) to get bucket and path for signed URL
+        export_record["signed_url"] = get_signed_url(BACKLOT_FILES_BUCKET, s3_key)
+
+        return export_record
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving continuity export: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/continuity/exports")
+async def list_continuity_exports(
+    project_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """List all continuity PDF exports for a project (version history)"""
+    try:
+        # Get current user
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Fetch exports ordered by created_at DESC
+        result = client.table("backlot_continuity_exports").select(
+            "*, created_by_profile:profiles!created_by(id, full_name, display_name, avatar_url)"
+        ).eq("project_id", project_id).order("created_at", desc=True).execute()
+
+        exports = result.data or []
+
+        # Add signed URLs to each export
+        for export in exports:
+            if export.get("file_url"):
+                # Parse S3 URI (s3://bucket/path) to extract path
+                file_url = export["file_url"]
+                if file_url.startswith("s3://"):
+                    parts = file_url[5:].split("/", 1)  # Remove s3:// and split bucket/path
+                    if len(parts) == 2:
+                        export["signed_url"] = get_signed_url(parts[0], parts[1])
+
+        return exports
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing continuity exports: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/continuity/exports/{export_id}")
+async def get_continuity_export(
+    project_id: str,
+    export_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get a specific continuity export with signed URL"""
+    try:
+        # Get current user
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        result = client.table("backlot_continuity_exports").select(
+            "*, created_by_profile:profiles!created_by(id, full_name, display_name, avatar_url)"
+        ).eq("id", export_id).eq("project_id", project_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        export = result.data
+        if export.get("file_url"):
+            # Parse S3 URI (s3://bucket/path) to extract path
+            file_url = export["file_url"]
+            if file_url.startswith("s3://"):
+                parts = file_url[5:].split("/", 1)  # Remove s3:// and split bucket/path
+                if len(parts) == 2:
+                    export["signed_url"] = get_signed_url(parts[0], parts[1])
+
+        return export
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting continuity export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{project_id}/continuity/exports/{export_id}")
+async def delete_continuity_export(
+    project_id: str,
+    export_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a continuity export"""
+    try:
+        # Get current user
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Check if export exists
+        existing = client.table("backlot_continuity_exports").select(
+            "id, file_url, is_current"
+        ).eq("id", export_id).eq("project_id", project_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        was_current = existing.data.get("is_current", False)
+
+        # Delete the record
+        client.table("backlot_continuity_exports").delete().eq("id", export_id).execute()
+
+        # If we deleted the current export, mark the next most recent as current
+        if was_current:
+            latest = client.table("backlot_continuity_exports").select("id").eq(
+                "project_id", project_id
+            ).order("created_at", desc=True).limit(1).execute()
+
+            if latest.data:
+                client.table("backlot_continuity_exports").update(
+                    {"is_current": True}
+                ).eq("id", latest.data[0]["id"]).execute()
+
+        # Optionally delete from S3 (commented out to preserve files)
+        # s3_uri = existing.data.get("file_url")
+        # if s3_uri and s3_uri.startswith("s3://"):
+        #     ... delete from S3 ...
+
+        return {"success": True, "message": "Export deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting continuity export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/projects/{project_id}/continuity/exports/{export_id}")
+async def update_continuity_export(
+    project_id: str,
+    export_id: str,
+    version_label: Optional[str] = Body(None, embed=True),
+    is_current: Optional[bool] = Body(None, embed=True),
+    authorization: Optional[str] = Header(None)
+):
+    """Update a continuity export (label or set as current)"""
+    try:
+        # Get current user
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Check if export exists
+        existing = client.table("backlot_continuity_exports").select(
+            "id"
+        ).eq("id", export_id).eq("project_id", project_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        update_data = {}
+        if version_label is not None:
+            update_data["version_label"] = version_label
+
+        if is_current is True:
+            # Unset current from all others first
+            client.table("backlot_continuity_exports").update(
+                {"is_current": False}
+            ).eq("project_id", project_id).execute()
+            update_data["is_current"] = True
+
+        if update_data:
+            result = client.table("backlot_continuity_exports").update(
+                update_data
+            ).eq("id", export_id).execute()
+
+            if result.data:
+                export = result.data[0]
+                if export.get("file_url"):
+                    export["signed_url"] = get_signed_url(export["file_url"])
+                return export
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating continuity export: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# CONTINUITY EXPORT ANNOTATIONS (Version-Specific)
+# =====================================================
+
+# --- Highlights CRUD ---
+
+@router.get("/projects/{project_id}/continuity/exports/{export_id}/highlights")
+async def get_export_highlights(
+    project_id: str,
+    export_id: str,
+    page_number: Optional[int] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """Get all highlights for a continuity export, optionally filtered by page"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        query = client.table("backlot_continuity_export_highlights").select(
+            "*, created_by_profile:profiles!created_by(id, full_name, display_name, avatar_url)"
+        ).eq("export_id", export_id)
+
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+
+        result = query.order("created_at").execute()
+        return result.data or []
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting export highlights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/continuity/exports/{export_id}/highlights")
+async def create_export_highlight(
+    project_id: str,
+    export_id: str,
+    page_number: int = Body(...),
+    x: float = Body(...),
+    y: float = Body(...),
+    width: float = Body(...),
+    height: float = Body(...),
+    color: str = Body("yellow"),
+    opacity: float = Body(0.3),
+    text_content: Optional[str] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Create a new highlight on a continuity export"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        # Get user profile ID
+        from app.api.users import get_profile_id_from_cognito_id
+        profile_id = get_profile_id_from_cognito_id(current_user["user_id"])
+
+        highlight_data = {
+            "id": str(uuid.uuid4()),
+            "export_id": export_id,
+            "page_number": page_number,
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "color": color,
+            "opacity": opacity,
+            "text_content": text_content,
+            "created_by": profile_id,
+        }
+
+        result = client.table("backlot_continuity_export_highlights").insert(highlight_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create highlight")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating export highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/continuity/export-highlights/{highlight_id}")
+async def update_export_highlight(
+    highlight_id: str,
+    x: Optional[float] = Body(None),
+    y: Optional[float] = Body(None),
+    width: Optional[float] = Body(None),
+    height: Optional[float] = Body(None),
+    color: Optional[str] = Body(None),
+    opacity: Optional[float] = Body(None),
+    text_content: Optional[str] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Update an existing highlight"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if x is not None:
+            update_data["x"] = x
+        if y is not None:
+            update_data["y"] = y
+        if width is not None:
+            update_data["width"] = width
+        if height is not None:
+            update_data["height"] = height
+        if color is not None:
+            update_data["color"] = color
+        if opacity is not None:
+            update_data["opacity"] = opacity
+        if text_content is not None:
+            update_data["text_content"] = text_content
+
+        result = client.table("backlot_continuity_export_highlights").update(
+            update_data
+        ).eq("id", highlight_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Highlight not found")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating export highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/continuity/export-highlights/{highlight_id}")
+async def delete_export_highlight(
+    highlight_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a highlight"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        result = client.table("backlot_continuity_export_highlights").delete().eq(
+            "id", highlight_id
+        ).execute()
+
+        return {"success": True, "message": "Highlight deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting export highlight: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Notes CRUD ---
+
+@router.get("/projects/{project_id}/continuity/exports/{export_id}/notes")
+async def get_export_notes(
+    project_id: str,
+    export_id: str,
+    page_number: Optional[int] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """Get all notes for a continuity export, optionally filtered by page"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        query = client.table("backlot_continuity_export_notes").select(
+            "*, created_by_profile:profiles!created_by(id, full_name, display_name, avatar_url)"
+        ).eq("export_id", export_id)
+
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+
+        result = query.order("created_at").execute()
+        return result.data or []
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting export notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/continuity/exports/{export_id}/notes")
+async def create_export_note(
+    project_id: str,
+    export_id: str,
+    page_number: int = Body(...),
+    anchor_x: float = Body(...),
+    anchor_y: float = Body(...),
+    note_text: str = Body(...),
+    note_category: str = Body("general"),
+    is_critical: bool = Body(False),
+    authorization: Optional[str] = Header(None)
+):
+    """Create a new note on a continuity export"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        # Get user profile ID
+        from app.api.users import get_profile_id_from_cognito_id
+        profile_id = get_profile_id_from_cognito_id(current_user["user_id"])
+
+        note_data = {
+            "id": str(uuid.uuid4()),
+            "export_id": export_id,
+            "page_number": page_number,
+            "anchor_x": anchor_x,
+            "anchor_y": anchor_y,
+            "note_text": note_text,
+            "note_category": note_category,
+            "is_critical": is_critical,
+            "created_by": profile_id,
+        }
+
+        result = client.table("backlot_continuity_export_notes").insert(note_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create note")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating export note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/continuity/export-notes/{note_id}")
+async def update_export_note(
+    note_id: str,
+    anchor_x: Optional[float] = Body(None),
+    anchor_y: Optional[float] = Body(None),
+    note_text: Optional[str] = Body(None),
+    note_category: Optional[str] = Body(None),
+    is_critical: Optional[bool] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Update an existing note"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if anchor_x is not None:
+            update_data["anchor_x"] = anchor_x
+        if anchor_y is not None:
+            update_data["anchor_y"] = anchor_y
+        if note_text is not None:
+            update_data["note_text"] = note_text
+        if note_category is not None:
+            update_data["note_category"] = note_category
+        if is_critical is not None:
+            update_data["is_critical"] = is_critical
+
+        result = client.table("backlot_continuity_export_notes").update(
+            update_data
+        ).eq("id", note_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating export note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/continuity/export-notes/{note_id}")
+async def delete_export_note(
+    note_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a note"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        result = client.table("backlot_continuity_export_notes").delete().eq(
+            "id", note_id
+        ).execute()
+
+        return {"success": True, "message": "Note deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting export note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Drawings CRUD ---
+
+@router.get("/projects/{project_id}/continuity/exports/{export_id}/drawings")
+async def get_export_drawings(
+    project_id: str,
+    export_id: str,
+    page_number: Optional[int] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """Get all drawings for a continuity export, optionally filtered by page"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        query = client.table("backlot_continuity_export_drawings").select(
+            "*, created_by_profile:profiles!created_by(id, full_name, display_name, avatar_url)"
+        ).eq("export_id", export_id)
+
+        if page_number is not None:
+            query = query.eq("page_number", page_number)
+
+        result = query.order("created_at").execute()
+        return result.data or []
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting export drawings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/continuity/exports/{export_id}/drawings")
+async def create_export_drawing(
+    project_id: str,
+    export_id: str,
+    page_number: int = Body(...),
+    tool_type: str = Body(...),
+    path_data: dict = Body(...),
+    stroke_color: str = Body("#FF0000"),
+    stroke_width: float = Body(2),
+    fill_color: Optional[str] = Body(None),
+    opacity: float = Body(1.0),
+    text_content: Optional[str] = Body(None),
+    font_size: float = Body(12),
+    authorization: Optional[str] = Header(None)
+):
+    """Create a new drawing on a continuity export"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Verify export belongs to project
+        export = client.table("backlot_continuity_exports").select("id").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+        if not export.data:
+            raise HTTPException(status_code=404, detail="Export not found")
+
+        # Get user profile ID
+        from app.api.users import get_profile_id_from_cognito_id
+        profile_id = get_profile_id_from_cognito_id(current_user["user_id"])
+
+        drawing_data = {
+            "id": str(uuid.uuid4()),
+            "export_id": export_id,
+            "page_number": page_number,
+            "tool_type": tool_type,
+            "path_data": path_data,
+            "stroke_color": stroke_color,
+            "stroke_width": stroke_width,
+            "fill_color": fill_color,
+            "opacity": opacity,
+            "text_content": text_content,
+            "font_size": font_size,
+            "created_by": profile_id,
+        }
+
+        result = client.table("backlot_continuity_export_drawings").insert(drawing_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create drawing")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating export drawing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/continuity/export-drawings/{drawing_id}")
+async def update_export_drawing(
+    drawing_id: str,
+    path_data: Optional[dict] = Body(None),
+    stroke_color: Optional[str] = Body(None),
+    stroke_width: Optional[float] = Body(None),
+    fill_color: Optional[str] = Body(None),
+    opacity: Optional[float] = Body(None),
+    text_content: Optional[str] = Body(None),
+    font_size: Optional[float] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """Update an existing drawing"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        update_data = {"updated_at": datetime.now(timezone.utc).isoformat()}
+        if path_data is not None:
+            update_data["path_data"] = path_data
+        if stroke_color is not None:
+            update_data["stroke_color"] = stroke_color
+        if stroke_width is not None:
+            update_data["stroke_width"] = stroke_width
+        if fill_color is not None:
+            update_data["fill_color"] = fill_color
+        if opacity is not None:
+            update_data["opacity"] = opacity
+        if text_content is not None:
+            update_data["text_content"] = text_content
+        if font_size is not None:
+            update_data["font_size"] = font_size
+
+        result = client.table("backlot_continuity_export_drawings").update(
+            update_data
+        ).eq("id", drawing_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Drawing not found")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating export drawing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/continuity/export-drawings/{drawing_id}")
+async def delete_export_drawing(
+    drawing_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a drawing"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        result = client.table("backlot_continuity_export_drawings").delete().eq(
+            "id", drawing_id
+        ).execute()
+
+        return {"success": True, "message": "Drawing deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting export drawing: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
