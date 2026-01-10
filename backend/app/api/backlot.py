@@ -10884,15 +10884,24 @@ async def import_script(
 
         # Create scene records if any were parsed
         # Deduplicate scenes by slugline (same scene heading = same scene)
+        # Also check against existing scenes in the project to avoid duplicates
         if parsed_scenes:
+            # Get existing scenes for this project to avoid duplicates
+            existing_scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, slugline"
+            ).eq("project_id", project_id).execute()
+            existing_by_number = {s["scene_number"]: s for s in (existing_scenes_result.data or [])}
+            existing_sluglines = {(s.get("slugline") or "").strip().upper() for s in (existing_scenes_result.data or [])}
+
             seen_sluglines = set()
             unique_scenes = []
+            scenes_to_update = []
             scene_sequence = 0
 
             for scene_data in parsed_scenes:
                 slugline = scene_data.get("slugline", "").strip().upper()
 
-                # Skip duplicate sluglines
+                # Skip duplicate sluglines within this import
                 if slugline in seen_sluglines:
                     continue
 
@@ -10904,18 +10913,42 @@ async def import_script(
                 scene_data["scene_number"] = str(scene_sequence)
                 scene_data["project_id"] = project_id
                 scene_data["script_id"] = script["id"]
-                unique_scenes.append(scene_data)
 
+                # Check if this scene already exists (by scene_number or slugline)
+                if scene_data["scene_number"] in existing_by_number:
+                    # Update existing scene instead of creating duplicate
+                    existing_id = existing_by_number[scene_data["scene_number"]]["id"]
+                    scenes_to_update.append((existing_id, scene_data))
+                elif slugline in existing_sluglines:
+                    # Scene with same slugline exists, skip to avoid duplicate
+                    continue
+                else:
+                    unique_scenes.append(scene_data)
+
+            # Update existing scenes
+            for existing_id, scene_data in scenes_to_update:
+                client.table("backlot_scenes").update(scene_data).eq("id", existing_id).execute()
+
+            # Insert only truly new scenes
             if unique_scenes:
                 client.table("backlot_scenes").insert(unique_scenes).execute()
 
-            # Update parsed_scenes count for response
-            parsed_scenes = unique_scenes
+            # Track total scenes processed (new + updated)
+            total_scenes_processed = len(unique_scenes) + len(scenes_to_update)
 
-            # Update script's total_scenes with deduplicated count
+            # Get actual total scenes count from database
+            total_scenes_result = client.table("backlot_scenes").select(
+                "id", count="exact"
+            ).eq("project_id", project_id).execute()
+            total_scenes_count = total_scenes_result.count or len(unique_scenes) + len(existing_by_number)
+
+            # Update script's total_scenes with actual count
             client.table("backlot_scripts").update({
-                "total_scenes": len(unique_scenes)
+                "total_scenes": total_scenes_count
             }).eq("id", script["id"]).execute()
+
+            # Update parsed_scenes for response message
+            parsed_scenes = [{"id": "new"}] * total_scenes_processed  # Just for counting
 
         # Build response message
         text_extracted = bool(text_content)
