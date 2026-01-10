@@ -10756,6 +10756,7 @@ async def import_script(
         page_count = None
         text_content = None  # For the script editor
         parsed_scenes = []
+        title_page_data = None  # Structured title page metadata
 
         # Use the improved script parser
         try:
@@ -10764,6 +10765,13 @@ async def import_script(
             parse_result = parse_script_file(content, ext)
             text_content = parse_result.text_content
             page_count = parse_result.page_count
+
+            # Extract structured title page data if available
+            if parse_result.title_page_data:
+                from dataclasses import asdict
+                title_page_data = asdict(parse_result.title_page_data)
+                # Remove None values for cleaner JSON
+                title_page_data = {k: v for k, v in title_page_data.items() if v is not None}
 
             # Convert parsed scenes to dict format for database
             for scene in parse_result.scenes:
@@ -10863,7 +10871,8 @@ async def import_script(
             "created_by_user_id": profile_id,
             "total_pages": page_count,
             "total_scenes": len(parsed_scenes),
-            "text_content": text_content  # For the script editor
+            "text_content": text_content,  # For the script editor
+            "title_page_data": title_page_data  # Structured title page metadata
         }
 
         script_result = client.table("backlot_scripts").insert(script_data).execute()
@@ -10874,12 +10883,39 @@ async def import_script(
         script = script_result.data[0]
 
         # Create scene records if any were parsed
+        # Deduplicate scenes by slugline (same scene heading = same scene)
         if parsed_scenes:
+            seen_sluglines = set()
+            unique_scenes = []
+            scene_sequence = 0
+
             for scene_data in parsed_scenes:
+                slugline = scene_data.get("slugline", "").strip().upper()
+
+                # Skip duplicate sluglines
+                if slugline in seen_sluglines:
+                    continue
+
+                seen_sluglines.add(slugline)
+                scene_sequence += 1
+
+                # Update sequence to reflect unique scenes only
+                scene_data["sequence"] = scene_sequence
+                scene_data["scene_number"] = str(scene_sequence)
                 scene_data["project_id"] = project_id
                 scene_data["script_id"] = script["id"]
+                unique_scenes.append(scene_data)
 
-            client.table("backlot_scenes").insert(parsed_scenes).execute()
+            if unique_scenes:
+                client.table("backlot_scenes").insert(unique_scenes).execute()
+
+            # Update parsed_scenes count for response
+            parsed_scenes = unique_scenes
+
+            # Update script's total_scenes with deduplicated count
+            client.table("backlot_scripts").update({
+                "total_scenes": len(unique_scenes)
+            }).eq("id", script["id"]).execute()
 
         # Build response message
         text_extracted = bool(text_content)
@@ -11047,6 +11083,140 @@ async def delete_script(
         raise
     except Exception as e:
         print(f"Error deleting script: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SCRIPT TITLE PAGE
+# =====================================================
+
+class TitlePageContactInput(BaseModel):
+    """Contact information for title page"""
+    name: Optional[str] = None
+    company: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class TitlePageDraftInfoInput(BaseModel):
+    """Draft information for title page"""
+    date: Optional[str] = None
+    revision: Optional[str] = None
+
+
+class TitlePageDataInput(BaseModel):
+    """Input for updating title page data"""
+    title: Optional[str] = None
+    written_by: Optional[List[str]] = None
+    based_on: Optional[str] = None
+    contact: Optional[TitlePageContactInput] = None
+    draft_info: Optional[TitlePageDraftInfoInput] = None
+    copyright: Optional[str] = None
+    additional_lines: Optional[List[str]] = None
+
+
+@router.get("/scripts/{script_id}/title-page")
+async def get_script_title_page(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """Get title page data for a script"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    try:
+        result = client.table("backlot_scripts").select("id, project_id, title, title_page_data").eq("id", script_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script = result.data
+
+        # Verify access
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", script["project_id"]).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        is_owner = project_response.data[0]["owner_id"] == profile_id
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", script["project_id"]).eq("user_id", profile_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        return {
+            "script_id": script["id"],
+            "script_title": script["title"],
+            "title_page_data": script.get("title_page_data")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching title page: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/scripts/{script_id}/title-page")
+async def update_script_title_page(
+    script_id: str,
+    title_page_data: TitlePageDataInput,
+    authorization: str = Header(None)
+):
+    """Update title page data for a script"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    client = get_client()
+
+    # Convert Cognito user ID to profile ID
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    try:
+        # Get script and verify access
+        existing = client.table("backlot_scripts").select("project_id").eq("id", script_id).single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        project_id = existing.data["project_id"]
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+
+        is_owner = project_response.data[0]["owner_id"] == profile_id
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="You don't have permission to edit scripts")
+
+        # Convert Pydantic model to dict, removing None values
+        title_page_dict = title_page_data.model_dump(exclude_none=True)
+
+        # Convert nested models to dicts
+        if "contact" in title_page_dict and title_page_dict["contact"]:
+            title_page_dict["contact"] = {k: v for k, v in title_page_dict["contact"].items() if v is not None}
+        if "draft_info" in title_page_dict and title_page_dict["draft_info"]:
+            title_page_dict["draft_info"] = {k: v for k, v in title_page_dict["draft_info"].items() if v is not None}
+
+        result = client.table("backlot_scripts").update({
+            "title_page_data": title_page_dict if title_page_dict else None
+        }).eq("id", script_id).execute()
+
+        return {
+            "success": True,
+            "script_id": script_id,
+            "title_page_data": title_page_dict
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating title page: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -11563,16 +11733,21 @@ async def update_script_text(
 @router.post("/scripts/{script_id}/extract-text")
 async def extract_text_from_script_pdf(
     script_id: str,
+    force: bool = False,
     authorization: str = Header(None)
 ):
-    """Extract text content from a script's PDF file for editing"""
+    """Extract text content from a script's PDF file for editing.
+
+    Args:
+        force: If True, re-extract even if text_content already exists
+    """
     user = await get_current_user_from_token(authorization)
     user_id = user["id"]
-    client = get_client()
+    db_client = get_client()
 
     try:
         # Get script and verify access
-        script = client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
+        script = db_client.table("backlot_scripts").select("*").eq("id", script_id).single().execute()
         if not script.data:
             raise HTTPException(status_code=404, detail="Script not found")
 
@@ -11580,13 +11755,13 @@ async def extract_text_from_script_pdf(
         project_id = script_data["project_id"]
 
         # Verify project edit access
-        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        project_response = db_client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
 
         is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
         if not is_owner:
-            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+            member_response = db_client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["admin", "editor"]:
                 raise HTTPException(status_code=403, detail="Edit access required")
 
@@ -11595,64 +11770,121 @@ async def extract_text_from_script_pdf(
         if not file_url:
             raise HTTPException(status_code=400, detail="Script has no PDF file to extract from")
 
-        # Check if already has text content
-        if script_data.get("text_content"):
+        # Check if already has text content (unless force is True)
+        if script_data.get("text_content") and not force:
             return {
                 "success": True,
                 "text_content": script_data["text_content"],
                 "already_extracted": True,
-                "message": "Script already has text content"
+                "message": "Script already has text content. Use force=true to re-extract."
             }
+
+        # Get signed URL if it's an S3 path
+        download_url = file_url
+        if file_url.startswith("s3://"):
+            s3_uri = file_url[5:]  # Remove 's3://'
+            parts = s3_uri.split("/", 1)
+            if len(parts) == 2:
+                bucket_name, s3_path = parts
+                download_url = get_signed_url('backlot-files', s3_path, expires_in=300)
 
         # Download the PDF from storage
         import httpx
-        from pypdf import PdfReader
-        import io
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(file_url)
+        print(f"extract-text: Downloading PDF from {download_url[:100]}...")
+        async with httpx.AsyncClient(timeout=60.0) as http_client:
+            response = await http_client.get(download_url)
             if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Failed to download script PDF")
+                raise HTTPException(status_code=500, detail=f"Failed to download script PDF: {response.status_code}")
             content = response.content
+            print(f"extract-text: Downloaded {len(content)} bytes")
 
-        # Extract text from PDF
+        # Use pdftotext directly for raw text extraction (preserves all content)
+        # The heavy formatting in parse_script_file loses ~10% of characters
         try:
+            from app.utils.script_parser import extract_pdf_with_pdftotext
+            import subprocess
+            import tempfile
+            import os
+
+            print(f"extract-text: Using pdftotext for raw extraction...")
+
+            # Try pdftotext first (best layout preservation, keeps all content)
+            try:
+                raw_text, page_count = extract_pdf_with_pdftotext(content)
+
+                # Split by form feed to get individual pages
+                pages = raw_text.split('\f')
+                print(f"extract-text: pdftotext extracted {page_count} pages ({len(pages)} page blocks), {len(raw_text)} raw chars")
+
+                # Skip the first page (title page) if there are multiple pages
+                if len(pages) > 1:
+                    # Join pages starting from page 2 (index 1)
+                    text_content = '\n\n'.join(pages[1:])
+                    print(f"extract-text: Skipped title page, kept {len(pages)-1} pages, {len(text_content)} chars")
+                else:
+                    text_content = raw_text.replace('\f', '\n\n')
+                    print(f"extract-text: Single page, keeping all {len(text_content)} chars")
+
+            except FileNotFoundError:
+                print(f"extract-text: pdftotext not available, falling back to pypdf")
+                raise ImportError("pdftotext not installed")
+
+            if not text_content.strip():
+                raise HTTPException(status_code=400, detail="Could not extract text from PDF. The PDF may be image-based.")
+
+        except ImportError as ie:
+            print(f"extract-text: pdftotext not available: {ie}, falling back to pypdf")
+            # Fallback to basic pypdf extraction
+            from pypdf import PdfReader
+            import io
+
             pdf_reader = PdfReader(io.BytesIO(content))
             page_count = len(pdf_reader.pages)
             extracted_pages = []
 
+            # Skip first page (title page), start from index 1
             for i, page in enumerate(pdf_reader.pages):
+                if i == 0:  # Skip title page
+                    continue
                 page_text = page.extract_text() or ""
                 if page_text.strip():
-                    extracted_pages.append(f"=== PAGE {i + 1} ===\n\n{page_text}")
+                    extracted_pages.append(page_text)
 
             text_content = "\n\n".join(extracted_pages)
+            print(f"extract-text: pypdf extracted {page_count} pages (skipped title page), {len(text_content)} chars")
 
             if not text_content.strip():
                 raise HTTPException(status_code=400, detail="Could not extract text from PDF. The PDF may be image-based.")
 
         except Exception as pdf_err:
-            print(f"PDF extraction error: {pdf_err}")
+            import traceback
+            print(f"extract-text: PDF extraction error: {pdf_err}")
+            print(f"extract-text: Traceback: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Failed to extract text from PDF: {str(pdf_err)}")
 
         # Update the script with extracted text
-        result = client.table("backlot_scripts").update({
+        result = db_client.table("backlot_scripts").update({
             "text_content": text_content,
             "total_pages": page_count
         }).eq("id", script_id).execute()
+
+        print(f"extract-text: Updated script {script_id} with {len(text_content)} chars")
 
         return {
             "success": True,
             "text_content": text_content,
             "page_count": page_count,
             "already_extracted": False,
-            "message": f"Successfully extracted text from {page_count} pages"
+            "message": f"Successfully extracted text from {page_count} pages ({len(text_content)} characters)"
         }
 
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
         print(f"Error extracting text from script: {e}")
+        print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -14245,6 +14477,182 @@ async def delete_highlight_note(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class HighlightRelocateResult(BaseModel):
+    """Result of relocating a single highlight"""
+    highlight_id: str
+    status: str  # 'relocated', 'stale', 'unchanged'
+    new_start_offset: Optional[int] = None
+    new_end_offset: Optional[int] = None
+
+
+@router.post("/scripts/{script_id}/highlights/relocate")
+async def relocate_script_highlights(
+    script_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Relocate all highlights for a script based on current text content.
+
+    This is called after script text is edited to update highlight positions.
+    Uses fuzzy text matching to find the highlighted_text in the new content.
+    Marks highlights as 'stale' if the text can no longer be found.
+
+    Returns:
+        List of relocate results showing what happened to each highlight
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    client = get_client()
+
+    try:
+        # Convert Cognito ID to profile ID
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Get script with text content
+        script_result = client.table("backlot_scripts").select(
+            "id, project_id, text_content"
+        ).eq("id", script_id).single().execute()
+
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script = script_result.data
+        project_id = script["project_id"]
+        text_content = script.get("text_content") or ""
+
+        # Check project membership
+        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+        is_owner = project_response.data and project_response.data[0]["owner_id"] == profile_id
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", profile_id).execute()
+            if not member_response.data:
+                raise HTTPException(status_code=403, detail="Access denied - not a project member")
+
+        # Get all highlights for this script
+        highlights_result = client.table("backlot_script_highlight_breakdowns").select(
+            "id, highlighted_text, start_offset, end_offset, status"
+        ).eq("script_id", script_id).execute()
+
+        highlights = highlights_result.data or []
+        results = []
+        updates_to_make = []
+
+        for highlight in highlights:
+            highlight_id = highlight["id"]
+            highlighted_text = highlight.get("highlighted_text", "")
+            old_start = highlight.get("start_offset", 0)
+            old_end = highlight.get("end_offset", 0)
+            current_status = highlight.get("status", "pending")
+
+            if not highlighted_text:
+                results.append({
+                    "highlight_id": highlight_id,
+                    "status": "unchanged",
+                    "reason": "No highlighted text stored"
+                })
+                continue
+
+            # Try exact match first
+            new_start = text_content.find(highlighted_text)
+
+            if new_start >= 0:
+                new_end = new_start + len(highlighted_text)
+
+                # Check if position changed
+                if new_start == old_start and new_end == old_end:
+                    results.append({
+                        "highlight_id": highlight_id,
+                        "status": "unchanged"
+                    })
+                else:
+                    # Position changed - update it
+                    updates_to_make.append({
+                        "id": highlight_id,
+                        "start_offset": new_start,
+                        "end_offset": new_end,
+                        "status": "confirmed" if current_status == "stale" else current_status
+                    })
+                    results.append({
+                        "highlight_id": highlight_id,
+                        "status": "relocated",
+                        "new_start_offset": new_start,
+                        "new_end_offset": new_end
+                    })
+            else:
+                # Text not found - try fuzzy match with some flexibility
+                # Look for partial match (at least 80% of text)
+                min_match_len = max(10, int(len(highlighted_text) * 0.8))
+                found_fuzzy = False
+
+                # Try matching with start of the text
+                if len(highlighted_text) > 20:
+                    start_text = highlighted_text[:min_match_len]
+                    fuzzy_start = text_content.find(start_text)
+                    if fuzzy_start >= 0:
+                        # Found partial match - estimate end
+                        new_start = fuzzy_start
+                        new_end = fuzzy_start + len(highlighted_text)
+                        found_fuzzy = True
+                        updates_to_make.append({
+                            "id": highlight_id,
+                            "start_offset": new_start,
+                            "end_offset": min(new_end, len(text_content)),
+                            "status": current_status  # Keep status, might be slightly off
+                        })
+                        results.append({
+                            "highlight_id": highlight_id,
+                            "status": "relocated",
+                            "new_start_offset": new_start,
+                            "new_end_offset": min(new_end, len(text_content)),
+                            "note": "fuzzy_match"
+                        })
+
+                if not found_fuzzy:
+                    # Mark as stale if not already
+                    if current_status != "stale":
+                        updates_to_make.append({
+                            "id": highlight_id,
+                            "status": "stale"
+                        })
+                    results.append({
+                        "highlight_id": highlight_id,
+                        "status": "stale",
+                        "reason": "Text not found in script"
+                    })
+
+        # Batch update highlights
+        updated_count = 0
+        stale_count = 0
+        for update in updates_to_make:
+            highlight_id = update.pop("id")
+            update["updated_at"] = datetime.utcnow().isoformat()
+            try:
+                client.table("backlot_script_highlight_breakdowns").update(
+                    update
+                ).eq("id", highlight_id).execute()
+                if update.get("status") == "stale":
+                    stale_count += 1
+                else:
+                    updated_count += 1
+            except Exception as e:
+                print(f"Error updating highlight {highlight_id}: {e}")
+
+        return {
+            "success": True,
+            "total_highlights": len(highlights),
+            "relocated": updated_count,
+            "stale": stale_count,
+            "unchanged": len(highlights) - updated_count - stale_count,
+            "results": results
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error relocating highlights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/scripts/{script_id}/export-with-highlights")
 async def export_script_with_highlights(
     script_id: str,
@@ -14651,6 +15059,116 @@ async def export_script_with_highlights(
         raise
     except Exception as e:
         print(f"Error exporting script with highlights: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scripts/{script_id}/export")
+async def export_script_multi_format(
+    script_id: str,
+    format: str = Query("fountain", description="Export format: fdx, fountain, or celtx"),
+    include_highlights: bool = Query(False, description="Include breakdown highlights"),
+    include_notes: bool = Query(False, description="Include script notes"),
+    authorization: str = Header(None)
+):
+    """
+    Export script in multiple formats (FDX, Fountain, Celtx).
+
+    Parameters:
+    - format: Export format - 'fdx' (Final Draft), 'fountain' (plain text), or 'celtx'
+    - include_highlights: Include breakdown highlights as annotations
+    - include_notes: Include script notes
+
+    Returns the script content in the requested format.
+    """
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    client = get_client()
+
+    try:
+        from app.utils.script_exporter import export_script, get_content_type, get_file_extension
+
+        profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+        # Get script and verify access
+        script_result = client.table("backlot_scripts").select(
+            "*, project:backlot_projects!inner(id, title, owner_id)"
+        ).eq("id", script_id).single().execute()
+
+        if not script_result.data:
+            raise HTTPException(status_code=404, detail="Script not found")
+
+        script = script_result.data
+        project = script.get("project", {})
+
+        # Verify user has access to the project
+        team_result = client.table("backlot_project_team").select("*").eq(
+            "project_id", project.get("id")
+        ).eq("user_id", profile_id).execute()
+
+        is_owner = project.get("owner_id") == profile_id
+        is_team_member = bool(team_result.data)
+
+        if not is_owner and not is_team_member:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get text content
+        text_content = script.get("text_content", "")
+        if not text_content:
+            raise HTTPException(
+                status_code=400,
+                detail="Script has no text content to export. Please edit the script first."
+            )
+
+        # Get highlights if requested
+        highlights = []
+        if include_highlights:
+            highlights_result = client.table("backlot_script_highlight_breakdowns").select(
+                "*"
+            ).eq("script_id", script_id).execute()
+            highlights = highlights_result.data or []
+
+        # Get notes if requested
+        notes = []
+        if include_notes:
+            notes_result = client.table("backlot_script_notes").select(
+                "*, author:profiles(id, full_name, display_name, username)"
+            ).eq("script_id", script_id).order("page_number").execute()
+            notes = notes_result.data or []
+
+        # Export to requested format
+        script_title = script.get("title", "Untitled Script")
+        exported_content = export_script(
+            format=format,
+            script_title=script_title,
+            text_content=text_content,
+            highlights=highlights,
+            notes=notes,
+            include_highlights=include_highlights,
+            include_notes=include_notes,
+        )
+
+        # Generate filename
+        safe_title = script_title.replace(" ", "_")[:30]
+        suffix = "_marked" if include_highlights else ""
+        extension = get_file_extension(format)
+        filename = f"{safe_title}{suffix}{extension}"
+
+        return Response(
+            content=exported_content.encode('utf-8'),
+            media_type=get_content_type(format),
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            }
+        )
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error exporting script: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -29425,6 +29943,271 @@ async def get_public_project_credits(project_id: str):
 
     except Exception as e:
         print(f"Error getting public project credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Department mapping from project roles to credit departments
+CREDIT_DEPARTMENT_MAP = {
+    'camera': 'Camera',
+    'lighting': 'Lighting',
+    'grip': 'Lighting',
+    'electric': 'Lighting',
+    'sound': 'Sound',
+    'audio': 'Sound',
+    'art': 'Art',
+    'production_design': 'Art',
+    'wardrobe': 'Costume',
+    'costume': 'Costume',
+    'makeup': 'Makeup',
+    'hair': 'Makeup',
+    'production': 'Production',
+    'direction': 'Direction',
+    'writing': 'Writing',
+    'editing': 'Editing',
+    'post': 'Editing',
+    'vfx': 'Visual Effects',
+    'visual_effects': 'Visual Effects',
+    'music': 'Music',
+    'stunts': 'Stunts',
+    'locations': 'Locations',
+    'transportation': 'Transportation',
+    'catering': 'Catering',
+    'craft_services': 'Catering',
+    'cast': 'Cast',
+    'acting': 'Cast',
+}
+
+def map_department_to_credit(dept: str) -> str:
+    """Map a project role department to a credit department."""
+    if not dept:
+        return 'Other'
+    normalized = dept.lower().replace(' ', '_').replace('-', '_')
+    return CREDIT_DEPARTMENT_MAP.get(normalized, 'Other')
+
+
+@router.post("/projects/{project_id}/credits/sync")
+async def sync_credits_from_roles(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Sync credits from booked project roles - creates or updates credits."""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify project access
+        project_result = client.table("backlot_projects").select("id, owner_id, credit_settings").eq("id", project_id).single().execute()
+        if not project_result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project = project_result.data
+        credit_settings = project.get("credit_settings") or {"show_character_name": True}
+
+        # Check permissions
+        is_owner = project["owner_id"] == current_user_id
+        if not is_owner:
+            member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_result.data or member_result.data[0]["role"] not in ["owner", "admin", "manager"]:
+                raise HTTPException(status_code=403, detail="Permission denied")
+
+        # Get all booked roles
+        roles_result = client.table("backlot_project_roles").select(
+            "id, type, title, department, character_name, booked_user_id"
+        ).eq("project_id", project_id).not_.is_("booked_user_id", "null").execute()
+
+        booked_roles = roles_result.data or []
+        if not booked_roles:
+            return {"created": 0, "updated": 0, "unchanged": 0, "message": "No booked roles found"}
+
+        # Get all booked user IDs
+        booked_user_ids = list(set([r["booked_user_id"] for r in booked_roles]))
+
+        # Fetch user profiles
+        profiles_result = client.table("profiles").select(
+            "id, full_name, display_name, username"
+        ).in_("id", booked_user_ids).execute()
+        profiles_map = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Fetch credit preferences for these users
+        prefs_result = client.table("backlot_credit_preferences").select("*").in_(
+            "user_id", booked_user_ids
+        ).execute()
+        # Map by user_id -> role_id -> pref, plus defaults
+        prefs_by_user = {}
+        defaults_by_user = {}
+        for pref in (prefs_result.data or []):
+            uid = pref["user_id"]
+            rid = pref.get("role_id")
+            if pref.get("use_as_default"):
+                defaults_by_user[uid] = pref
+            if rid:
+                if uid not in prefs_by_user:
+                    prefs_by_user[uid] = {}
+                prefs_by_user[uid][rid] = pref
+
+        # Get existing auto-created credits
+        existing_result = client.table("backlot_project_credits").select(
+            "id, source_role_id, user_id, name, credit_role, department"
+        ).eq("project_id", project_id).eq("auto_created", True).execute()
+        existing_by_role_id = {c["source_role_id"]: c for c in (existing_result.data or []) if c.get("source_role_id")}
+
+        created = 0
+        updated = 0
+        unchanged = 0
+
+        for role in booked_roles:
+            role_id = role["id"]
+            user_id = role["booked_user_id"]
+            profile = profiles_map.get(user_id, {})
+
+            # Get credit preference (role-specific > default > none)
+            user_prefs = prefs_by_user.get(user_id, {})
+            pref = user_prefs.get(role_id) or defaults_by_user.get(user_id)
+
+            # Determine credit values
+            display_name = (
+                (pref.get("display_name") if pref else None) or
+                profile.get("display_name") or
+                profile.get("full_name") or
+                profile.get("username") or
+                "Unknown"
+            )
+
+            # Credit role: for cast, optionally use character name
+            if role["type"] == "cast" and credit_settings.get("show_character_name") and role.get("character_name"):
+                credit_role = role["character_name"]
+            else:
+                credit_role = (pref.get("role_title_preference") if pref else None) or role["title"]
+
+            # Department mapping
+            raw_dept = (pref.get("department_preference") if pref else None) or role.get("department")
+            department = map_department_to_credit(raw_dept)
+
+            # For cast, force Cast department
+            if role["type"] == "cast":
+                department = "Cast"
+
+            # Determine if primary (directors, producers, writers, lead cast)
+            is_primary = department in ["Direction", "Production", "Writing"] or (
+                role["type"] == "cast" and "lead" in role["title"].lower()
+            )
+
+            credit_data = {
+                "project_id": project_id,
+                "user_id": user_id,
+                "name": display_name,
+                "credit_role": credit_role,
+                "department": department,
+                "is_primary": is_primary,
+                "is_public": pref.get("is_public", True) if pref else True,
+                "endorsement_note": pref.get("endorsement_note") if pref else None,
+                "imdb_id": pref.get("imdb_id") if pref else None,
+                "credit_preference_id": pref["id"] if pref else None,
+                "auto_created": True,
+                "source_role_id": role_id,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            existing = existing_by_role_id.get(role_id)
+            if existing:
+                # Check if update needed
+                needs_update = (
+                    existing.get("name") != display_name or
+                    existing.get("credit_role") != credit_role or
+                    existing.get("department") != department
+                )
+                if needs_update:
+                    client.table("backlot_project_credits").update(credit_data).eq("id", existing["id"]).execute()
+                    updated += 1
+                else:
+                    unchanged += 1
+            else:
+                # Create new credit
+                credit_data["created_by"] = current_user_id
+                client.table("backlot_project_credits").insert(credit_data).execute()
+                created += 1
+
+        return {
+            "created": created,
+            "updated": updated,
+            "unchanged": unchanged,
+            "message": f"Synced {created + updated} credits from {len(booked_roles)} booked roles"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error syncing credits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class CreditSettingsInput(BaseModel):
+    show_character_name: Optional[bool] = None
+
+
+@router.get("/projects/{project_id}/credit-settings")
+async def get_credit_settings(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get credit settings for a project."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        result = client.table("backlot_projects").select("credit_settings").eq("id", project_id).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return result.data.get("credit_settings") or {"show_character_name": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/projects/{project_id}/credit-settings")
+async def update_credit_settings(
+    project_id: str,
+    settings: CreditSettingsInput,
+    authorization: str = Header(None)
+):
+    """Update credit settings for a project."""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Verify project access
+        project_result = client.table("backlot_projects").select("owner_id, credit_settings").eq("id", project_id).single().execute()
+        if not project_result.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Check permissions
+        is_owner = project_result.data["owner_id"] == current_user_id
+        if not is_owner:
+            member_result = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_result.data or member_result.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Permission denied")
+
+        # Merge settings
+        current_settings = project_result.data.get("credit_settings") or {}
+        if settings.show_character_name is not None:
+            current_settings["show_character_name"] = settings.show_character_name
+
+        # Update
+        client.table("backlot_projects").update({
+            "credit_settings": current_settings,
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", project_id).execute()
+
+        return current_settings
+
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
