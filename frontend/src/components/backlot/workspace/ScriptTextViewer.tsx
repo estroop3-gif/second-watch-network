@@ -234,24 +234,40 @@ function parseScriptLines(content: string): ScriptLine[] {
   const lines: ScriptLine[] = [];
   let prevType: ScriptElementType | undefined;
   let currentOffset = 0;
+  let skipNextBlankLines = false;
 
   for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const isBlank = !line.trim();
+
     // Skip standalone page number lines (from PDF imports)
     // since we render our own page numbers
-    if (isPageNumberLine(rawLines[i])) {
-      currentOffset += rawLines[i].length + 1;
+    if (isPageNumberLine(line)) {
+      currentOffset += line.length + 1;
+      skipNextBlankLines = true; // Also skip blank lines after page numbers
       continue;
     }
 
-    const type = detectElementType(rawLines[i], prevType, false);
+    // Skip blank lines that follow page numbers
+    if (skipNextBlankLines && isBlank) {
+      currentOffset += line.length + 1;
+      continue;
+    }
+
+    // Stop skipping blank lines once we hit actual content
+    if (!isBlank) {
+      skipNextBlankLines = false;
+    }
+
+    const type = detectElementType(line, prevType, false);
     lines.push({
       type,
-      content: rawLines[i],
+      content: line,
       lineIndex: i,
       charOffset: currentOffset,
     });
-    if (rawLines[i].trim()) prevType = type;
-    currentOffset += rawLines[i].length + 1; // +1 for newline
+    if (line.trim()) prevType = type;
+    currentOffset += line.length + 1; // +1 for newline
   }
 
   return lines;

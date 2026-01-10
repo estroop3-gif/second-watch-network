@@ -340,20 +340,35 @@ function parseScriptLines(content: string): ScriptLine[] {
   const rawLines = content.split('\n');
   const lines: ScriptLine[] = [];
   let prevType: ScriptElementType | undefined;
+  let skipNextBlankLines = false;
 
   // Note: Title page content is now handled separately (stored in title_page_data JSON)
   // The text_content passed here should only contain the script body, not title page
   // So we don't need to detect title pages - treat everything as script body
   for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const isBlank = !line.trim();
+
     // Skip standalone page number lines (from PDF imports)
     // since we render our own page numbers
-    if (isPageNumberLine(rawLines[i])) {
+    if (isPageNumberLine(line)) {
+      skipNextBlankLines = true; // Also skip blank lines after page numbers
       continue;
     }
 
-    const type = detectElementType(rawLines[i], prevType, false);
-    lines.push({ type, content: rawLines[i], lineIndex: i });
-    if (rawLines[i].trim()) prevType = type;
+    // Skip blank lines that follow page numbers
+    if (skipNextBlankLines && isBlank) {
+      continue;
+    }
+
+    // Stop skipping blank lines once we hit actual content
+    if (!isBlank) {
+      skipNextBlankLines = false;
+    }
+
+    const type = detectElementType(line, prevType, false);
+    lines.push({ type, content: line, lineIndex: i });
+    if (line.trim()) prevType = type;
   }
 
   return lines;
