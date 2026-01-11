@@ -41,12 +41,36 @@ import requests
 import secrets
 import hashlib
 from pypdf import PdfReader
-from app.core.database import get_client, execute_single, execute_query
+from app.core.database import get_client, execute_single, execute_query, execute_insert
 from app.core.config import settings
 from app.core.storage import upload_file, get_signed_url, generate_unique_filename, BACKLOT_FILES_BUCKET, download_from_s3_uri
 from app.socketio_app import get_user_from_token
 
 router = APIRouter()
+
+
+def generate_signed_url(s3_uri: str, expires_in: int = 86400) -> str:
+    """
+    Generate a signed URL from an S3 URI.
+
+    Args:
+        s3_uri: S3 URI in format s3://bucket/key
+        expires_in: URL expiration time in seconds (default 24 hours)
+
+    Returns:
+        Signed URL string, or empty string if URI is invalid
+    """
+    if not s3_uri:
+        return ""
+
+    if s3_uri.startswith("s3://"):
+        parts = s3_uri[5:].split("/", 1)
+        if len(parts) == 2:
+            bucket, key = parts
+            return get_signed_url(bucket, key, expires_in)
+
+    # If it's already a regular URL or invalid format, return as-is
+    return s3_uri
 
 
 class ChatMessage(BaseModel):
@@ -16744,6 +16768,642 @@ async def delete_export_drawing(
         raise
     except Exception as e:
         print(f"Error deleting export drawing: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# SCRIPT SIDES
+# =====================================================
+
+@router.get("/projects/{project_id}/script-sides")
+async def list_script_sides(
+    project_id: str,
+    production_day_id: Optional[str] = None,
+    call_sheet_id: Optional[str] = None,
+    status: Optional[str] = None,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    List all script sides exports for a project.
+    Can filter by production_day_id, call_sheet_id, or status.
+    Returns grouped by production day with scene counts.
+    """
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Build query for sides exports
+        query = client.table("backlot_continuity_exports").select(
+            "*, production_day:backlot_production_days!production_day_id(id, day_number, date, title)"
+        ).eq("project_id", project_id).eq("export_type", "sides")
+
+        if production_day_id:
+            query = query.eq("production_day_id", production_day_id)
+        if call_sheet_id:
+            query = query.eq("call_sheet_id", call_sheet_id)
+        if status:
+            query = query.eq("status", status)
+
+        query = query.order("created_at", desc=True)
+        result = query.execute()
+
+        sides = result.data or []
+
+        # Generate signed URLs for each
+        for side in sides:
+            if side.get("file_url"):
+                side["signed_url"] = generate_signed_url(side["file_url"])
+            # Parse scene count from extracted_scene_ids
+            if side.get("extracted_scene_ids"):
+                if isinstance(side["extracted_scene_ids"], list):
+                    side["scene_count"] = len(side["extracted_scene_ids"])
+                else:
+                    side["scene_count"] = 0
+            else:
+                side["scene_count"] = 0
+
+        return {"exports": sides}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing script sides: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script-sides/check-outdated")
+async def check_outdated_sides(
+    project_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Check which script sides packets are outdated based on
+    comparing their extracted_scene_ids with current call sheet/day scenes.
+    """
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        outdated = []
+
+        # Get all sides packets
+        sides_result = client.table("backlot_continuity_exports").select(
+            "id, file_name, production_day_id, call_sheet_id, extracted_scene_ids"
+        ).eq("project_id", project_id).eq("export_type", "sides").execute()
+
+        for side in sides_result.data or []:
+            is_outdated = False
+            current_scene_ids = []
+
+            # Check production day scenes
+            if side.get("production_day_id"):
+                day_scenes = client.table("backlot_production_day_scenes").select(
+                    "scene_id"
+                ).eq("production_day_id", side["production_day_id"]).execute()
+                current_scene_ids = [s["scene_id"] for s in (day_scenes.data or [])]
+
+            # Check call sheet scenes
+            elif side.get("call_sheet_id"):
+                cs_scenes = client.table("backlot_call_sheet_scene_links").select(
+                    "scene_id"
+                ).eq("call_sheet_id", side["call_sheet_id"]).execute()
+                current_scene_ids = [s["scene_id"] for s in (cs_scenes.data or [])]
+
+            # Compare with extracted_scene_ids
+            extracted = side.get("extracted_scene_ids") or []
+            if set(extracted) != set(current_scene_ids) and current_scene_ids:
+                is_outdated = True
+
+            if is_outdated:
+                outdated.append({
+                    "export_id": side["id"],
+                    "file_name": side["file_name"],
+                    "production_day_id": side.get("production_day_id"),
+                    "call_sheet_id": side.get("call_sheet_id"),
+                    "extracted_scene_ids": extracted,
+                    "current_scene_ids": current_scene_ids,
+                    "missing_scenes": list(set(current_scene_ids) - set(extracted)),
+                    "extra_scenes": list(set(extracted) - set(current_scene_ids))
+                })
+
+        return {"outdated": outdated}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error checking outdated sides: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/script-sides/{export_id}")
+async def get_script_side(
+    project_id: str,
+    export_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Get a single script sides export with signed URL"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        result = client.table("backlot_continuity_exports").select(
+            "*, production_day:backlot_production_days!production_day_id(id, day_number, date, title), "
+            "call_sheet:backlot_call_sheets!call_sheet_id(id, title, date), "
+            "source_export:backlot_continuity_exports!source_export_id(id, file_name, version_label)"
+        ).eq("id", export_id).eq("project_id", project_id).single().execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Script sides not found")
+
+        side = result.data
+        if side.get("file_url"):
+            side["signed_url"] = generate_signed_url(side["file_url"])
+
+        return side
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting script side: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/script-sides/generate")
+async def generate_script_sides(
+    project_id: str,
+    scene_ids: List[str] = Body(...),
+    production_day_id: Optional[str] = Body(None),
+    call_sheet_id: Optional[str] = Body(None),
+    title: Optional[str] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Generate script sides PDF by extracting pages from master script.
+    Requires scene_ids and optionally links to production_day or call_sheet.
+    """
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        if not scene_ids:
+            raise HTTPException(status_code=400, detail="scene_ids required")
+
+        client = get_client()
+
+        # Find the current master script export
+        master_result = client.table("backlot_continuity_exports").select("*").eq(
+            "project_id", project_id
+        ).eq("export_type", "script").eq("is_current", True).single().execute()
+
+        if not master_result.data:
+            raise HTTPException(
+                status_code=400,
+                detail="No master script found. Please upload a script in the Continuity tab first."
+            )
+
+        master_export = master_result.data
+        scene_mappings = master_export.get("scene_mappings", {})
+
+        if not scene_mappings or not scene_mappings.get("scenes"):
+            raise HTTPException(
+                status_code=400,
+                detail="Master script has no scene mappings. Please re-export with scene mappings."
+            )
+
+        # Find page ranges for requested scenes
+        pages_to_extract = []
+        scene_mapping_list = scene_mappings.get("scenes", [])
+
+        # Build a map of scene_id -> page info
+        scene_id_to_pages = {}
+        for i, mapping in enumerate(scene_mapping_list):
+            scene_id = mapping.get("scene_id")
+            start_page = mapping.get("page_number", 1)
+
+            # Calculate end page (next scene's start - 1, or use last page)
+            if i + 1 < len(scene_mapping_list):
+                end_page = scene_mapping_list[i + 1].get("page_number", start_page) - 1
+            else:
+                end_page = master_export.get("page_count", start_page)
+
+            if end_page < start_page:
+                end_page = start_page
+
+            scene_id_to_pages[scene_id] = {
+                "start_page": start_page,
+                "end_page": end_page,
+                "scene_number": mapping.get("scene_number", "")
+            }
+
+        # Collect pages for requested scenes
+        for scene_id in scene_ids:
+            if scene_id in scene_id_to_pages:
+                page_info = scene_id_to_pages[scene_id]
+                for page in range(page_info["start_page"], page_info["end_page"] + 1):
+                    if page not in pages_to_extract:
+                        pages_to_extract.append(page)
+
+        pages_to_extract.sort()
+
+        if not pages_to_extract:
+            raise HTTPException(
+                status_code=400,
+                detail="No pages found for the requested scenes"
+            )
+
+        # Download master PDF from S3
+        import boto3
+        from io import BytesIO
+
+        s3_client = boto3.client("s3")
+        master_url = master_export["file_url"]
+
+        # Parse S3 URI
+        if master_url.startswith("s3://"):
+            parts = master_url[5:].split("/", 1)
+            bucket = parts[0]
+            key = parts[1]
+        else:
+            raise HTTPException(status_code=500, detail="Invalid master PDF URL format")
+
+        # Download the master PDF
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        master_pdf_bytes = response["Body"].read()
+
+        # Extract pages using PyPDF2
+        try:
+            from PyPDF2 import PdfReader, PdfWriter
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="PyPDF2 not installed. Please install it to enable PDF extraction."
+            )
+
+        reader = PdfReader(BytesIO(master_pdf_bytes))
+        writer = PdfWriter()
+
+        for page_num in pages_to_extract:
+            # PyPDF2 uses 0-based indexing
+            if 0 <= page_num - 1 < len(reader.pages):
+                writer.add_page(reader.pages[page_num - 1])
+
+        # Write extracted PDF to bytes
+        output = BytesIO()
+        writer.write(output)
+        extracted_pdf_bytes = output.getvalue()
+
+        # Generate file name
+        day_label = ""
+        if production_day_id:
+            day_result = client.table("backlot_production_days").select(
+                "day_number, date"
+            ).eq("id", production_day_id).single().execute()
+            if day_result.data:
+                day_label = f"Day{day_result.data['day_number']}_"
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"sides_{day_label}{timestamp}.pdf"
+
+        # Upload to S3
+        sides_key = f"projects/{project_id}/sides/{file_name}"
+        s3_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key=sides_key,
+            Body=extracted_pdf_bytes,
+            ContentType="application/pdf"
+        )
+
+        s3_uri = f"s3://{s3_bucket}/{sides_key}"
+
+        # Get next version number
+        version_result = client.table("backlot_continuity_exports").select(
+            "version_number"
+        ).eq("project_id", project_id).eq("export_type", "sides").order(
+            "version_number", desc=True
+        ).limit(1).execute()
+
+        next_version = 1
+        if version_result.data:
+            next_version = (version_result.data[0].get("version_number", 0) or 0) + 1
+
+        # Create the sides export record
+        # Use execute_insert for proper JSONB handling
+        import json
+        new_sides = execute_insert(
+            """INSERT INTO backlot_continuity_exports
+               (project_id, file_url, file_name, file_size, export_type, page_count,
+                version_number, version_label, production_day_id, call_sheet_id,
+                source_export_id, extracted_scene_ids, status, created_by, is_current)
+               VALUES (:project_id, :file_url, :file_name, :file_size, :export_type, :page_count,
+                       :version_number, :version_label, :production_day_id, :call_sheet_id,
+                       :source_export_id, CAST(:extracted_scene_ids AS jsonb), :status, :created_by, :is_current)
+               RETURNING *""",
+            {
+                "project_id": project_id,
+                "file_url": s3_uri,
+                "file_name": title or file_name,
+                "file_size": len(extracted_pdf_bytes),
+                "export_type": "sides",
+                "page_count": len(pages_to_extract),
+                "version_number": next_version,
+                "version_label": title,
+                "production_day_id": production_day_id,
+                "call_sheet_id": call_sheet_id,
+                "source_export_id": master_export["id"],
+                "extracted_scene_ids": json.dumps(scene_ids),
+                "status": "draft",
+                "created_by": current_user.get("profile_id") or current_user.get("user_id"),
+                "is_current": False
+            }
+        )
+
+        if not new_sides:
+            raise HTTPException(status_code=500, detail="Failed to create sides record")
+        new_sides["signed_url"] = generate_signed_url(s3_uri)
+        new_sides["scene_count"] = len(scene_ids)
+
+        return new_sides
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating script sides: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/script-sides/{export_id}/regenerate")
+async def regenerate_script_sides(
+    project_id: str,
+    export_id: str,
+    scene_ids: Optional[List[str]] = Body(None),
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Regenerate script sides PDF with updated scenes.
+    If scene_ids not provided, uses the existing scene_ids from the export.
+    """
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Get the existing sides export
+        existing_result = client.table("backlot_continuity_exports").select("*").eq(
+            "id", export_id
+        ).eq("project_id", project_id).single().execute()
+
+        if not existing_result.data:
+            raise HTTPException(status_code=404, detail="Script sides not found")
+
+        existing = existing_result.data
+
+        # Use existing scene_ids if not provided
+        if scene_ids is None:
+            scene_ids = existing.get("extracted_scene_ids", [])
+
+        if not scene_ids:
+            raise HTTPException(status_code=400, detail="No scene_ids to regenerate")
+
+        # Delete old file from S3
+        if existing.get("file_url"):
+            try:
+                import boto3
+                s3_client = boto3.client("s3")
+                old_url = existing["file_url"]
+                if old_url.startswith("s3://"):
+                    parts = old_url[5:].split("/", 1)
+                    bucket = parts[0]
+                    key = parts[1]
+                    s3_client.delete_object(Bucket=bucket, Key=key)
+            except Exception as e:
+                print(f"Warning: Could not delete old sides file: {e}")
+
+        # Generate new sides using the generate endpoint logic
+        # (reusing the generation logic inline)
+        master_result = client.table("backlot_continuity_exports").select("*").eq(
+            "project_id", project_id
+        ).eq("export_type", "script").eq("is_current", True).single().execute()
+
+        if not master_result.data:
+            raise HTTPException(status_code=400, detail="No master script found")
+
+        master_export = master_result.data
+        scene_mappings = master_export.get("scene_mappings", {})
+
+        if not scene_mappings or not scene_mappings.get("scenes"):
+            raise HTTPException(status_code=400, detail="Master script has no scene mappings")
+
+        # Find page ranges
+        pages_to_extract = []
+        scene_mapping_list = scene_mappings.get("scenes", [])
+        scene_id_to_pages = {}
+
+        for i, mapping in enumerate(scene_mapping_list):
+            scene_id = mapping.get("scene_id")
+            start_page = mapping.get("page_number", 1)
+            if i + 1 < len(scene_mapping_list):
+                end_page = scene_mapping_list[i + 1].get("page_number", start_page) - 1
+            else:
+                end_page = master_export.get("page_count", start_page)
+            if end_page < start_page:
+                end_page = start_page
+            scene_id_to_pages[scene_id] = {"start_page": start_page, "end_page": end_page}
+
+        for scene_id in scene_ids:
+            if scene_id in scene_id_to_pages:
+                page_info = scene_id_to_pages[scene_id]
+                for page in range(page_info["start_page"], page_info["end_page"] + 1):
+                    if page not in pages_to_extract:
+                        pages_to_extract.append(page)
+
+        pages_to_extract.sort()
+
+        if not pages_to_extract:
+            raise HTTPException(status_code=400, detail="No pages found for scenes")
+
+        # Download and extract
+        import boto3
+        from io import BytesIO
+
+        s3_client = boto3.client("s3")
+        master_url = master_export["file_url"]
+        parts = master_url[5:].split("/", 1)
+        bucket = parts[0]
+        key = parts[1]
+
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+        master_pdf_bytes = response["Body"].read()
+
+        from PyPDF2 import PdfReader, PdfWriter
+        reader = PdfReader(BytesIO(master_pdf_bytes))
+        writer = PdfWriter()
+
+        for page_num in pages_to_extract:
+            if 0 <= page_num - 1 < len(reader.pages):
+                writer.add_page(reader.pages[page_num - 1])
+
+        output = BytesIO()
+        writer.write(output)
+        extracted_pdf_bytes = output.getvalue()
+
+        # Upload new file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"sides_regenerated_{timestamp}.pdf"
+        sides_key = f"projects/{project_id}/sides/{file_name}"
+        s3_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key=sides_key,
+            Body=extracted_pdf_bytes,
+            ContentType="application/pdf"
+        )
+
+        s3_uri = f"s3://{s3_bucket}/{sides_key}"
+
+        # Update the record using raw SQL for proper JSONB handling
+        import json
+        updated = execute_insert(
+            """UPDATE backlot_continuity_exports
+               SET file_url = :file_url,
+                   file_size = :file_size,
+                   page_count = :page_count,
+                   extracted_scene_ids = CAST(:extracted_scene_ids AS jsonb),
+                   source_export_id = :source_export_id,
+                   updated_at = NOW()
+               WHERE id = :export_id
+               RETURNING *""",
+            {
+                "file_url": s3_uri,
+                "file_size": len(extracted_pdf_bytes),
+                "page_count": len(pages_to_extract),
+                "extracted_scene_ids": json.dumps(scene_ids),
+                "source_export_id": master_export["id"],
+                "export_id": export_id
+            }
+        )
+
+        if not updated:
+            raise HTTPException(status_code=500, detail="Failed to update sides record")
+        updated["signed_url"] = generate_signed_url(s3_uri)
+        updated["scene_count"] = len(scene_ids)
+
+        return updated
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error regenerating script sides: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/projects/{project_id}/script-sides/{export_id}")
+async def update_script_side(
+    project_id: str,
+    export_id: str,
+    title: Optional[str] = Body(None, embed=True),
+    status: Optional[str] = Body(None, embed=True),
+    authorization: Optional[str] = Header(None)
+):
+    """Update script sides metadata (title, status)"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+        update_data = {}
+
+        if title is not None:
+            update_data["version_label"] = title
+            update_data["file_name"] = title
+        if status is not None:
+            if status not in ["draft", "published", "sent"]:
+                raise HTTPException(status_code=400, detail="Invalid status")
+            update_data["status"] = status
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        result = client.table("backlot_continuity_exports").update(
+            update_data
+        ).eq("id", export_id).eq("project_id", project_id).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Script sides not found")
+
+        return result.data[0]
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating script side: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{project_id}/script-sides/{export_id}")
+async def delete_script_side(
+    project_id: str,
+    export_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Delete a script sides export"""
+    try:
+        current_user = await get_user_from_token(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        client = get_client()
+
+        # Get the export to find file URL
+        existing = client.table("backlot_continuity_exports").select(
+            "file_url"
+        ).eq("id", export_id).eq("project_id", project_id).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Script sides not found")
+
+        # Delete from S3
+        if existing.data.get("file_url"):
+            try:
+                import boto3
+                s3_client = boto3.client("s3")
+                file_url = existing.data["file_url"]
+                if file_url.startswith("s3://"):
+                    parts = file_url[5:].split("/", 1)
+                    bucket = parts[0]
+                    key = parts[1]
+                    s3_client.delete_object(Bucket=bucket, Key=key)
+            except Exception as e:
+                print(f"Warning: Could not delete S3 file: {e}")
+
+        # Delete the record
+        client.table("backlot_continuity_exports").delete().eq(
+            "id", export_id
+        ).execute()
+
+        return {"success": True, "message": "Script sides deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting script side: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -34407,6 +35067,12 @@ async def add_scene_to_production_day(
         }
         result = client.table("backlot_production_day_scenes").insert(insert_data).execute()
 
+        # Also update the scene's scheduled_day_id for stripboard sync
+        client.table("backlot_scenes").update({
+            "scheduled_day_id": day_id,
+            "is_scheduled": True
+        }).eq("id", scene_data.scene_id).execute()
+
         # Return with full scene details
         if result.data:
             full_result = client.table("backlot_production_day_scenes").select(
@@ -34466,6 +35132,11 @@ async def add_scenes_bulk_to_production_day(
             result = client.table("backlot_production_day_scenes").insert(insert_data).execute()
             if result.data:
                 inserted.append(result.data[0])
+                # Also update the scene's scheduled_day_id for stripboard sync
+                client.table("backlot_scenes").update({
+                    "scheduled_day_id": day_id,
+                    "is_scheduled": True
+                }).eq("id", scene_id).execute()
             current_order += 1
 
         return {"inserted_count": len(inserted), "scenes": inserted}
@@ -34499,6 +35170,12 @@ async def remove_scene_from_production_day(
         client.table("backlot_production_day_scenes").delete().eq(
             "production_day_id", day_id
         ).eq("scene_id", scene_id).execute()
+
+        # Also clear the scene's scheduled_day_id for stripboard sync
+        client.table("backlot_scenes").update({
+            "scheduled_day_id": None,
+            "is_scheduled": False
+        }).eq("id", scene_id).execute()
 
         return {"success": True}
 

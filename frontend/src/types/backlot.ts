@@ -1360,7 +1360,11 @@ export type BacklotWorkspaceView =
   | 'episode-management'
   | 'files'
   | 'script-sides'
-  | 'story-management';
+  | 'story-management'
+  | 'av-script'
+  | 'run-of-show'
+  | 'media-pipeline'
+  | 'program-rundown';
 
 // =============================================================================
 // HOT SET (Production Day) TYPES

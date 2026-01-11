@@ -23,7 +23,8 @@ export interface Strip {
   id: string;
   project_id: string;
   stripboard_id: string;
-  script_scene_id: string | null;
+  script_scene_id: string | null;  // From script documents
+  scene_id: string | null;          // From schedule (backlot_scenes)
   custom_title: string | null;
   unit: 'A' | 'B' | 'OTHER';
   assigned_day_id: string | null;
@@ -33,13 +34,26 @@ export interface Strip {
   estimated_duration_minutes: number | null;
   created_at: string;
   updated_at: string;
-  // Joined from ScriptScene
+  // Joined from ScriptScene or backlot_scenes
   scene_number?: number;
   slugline?: string;
   location?: string;
   time_of_day?: string;
   raw_scene_text?: string;
   characters?: string[];
+}
+
+export interface CallSheetOption {
+  id: string;
+  title: string;
+  date: string;
+  production_day_id: string | null;
+}
+
+export interface GenerateResult {
+  created: number;
+  skipped: number;
+  message: string;
 }
 
 export interface ProductionDay {
@@ -231,7 +245,7 @@ export function useGenerateStripsFromScript(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (stripboardId: string) => {
+    mutationFn: async (stripboardId: string): Promise<GenerateResult> => {
       if (!projectId) throw new Error('Project ID required');
       return api.post(
         `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/generate-from-script`
@@ -240,6 +254,71 @@ export function useGenerateStripsFromScript(projectId: string | null) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: stripboardKeys.all });
     },
+  });
+}
+
+/**
+ * Generate strips from all project scenes (schedule)
+ */
+export function useGenerateStripsFromScenes(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (stripboardId: string): Promise<GenerateResult> => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.post(
+        `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/generate-from-scenes`
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: stripboardKeys.all });
+    },
+  });
+}
+
+/**
+ * Generate strips from a specific call sheet
+ */
+export function useGenerateStripsFromCallSheet(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      stripboardId,
+      callSheetId,
+    }: {
+      stripboardId: string;
+      callSheetId: string;
+    }): Promise<GenerateResult> => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.post(
+        `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/generate-from-call-sheet/${callSheetId}`
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: stripboardKeys.all });
+    },
+  });
+}
+
+/**
+ * Get call sheets for the call sheet picker
+ */
+export function useCallSheetsForStripboard(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'call-sheets-picker', projectId],
+    queryFn: async (): Promise<CallSheetOption[]> => {
+      if (!projectId) throw new Error('Project ID required');
+      const response = await api.get(`/api/v1/backlot/projects/${projectId}/call-sheets`);
+      // Map to the CallSheetOption format
+      return (response.call_sheets || response || []).map((cs: any) => ({
+        id: cs.id,
+        title: cs.title,
+        date: cs.date,
+        production_day_id: cs.production_day_id,
+      }));
+    },
+    enabled: !!projectId,
   });
 }
 
@@ -261,6 +340,7 @@ export function useCreateStrip(projectId: string | null) {
       stripboardId: string;
       data: {
         script_scene_id?: string;
+        scene_id?: string;  // From schedule (backlot_scenes)
         custom_title?: string;
         unit?: string;
         notes?: string;
@@ -368,6 +448,47 @@ export function useReorderStrip(projectId: string | null) {
 }
 
 // =====================================================
+// Hooks: Sync Stripboard with Schedule
+// =====================================================
+
+export type SyncDirection = 'to_schedule' | 'from_schedule' | 'both';
+
+export interface SyncResult {
+  direction: SyncDirection;
+  to_schedule_synced: number;
+  from_schedule_synced: number;
+  message: string;
+}
+
+/**
+ * Sync stripboard assignments with schedule scene assignments
+ */
+export function useSyncStripboardWithSchedule(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      stripboardId,
+      direction = 'both',
+    }: {
+      stripboardId: string;
+      direction?: SyncDirection;
+    }): Promise<SyncResult> => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.post(
+        `/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/sync-with-schedule?direction=${direction}`
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: stripboardKeys.all });
+      // Also invalidate schedule data since scenes may have been updated
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-schedule'] });
+    },
+  });
+}
+
+// =====================================================
 // Helper: Build Export URL
 // =====================================================
 
@@ -386,6 +507,23 @@ export function getStripboardExportUrl(
   if (end) params.append('end', end);
   const query = params.toString();
   return `${baseUrl}/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/export.csv${query ? `?${query}` : ''}`;
+}
+
+/**
+ * Build PDF export URL for stripboard
+ */
+export function getStripboardPdfExportUrl(
+  projectId: string,
+  stripboardId: string,
+  start?: string,
+  end?: string
+): string {
+  const baseUrl = import.meta.env.VITE_API_URL || '';
+  const params = new URLSearchParams();
+  if (start) params.append('start', start);
+  if (end) params.append('end', end);
+  const query = params.toString();
+  return `${baseUrl}/api/v1/backlot/projects/${projectId}/stripboard/${stripboardId}/export.pdf${query ? `?${query}` : ''}`;
 }
 
 // =====================================================

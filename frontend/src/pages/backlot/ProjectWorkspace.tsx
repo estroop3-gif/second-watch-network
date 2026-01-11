@@ -47,6 +47,7 @@ import {
   BookOpen,
   PanelLeftClose,
   PanelLeft,
+  FileVideo,
 } from 'lucide-react';
 import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, useCanApprove, BACKLOT_ROLES, useTodayShootDay } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -118,7 +119,7 @@ const TeamAccessView = lazy(() => import('@/components/backlot/workspace/TeamAcc
 const CameraLogView = lazy(() => import('@/components/backlot/workspace/CameraLogView'));
 const CheckInView = lazy(() => import('@/components/backlot/workspace/CheckInView'));
 const MySpacePanel = lazy(() => import('@/components/backlot/workspace/MySpacePanel'));
-const ChurchToolsView = lazy(() => import('@/components/backlot/workspace/ChurchToolsView'));
+// ChurchToolsView - Coming Soon (lazy import removed)
 const HotSetView = lazy(() => import('@/components/backlot/workspace/HotSetView'));
 const InvoicesView = lazy(() => import('@/components/backlot/workspace/InvoicesView'));
 const ComsView = lazy(() => import('@/components/backlot/workspace/ComsView'));
@@ -131,6 +132,7 @@ const EpisodeDetailView = lazy(() => import('@/components/backlot/workspace/Epis
 const MoodboardView = lazy(() => import('@/components/backlot/workspace/MoodboardView'));
 const StoryManagementView = lazy(() => import('@/components/backlot/workspace/StoryManagementView'));
 const ScriptSidesView = lazy(() => import('@/components/backlot/workspace/ScriptSidesView'));
+const ScriptSidesExportsView = lazy(() => import('@/components/backlot/workspace/ScriptSidesExportsView'));
 const StripboardView = lazy(() => import('@/components/backlot/workspace/StripboardView'));
 const FilesView = lazy(() => import('@/components/backlot/workspace/FilesView'));
 const ContinuityView = lazy(() => import('@/components/backlot/workspace/ContinuityView'));
@@ -147,7 +149,7 @@ const ReviewDetailView = lazy(() =>
 );
 
 import { SceneListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale } from 'lucide-react';
+import { SquarePlay, Video, UserCog, Timer, Layers, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale, ListOrdered, Clock, Workflow } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -183,6 +185,7 @@ interface NavItem {
   label: string;
   icon: React.ElementType;
   adminOnly?: boolean;
+  comingSoon?: boolean;
 }
 
 interface NavSection {
@@ -207,7 +210,7 @@ const NAV_SECTIONS: NavSection[] = [
       { id: 'coverage', label: 'Coverage', icon: Target },
       { id: 'episode-management', label: 'Episodes', icon: Tv },
       { id: 'script-sides', label: 'Script Sides', icon: FileText },
-      { id: 'story-management', label: 'Story', icon: BookOpen },
+      { id: 'story-management', label: 'Beat Sheet', icon: BookOpen },
     ],
   },
   {
@@ -283,15 +286,19 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    title: 'Church Tools',
-    items: [
-      { id: 'church-tools', label: 'Church Tools', icon: Church },
-    ],
-  },
-  {
     title: 'Resources',
     items: [
       { id: 'files', label: 'Files', icon: FolderOpen },
+    ],
+  },
+  {
+    title: 'Coming Soon',
+    items: [
+      { id: 'av-script', label: 'AV Script', icon: FileVideo, comingSoon: true },
+      { id: 'run-of-show', label: 'Run of Show', icon: ListOrdered, comingSoon: true },
+      { id: 'program-rundown', label: 'Program Rundown', icon: Clock, comingSoon: true },
+      { id: 'media-pipeline', label: 'Media Pipeline', icon: Workflow, comingSoon: true },
+      { id: 'church-tools', label: 'Church Tools', icon: Church, comingSoon: true },
     ],
   },
   {
@@ -665,12 +672,19 @@ const ProjectWorkspace: React.FC = () => {
                             )}
                           >
                             <item.icon className="w-4 h-4 flex-shrink-0" />
-                            <span className={cn(!sidebarExpanded && 'lg:hidden')}>{item.label}</span>
+                            <span className={cn(!sidebarExpanded && 'lg:hidden', 'flex items-center gap-2')}>
+                              {item.label}
+                              {item.comingSoon && (
+                                <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 border-accent-yellow/50 text-accent-yellow">
+                                  Soon
+                                </Badge>
+                              )}
+                            </span>
                           </button>
                         </TooltipTrigger>
                         {!sidebarExpanded && (
                           <TooltipContent side="right" className="hidden lg:block">
-                            {item.label}
+                            {item.label}{item.comingSoon && ' (Coming Soon)'}
                           </TooltipContent>
                         )}
                       </Tooltip>
@@ -939,7 +953,39 @@ const ProjectWorkspace: React.FC = () => {
             <ProjectSettings project={project} permission={permission} />
           )}
           {activeView === 'church-tools' && (
-            <ChurchToolsView projectId={project.id} />
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">Church Tools</h2>
+                <p className="text-sm text-muted-gray">Specialized tools for church and ministry productions</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <Church className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  Purpose-built tools for church services, worship nights, and ministry events.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Service Planning</h4>
+                    <p className="text-sm text-muted-gray">Plan worship services with song selection, scripture readings, and sermon notes.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Volunteer Scheduling</h4>
+                    <p className="text-sm text-muted-gray">Manage tech team schedules, send reminders, and track availability.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Lyrics & Graphics</h4>
+                    <p className="text-sm text-muted-gray">Manage song lyrics, lower thirds, and announcement graphics.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Multi-Campus Sync</h4>
+                    <p className="text-sm text-muted-gray">Coordinate services across multiple campuses with shared resources.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Coming Soon Placeholder Tabs */}
@@ -975,10 +1021,158 @@ const ProjectWorkspace: React.FC = () => {
             <FilesView projectId={project.id} canEdit={isTabEditable('files')} />
           )}
           {activeView === 'script-sides' && (
-            <ScriptSidesView projectId={project.id} canEdit={isTabEditable('script-sides')} />
+            <ScriptSidesExportsView projectId={project.id} canEdit={isTabEditable('script-sides')} />
           )}
           {activeView === 'story-management' && (
             <StoryManagementView projectId={project.id} canEdit={isTabEditable('story-management')} />
+          )}
+
+          {/* Coming Soon: AV Script */}
+          {activeView === 'av-script' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">AV Script</h2>
+                <p className="text-sm text-muted-gray">Audio-visual script format for video productions</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <FileVideo className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  Two-column AV script format with visual and audio descriptions side by side.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Two-Column Layout</h4>
+                    <p className="text-sm text-muted-gray">Visual descriptions on the left, audio/dialogue on the right.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Time Codes</h4>
+                    <p className="text-sm text-muted-gray">Precise timing for each segment with auto-duration calculations.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">B-Roll Notes</h4>
+                    <p className="text-sm text-muted-gray">Mark sections for B-roll footage with shot descriptions.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Export Options</h4>
+                    <p className="text-sm text-muted-gray">Export to PDF, teleprompter format, or spreadsheet.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Coming Soon: Run of Show */}
+          {activeView === 'run-of-show' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">Run of Show</h2>
+                <p className="text-sm text-muted-gray">Live event schedule and timing management</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <Radio className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  Complete run of show planning for live events, broadcasts, and shows.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Timeline View</h4>
+                    <p className="text-sm text-muted-gray">Visual timeline with drag-and-drop segment ordering.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Cue Sheets</h4>
+                    <p className="text-sm text-muted-gray">Generate cue sheets for audio, video, and lighting teams.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Live Tracking</h4>
+                    <p className="text-sm text-muted-gray">Real-time show progress with variance from planned times.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Multi-Role Views</h4>
+                    <p className="text-sm text-muted-gray">Role-specific views for stage manager, talent, and crew.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Coming Soon: Media Pipeline */}
+          {activeView === 'media-pipeline' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">Media Pipeline</h2>
+                <p className="text-sm text-muted-gray">Ingest, organize, and distribute your production media</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <FolderOpen className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  Complete media management from card ingest to final distribution.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Card Ingest</h4>
+                    <p className="text-sm text-muted-gray">Offload camera cards with verification and naming conventions.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Asset Organization</h4>
+                    <p className="text-sm text-muted-gray">Link sponsor videos, presentations, graphics, and deliverables.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Naming Templates</h4>
+                    <p className="text-sm text-muted-gray">Enforce file naming conventions with project-specific templates.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Distribution</h4>
+                    <p className="text-sm text-muted-gray">Package and deliver assets to clients, sponsors, and platforms.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Coming Soon: Program Rundown */}
+          {activeView === 'program-rundown' && (
+            <div className="space-y-6">
+              <div>
+                <h2 className="text-2xl font-heading text-bone-white">Program Rundown</h2>
+                <p className="text-sm text-muted-gray">Real-time timers and show management for live events</p>
+              </div>
+              <div className="flex flex-col items-center justify-center py-16 px-4 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+                <div className="w-16 h-16 rounded-full bg-accent-yellow/10 flex items-center justify-center mb-4">
+                  <Timer className="w-8 h-8 text-accent-yellow" />
+                </div>
+                <h3 className="text-xl font-semibold text-bone-white mb-2">Coming Soon</h3>
+                <p className="text-muted-gray text-center max-w-md mb-8">
+                  Day-of show management with real-time timers and automatic adjustments.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-2xl w-full">
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Segment Timers</h4>
+                    <p className="text-sm text-muted-gray">Rolling runtime with hard out alarms. Know exactly where you stand.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Auto Cut List</h4>
+                    <p className="text-sm text-muted-gray">"If we're long" cut list that updates automatically as the show progresses.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Speaker Timer</h4>
+                    <p className="text-sm text-muted-gray">On-stage confidence monitor mode with countdown and cues for talent.</p>
+                  </div>
+                  <div className="bg-charcoal-black border border-muted-gray/20 rounded-lg p-4">
+                    <h4 className="font-medium text-bone-white mb-2">Break & Doors</h4>
+                    <p className="text-sm text-muted-gray">Break timers and doors open countdown for audience management.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
           </Suspense>
         </main>

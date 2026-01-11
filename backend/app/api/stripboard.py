@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
+from enum import Enum
 import csv
 import io
 import json
@@ -32,7 +33,8 @@ class StripboardUpdate(BaseModel):
 
 
 class StripCreate(BaseModel):
-    script_scene_id: Optional[str] = None
+    script_scene_id: Optional[str] = None  # From script documents
+    scene_id: Optional[str] = None         # From schedule (backlot_scenes)
     custom_title: Optional[str] = None
     unit: str = Field(default='A')
     notes: Optional[str] = None
@@ -310,12 +312,19 @@ async def get_stripboard_view(
     """, date_params)
 
     # Get bank strips (unscheduled)
+    # JOINs with both script_scenes and backlot_scenes, using COALESCE to prefer script data
+    # Cast scene_number to text for COALESCE compatibility
     bank_strips = execute_query("""
         SELECT s.*,
-               ss.scene_number, ss.slugline, ss.location, ss.time_of_day,
-               ss.raw_scene_text, ss.characters
+               COALESCE(ss.scene_number::text, bs.scene_number::text) as scene_number,
+               COALESCE(ss.slugline, bs.slugline) as slugline,
+               COALESCE(ss.location, bs.location_hint) as location,
+               COALESCE(ss.time_of_day, bs.time_of_day) as time_of_day,
+               ss.raw_scene_text,
+               ss.characters
         FROM backlot_strips s
         LEFT JOIN backlot_script_scenes ss ON ss.id = s.script_scene_id
+        LEFT JOIN backlot_scenes bs ON bs.id = s.scene_id
         WHERE s.stripboard_id = :stripboard_id AND s.assigned_day_id IS NULL
         ORDER BY s.sort_order
     """, {"stripboard_id": stripboard_id})
@@ -323,10 +332,15 @@ async def get_stripboard_view(
     # Get all strips for days
     all_day_strips = execute_query("""
         SELECT s.*,
-               ss.scene_number, ss.slugline, ss.location, ss.time_of_day,
-               ss.raw_scene_text, ss.characters
+               COALESCE(ss.scene_number::text, bs.scene_number::text) as scene_number,
+               COALESCE(ss.slugline, bs.slugline) as slugline,
+               COALESCE(ss.location, bs.location_hint) as location,
+               COALESCE(ss.time_of_day, bs.time_of_day) as time_of_day,
+               ss.raw_scene_text,
+               ss.characters
         FROM backlot_strips s
         LEFT JOIN backlot_script_scenes ss ON ss.id = s.script_scene_id
+        LEFT JOIN backlot_scenes bs ON bs.id = s.scene_id
         WHERE s.stripboard_id = :stripboard_id AND s.assigned_day_id IS NOT NULL
         ORDER BY s.assigned_day_id, s.sort_order
     """, {"stripboard_id": stripboard_id})
@@ -348,7 +362,7 @@ async def get_stripboard_view(
             FROM dood_assignments da
             JOIN dood_subjects ds ON ds.id = da.subject_id
             WHERE da.project_id = :project_id
-            AND da.day_id = ANY(:day_ids)
+            AND da.day_id = ANY(CAST(:day_ids AS uuid[]))
             AND da.code = 'W'
             AND ds.subject_type = 'CAST'
         """, {"project_id": project_id, "day_ids": day_ids})
@@ -502,6 +516,235 @@ async def generate_strips_from_script(
 
 
 # =====================================================
+# Generate Strips from Schedule (backlot_scenes)
+# =====================================================
+
+@router.post("/projects/{project_id}/stripboard/{stripboard_id}/generate-from-scenes")
+async def generate_strips_from_scenes(
+    project_id: str,
+    stripboard_id: str,
+    authorization: str = Header(...)
+):
+    """
+    Generate strips from ALL backlot_scenes in the project.
+    Idempotent: won't duplicate strips for scenes that already have strips.
+    Respects scene's scheduled_day_id - places strip under corresponding day.
+    Unscheduled scenes go to bank.
+    """
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    # Verify stripboard exists
+    stripboard = execute_single("""
+        SELECT * FROM backlot_stripboards WHERE id = :id AND project_id = :project_id
+    """, {"id": stripboard_id, "project_id": project_id})
+
+    if not stripboard:
+        raise HTTPException(status_code=404, detail="Stripboard not found")
+
+    # Get all scenes from backlot_scenes WITH their scheduled_day_id
+    scenes = execute_query("""
+        SELECT id, scene_number, slugline, scheduled_day_id
+        FROM backlot_scenes
+        WHERE project_id = :project_id
+        ORDER BY scene_number
+    """, {"project_id": project_id})
+
+    if not scenes:
+        return {"created": 0, "skipped": 0, "message": "No scenes found in project"}
+
+    # Get existing strips that already reference these scenes
+    existing = execute_query("""
+        SELECT scene_id FROM backlot_strips
+        WHERE stripboard_id = :stripboard_id AND scene_id IS NOT NULL
+    """, {"stripboard_id": stripboard_id})
+
+    existing_scene_ids = {e['scene_id'] for e in existing}
+
+    # Create strips for scenes that don't have them
+    client = get_client()
+    created = 0
+    skipped = 0
+    scheduled_count = 0
+
+    # Track sort order per day bucket (including bank as None)
+    sort_orders = {}
+
+    for scene in scenes:
+        if scene['id'] in existing_scene_ids:
+            skipped += 1
+            continue
+
+        # Use scene's scheduled_day_id for strip placement
+        day_id = scene.get('scheduled_day_id')
+
+        # Get next sort order for this day bucket
+        if day_id not in sort_orders:
+            sort_orders[day_id] = await get_next_sort_order(stripboard_id, day_id)
+
+        current_order = sort_orders[day_id]
+        sort_orders[day_id] += 1
+
+        client.table("backlot_strips").insert({
+            "project_id": project_id,
+            "stripboard_id": stripboard_id,
+            "scene_id": scene['id'],
+            "assigned_day_id": day_id,  # Place under scheduled day
+            "unit": "A",
+            "sort_order": current_order,
+            "status": "SCHEDULED" if day_id else "PLANNED"
+        }).execute()
+
+        created += 1
+        if day_id:
+            scheduled_count += 1
+
+    bank_count = created - scheduled_count
+    return {
+        "created": created,
+        "skipped": skipped,
+        "scheduled": scheduled_count,
+        "bank": bank_count,
+        "message": f"Created {created} strips ({scheduled_count} scheduled, {bank_count} in bank), skipped {skipped} existing"
+    }
+
+
+# =====================================================
+# Generate Strips from Call Sheet
+# =====================================================
+
+@router.post("/projects/{project_id}/stripboard/{stripboard_id}/generate-from-call-sheet/{call_sheet_id}")
+async def generate_strips_from_call_sheet(
+    project_id: str,
+    stripboard_id: str,
+    call_sheet_id: str,
+    authorization: str = Header(...)
+):
+    """
+    Generate strips from scenes linked to a specific call sheet.
+    Uses backlot_call_sheet_scene_links to find scene_ids.
+    Strips are pre-assigned to the call sheet's production day.
+    """
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    # Verify stripboard exists
+    stripboard = execute_single("""
+        SELECT * FROM backlot_stripboards WHERE id = :id AND project_id = :project_id
+    """, {"id": stripboard_id, "project_id": project_id})
+
+    if not stripboard:
+        raise HTTPException(status_code=404, detail="Stripboard not found")
+
+    # Get call sheet with production_day_id
+    call_sheet = execute_single("""
+        SELECT id, title, production_day_id
+        FROM backlot_call_sheets
+        WHERE id = :id AND project_id = :project_id
+    """, {"id": call_sheet_id, "project_id": project_id})
+
+    if not call_sheet:
+        raise HTTPException(status_code=404, detail="Call sheet not found")
+
+    production_day_id = call_sheet.get('production_day_id')
+
+    # Get scenes linked to this call sheet via junction table
+    linked_scenes = execute_query("""
+        SELECT csl.scene_id, csl.sequence, bs.scene_number, bs.slugline
+        FROM backlot_call_sheet_scene_links csl
+        JOIN backlot_scenes bs ON bs.id = csl.scene_id
+        WHERE csl.call_sheet_id = :call_sheet_id
+        ORDER BY csl.sequence, bs.scene_number
+    """, {"call_sheet_id": call_sheet_id})
+
+    if not linked_scenes:
+        # Also try backlot_call_sheet_scenes table (older approach)
+        fallback_scenes = execute_query("""
+            SELECT scene_number, scene_name, description
+            FROM backlot_call_sheet_scenes
+            WHERE call_sheet_id = :call_sheet_id
+            ORDER BY sort_order
+        """, {"call_sheet_id": call_sheet_id})
+
+        if not fallback_scenes:
+            return {"created": 0, "skipped": 0, "message": "No scenes linked to this call sheet"}
+
+        # Create custom strips from fallback data (no scene_id link)
+        client = get_client()
+        created = 0
+        current_order = await get_next_sort_order(stripboard_id, production_day_id)
+
+        for scene_data in fallback_scenes:
+            title = f"{scene_data['scene_number']} - {scene_data.get('scene_name') or scene_data.get('description') or ''}"
+            client.table("backlot_strips").insert({
+                "project_id": project_id,
+                "stripboard_id": stripboard_id,
+                "custom_title": title.strip(' -'),
+                "assigned_day_id": production_day_id,
+                "unit": "A",
+                "sort_order": current_order,
+                "status": "SCHEDULED" if production_day_id else "PLANNED"
+            }).execute()
+            current_order += 1
+            created += 1
+
+        return {
+            "created": created,
+            "skipped": 0,
+            "message": f"Created {created} strips from call sheet scenes"
+        }
+
+    # Get existing strips that already reference these scenes
+    scene_ids = [s['scene_id'] for s in linked_scenes]
+    existing = execute_query("""
+        SELECT scene_id FROM backlot_strips
+        WHERE stripboard_id = :stripboard_id AND scene_id = ANY(:scene_ids)
+    """, {"stripboard_id": stripboard_id, "scene_ids": scene_ids})
+
+    existing_scene_ids = {e['scene_id'] for e in existing}
+
+    # Create strips for scenes that don't have them
+    client = get_client()
+    created = 0
+    skipped = 0
+
+    # Get current max sort order for the target bucket (day or bank)
+    current_order = await get_next_sort_order(stripboard_id, production_day_id)
+
+    for scene in linked_scenes:
+        if scene['scene_id'] in existing_scene_ids:
+            skipped += 1
+            continue
+
+        client.table("backlot_strips").insert({
+            "project_id": project_id,
+            "stripboard_id": stripboard_id,
+            "scene_id": scene['scene_id'],
+            "assigned_day_id": production_day_id,
+            "unit": "A",
+            "sort_order": current_order,
+            "status": "SCHEDULED" if production_day_id else "PLANNED"
+        }).execute()
+
+        current_order += 1
+        created += 1
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "message": f"Created {created} strips from call sheet, skipped {skipped} existing"
+    }
+
+
+# =====================================================
 # Strip CRUD Endpoints
 # =====================================================
 
@@ -528,9 +771,9 @@ async def create_strip(
     if not stripboard:
         raise HTTPException(status_code=404, detail="Stripboard not found")
 
-    # Validate: need either script_scene_id or custom_title
-    if not data.script_scene_id and not data.custom_title:
-        raise HTTPException(status_code=400, detail="Either script_scene_id or custom_title is required")
+    # Validate: need script_scene_id, scene_id, or custom_title
+    if not data.script_scene_id and not data.scene_id and not data.custom_title:
+        raise HTTPException(status_code=400, detail="Either script_scene_id, scene_id, or custom_title is required")
 
     # If script_scene_id provided, verify it exists
     if data.script_scene_id:
@@ -541,6 +784,15 @@ async def create_strip(
         if not scene:
             raise HTTPException(status_code=404, detail="Script scene not found")
 
+    # If scene_id provided, verify it exists
+    if data.scene_id:
+        scene = execute_single("""
+            SELECT id FROM backlot_scenes
+            WHERE id = :id AND project_id = :project_id
+        """, {"id": data.scene_id, "project_id": project_id})
+        if not scene:
+            raise HTTPException(status_code=404, detail="Scene not found")
+
     # Get next sort order for bank
     sort_order = await get_next_sort_order(stripboard_id, None)
 
@@ -549,6 +801,7 @@ async def create_strip(
         "project_id": project_id,
         "stripboard_id": stripboard_id,
         "script_scene_id": data.script_scene_id,
+        "scene_id": data.scene_id,
         "custom_title": data.custom_title,
         "unit": data.unit,
         "sort_order": sort_order,
@@ -626,7 +879,8 @@ async def update_strip(
         update_data['estimated_duration_minutes'] = data.estimated_duration_minutes
 
     if not update_data:
-        raise HTTPException(status_code=400, detail="No update data provided")
+        # Nothing to update - strip is already in the desired state
+        return current
 
     client = get_client()
     result = client.table("backlot_strips").update(update_data).eq("id", strip_id).execute()
@@ -637,6 +891,12 @@ async def update_strip(
         new_day_id = data.assigned_day_id if data.assigned_day_id != '' else None
         if old_day_id != new_day_id:
             await recompact_bucket(stripboard_id, old_day_id)
+
+            # Auto-sync: Update scene's scheduled_day_id to match strip
+            if current.get('scene_id'):
+                client.table("backlot_scenes").update({
+                    "scheduled_day_id": new_day_id
+                }).eq("id", current['scene_id']).execute()
 
     return result.data[0] if result.data else None
 
@@ -769,6 +1029,102 @@ async def reorder_strip(
     client.table("backlot_strips").update({"sort_order": adjacent['sort_order']}).eq("id", strip['id']).execute()
 
     return {"success": True}
+
+
+# =====================================================
+# Sync with Schedule Endpoint
+# =====================================================
+
+class SyncDirection(str, Enum):
+    TO_SCHEDULE = "to_schedule"
+    FROM_SCHEDULE = "from_schedule"
+    BOTH = "both"
+
+@router.post("/projects/{project_id}/stripboard/{stripboard_id}/sync-with-schedule")
+async def sync_stripboard_with_schedule(
+    project_id: str,
+    stripboard_id: str,
+    direction: SyncDirection = Query(SyncDirection.BOTH),
+    authorization: str = Header(...)
+):
+    """
+    Sync stripboard assignments with schedule.
+    - to_schedule: Update backlot_scenes.scheduled_day_id to match strip assignments
+    - from_schedule: Update strip.assigned_day_id to match scene schedules
+    - both: Bidirectional sync (stripboard wins for conflicts)
+    """
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    # Verify stripboard exists
+    stripboard = execute_single("""
+        SELECT * FROM backlot_stripboards WHERE id = :id AND project_id = :project_id
+    """, {"id": stripboard_id, "project_id": project_id})
+
+    if not stripboard:
+        raise HTTPException(status_code=404, detail="Stripboard not found")
+
+    client = get_client()
+    to_schedule_count = 0
+    from_schedule_count = 0
+
+    # TO_SCHEDULE: Update scenes to match strip assignments
+    if direction in [SyncDirection.TO_SCHEDULE, SyncDirection.BOTH]:
+        # Get all strips with scene_id
+        strips = execute_query("""
+            SELECT id, scene_id, assigned_day_id
+            FROM backlot_strips
+            WHERE stripboard_id = :stripboard_id AND scene_id IS NOT NULL
+        """, {"stripboard_id": stripboard_id})
+
+        for strip in strips:
+            # Update scene's scheduled_day_id
+            client.table("backlot_scenes").update({
+                "scheduled_day_id": strip['assigned_day_id']
+            }).eq("id", strip['scene_id']).execute()
+            to_schedule_count += 1
+
+    # FROM_SCHEDULE: Update strips to match scene schedules
+    if direction in [SyncDirection.FROM_SCHEDULE, SyncDirection.BOTH]:
+        # Get all scenes with their schedules
+        scenes_with_strips = execute_query("""
+            SELECT s.id as strip_id, s.scene_id, s.assigned_day_id as strip_day_id,
+                   bs.scheduled_day_id as scene_day_id
+            FROM backlot_strips s
+            JOIN backlot_scenes bs ON bs.id = s.scene_id
+            WHERE s.stripboard_id = :stripboard_id AND s.scene_id IS NOT NULL
+        """, {"stripboard_id": stripboard_id})
+
+        for item in scenes_with_strips:
+            # Only update if scene has a scheduled day and strip doesn't match
+            # (For BOTH direction, stripboard wins, so we skip if strip already has a day)
+            if item['scene_day_id'] and item['strip_day_id'] != item['scene_day_id']:
+                if direction == SyncDirection.FROM_SCHEDULE or item['strip_day_id'] is None:
+                    new_sort_order = await get_next_sort_order(stripboard_id, item['scene_day_id'])
+                    old_day_id = item['strip_day_id']
+
+                    client.table("backlot_strips").update({
+                        "assigned_day_id": item['scene_day_id'],
+                        "sort_order": new_sort_order,
+                        "status": "SCHEDULED"
+                    }).eq("id", item['strip_id']).execute()
+
+                    # Recompact old bucket
+                    if old_day_id:
+                        await recompact_bucket(stripboard_id, old_day_id)
+
+                    from_schedule_count += 1
+
+    return {
+        "success": True,
+        "to_schedule": to_schedule_count,
+        "from_schedule": from_schedule_count,
+        "message": f"Synced {to_schedule_count} strips → schedule, {from_schedule_count} schedule → strips"
+    }
 
 
 # =====================================================
@@ -918,3 +1274,72 @@ async def get_stripboard_print_data(
         "day_columns": view_data['day_columns'],
         "generated_at": datetime.utcnow().isoformat()
     }
+
+
+# =====================================================
+# PDF Export Endpoint
+# =====================================================
+
+@router.get("/projects/{project_id}/stripboard/{stripboard_id}/export.pdf")
+async def export_stripboard_pdf(
+    project_id: str,
+    stripboard_id: str,
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    authorization: str = Header(...)
+):
+    """
+    Export stripboard as PDF.
+    Generates a professional production schedule PDF.
+    """
+    token = authorization.replace("Bearer ", "")
+    import jwt
+    decoded = jwt.decode(token, options={"verify_signature": False})
+    user_id = decoded.get("sub")
+
+    await verify_project_access(project_id, user_id)
+
+    # Get project title
+    project = execute_single("""
+        SELECT title FROM backlot_projects WHERE id = :id
+    """, {"id": project_id})
+
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Get stripboard
+    stripboard = execute_single("""
+        SELECT * FROM backlot_stripboards WHERE id = :id AND project_id = :project_id
+    """, {"id": stripboard_id, "project_id": project_id})
+
+    if not stripboard:
+        raise HTTPException(status_code=404, detail="Stripboard not found")
+
+    # Get view data
+    view_data = await get_stripboard_view(project_id, stripboard_id, start, end, f"Bearer {token}")
+
+    # Determine date range for display
+    date_range_start = start or (view_data['day_columns'][0]['day']['date'] if view_data['day_columns'] else datetime.utcnow().strftime('%Y-%m-%d'))
+    date_range_end = end or (view_data['day_columns'][-1]['day']['date'] if view_data['day_columns'] else datetime.utcnow().strftime('%Y-%m-%d'))
+
+    # Generate PDF
+    from app.services.stripboard_pdf_service import generate_stripboard_pdf
+
+    pdf_bytes = await generate_stripboard_pdf(
+        project_title=project['title'],
+        stripboard_title=stripboard['title'],
+        bank_strips=view_data['bank_strips'],
+        day_columns=view_data['day_columns'],
+        date_range_start=date_range_start,
+        date_range_end=date_range_end,
+    )
+
+    filename = f"{stripboard['title'].replace(' ', '_')}_schedule.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )

@@ -55,7 +55,6 @@ import {
   ChevronDown,
   MoreVertical,
   AlertTriangle,
-  Printer,
   Archive,
   Users,
   Clock,
@@ -66,22 +65,49 @@ import {
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { format, addDays } from 'date-fns';
-import { useNavigate } from 'react-router-dom';
+import {
+  DndContext,
+  DragOverlay,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragStartEvent,
+  DragEndEvent,
+  DragOverEvent,
+  useDroppable,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+  useSortable,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   useActiveStripboard,
   useCreateStripboard,
   useStripboardView,
   useGenerateStripsFromScript,
+  useGenerateStripsFromScenes,
+  useGenerateStripsFromCallSheet,
+  useCallSheetsForStripboard,
   useCreateStrip,
   useUpdateStrip,
   useDeleteStrip,
   useReorderStrip,
+  useSyncStripboardWithSchedule,
   getStripboardExportUrl,
+  getStripboardPdfExportUrl,
   Strip,
   DayColumn,
+  CallSheetOption,
   STRIP_UNITS,
   STRIP_STATUSES,
+  SyncDirection,
 } from '@/hooks/backlot';
+import { useAuth } from '@/context/AuthContext';
 
 interface StripboardViewProps {
   projectId: string;
@@ -166,10 +192,6 @@ function StripCard({
   const reorderStrip = useReorderStrip(projectId);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const title = strip.scene_number
-    ? `${strip.scene_number}. ${strip.slugline || ''}`
-    : strip.custom_title || 'Untitled';
-
   const handleMoveUp = async () => {
     try {
       await reorderStrip.mutateAsync({
@@ -217,28 +239,46 @@ function StripCard({
     }
   };
 
+  // Build scene number display
+  const sceneNum = strip.scene_number ? `${strip.scene_number}` : null;
+
   return (
     <>
-      <div className="bg-charcoal-black/50 border border-muted-gray/30 rounded-md p-2 hover:border-accent-yellow/50 transition-colors">
-        <div className="flex items-start gap-2">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-bone-white truncate">{title}</p>
-            {strip.estimated_duration_minutes && (
-              <p className="text-xs text-muted-gray flex items-center gap-1 mt-1">
-                <Clock className="w-3 h-3" />
-                {strip.estimated_duration_minutes} min
-              </p>
+      <div className="bg-charcoal-black/50 border border-muted-gray/30 rounded-lg p-3 hover:border-accent-yellow/50 transition-colors cursor-grab active:cursor-grabbing">
+        {/* Header: Scene number + badges */}
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            {sceneNum && (
+              <span className="text-lg font-bold text-accent-yellow">{sceneNum}</span>
             )}
-          </div>
-
-          <div className="flex items-center gap-1 flex-shrink-0">
             <Badge className={cn('text-xs h-5', getUnitBadgeColor(strip.unit))}>
               {strip.unit}
             </Badge>
-            <Badge className={cn('text-xs h-5 text-white', getStatusBadgeColor(strip.status))}>
-              {strip.status}
-            </Badge>
           </div>
+          <Badge className={cn('text-xs h-5 text-white', getStatusBadgeColor(strip.status))}>
+            {strip.status}
+          </Badge>
+        </div>
+
+        {/* Slugline */}
+        <p className="text-sm font-medium text-bone-white leading-tight mb-2">
+          {strip.slugline || strip.custom_title || 'Untitled'}
+        </p>
+
+        {/* Meta info: location, duration */}
+        <div className="flex items-center gap-3 text-xs text-muted-gray">
+          {strip.location && (
+            <span className="flex items-center gap-1 truncate">
+              <Film className="w-3 h-3 flex-shrink-0" />
+              {strip.location}
+            </span>
+          )}
+          {strip.estimated_duration_minutes && (
+            <span className="flex items-center gap-1 flex-shrink-0">
+              <Clock className="w-3 h-3" />
+              {strip.estimated_duration_minutes}m
+            </span>
+          )}
         </div>
 
         {canEdit && (
@@ -324,6 +364,62 @@ function StripCard({
 }
 
 // =====================================================
+// Sortable Strip Card Wrapper (for drag-and-drop)
+// =====================================================
+
+interface SortableStripCardProps extends StripCardProps {
+  id: string;
+}
+
+function SortableStripCard({ id, ...props }: SortableStripCardProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
+      <StripCard {...props} />
+    </div>
+  );
+}
+
+// =====================================================
+// Droppable Column Wrapper
+// =====================================================
+
+interface DroppableColumnProps {
+  id: string;
+  children: React.ReactNode;
+}
+
+function DroppableColumn({ id, children }: DroppableColumnProps) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'transition-colors',
+        isOver && 'ring-2 ring-accent-yellow/50'
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+// =====================================================
 // Bank Column Component
 // =====================================================
 
@@ -337,40 +433,47 @@ interface BankColumnProps {
 }
 
 function BankColumn({ strips, stripboardId, projectId, canEdit, allDays, onEditStrip }: BankColumnProps) {
+  const stripIds = strips.map((s) => s.id);
+
   return (
-    <div className="flex-shrink-0 w-64 bg-muted-gray/5 border border-muted-gray/30 rounded-lg">
-      <div className="p-3 border-b border-muted-gray/30 bg-muted-gray/10">
-        <div className="flex items-center gap-2">
-          <Archive className="w-4 h-4 text-muted-gray" />
-          <h3 className="font-medium text-bone-white">Bank</h3>
-          <Badge variant="outline" className="ml-auto text-xs">
-            {strips.length}
-          </Badge>
+    <DroppableColumn id="bank">
+      <div className="flex-shrink-0 w-80 bg-muted-gray/5 border border-muted-gray/30 rounded-lg">
+        <div className="p-3 border-b border-muted-gray/30 bg-muted-gray/10">
+          <div className="flex items-center gap-2">
+            <Archive className="w-4 h-4 text-muted-gray" />
+            <h3 className="font-medium text-bone-white">Bank</h3>
+            <Badge variant="outline" className="ml-auto text-xs">
+              {strips.length}
+            </Badge>
+          </div>
+          <p className="text-xs text-muted-gray mt-1">Unscheduled strips</p>
         </div>
-        <p className="text-xs text-muted-gray mt-1">Unscheduled strips</p>
+        <ScrollArea className="h-[calc(100vh-380px)]">
+          <div className="p-2 space-y-2 min-h-[100px]">
+            <SortableContext items={stripIds} strategy={verticalListSortingStrategy}>
+              {strips.length === 0 ? (
+                <p className="text-xs text-muted-gray text-center py-4">No unscheduled strips</p>
+              ) : (
+                strips.map((strip, idx) => (
+                  <SortableStripCard
+                    key={strip.id}
+                    id={strip.id}
+                    strip={strip}
+                    stripboardId={stripboardId}
+                    projectId={projectId}
+                    canEdit={canEdit}
+                    isFirst={idx === 0}
+                    isLast={idx === strips.length - 1}
+                    allDays={allDays}
+                    onEdit={onEditStrip}
+                  />
+                ))
+              )}
+            </SortableContext>
+          </div>
+        </ScrollArea>
       </div>
-      <ScrollArea className="h-[calc(100vh-380px)]">
-        <div className="p-2 space-y-2">
-          {strips.length === 0 ? (
-            <p className="text-xs text-muted-gray text-center py-4">No unscheduled strips</p>
-          ) : (
-            strips.map((strip, idx) => (
-              <StripCard
-                key={strip.id}
-                strip={strip}
-                stripboardId={stripboardId}
-                projectId={projectId}
-                canEdit={canEdit}
-                isFirst={idx === 0}
-                isLast={idx === strips.length - 1}
-                allDays={allDays}
-                onEdit={onEditStrip}
-              />
-            ))
-          )}
-        </div>
-      </ScrollArea>
-    </div>
+    </DroppableColumn>
   );
 }
 
@@ -398,65 +501,71 @@ function DayColumnComponent({
   onShowCastMismatch,
 }: DayColumnComponentProps) {
   const { day, strips, cast_mismatch } = dayColumn;
+  const stripIds = strips.map((s) => s.id);
 
   return (
-    <div className="flex-shrink-0 w-64 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
-      <div className="p-3 border-b border-muted-gray/30">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs text-muted-gray">{getDayOfWeek(day.date)}</p>
-            <h3 className="font-medium text-bone-white">{formatDateShort(day.date)}</h3>
+    <DroppableColumn id={day.id}>
+      <div className="flex-shrink-0 w-80 bg-charcoal-black/30 border border-muted-gray/30 rounded-lg">
+        <div className="p-3 border-b border-muted-gray/30">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-muted-gray">{getDayOfWeek(day.date)}</p>
+              <h3 className="font-medium text-bone-white">{formatDateShort(day.date)}</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {cast_mismatch.has_mismatch && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 w-6 p-0 text-amber-400"
+                  onClick={() => onShowCastMismatch(dayColumn)}
+                >
+                  <AlertTriangle className="w-4 h-4" />
+                </Button>
+              )}
+              <Badge variant="outline" className="text-xs">
+                {strips.length}
+              </Badge>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            {cast_mismatch.has_mismatch && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0 text-amber-400"
-                onClick={() => onShowCastMismatch(dayColumn)}
-              >
-                <AlertTriangle className="w-4 h-4" />
-              </Button>
-            )}
-            <Badge variant="outline" className="text-xs">
-              {strips.length}
+          <div className="flex items-center gap-2 mt-1">
+            <Badge
+              variant="outline"
+              className="text-xs bg-muted-gray/20 text-muted-gray border-muted-gray/30"
+            >
+              {day.day_type}
             </Badge>
+            {day.day_number > 0 && (
+              <span className="text-xs text-muted-gray">Day {day.day_number}</span>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2 mt-1">
-          <Badge
-            variant="outline"
-            className="text-xs bg-muted-gray/20 text-muted-gray border-muted-gray/30"
-          >
-            {day.day_type}
-          </Badge>
-          {day.day_number > 0 && (
-            <span className="text-xs text-muted-gray">Day {day.day_number}</span>
-          )}
-        </div>
+        <ScrollArea className="h-[calc(100vh-380px)]">
+          <div className="p-2 space-y-2 min-h-[100px]">
+            <SortableContext items={stripIds} strategy={verticalListSortingStrategy}>
+              {strips.length === 0 ? (
+                <p className="text-xs text-muted-gray text-center py-4">No strips</p>
+              ) : (
+                strips.map((strip, idx) => (
+                  <SortableStripCard
+                    key={strip.id}
+                    id={strip.id}
+                    strip={strip}
+                    stripboardId={stripboardId}
+                    projectId={projectId}
+                    canEdit={canEdit}
+                    isFirst={idx === 0}
+                    isLast={idx === strips.length - 1}
+                    allDays={allDays}
+                    onEdit={onEditStrip}
+                  />
+                ))
+              )}
+            </SortableContext>
+          </div>
+        </ScrollArea>
       </div>
-      <ScrollArea className="h-[calc(100vh-380px)]">
-        <div className="p-2 space-y-2">
-          {strips.length === 0 ? (
-            <p className="text-xs text-muted-gray text-center py-4">No strips</p>
-          ) : (
-            strips.map((strip, idx) => (
-              <StripCard
-                key={strip.id}
-                strip={strip}
-                stripboardId={stripboardId}
-                projectId={projectId}
-                canEdit={canEdit}
-                isFirst={idx === 0}
-                isLast={idx === strips.length - 1}
-                allDays={allDays}
-                onEdit={onEditStrip}
-              />
-            ))
-          )}
-        </div>
-      </ScrollArea>
-    </div>
+    </DroppableColumn>
   );
 }
 
@@ -888,12 +997,27 @@ function CreateStripModal({ projectId, stripboardId, open, onClose }: CreateStri
 // =====================================================
 
 export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
-  const navigate = useNavigate();
+  const { session } = useAuth();
   const [dateRange, setDateRange] = useState(getDefaultDateRange);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [showCreateStripboard, setShowCreateStripboard] = useState(false);
   const [showCreateStrip, setShowCreateStrip] = useState(false);
   const [editingStrip, setEditingStrip] = useState<Strip | null>(null);
   const [castMismatchDay, setCastMismatchDay] = useState<DayColumn | null>(null);
+  const [showCallSheetPicker, setShowCallSheetPicker] = useState(false);
+  const [activeStrip, setActiveStrip] = useState<Strip | null>(null);
+
+  // DnD sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 8,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
 
   // Queries
   const { data: summary, isLoading: loadingSummary } = useActiveStripboard(projectId);
@@ -907,16 +1031,116 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
     dateRange.end
   );
 
-  // Mutations
-  const generateStrips = useGenerateStripsFromScript(projectId);
+  const { data: callSheets, isLoading: loadingCallSheets } = useCallSheetsForStripboard(projectId);
 
-  const handleGenerate = async () => {
+  // Mutations
+  const generateFromScript = useGenerateStripsFromScript(projectId);
+  const generateFromScenes = useGenerateStripsFromScenes(projectId);
+  const generateFromCallSheet = useGenerateStripsFromCallSheet(projectId);
+  const updateStrip = useUpdateStrip(projectId);
+  const syncWithSchedule = useSyncStripboardWithSchedule(projectId);
+
+  const isGenerating = generateFromScript.isPending || generateFromScenes.isPending || generateFromCallSheet.isPending;
+  const isSyncing = syncWithSchedule.isPending;
+
+  const handleSync = async (direction: SyncDirection) => {
     if (!stripboardId) return;
     try {
-      const result = await generateStrips.mutateAsync(stripboardId);
-      toast.success(`Generated ${result.created} strips, skipped ${result.skipped} existing`);
+      const result = await syncWithSchedule.mutateAsync({ stripboardId, direction });
+      toast.success(result.message);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to generate strips');
+      toast.error(err.message || 'Failed to sync with schedule');
+    }
+  };
+
+  // DnD Handlers
+  const handleDragStart = (event: DragStartEvent) => {
+    const { active } = event;
+    // Find the strip being dragged
+    const allStrips = [
+      ...(viewData?.bank_strips || []),
+      ...(viewData?.day_columns.flatMap((dc) => dc.strips) || []),
+    ];
+    const draggedStrip = allStrips.find((s) => s.id === active.id);
+    if (draggedStrip) {
+      setActiveStrip(draggedStrip);
+    }
+  };
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    setActiveStrip(null);
+
+    if (!over || !stripboardId) return;
+
+    const stripId = active.id as string;
+    const destinationId = over.id as string;
+
+    // Find the strip
+    const allStrips = [
+      ...(viewData?.bank_strips || []),
+      ...(viewData?.day_columns.flatMap((dc) => dc.strips) || []),
+    ];
+    const strip = allStrips.find((s) => s.id === stripId);
+    if (!strip) return;
+
+    // Determine the destination day ID (bank = empty string, day = day.id)
+    let newDayId = destinationId === 'bank' ? '' : destinationId;
+
+    // If dropped on another strip, find which column it belongs to
+    const droppedOnStrip = allStrips.find((s) => s.id === destinationId);
+    if (droppedOnStrip) {
+      newDayId = droppedOnStrip.assigned_day_id || '';
+    }
+
+    // Check if we're just reordering within same column
+    const currentDayId = strip.assigned_day_id || '';
+    if (currentDayId === newDayId) {
+      // Same column - no need to update assigned_day_id
+      return;
+    }
+
+    // Move to different column
+    try {
+      await updateStrip.mutateAsync({
+        stripboardId,
+        stripId,
+        data: { assigned_day_id: newDayId },
+      });
+      toast.success('Strip moved');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to move strip');
+    }
+  };
+
+  const handleGenerateFromScript = async () => {
+    if (!stripboardId) return;
+    try {
+      const result = await generateFromScript.mutateAsync(stripboardId);
+      toast.success(`Generated ${result.created} strips from script, skipped ${result.skipped} existing`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to generate strips from script');
+    }
+  };
+
+  const handleGenerateFromScenes = async () => {
+    if (!stripboardId) return;
+    try {
+      const result = await generateFromScenes.mutateAsync(stripboardId);
+      toast.success(`Generated ${result.created} strips from schedule, skipped ${result.skipped} existing`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to generate strips from schedule');
+    }
+  };
+
+  const handleGenerateFromCallSheet = async (callSheetId: string) => {
+    if (!stripboardId) return;
+    try {
+      const result = await generateFromCallSheet.mutateAsync({ stripboardId, callSheetId });
+      toast.success(`Generated ${result.created} strips from call sheet, skipped ${result.skipped} existing`);
+      setShowCallSheetPicker(false);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to generate strips from call sheet');
     }
   };
 
@@ -926,12 +1150,40 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
     window.open(url, '_blank');
   };
 
-  const handlePrint = () => {
+  const handleExportPdf = async () => {
     if (!stripboardId) return;
-    const params = new URLSearchParams();
-    params.append('start', dateRange.start);
-    params.append('end', dateRange.end);
-    navigate(`/backlot/${projectId}/stripboard/${stripboardId}/print?${params.toString()}`);
+    const token = session?.access_token;
+    if (!token) {
+      toast.error('Please sign in to export PDF');
+      return;
+    }
+    setIsExportingPdf(true);
+    try {
+      const url = getStripboardPdfExportUrl(projectId, stripboardId, dateRange.start, dateRange.end);
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error('Failed to generate PDF');
+      }
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = `${stripboard?.title || 'stripboard'}_schedule.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+      toast.success('PDF exported successfully');
+    } catch (error) {
+      console.error('PDF export failed:', error);
+      toast.error('Failed to export PDF');
+    } finally {
+      setIsExportingPdf(false);
+    }
   };
 
   // Loading state
@@ -1002,28 +1254,71 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
         <div className="flex items-center gap-2">
           {canEdit && (
             <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleGenerate}
-                disabled={generateStrips.isPending}
-              >
-                <Wand2 className="w-4 h-4 mr-2" />
-                {generateStrips.isPending ? 'Generating...' : 'Generate from Script'}
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={isGenerating}>
+                    <Wand2 className="w-4 h-4 mr-2" />
+                    {isGenerating ? 'Generating...' : 'Generate Strips'}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handleGenerateFromScript}>
+                    <FileSpreadsheet className="w-4 h-4 mr-2" />
+                    From Script
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleGenerateFromScenes}>
+                    <Calendar className="w-4 h-4 mr-2" />
+                    From Schedule (All Scenes)
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => setShowCallSheetPicker(true)}>
+                    <Film className="w-4 h-4 mr-2" />
+                    From Call Sheet...
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button variant="outline" size="sm" onClick={() => setShowCreateStrip(true)}>
                 <Plus className="w-4 h-4 mr-2" />
                 Custom Strip
               </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={isSyncing}>
+                    <RefreshCw className={cn('w-4 h-4 mr-2', isSyncing && 'animate-spin')} />
+                    {isSyncing ? 'Syncing...' : 'Sync Schedule'}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleSync('both')}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Sync Both Ways
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => handleSync('to_schedule')}>
+                    <ChevronUp className="w-4 h-4 mr-2" />
+                    Push to Schedule
+                    <span className="ml-2 text-xs text-muted-gray">
+                      (Strip → Scene)
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleSync('from_schedule')}>
+                    <ChevronDown className="w-4 h-4 mr-2" />
+                    Pull from Schedule
+                    <span className="ml-2 text-xs text-muted-gray">
+                      (Scene → Strip)
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
           <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="w-4 h-4 mr-2" />
             Export CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={handlePrint}>
-            <Printer className="w-4 h-4 mr-2" />
-            Print
+          <Button variant="outline" size="sm" onClick={handleExportPdf} disabled={isExportingPdf}>
+            <Download className="w-4 h-4 mr-2" />
+            {isExportingPdf ? 'Exporting...' : 'Export PDF'}
           </Button>
         </div>
       </div>
@@ -1066,47 +1361,82 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
           <Skeleton className="h-96 w-64 flex-shrink-0" />
         </div>
       ) : (
-        <ScrollArea className="w-full">
-          <div className="flex gap-4 pb-4">
-            {/* Bank Column */}
-            <BankColumn
-              strips={viewData?.bank_strips || []}
-              stripboardId={stripboardId}
-              projectId={projectId}
-              canEdit={canEdit}
-              allDays={viewData?.day_columns || []}
-              onEditStrip={setEditingStrip}
-            />
-
-            {/* Day Columns */}
-            {viewData?.day_columns.map((dayCol) => (
-              <DayColumnComponent
-                key={dayCol.day.id}
-                dayColumn={dayCol}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <ScrollArea className="w-full">
+            <div className="flex gap-4 pb-4">
+              {/* Bank Column */}
+              <BankColumn
+                strips={viewData?.bank_strips || []}
                 stripboardId={stripboardId}
                 projectId={projectId}
                 canEdit={canEdit}
-                allDays={viewData.day_columns}
+                allDays={viewData?.day_columns || []}
                 onEditStrip={setEditingStrip}
-                onShowCastMismatch={setCastMismatchDay}
               />
-            ))}
 
-            {/* Empty state for no days */}
-            {(!viewData?.day_columns || viewData.day_columns.length === 0) && (
-              <div className="flex-1 flex items-center justify-center p-8 border border-dashed border-muted-gray/30 rounded-lg">
-                <div className="text-center">
-                  <Calendar className="w-8 h-8 text-muted-gray mx-auto mb-2" />
-                  <p className="text-muted-gray">No production days in selected range</p>
-                  <p className="text-xs text-muted-gray mt-1">
-                    Create production days in the Schedule tab
+              {/* Day Columns */}
+              {viewData?.day_columns.map((dayCol) => (
+                <DayColumnComponent
+                  key={dayCol.day.id}
+                  dayColumn={dayCol}
+                  stripboardId={stripboardId}
+                  projectId={projectId}
+                  canEdit={canEdit}
+                  allDays={viewData.day_columns}
+                  onEditStrip={setEditingStrip}
+                  onShowCastMismatch={setCastMismatchDay}
+                />
+              ))}
+
+              {/* Empty state for no days */}
+              {(!viewData?.day_columns || viewData.day_columns.length === 0) && (
+                <div className="flex-1 flex items-center justify-center p-8 border border-dashed border-muted-gray/30 rounded-lg">
+                  <div className="text-center">
+                    <Calendar className="w-8 h-8 text-muted-gray mx-auto mb-2" />
+                    <p className="text-muted-gray">No production days in selected range</p>
+                    <p className="text-xs text-muted-gray mt-1">
+                      Create production days in the Schedule tab
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <ScrollBar orientation="horizontal" />
+          </ScrollArea>
+
+          {/* Drag Overlay - shows the strip being dragged */}
+          <DragOverlay>
+            {activeStrip && (
+              <div className="opacity-90">
+                <div className="bg-charcoal-black/80 border-2 border-accent-yellow rounded-lg p-3 w-80 shadow-lg">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      {activeStrip.scene_number && (
+                        <span className="text-lg font-bold text-accent-yellow">
+                          {activeStrip.scene_number}
+                        </span>
+                      )}
+                      <Badge className={cn('text-xs h-5', getUnitBadgeColor(activeStrip.unit))}>
+                        {activeStrip.unit}
+                      </Badge>
+                    </div>
+                    <Badge className={cn('text-xs h-5 text-white', getStatusBadgeColor(activeStrip.status))}>
+                      {activeStrip.status}
+                    </Badge>
+                  </div>
+                  <p className="text-sm font-medium text-bone-white leading-tight">
+                    {activeStrip.slugline || activeStrip.custom_title || 'Untitled'}
                   </p>
                 </div>
               </div>
             )}
-          </div>
-          <ScrollBar orientation="horizontal" />
-        </ScrollArea>
+          </DragOverlay>
+        </DndContext>
       )}
 
       {/* Modals */}
@@ -1138,6 +1468,52 @@ export function StripboardView({ projectId, canEdit }: StripboardViewProps) {
         dayColumn={castMismatchDay}
         onClose={() => setCastMismatchDay(null)}
       />
+
+      {/* Call Sheet Picker Dialog */}
+      <Dialog open={showCallSheetPicker} onOpenChange={setShowCallSheetPicker}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Generate Strips from Call Sheet</DialogTitle>
+            <DialogDescription>
+              Select a call sheet to import scenes as strips. Strips will be assigned to the call
+              sheet's production day.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 max-h-[400px] overflow-y-auto">
+            {loadingCallSheets ? (
+              <div className="space-y-2">
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+                <Skeleton className="h-12 w-full" />
+              </div>
+            ) : !callSheets || callSheets.length === 0 ? (
+              <p className="text-muted-gray text-center py-8">
+                No call sheets found. Create a call sheet first.
+              </p>
+            ) : (
+              callSheets.map((cs) => (
+                <button
+                  key={cs.id}
+                  className="w-full p-3 text-left rounded-lg border border-muted-gray/30 hover:border-bone-white/50 hover:bg-charcoal-black/50 transition-colors"
+                  onClick={() => handleGenerateFromCallSheet(cs.id)}
+                  disabled={generateFromCallSheet.isPending}
+                >
+                  <div className="font-medium text-bone-white">{cs.title}</div>
+                  <div className="text-sm text-muted-gray">
+                    {cs.date ? format(new Date(cs.date), 'MMM d, yyyy') : 'No date'}
+                    {cs.production_day_id && ' • Linked to production day'}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCallSheetPicker(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

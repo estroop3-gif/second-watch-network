@@ -1156,13 +1156,16 @@ export type {
 export {
   useDoodRange,
   useGenerateDoodDays,
+  useSyncDoodDaysFromSchedule,
   useCreateDoodSubject,
   useUpdateDoodSubject,
   useDeleteDoodSubject,
   useUpsertDoodAssignment,
   usePublishDood,
   useDoodVersions,
+  useAvailableDoodSubjects,
   getDoodExportUrl,
+  getDoodPdfExportUrl,
   calculateSubjectTotals,
   getCodeInfo,
   DOOD_CODES,
@@ -1174,6 +1177,11 @@ export type {
   DoodAssignment,
   DoodVersion,
   DoodRangeData,
+  AvailableCastMember,
+  AvailableCrewMember,
+  AvailableContact,
+  AvailableTeamMember,
+  AvailableSubjectsData,
 } from './useDood';
 
 // Storyboard
@@ -1225,10 +1233,12 @@ export {
   useCreateSubject,
   useUpdateSubject,
   useDeleteSubject,
+  useLinkContact,
   // Locations
   useCreateLocation,
   useUpdateLocation,
   useDeleteLocation,
+  useLinkProjectLocation,
   // List Items
   useCreateListItem,
   useUpdateListItem,
@@ -1245,9 +1255,11 @@ export {
   useUpdateDeliverable,
   useDeleteDeliverable,
   useApplyDeliverableTemplate,
+  useLinkProjectDeliverable,
   // Asset Links
   useCreateAssetLink,
   useDeleteAssetLink,
+  useLinkAsset,
   // Shoot Days
   useProjectDays,
   useTagShootDay,
@@ -1263,6 +1275,9 @@ export {
   // Settings
   useEpisodeSettings,
   useUpdateEpisodeSettings,
+  // Milestone Import
+  useAllMilestones,
+  useImportMilestones,
   // Import/Export
   useImportEpisodes,
   usePrintData,
@@ -1273,6 +1288,7 @@ export {
   getEditStatusInfo,
   getDeliveryStatusInfo,
   getDeliverableStatusInfo,
+  getApprovalTypeInfo,
   formatEpisodeCode,
   // Constants
   PIPELINE_STAGES,
@@ -1281,6 +1297,7 @@ export {
   SUBJECT_TYPES as EPISODE_SUBJECT_TYPES,
   LIST_ITEM_KINDS,
   DELIVERABLE_STATUSES_CONFIG,
+  APPROVAL_TYPES,
 } from './useEpisodes';
 export type {
   Season,
@@ -1307,6 +1324,8 @@ export type {
   DeliverableStatus,
   ApprovalType,
   ApprovalStatus,
+  MilestoneWithEpisode,
+  SubjectWithContactData,
 } from './useEpisodes';
 
 // Moodboard
@@ -1334,7 +1353,7 @@ export type {
   MoodboardPrintData,
 } from './useMoodboard';
 
-// Story Management
+// Story Management (Beat Sheet)
 export {
   useStories,
   useStory,
@@ -1347,6 +1366,7 @@ export {
   useReorderBeats,
   useCharacters,
   useCreateCharacter,
+  useCreateCharacterFromContact,
   useUpdateCharacter,
   useDeleteCharacter,
   useCreateCharacterArc,
@@ -1354,6 +1374,20 @@ export {
   useDeleteCharacterArc,
   useStoryPrintData,
   getStoryExportUrl,
+  // Story connections
+  useBeatSceneLinks,
+  useLinkBeatToScene,
+  useUnlinkBeatFromScene,
+  useStoryEpisodeLinks,
+  useLinkStoryToEpisode,
+  useUnlinkStoryFromEpisode,
+  useCharacterCastLinks,
+  useLinkCharacterToCast,
+  useUnlinkCharacterFromCast,
+  // Beat Sheet Templates & PDF Export
+  useBeatTemplates,
+  useApplyTemplate,
+  getBeatSheetPdfUrl,
 } from './useStoryManagement';
 export type {
   Story,
@@ -1361,6 +1395,10 @@ export type {
   StoryCharacter,
   CharacterArc,
   StoryPrintData,
+  BeatSceneLink,
+  StoryEpisodeLink,
+  CharacterCastLink,
+  BeatTemplate,
 } from './useStoryManagement';
 
 // Script Sides
@@ -1403,11 +1441,16 @@ export {
   useStripboardView,
   useStripboardPrintData,
   useGenerateStripsFromScript,
+  useGenerateStripsFromScenes,
+  useGenerateStripsFromCallSheet,
+  useCallSheetsForStripboard,
   useCreateStrip,
   useUpdateStrip,
   useDeleteStrip,
   useReorderStrip,
+  useSyncStripboardWithSchedule,
   getStripboardExportUrl,
+  getStripboardPdfExportUrl,
   STRIP_UNITS,
   STRIP_STATUSES,
 } from './useStripboard';
@@ -1420,6 +1463,10 @@ export type {
   StripboardViewData,
   StripboardSummary,
   StripboardPrintData,
+  CallSheetOption,
+  GenerateResult,
+  SyncDirection,
+  SyncResult,
 } from './useStripboard';
 
 // Project Files
@@ -1520,3 +1567,31 @@ export type {
   CreateDrawingInput,
   UpdateDrawingInput,
 } from './useContinuityExportAnnotations';
+
+// Script Sides Exports (PDF-based extraction from master script)
+export {
+  // List & Get
+  useScriptSidesExports,
+  useScriptSidesExport,
+  useScriptSidesForDay,
+  useScriptSidesForCallSheet,
+  // Generate & Regenerate
+  useGenerateScriptSides,
+  useRegenerateScriptSides,
+  // Update & Delete
+  useUpdateScriptSidesExport,
+  useDeleteScriptSidesExport,
+  // Outdated Detection
+  useCheckOutdatedSides,
+  useIsSidesOutdated,
+  // Helpers
+  getSidesDisplayName,
+  getSidesStatusColor,
+  formatSceneCount,
+} from './useScriptSidesExports';
+export type {
+  ScriptSidesExport,
+  ScriptSidesListItem,
+  GenerateScriptSidesInput,
+  OutdatedSidesInfo,
+} from './useScriptSidesExports';

@@ -199,15 +199,34 @@ async def get_current_user_from_token(authorization: str = Header(None)) -> Dict
 
 
 async def verify_project_access(client, project_id: str, user_id: str) -> bool:
-    """Check if user has access to project"""
+    """Check if user has access to project (member or owner)"""
+    # Check if user is a project member
     result = client.table("backlot_project_members").select("id").eq(
         "project_id", project_id
     ).eq("user_id", user_id).execute()
-    return len(result.data or []) > 0
+    if len(result.data or []) > 0:
+        return True
+
+    # Also check if user is the project owner
+    project = client.table("backlot_projects").select("created_by").eq(
+        "id", project_id
+    ).execute()
+    if project.data and project.data[0].get("created_by") == user_id:
+        return True
+
+    return False
 
 
 async def verify_project_edit(client, project_id: str, user_id: str) -> bool:
-    """Check if user can edit project (has edit role)"""
+    """Check if user can edit project (has edit role or is owner)"""
+    # Check if user is the project owner (always has edit access)
+    project = client.table("backlot_projects").select("created_by").eq(
+        "id", project_id
+    ).execute()
+    if project.data and project.data[0].get("created_by") == user_id:
+        return True
+
+    # Check project member role
     result = client.table("backlot_project_members").select("role").eq(
         "project_id", project_id
     ).eq("user_id", user_id).execute()
