@@ -1,0 +1,168 @@
+=====================================================
+EXAMPLE: Title Page Detection and Formatting
+=====================================================
+
+SAMPLE SCRIPT CONTENT:
+-----------------------------------------------------
+
+
+                    THE LAST WATCH
+
+
+                        by
+                   John Filmmaker
+
+
+                    First Draft
+                   January 9, 2026
+
+
+                Copyright © 2026 John Filmmaker
+                   All Rights Reserved
+
+
+
+
+Contact:
+John Filmmaker
+john@filmmaker.com
+(555) 123-4567
+Agent: Big Agency, Inc.
+
+
+
+
+
+
+FADE IN:
+
+INT. CHURCH SANCTUARY - DAY
+
+A small congregation gathers in a humble church.
+
+-----------------------------------------------------
+
+HOW THE FIX WORKS:
+-----------------------------------------------------
+
+BEFORE FIX (Incorrect):
+- "THE LAST WATCH" detected as SCENE_HEADING or ACTION
+  → Left-aligned, standard font
+- "by" detected as CHARACTER or ACTION
+  → Left-aligned or indented as character name
+- "John Filmmaker" detected as CHARACTER
+  → Indented at 3.7" from left margin
+- Contact info treated as ACTION or CHARACTER
+  → Incorrect alignment
+
+AFTER FIX (Correct):
+- Title page boundary detected at line where "FADE IN:" appears
+- All lines before "FADE IN:" processed as title page elements:
+
+  Line: "THE LAST WATCH"
+  → Type: 'title' (all caps, short, no scene heading)
+  → Style: center-aligned, bold, uppercase, 18px font
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'center' }
+
+  Line: "by"
+  → Type: 'author' (matches pattern /^by\s*$/i)
+  → Style: center-aligned
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'center' }
+
+  Line: "John Filmmaker"
+  → Type: 'title_page_text' (default for title page)
+  → Style: center-aligned
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'center' }
+
+  Line: "First Draft"
+  → Type: 'draft_info' (matches pattern /^draft/i)
+  → Style: center-aligned, 10px font
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'center' }
+
+  Line: "Copyright © 2026..."
+  → Type: 'copyright' (matches pattern /^©|copyright/i)
+  → Style: center-aligned, 10px font
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'center' }
+
+  Lines starting with "Contact:", email, phone, agent
+  → Type: 'contact' (matches email/phone patterns)
+  → Style: left-aligned, 10px font
+  → Position: { left: 0, width: CONTENT_WIDTH, textAlign: 'left' }
+
+- After "FADE IN:", normal screenplay detection resumes:
+
+  Line: "INT. CHURCH SANCTUARY - DAY"
+  → Type: 'scene_heading' (matches /^INT\./i)
+  → Style: bold, uppercase, left-aligned
+  → Position: { left: 0, width: CONTENT_WIDTH }
+
+  Line: "A small congregation gathers..."
+  → Type: 'action'
+  → Style: normal, left-aligned
+  → Position: { left: 0, width: CONTENT_WIDTH }
+
+-----------------------------------------------------
+
+DETECTION ALGORITHM:
+-----------------------------------------------------
+
+Step 1: Scan first 60 lines for scene heading
+  - Found "FADE IN:" at line X
+  - OR "INT." / "EXT." at line Y
+  - Title page ends at first scene heading found
+
+Step 2: If no scene heading in first 60 lines
+  - Assume title page is first 55 lines (~1 page)
+
+Step 3: For each line before title page boundary
+  - Pass isTitlePage=true to detectElementType()
+  - Check copyright, author, draft_info, contact patterns
+  - Check if all caps + short = title
+  - Default to title_page_text (centered)
+
+Step 4: For each line after title page boundary
+  - Pass isTitlePage=false (or undefined)
+  - Use normal screenplay element detection
+  - scene_heading, character, dialogue, action, etc.
+
+-----------------------------------------------------
+
+VISUAL COMPARISON:
+-----------------------------------------------------
+
+BEFORE FIX:
+┌─────────────────────────────────────────┐
+│                                         │
+│ THE LAST WATCH                          │  ← LEFT ALIGNED (wrong)
+│                                         │
+│ by                                      │  ← LEFT ALIGNED (wrong)
+│ John Filmmaker                          │  ← LEFT ALIGNED (wrong)
+│                                         │
+│ First Draft                             │  ← LEFT ALIGNED (wrong)
+│ January 9, 2026                         │
+│                                         │
+│ Copyright © 2026 John Filmmaker         │  ← LEFT ALIGNED (wrong)
+│                                         │
+└─────────────────────────────────────────┘
+
+AFTER FIX:
+┌─────────────────────────────────────────┐
+│                                         │
+│          THE LAST WATCH                 │  ← CENTERED (correct)
+│                                         │
+│                 by                      │  ← CENTERED (correct)
+│          John Filmmaker                 │  ← CENTERED (correct)
+│                                         │
+│           First Draft                   │  ← CENTERED (correct)
+│          January 9, 2026                │
+│                                         │
+│   Copyright © 2026 John Filmmaker       │  ← CENTERED (correct)
+│                                         │
+└─────────────────────────────────────────┘
+
+Contact:                                    ← LEFT ALIGNED (correct)
+John Filmmaker                              ← LEFT ALIGNED (correct)
+john@filmmaker.com                          ← LEFT ALIGNED (correct)
+(555) 123-4567                              ← LEFT ALIGNED (correct)
+
+=====================================================

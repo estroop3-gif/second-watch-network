@@ -20,6 +20,7 @@ import {
   LayoutList,
   Tag,
   DollarSign,
+  X,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -80,6 +81,10 @@ export function MarketplaceView({
   const [listerTypeFilter, setListerTypeFilter] = useState<ListerType | ''>('');
   const [priceRange, setPriceRange] = useState<{ min?: number; max?: number }>({});
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [dateRange, setDateRange] = useState<{
+    available_from?: string;
+    available_to?: string;
+  }>({});
 
   // Dialog state
   const [selectedListing, setSelectedListing] = useState<GearMarketplaceListing | null>(null);
@@ -100,6 +105,9 @@ export function MarketplaceView({
     verified_only: verifiedOnly || undefined,
     // Filter by listing type based on browse mode
     listing_type: browseMode === 'rentals' ? 'rent' : 'sale',
+    // Date availability filters
+    available_from: dateRange.available_from,
+    available_to: dateRange.available_to,
   };
 
   // Get org IDs from quote items for prioritization
@@ -301,6 +309,45 @@ export function MarketplaceView({
                 Verified Only
               </Button>
 
+              {/* Date Range Filter (only show for rentals) */}
+              {browseMode === 'rentals' && (
+                <div className="flex items-center gap-2 border-l border-white/10 pl-2">
+                  <Input
+                    type="date"
+                    value={dateRange.available_from || ''}
+                    onChange={(e) => setDateRange(prev => ({
+                      ...prev,
+                      available_from: e.target.value
+                    }))}
+                    min={new Date().toISOString().split('T')[0]}
+                    placeholder="From"
+                    className="w-[140px]"
+                  />
+                  <span className="text-muted-gray">to</span>
+                  <Input
+                    type="date"
+                    value={dateRange.available_to || ''}
+                    onChange={(e) => setDateRange(prev => ({
+                      ...prev,
+                      available_to: e.target.value
+                    }))}
+                    min={dateRange.available_from || new Date().toISOString().split('T')[0]}
+                    placeholder="To"
+                    className="w-[140px]"
+                  />
+                  {(dateRange.available_from || dateRange.available_to) && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDateRange({})}
+                      className="h-8 px-2"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
+
               <div className="flex items-center gap-1 border-l border-white/10 pl-2">
                 <Button
                   variant={groupByOrg ? 'default' : 'ghost'}
@@ -405,6 +452,7 @@ export function MarketplaceView({
         backlotProjectId={backlotProjectId}
         onRemoveItem={handleRemoveFromQuote}
         onSubmitted={handleQuoteSubmitted}
+        initialDateRange={dateRange}
       />
 
       {/* Asset Picker Dialog for bulk listing */}

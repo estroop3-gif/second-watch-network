@@ -67,12 +67,14 @@ import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
   useDoodRange,
-  useGenerateDoodDays,
+  useSyncDoodDaysFromSchedule,
   useCreateDoodSubject,
   useDeleteDoodSubject,
   useUpsertDoodAssignment,
   usePublishDood,
+  useAvailableDoodSubjects,
   getDoodExportUrl,
+  getDoodPdfExportUrl,
   calculateSubjectTotals,
   getCodeInfo,
   DOOD_CODES,
@@ -80,6 +82,10 @@ import {
   DoodSubject,
   DoodDay,
   DoodAssignment,
+  AvailableCastMember,
+  AvailableCrewMember,
+  AvailableContact,
+  AvailableTeamMember,
 } from '@/hooks/backlot';
 
 interface DoodViewProps {
@@ -120,6 +126,9 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
 
   // Subject dialog state
   const [showAddSubject, setShowAddSubject] = useState(false);
+  const [showSubjectPicker, setShowSubjectPicker] = useState(false);
+  const [subjectPickerTab, setSubjectPickerTab] = useState<'cast' | 'crew' | 'contacts' | 'team' | 'manual'>('cast');
+  const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(new Set());
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectType, setNewSubjectType] = useState<string>('CAST');
   const [newSubjectDept, setNewSubjectDept] = useState('');
@@ -147,8 +156,11 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
     refetch,
   } = useDoodRange(projectId, dateRange.start, dateRange.end);
 
+  // Available subjects for picker
+  const { data: availableSubjects, isLoading: isLoadingAvailable } = useAvailableDoodSubjects(projectId);
+
   // Mutations
-  const generateDays = useGenerateDoodDays(projectId);
+  const syncDaysFromSchedule = useSyncDoodDaysFromSchedule(projectId);
   const createSubject = useCreateDoodSubject(projectId);
   const deleteSubject = useDeleteDoodSubject(projectId);
   const upsertAssignment = useUpsertDoodAssignment(projectId);
@@ -166,17 +178,18 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   }, [rangeData?.assignments]);
 
   // Handlers
-  const handleGenerateDays = useCallback(async () => {
+  const handleSyncFromSchedule = useCallback(async () => {
     try {
-      await generateDays.mutateAsync({
-        start: dateRange.start,
-        end: dateRange.end,
-      });
-      toast.success('Days generated successfully');
+      const result = await syncDaysFromSchedule.mutateAsync();
+      if (result.count === 0) {
+        toast.info(result.message || 'No production days found in the schedule.');
+      } else {
+        toast.success(`Synced ${result.count} days from schedule`);
+      }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to generate days');
+      toast.error(err.message || 'Failed to sync from schedule');
     }
-  }, [generateDays, dateRange]);
+  }, [syncDaysFromSchedule]);
 
   const handleAddSubject = useCallback(async () => {
     if (!newSubjectName.trim()) {
@@ -198,6 +211,94 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
       toast.error(err.message || 'Failed to add subject');
     }
   }, [createSubject, newSubjectName, newSubjectType, newSubjectDept]);
+
+  const handleAddSelectedSubjects = useCallback(async () => {
+    if (selectedSubjects.size === 0) {
+      toast.error('Select at least one subject');
+      return;
+    }
+
+    const subjects: Array<{
+      display_name: string;
+      subject_type: string;
+      department?: string;
+      source_type: string;
+      source_id: string;
+    }> = [];
+
+    // Process selected subjects based on source
+    for (const key of selectedSubjects) {
+      const [sourceType, sourceId] = key.split(':');
+
+      if (sourceType === 'cast_member' && availableSubjects?.cast) {
+        const cast = availableSubjects.cast.find(c => c.id === sourceId);
+        if (cast) {
+          subjects.push({
+            display_name: cast.actor_name || cast.character_name || 'Unknown Cast',
+            subject_type: 'CAST',
+            source_type: 'cast_member',
+            source_id: cast.id,
+          });
+        }
+      } else if (sourceType === 'crew_member' && availableSubjects?.crew) {
+        const crew = availableSubjects.crew.find(c => c.id === sourceId);
+        if (crew) {
+          subjects.push({
+            display_name: crew.name,
+            subject_type: 'CREW',
+            department: crew.department || undefined,
+            source_type: 'crew_member',
+            source_id: crew.id,
+          });
+        }
+      } else if (sourceType === 'contact' && availableSubjects?.contacts) {
+        const contact = availableSubjects.contacts.find(c => c.id === sourceId);
+        if (contact) {
+          subjects.push({
+            display_name: contact.name,
+            subject_type: 'OTHER',
+            source_type: 'contact',
+            source_id: contact.id,
+          });
+        }
+      } else if (sourceType === 'team_member' && availableSubjects?.team) {
+        const team = availableSubjects.team.find(t => t.id === sourceId);
+        if (team) {
+          subjects.push({
+            display_name: team.profiles?.full_name || team.profiles?.display_name || 'Team Member',
+            subject_type: 'CREW',
+            department: team.department || undefined,
+            source_type: 'team_member',
+            source_id: team.id,
+          });
+        }
+      }
+    }
+
+    try {
+      // Add subjects one by one
+      for (const subj of subjects) {
+        await createSubject.mutateAsync(subj);
+      }
+      toast.success(`Added ${subjects.length} subject${subjects.length > 1 ? 's' : ''}`);
+      setSelectedSubjects(new Set());
+      setShowSubjectPicker(false);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to add subjects');
+    }
+  }, [selectedSubjects, availableSubjects, createSubject]);
+
+  const toggleSubjectSelection = useCallback((key: string) => {
+    setSelectedSubjects(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }, []);
 
   const handleDeleteSubject = useCallback(async () => {
     if (!deleteSubjectId) return;
@@ -262,12 +363,6 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
     // Add auth token to the request
     const token = localStorage.getItem('access_token');
     if (token) {
-      // Create a temporary form to submit with auth
-      const form = document.createElement('form');
-      form.method = 'GET';
-      form.action = url;
-      form.target = '_blank';
-
       // For GET request with auth header, we need to fetch and download
       fetch(url, {
         headers: {
@@ -285,6 +380,36 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
         })
         .catch((err) => {
           toast.error('Failed to export CSV');
+          console.error(err);
+        });
+    }
+  }, [projectId, dateRange]);
+
+  const handleExportPdf = useCallback(() => {
+    const url = getDoodPdfExportUrl(projectId, dateRange.start, dateRange.end);
+    const token = localStorage.getItem('access_token');
+    if (token) {
+      toast.info('Generating PDF...');
+      fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error('Failed to generate PDF');
+          return res.blob();
+        })
+        .then((blob) => {
+          const downloadUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = `dood_${dateRange.start}_${dateRange.end}.pdf`;
+          a.click();
+          URL.revokeObjectURL(downloadUrl);
+          toast.success('PDF downloaded');
+        })
+        .catch((err) => {
+          toast.error('Failed to export PDF');
           console.error(err);
         });
     }
@@ -385,20 +510,20 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                 <>
                   <Button
                     variant="outline"
-                    onClick={handleGenerateDays}
-                    disabled={generateDays.isPending}
+                    onClick={handleSyncFromSchedule}
+                    disabled={syncDaysFromSchedule.isPending}
                     className="gap-2"
                   >
-                    <CalendarRange className="w-4 h-4" />
-                    Generate Days
+                    <RefreshCw className={cn("w-4 h-4", syncDaysFromSchedule.isPending && "animate-spin")} />
+                    Sync from Schedule
                   </Button>
                   <Button
                     variant="outline"
-                    onClick={() => setShowAddSubject(true)}
+                    onClick={() => setShowSubjectPicker(true)}
                     className="gap-2"
                   >
                     <Plus className="w-4 h-4" />
-                    Add Subject
+                    Add Subjects
                   </Button>
                   <Button
                     variant="outline"
@@ -420,6 +545,15 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                 <Download className="w-4 h-4" />
                 Export CSV
               </Button>
+              <Button
+                variant="outline"
+                onClick={handleExportPdf}
+                disabled={days.length === 0}
+                className="gap-2"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                Download PDF
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -433,12 +567,12 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
             No data yet
           </h3>
           <p className="text-muted-gray text-center mb-4">
-            Generate days for your date range and add subjects to get started.
+            Sync days from your Schedule tab and add subjects from Cast & Crew.
           </p>
           {canEdit && (
-            <Button onClick={handleGenerateDays} disabled={generateDays.isPending}>
-              <CalendarRange className="w-4 h-4 mr-2" />
-              Generate Days
+            <Button onClick={handleSyncFromSchedule} disabled={syncDaysFromSchedule.isPending}>
+              <RefreshCw className={cn("w-4 h-4 mr-2", syncDaysFromSchedule.isPending && "animate-spin")} />
+              Sync from Schedule
             </Button>
           )}
         </div>
@@ -667,7 +801,309 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
         </Card>
       )}
 
-      {/* Add Subject Dialog */}
+      {/* Subject Picker Dialog */}
+      <Dialog open={showSubjectPicker} onOpenChange={(open) => {
+        setShowSubjectPicker(open);
+        if (!open) {
+          setSelectedSubjects(new Set());
+          setSubjectPickerTab('cast');
+        }
+      }}>
+        <DialogContent className="max-w-2xl max-h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Add Subjects to Day Out of Days</DialogTitle>
+            <DialogDescription>
+              Select people from your project to track in the DOOD grid.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            {/* Tab buttons */}
+            <div className="flex gap-1 mb-4 border-b border-white/10 pb-2">
+              {[
+                { key: 'cast', label: 'Cast', count: availableSubjects?.cast?.filter(c => !c.already_added).length || 0 },
+                { key: 'crew', label: 'Crew', count: availableSubjects?.crew?.filter(c => !c.already_added).length || 0 },
+                { key: 'contacts', label: 'Contacts', count: availableSubjects?.contacts?.filter(c => !c.already_added).length || 0 },
+                { key: 'team', label: 'Team', count: availableSubjects?.team?.filter(t => !t.already_added).length || 0 },
+                { key: 'manual', label: 'Manual Entry', count: null },
+              ].map((tab) => (
+                <Button
+                  key={tab.key}
+                  variant={subjectPickerTab === tab.key ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setSubjectPickerTab(tab.key as typeof subjectPickerTab)}
+                  className="gap-1"
+                >
+                  {tab.label}
+                  {tab.count !== null && tab.count > 0 && (
+                    <Badge variant="secondary" className="text-xs px-1.5">
+                      {tab.count}
+                    </Badge>
+                  )}
+                </Button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <div className="max-h-[40vh] overflow-y-auto space-y-2">
+              {isLoadingAvailable ? (
+                <div className="flex items-center justify-center py-8">
+                  <RefreshCw className="w-6 h-6 animate-spin text-muted-gray" />
+                </div>
+              ) : subjectPickerTab === 'cast' ? (
+                availableSubjects?.cast && availableSubjects.cast.length > 0 ? (
+                  availableSubjects.cast.map((cast) => {
+                    const key = `cast_member:${cast.id}`;
+                    const isSelected = selectedSubjects.has(key);
+                    return (
+                      <button
+                        key={cast.id}
+                        onClick={() => !cast.already_added && toggleSubjectSelection(key)}
+                        disabled={cast.already_added}
+                        className={cn(
+                          'w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors',
+                          cast.already_added
+                            ? 'bg-white/5 opacity-50 cursor-not-allowed'
+                            : isSelected
+                            ? 'bg-primary-red/20 border border-primary-red'
+                            : 'bg-white/5 hover:bg-white/10'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-5 h-5 rounded border flex items-center justify-center',
+                          cast.already_added
+                            ? 'border-muted-gray bg-muted-gray/20'
+                            : isSelected
+                            ? 'border-primary-red bg-primary-red'
+                            : 'border-muted-gray'
+                        )}>
+                          {(isSelected || cast.already_added) && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium text-bone-white">
+                            {cast.actor_name || 'Unknown Actor'}
+                          </div>
+                          {cast.character_name && (
+                            <div className="text-sm text-muted-gray">as {cast.character_name}</div>
+                          )}
+                        </div>
+                        {cast.already_added && (
+                          <Badge variant="outline" className="text-xs">Already added</Badge>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-center text-muted-gray py-8">No cast members found. Add cast in the Cast & Crew tab.</p>
+                )
+              ) : subjectPickerTab === 'crew' ? (
+                availableSubjects?.crew && availableSubjects.crew.length > 0 ? (
+                  availableSubjects.crew.map((crew) => {
+                    const key = `crew_member:${crew.id}`;
+                    const isSelected = selectedSubjects.has(key);
+                    return (
+                      <button
+                        key={crew.id}
+                        onClick={() => !crew.already_added && toggleSubjectSelection(key)}
+                        disabled={crew.already_added}
+                        className={cn(
+                          'w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors',
+                          crew.already_added
+                            ? 'bg-white/5 opacity-50 cursor-not-allowed'
+                            : isSelected
+                            ? 'bg-primary-red/20 border border-primary-red'
+                            : 'bg-white/5 hover:bg-white/10'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-5 h-5 rounded border flex items-center justify-center',
+                          crew.already_added
+                            ? 'border-muted-gray bg-muted-gray/20'
+                            : isSelected
+                            ? 'border-primary-red bg-primary-red'
+                            : 'border-muted-gray'
+                        )}>
+                          {(isSelected || crew.already_added) && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium text-bone-white">{crew.name}</div>
+                          <div className="text-sm text-muted-gray">
+                            {crew.role}{crew.department && ` • ${crew.department}`}
+                          </div>
+                        </div>
+                        {crew.already_added && (
+                          <Badge variant="outline" className="text-xs">Already added</Badge>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-center text-muted-gray py-8">No crew members found. Add crew in the Cast & Crew tab.</p>
+                )
+              ) : subjectPickerTab === 'contacts' ? (
+                availableSubjects?.contacts && availableSubjects.contacts.length > 0 ? (
+                  availableSubjects.contacts.map((contact) => {
+                    const key = `contact:${contact.id}`;
+                    const isSelected = selectedSubjects.has(key);
+                    return (
+                      <button
+                        key={contact.id}
+                        onClick={() => !contact.already_added && toggleSubjectSelection(key)}
+                        disabled={contact.already_added}
+                        className={cn(
+                          'w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors',
+                          contact.already_added
+                            ? 'bg-white/5 opacity-50 cursor-not-allowed'
+                            : isSelected
+                            ? 'bg-primary-red/20 border border-primary-red'
+                            : 'bg-white/5 hover:bg-white/10'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-5 h-5 rounded border flex items-center justify-center',
+                          contact.already_added
+                            ? 'border-muted-gray bg-muted-gray/20'
+                            : isSelected
+                            ? 'border-primary-red bg-primary-red'
+                            : 'border-muted-gray'
+                        )}>
+                          {(isSelected || contact.already_added) && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium text-bone-white">{contact.name}</div>
+                          <div className="text-sm text-muted-gray">
+                            {contact.role_interest || contact.contact_type}
+                            {contact.company && ` • ${contact.company}`}
+                          </div>
+                        </div>
+                        {contact.already_added && (
+                          <Badge variant="outline" className="text-xs">Already added</Badge>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-center text-muted-gray py-8">No contacts found. Add contacts in the Contacts tab.</p>
+                )
+              ) : subjectPickerTab === 'team' ? (
+                availableSubjects?.team && availableSubjects.team.length > 0 ? (
+                  availableSubjects.team.map((team) => {
+                    const key = `team_member:${team.id}`;
+                    const isSelected = selectedSubjects.has(key);
+                    const displayName = team.profiles?.full_name || team.profiles?.display_name || 'Team Member';
+                    return (
+                      <button
+                        key={team.id}
+                        onClick={() => !team.already_added && toggleSubjectSelection(key)}
+                        disabled={team.already_added}
+                        className={cn(
+                          'w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors',
+                          team.already_added
+                            ? 'bg-white/5 opacity-50 cursor-not-allowed'
+                            : isSelected
+                            ? 'bg-primary-red/20 border border-primary-red'
+                            : 'bg-white/5 hover:bg-white/10'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-5 h-5 rounded border flex items-center justify-center',
+                          team.already_added
+                            ? 'border-muted-gray bg-muted-gray/20'
+                            : isSelected
+                            ? 'border-primary-red bg-primary-red'
+                            : 'border-muted-gray'
+                        )}>
+                          {(isSelected || team.already_added) && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1">
+                          <div className="font-medium text-bone-white">{displayName}</div>
+                          <div className="text-sm text-muted-gray">
+                            {team.production_role}{team.department && ` • ${team.department}`}
+                          </div>
+                        </div>
+                        {team.already_added && (
+                          <Badge variant="outline" className="text-xs">Already added</Badge>
+                        )}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-center text-muted-gray py-8">No team members found. Add team members in the Team & Access tab.</p>
+                )
+              ) : subjectPickerTab === 'manual' ? (
+                <div className="space-y-4 p-2">
+                  <div className="space-y-2">
+                    <Label>Name *</Label>
+                    <Input
+                      value={newSubjectName}
+                      onChange={(e) => setNewSubjectName(e.target.value)}
+                      placeholder="e.g., John Smith"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Type *</Label>
+                    <Select value={newSubjectType} onValueChange={setNewSubjectType}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SUBJECT_TYPES.map((t) => (
+                          <SelectItem key={t.value} value={t.value}>
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Department</Label>
+                    <Input
+                      value={newSubjectDept}
+                      onChange={(e) => setNewSubjectDept(e.target.value)}
+                      placeholder="e.g., Camera, Art, Production"
+                    />
+                  </div>
+                  <Button
+                    onClick={() => {
+                      handleAddSubject();
+                      setShowSubjectPicker(false);
+                    }}
+                    disabled={!newSubjectName.trim() || createSubject.isPending}
+                    className="w-full"
+                  >
+                    Add Manual Subject
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {subjectPickerTab !== 'manual' && (
+            <DialogFooter>
+              <div className="flex items-center gap-2 w-full">
+                <span className="text-sm text-muted-gray">
+                  {selectedSubjects.size} selected
+                </span>
+                <div className="flex-1" />
+                <Button variant="outline" onClick={() => setShowSubjectPicker(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleAddSelectedSubjects}
+                  disabled={selectedSubjects.size === 0 || createSubject.isPending}
+                >
+                  {createSubject.isPending ? (
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Plus className="w-4 h-4 mr-2" />
+                  )}
+                  Add Selected
+                </Button>
+              </div>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Subject Dialog (legacy - keeping for backwards compatibility) */}
       <Dialog open={showAddSubject} onOpenChange={setShowAddSubject}>
         <DialogContent>
           <DialogHeader>

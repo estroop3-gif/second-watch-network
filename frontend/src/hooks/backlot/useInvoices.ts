@@ -389,6 +389,38 @@ export function useDeleteLineItem(projectId: string | null, invoiceId: string | 
   });
 }
 
+/**
+ * Reorder a line item (move up or down)
+ */
+export function useReorderLineItem(projectId: string | null, invoiceId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: { line_item_id: string; direction: 'UP' | 'DOWN' }): Promise<void> => {
+      if (!projectId || !invoiceId) throw new Error('IDs required');
+      const token = api.getToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/invoices/${invoiceId}/line-items/reorder`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder line item' }));
+        throw new Error(error.detail || 'Failed to reorder line item');
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, invoiceId] });
+    },
+  });
+}
+
 // =============================================================================
 // MUTATION HOOKS - STATUS ACTIONS
 // =============================================================================
@@ -558,6 +590,11 @@ export function useApproveInvoice(projectId: string | null) {
       // Invalidate all invoice-related queries
       queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot', 'invoices', projectId, 'summary'] });
+      // Invalidate budget queries - invoice approval records line items to budget actuals
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals-summary', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-comparison', projectId] });
     },
   });
 }

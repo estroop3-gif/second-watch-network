@@ -62,6 +62,14 @@ import {
   Package,
   HelpCircle,
   BarChart3,
+  Car,
+  Briefcase,
+  Utensils,
+  FileCheck,
+  ExternalLink,
+  ToggleLeft,
+  ToggleRight,
+  Eye,
 } from 'lucide-react';
 import { DialogFooter } from '@/components/ui/dialog';
 import {
@@ -86,9 +94,13 @@ import {
   useExportBudgetPdf,
   useGearCosts,
   useSyncGearToBudget,
+  useBudgetActuals,
+  type BudgetActual,
+  type BudgetActualSourceDetails,
 } from '@/hooks/backlot';
 import { BudgetCreationModal } from './BudgetCreationModal';
 import { BudgetDeleteConfirmDialog } from './BudgetDeleteConfirmDialog';
+import { ActualDetailModal } from './ActualDetailModal';
 import {
   BacklotBudget,
   BacklotBudgetCategory,
@@ -208,6 +220,7 @@ const CategoryCard: React.FC<{
   onAddLineItem: (categoryId: string) => void;
   onEditLineItem: (item: BacklotBudgetLineItem) => void;
   onDeleteLineItem: (id: string) => void;
+  onViewLineItemDetails: (item: BacklotBudgetLineItem) => void;
 }> = ({
   category,
   lineItems,
@@ -219,6 +232,7 @@ const CategoryCard: React.FC<{
   onAddLineItem,
   onEditLineItem,
   onDeleteLineItem,
+  onViewLineItemDetails,
 }) => {
   const variance = category.actual_subtotal - category.estimated_subtotal;
   const variancePercent =
@@ -303,6 +317,7 @@ const CategoryCard: React.FC<{
                 canEdit={canEdit && !isLocked}
                 onEdit={onEditLineItem}
                 onDelete={onDeleteLineItem}
+                onViewDetails={onViewLineItemDetails}
               />
             ))
           ) : (
@@ -359,7 +374,8 @@ const LineItemRow: React.FC<{
   canEdit: boolean;
   onEdit: (item: BacklotBudgetLineItem) => void;
   onDelete: (id: string) => void;
-}> = ({ item, currency, canEdit, onEdit, onDelete }) => {
+  onViewDetails: (item: BacklotBudgetLineItem) => void;
+}> = ({ item, currency, canEdit, onEdit, onDelete, onViewDetails }) => {
   const variance = item.actual_total - item.estimated_total;
   const isOverBudget = variance > 0;
 
@@ -427,6 +443,11 @@ const LineItemRow: React.FC<{
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => onViewDetails(item)}>
+                <Eye className="w-4 h-4 mr-2" />
+                See Details
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => onEdit(item)}>
                 <Edit className="w-4 h-4 mr-2" />
                 Edit
@@ -439,6 +460,480 @@ const LineItemRow: React.FC<{
           </DropdownMenu>
         )}
       </div>
+    </div>
+  );
+};
+
+// Source type icons
+const getSourceIcon = (sourceType: string) => {
+  switch (sourceType) {
+    case 'mileage':
+      return <Car className="w-4 h-4" />;
+    case 'kit_rental':
+      return <Briefcase className="w-4 h-4" />;
+    case 'per_diem':
+      return <Utensils className="w-4 h-4" />;
+    case 'receipt':
+      return <Receipt className="w-4 h-4" />;
+    case 'purchase_order':
+      return <FileCheck className="w-4 h-4" />;
+    case 'invoice_line_item':
+      return <FileText className="w-4 h-4" />;
+    default:
+      return <DollarSign className="w-4 h-4" />;
+  }
+};
+
+// Source type labels
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  mileage: 'Mileage',
+  kit_rental: 'Kit Rental',
+  per_diem: 'Per Diem',
+  receipt: 'Receipt',
+  purchase_order: 'Purchase Order',
+  invoice_line_item: 'Invoice Line Item',
+  manual: 'Manual Entry',
+};
+
+// Actual Budget Item Row - shows individual actuals with source details
+const ActualBudgetItemRow: React.FC<{
+  actual: BudgetActual;
+  currency: string;
+  onViewSource: (actual: BudgetActual) => void;
+}> = ({ actual, currency, onViewSource }) => {
+  const sourceDetails = actual.source_details;
+
+  // Build description based on source type
+  const getSourceDescription = () => {
+    if (!sourceDetails) return actual.description || 'No description';
+
+    switch (actual.source_type) {
+      case 'mileage':
+        return `${sourceDetails.origin || ''} → ${sourceDetails.destination || ''} (${sourceDetails.miles || 0} mi)`;
+      case 'kit_rental':
+        return sourceDetails.kit_name || 'Kit Rental';
+      case 'per_diem':
+        return `${sourceDetails.per_diem_type || 'Per Diem'} - ${sourceDetails.days || 1} day(s)`;
+      case 'receipt':
+        return sourceDetails.vendor_name || actual.description || 'Receipt';
+      case 'purchase_order':
+        return `PO #${sourceDetails.po_number || 'N/A'} - ${sourceDetails.vendor || ''}`;
+      case 'invoice_line_item':
+        return `Invoice #${sourceDetails.invoice_number || 'N/A'} - ${sourceDetails.line_item_description || ''}`;
+      default:
+        return actual.description || 'Manual Entry';
+    }
+  };
+
+  // Get crew member or vendor info
+  const getSecondaryInfo = () => {
+    if (!sourceDetails) return null;
+
+    if (sourceDetails.crew_member_name) {
+      return sourceDetails.crew_member_name;
+    }
+    if (sourceDetails.vendor_name) {
+      return sourceDetails.vendor_name;
+    }
+    if (sourceDetails.vendor) {
+      return sourceDetails.vendor;
+    }
+    return null;
+  };
+
+  return (
+    <div className="flex items-center justify-between py-3 px-4 bg-charcoal-black/40 rounded-lg hover:bg-charcoal-black/60 transition-colors group">
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <div className={`p-2 rounded-lg ${
+          actual.source_type === 'mileage' ? 'bg-blue-500/20 text-blue-400' :
+          actual.source_type === 'kit_rental' ? 'bg-purple-500/20 text-purple-400' :
+          actual.source_type === 'per_diem' ? 'bg-green-500/20 text-green-400' :
+          actual.source_type === 'receipt' ? 'bg-yellow-500/20 text-yellow-400' :
+          actual.source_type === 'purchase_order' ? 'bg-orange-500/20 text-orange-400' :
+          actual.source_type === 'invoice_line_item' ? 'bg-pink-500/20 text-pink-400' :
+          'bg-muted-gray/20 text-muted-gray'
+        }`}>
+          {getSourceIcon(actual.source_type)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="font-medium text-bone-white truncate">{getSourceDescription()}</span>
+            <Badge variant="outline" className="text-xs shrink-0">
+              {SOURCE_TYPE_LABELS[actual.source_type] || actual.source_type}
+            </Badge>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-gray">
+            {getSecondaryInfo() && <span>{getSecondaryInfo()}</span>}
+            {actual.category_name && (
+              <>
+                {getSecondaryInfo() && <span>•</span>}
+                <span>{actual.category_name}</span>
+              </>
+            )}
+            <span>•</span>
+            <span>{new Date(actual.recorded_at).toLocaleDateString()}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4">
+        <div className="text-right">
+          <div className="font-medium text-bone-white">{formatCurrency(actual.amount, currency)}</div>
+        </div>
+        {actual.source_id && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 opacity-0 group-hover:opacity-100"
+            onClick={() => onViewSource(actual)}
+          >
+            <ExternalLink className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// Detailed Expense Row - shows full rate information from source
+const DetailedExpenseRow: React.FC<{
+  actual: BudgetActual;
+  currency: string;
+  onViewDetail?: (actualId: string) => void;
+}> = ({ actual, currency, onViewDetail }) => {
+  const sourceDetails = actual.source_details;
+
+  // Format rate info based on source type
+  const getRateDisplay = () => {
+    if (!sourceDetails) return null;
+
+    switch (actual.source_type) {
+      case 'mileage':
+        return {
+          rate: `${formatCurrency(sourceDetails.rate_per_mile || 0, currency)}/mile`,
+          quantity: `${sourceDetails.miles || 0} miles`,
+          extra: sourceDetails.origin && sourceDetails.destination
+            ? `${sourceDetails.origin} → ${sourceDetails.destination}`
+            : null,
+        };
+      case 'kit_rental':
+        const dailyRate = sourceDetails.daily_rate;
+        const weeklyRate = sourceDetails.weekly_rate;
+        const rentalType = sourceDetails.rental_type || 'daily';
+        const days = sourceDetails.rental_days;
+        const startDate = sourceDetails.start_date || sourceDetails.rental_start_date;
+        const endDate = sourceDetails.end_date || sourceDetails.rental_end_date;
+
+        // Build rate display based on rental type
+        let rateStr: string | null = null;
+        if (rentalType === 'flat') {
+          rateStr = 'Flat rate';
+        } else if (rentalType === 'weekly' && weeklyRate) {
+          rateStr = `${formatCurrency(weeklyRate, currency)}/week`;
+        } else if (dailyRate) {
+          rateStr = `${formatCurrency(dailyRate, currency)}/day`;
+        }
+
+        return {
+          rate: rateStr,
+          quantity: days ? `${days} day(s)` : null,
+          extra: rentalType === 'daily' && weeklyRate && weeklyRate > 0
+            ? `Weekly: ${formatCurrency(weeklyRate, currency)}`
+            : null,
+          dates: startDate && endDate
+            ? `${new Date(startDate).toLocaleDateString()} - ${new Date(endDate).toLocaleDateString()}`
+            : null,
+        };
+      case 'per_diem':
+        return {
+          rate: sourceDetails.daily_amount ? `${formatCurrency(sourceDetails.daily_amount, currency)}/day` : null,
+          quantity: `${sourceDetails.days || 1} day(s)`,
+          extra: sourceDetails.per_diem_type ? `Type: ${sourceDetails.per_diem_type}` : null,
+        };
+      case 'receipt':
+        return {
+          rate: null,
+          quantity: null,
+          extra: sourceDetails.vendor_name || null,
+          dates: sourceDetails.purchase_date ? new Date(sourceDetails.purchase_date).toLocaleDateString() : null,
+        };
+      case 'purchase_order':
+        return {
+          rate: null,
+          quantity: null,
+          extra: sourceDetails.po_number ? `PO #${sourceDetails.po_number}` : null,
+          dates: sourceDetails.order_date ? new Date(sourceDetails.order_date).toLocaleDateString() : null,
+        };
+      default:
+        return null;
+    }
+  };
+
+  const rateInfo = getRateDisplay();
+  const description = sourceDetails?.kit_name || sourceDetails?.kit_description ||
+    sourceDetails?.description || sourceDetails?.vendor_name ||
+    actual.description || 'Expense';
+
+  return (
+    <div
+      className={`flex items-center justify-between py-2 px-3 bg-charcoal-black/30 rounded hover:bg-charcoal-black/40 transition-colors text-sm ${
+        onViewDetail ? 'cursor-pointer' : ''
+      }`}
+      onClick={() => onViewDetail?.(actual.id)}
+    >
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <div className={`p-1.5 rounded ${
+          actual.source_type === 'mileage' ? 'bg-blue-500/20 text-blue-400' :
+          actual.source_type === 'kit_rental' ? 'bg-purple-500/20 text-purple-400' :
+          actual.source_type === 'per_diem' ? 'bg-green-500/20 text-green-400' :
+          actual.source_type === 'receipt' ? 'bg-yellow-500/20 text-yellow-400' :
+          actual.source_type === 'purchase_order' ? 'bg-orange-500/20 text-orange-400' :
+          'bg-muted-gray/20 text-muted-gray'
+        }`}>
+          {getSourceIcon(actual.source_type)}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-bone-white truncate">{description}</div>
+          <div className="flex items-center gap-2 text-xs text-muted-gray">
+            {rateInfo?.rate && <span>{rateInfo.rate}</span>}
+            {rateInfo?.rate && rateInfo?.quantity && <span>×</span>}
+            {rateInfo?.quantity && <span>{rateInfo.quantity}</span>}
+            {rateInfo?.dates && (
+              <>
+                {(rateInfo.rate || rateInfo.quantity) && <span>•</span>}
+                <span>{rateInfo.dates}</span>
+              </>
+            )}
+            {rateInfo?.extra && (
+              <>
+                <span>•</span>
+                <span className="truncate">{rateInfo.extra}</span>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="font-medium text-bone-white shrink-0 ml-2">
+        {formatCurrency(actual.amount, currency)}
+      </div>
+    </div>
+  );
+};
+
+// Submitter Actuals Group - groups expenses by submitter with "See Details" functionality
+const SubmitterActualsGroup: React.FC<{
+  submitterName: string;
+  sourceType: string;
+  actuals: BudgetActual[];
+  currency: string;
+  onViewActualDetail?: (actualId: string) => void;
+}> = ({ submitterName, sourceType, actuals, currency, onViewActualDetail }) => {
+  const [expanded, setExpanded] = useState(false);
+  const totalAmount = actuals.reduce((sum, a) => sum + a.amount, 0);
+  const displayName = submitterName.toLowerCase() === 'unknown' ? 'Unknown Submitter' : submitterName;
+  const typeLabel = SOURCE_TYPE_LABELS[sourceType] || sourceType;
+
+  // Get a summary description
+  const getSummary = () => {
+    if (actuals.length === 1) {
+      const a = actuals[0];
+      const sd = a.source_details;
+      if (sd) {
+        if (sourceType === 'kit_rental') {
+          const parts = [];
+          if (sd.kit_name) parts.push(sd.kit_name);
+          // Show rate info
+          if (sd.rental_type === 'flat') {
+            parts.push('Flat rate');
+          } else if (sd.daily_rate) {
+            parts.push(`$${sd.daily_rate}/day`);
+          }
+          if (sd.rental_days) {
+            parts.push(`${sd.rental_days} days`);
+          }
+          return parts.join(' • ') || 'Kit Rental';
+        }
+        if (sourceType === 'mileage') {
+          return `${sd.miles || 0} miles @ $${sd.rate_per_mile || 0}/mi`;
+        }
+        if (sourceType === 'per_diem' && sd.per_diem_type) {
+          return `${sd.per_diem_type} - ${sd.days || 1} day(s)`;
+        }
+      }
+      return a.description || typeLabel;
+    }
+    // Multiple actuals - show total
+    const totalDays = actuals.reduce((sum, a) => {
+      if (sourceType === 'per_diem' && a.source_details?.days) {
+        return sum + a.source_details.days;
+      }
+      return sum;
+    }, 0);
+    if (sourceType === 'per_diem' && totalDays > 0) {
+      return `${totalDays} total day(s)`;
+    }
+    return `${actuals.length} ${typeLabel.toLowerCase()}${actuals.length > 1 ? 's' : ''}`;
+  };
+
+  return (
+    <div className="border border-muted-gray/10 rounded-lg overflow-hidden">
+      <div
+        className="flex items-center justify-between py-3 px-4 bg-charcoal-black/30 cursor-pointer hover:bg-charcoal-black/40 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className={`p-2 rounded-lg ${
+            sourceType === 'mileage' ? 'bg-blue-500/20 text-blue-400' :
+            sourceType === 'kit_rental' ? 'bg-purple-500/20 text-purple-400' :
+            sourceType === 'per_diem' ? 'bg-green-500/20 text-green-400' :
+            sourceType === 'receipt' ? 'bg-yellow-500/20 text-yellow-400' :
+            sourceType === 'purchase_order' ? 'bg-orange-500/20 text-orange-400' :
+            sourceType === 'invoice_line_item' ? 'bg-pink-500/20 text-pink-400' :
+            'bg-muted-gray/20 text-muted-gray'
+          }`}>
+            {getSourceIcon(sourceType)}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="font-medium text-bone-white">
+                {displayName}'s {typeLabel}
+              </span>
+              {actuals.length > 1 && (
+                <Badge variant="outline" className="text-xs">
+                  {actuals.length} entries
+                </Badge>
+              )}
+            </div>
+            <div className="text-xs text-muted-gray truncate">{getSummary()}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="font-medium text-bone-white">
+            {formatCurrency(totalAmount, currency)}
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-muted-gray hover:text-bone-white"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded(!expanded);
+            }}
+          >
+            <Eye className="w-3 h-3 mr-1" />
+            {expanded ? 'Hide' : 'See Details'}
+          </Button>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="p-2 space-y-1 bg-charcoal-black/20">
+          {actuals.map((actual) => (
+            <DetailedExpenseRow
+              key={actual.id}
+              actual={actual}
+              currency={currency}
+              onViewDetail={onViewActualDetail}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Comparison Stats Component - shows estimated vs actual at top
+const BudgetComparisonStats: React.FC<{
+  estimatedTotal: number;
+  actualTotal: number;
+  currency: string;
+  bySourceType?: Record<string, number>;
+}> = ({ estimatedTotal, actualTotal, currency, bySourceType }) => {
+  const variance = actualTotal - estimatedTotal;
+  const variancePercent = estimatedTotal > 0 ? (variance / estimatedTotal) * 100 : 0;
+  const isOverBudget = variance > 0;
+  const spentPercent = estimatedTotal > 0 ? Math.min((actualTotal / estimatedTotal) * 100, 100) : 0;
+
+  return (
+    <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-6 mb-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+          <BarChart3 className="w-5 h-5 text-accent-yellow" />
+          Budget Comparison
+        </h3>
+      </div>
+
+      {/* Main comparison stats */}
+      <div className="grid grid-cols-3 gap-6 mb-6">
+        <div className="bg-charcoal-black/50 rounded-lg p-4">
+          <div className="flex items-center gap-2 text-muted-gray mb-1">
+            <Calculator className="w-4 h-4" />
+            <span className="text-sm">Estimated Budget</span>
+          </div>
+          <div className="text-2xl font-bold text-bone-white">
+            {formatCurrency(estimatedTotal, currency)}
+          </div>
+        </div>
+
+        <div className="bg-charcoal-black/50 rounded-lg p-4">
+          <div className="flex items-center gap-2 text-muted-gray mb-1">
+            <DollarSign className="w-4 h-4" />
+            <span className="text-sm">Actual Spent</span>
+          </div>
+          <div className="text-2xl font-bold text-bone-white">
+            {formatCurrency(actualTotal, currency)}
+          </div>
+        </div>
+
+        <div className={`rounded-lg p-4 ${
+          isOverBudget ? 'bg-red-500/10 border border-red-500/30' : 'bg-green-500/10 border border-green-500/30'
+        }`}>
+          <div className="flex items-center gap-2 text-muted-gray mb-1">
+            {isOverBudget ? (
+              <TrendingUp className="w-4 h-4 text-red-400" />
+            ) : (
+              <TrendingDown className="w-4 h-4 text-green-400" />
+            )}
+            <span className="text-sm">Variance</span>
+          </div>
+          <div className={`text-2xl font-bold ${isOverBudget ? 'text-red-400' : 'text-green-400'}`}>
+            {variance >= 0 ? '+' : ''}{formatCurrency(variance, currency)}
+          </div>
+          <div className="text-xs text-muted-gray mt-1">
+            {formatPercent(variancePercent)} {isOverBudget ? 'over' : 'under'} budget
+          </div>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="mb-4">
+        <div className="flex justify-between text-xs text-muted-gray mb-1">
+          <span>Budget Utilization</span>
+          <span>{spentPercent.toFixed(1)}%</span>
+        </div>
+        <Progress
+          value={spentPercent}
+          className={`h-2 ${isOverBudget ? '[&>div]:bg-red-500' : '[&>div]:bg-green-500'}`}
+        />
+      </div>
+
+      {/* Breakdown by source type */}
+      {bySourceType && Object.keys(bySourceType).length > 0 && (
+        <div className="border-t border-muted-gray/20 pt-4 mt-4">
+          <h4 className="text-sm font-medium text-muted-gray mb-3">Actual Spend by Type</h4>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {Object.entries(bySourceType).map(([type, amount]) => (
+              <div key={type} className="flex items-center gap-2 bg-charcoal-black/30 rounded-lg p-2">
+                <span className="text-muted-gray">{getSourceIcon(type)}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-muted-gray truncate">{SOURCE_TYPE_LABELS[type] || type}</div>
+                  <div className="text-sm font-medium text-bone-white">{formatCurrency(amount, currency)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -583,6 +1078,11 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const { data: categories, isLoading: categoriesLoading, refetch: refetchCategories } = useBudgetCategories(activeBudget?.id || null);
   const { data: lineItems, isLoading: lineItemsLoading, refetch: refetchLineItems } = useBudgetLineItems(activeBudget?.id || null);
 
+  // Budget actuals with source details for Actual view
+  const { data: budgetActualsData, isLoading: actualsLoading } = useBudgetActuals(projectId, {
+    includeSourceDetails: true,
+  });
+
   const createBudget = useCreateBudget();
   const updateBudget = useUpdateBudget();
   const lockBudget = useLockBudget();
@@ -602,6 +1102,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
   // Modal states
   const [activeTab, setActiveTab] = useState('detail');
+  const [budgetViewMode, setBudgetViewMode] = useState<'estimated' | 'actual'>('estimated');
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [showTemplateModal, setShowTemplateModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -616,6 +1117,9 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [syncResult, setSyncResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showTipsPanel, setShowTipsPanel] = useState(false);
+  const [showLineItemDetailsModal, setShowLineItemDetailsModal] = useState(false);
+  const [detailsLineItem, setDetailsLineItem] = useState<BacklotBudgetLineItem | null>(null);
+  const [selectedActualId, setSelectedActualId] = useState<string | null>(null);
 
   // Form states
   const [budgetForm, setBudgetForm] = useState<BudgetInput>({
@@ -720,12 +1224,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
   // Delete budget handler (called from triple-confirmation dialog)
   const handleDeleteBudget = async () => {
-    if (!budget) return;
+    if (!activeBudget) return;
     setIsDeleting(true);
     try {
-      await deleteBudget.mutateAsync({ budgetId: budget.id, projectId });
+      await deleteBudget.mutateAsync({ budgetId: activeBudget.id, projectId });
       // Reset selected budget if we deleted it
-      if (selectedBudgetId === budget.id) {
+      if (selectedBudgetId === activeBudget.id) {
         setSelectedBudgetId(null);
       }
     } catch (err) {
@@ -1170,12 +1674,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                 </SelectContent>
               </Select>
             ) : (
-              <h2 className="text-2xl font-heading text-bone-white">{budget.name}</h2>
+              <h2 className="text-2xl font-heading text-bone-white">{activeBudget.name}</h2>
             )}
             <Badge className={statusBadge.style}>{statusBadge.label}</Badge>
-            {budget.project_type_template && budget.project_type_template !== 'custom' && (
+            {activeBudget.project_type_template && activeBudget.project_type_template !== 'custom' && (
               <Badge variant="outline" className="text-xs">
-                {BUDGET_PROJECT_TYPE_LABELS[budget.project_type_template]}
+                {BUDGET_PROJECT_TYPE_LABELS[activeBudget.project_type_template]}
               </Badge>
             )}
             {isLocked && <Lock className="w-4 h-4 text-blue-400" />}
@@ -1186,7 +1690,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
             )}
           </div>
           <p className="text-sm text-muted-gray">
-            {budget.description || 'Track and manage your production budget'}
+            {activeBudget.description || 'Track and manage your production budget'}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -1219,12 +1723,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                 size="sm"
                 onClick={() => {
                   setBudgetForm({
-                    name: budget.name,
-                    description: budget.description || '',
-                    currency: budget.currency,
-                    contingency_percent: budget.contingency_percent,
-                    notes: budget.notes || '',
-                    status: budget.status,
+                    name: activeBudget.name,
+                    description: activeBudget.description || '',
+                    currency: activeBudget.currency,
+                    contingency_percent: activeBudget.contingency_percent,
+                    notes: activeBudget.notes || '',
+                    status: activeBudget.status,
                   });
                   setShowBudgetModal(true);
                 }}
@@ -1279,7 +1783,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       </div>
 
       {/* Stats Cards */}
-      <BudgetStatsCards budget={budget} categories={categories || []} stats={stats || null} />
+      <BudgetStatsCards budget={activeBudget} categories={categories || []} stats={stats || null} />
 
       {/* Gear Costs Section */}
       {gearCosts && gearCosts.total_cost > 0 && (
@@ -1359,9 +1863,38 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
         {/* Detail Tab */}
         <TabsContent value="detail" className="space-y-4 mt-4">
+          {/* View Toggle - Estimated vs Actual */}
           <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium text-bone-white">Budget Categories</h3>
-            {canEdit && !isLocked && (
+            <div className="flex items-center gap-2">
+              <div className="flex rounded-lg border border-muted-gray/20 p-1 bg-charcoal-black/50">
+                <Button
+                  variant={budgetViewMode === 'estimated' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setBudgetViewMode('estimated')}
+                  className={budgetViewMode === 'estimated'
+                    ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
+                    : 'text-muted-gray hover:text-bone-white'}
+                >
+                  <DollarSign className="w-4 h-4 mr-2" />
+                  Actual
+                </Button>
+                <Button
+                  variant={budgetViewMode === 'actual' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setBudgetViewMode('actual')}
+                  className={budgetViewMode === 'actual'
+                    ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
+                    : 'text-muted-gray hover:text-bone-white'}
+                >
+                  <Calculator className="w-4 h-4 mr-2" />
+                  Estimated
+                </Button>
+              </div>
+              <span className="text-sm text-muted-gray">
+                {budgetViewMode === 'estimated' ? 'Actual spending with line items' : 'Planned budget estimates'}
+              </span>
+            </div>
+            {canEdit && !isLocked && budgetViewMode === 'estimated' && (
               <Button
                 variant="outline"
                 size="sm"
@@ -1373,38 +1906,151 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
             )}
           </div>
 
-          {categories && categories.length > 0 ? (
-            <Accordion type="multiple" className="space-y-2">
-              {categories.map((cat) => (
-                <CategoryCard
-                  key={cat.id}
-                  category={cat}
-                  lineItems={lineItemsByCategory[cat.id] || []}
-                  currency={budget.currency}
-                  canEdit={canEdit}
-                  isLocked={isLocked}
-                  onEditCategory={handleOpenCategoryModal}
-                  onDeleteCategory={handleDeleteCategory}
-                  onAddLineItem={(catId) => handleOpenLineItemModal(catId)}
-                  onEditLineItem={(item) => handleOpenLineItemModal(item.category_id || '', item)}
-                  onDeleteLineItem={handleDeleteLineItem}
-                />
-              ))}
-            </Accordion>
-          ) : (
-            <div className="text-center py-8 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
-              <FolderOpen className="w-10 h-10 text-muted-gray/30 mx-auto mb-3" />
-              <p className="text-muted-gray">No categories yet</p>
-              {canEdit && !isLocked && (
-                <Button
-                  variant="link"
-                  className="text-accent-yellow"
-                  onClick={() => handleOpenCategoryModal()}
-                >
-                  Add your first category
-                </Button>
+          {/* Estimated Budget View */}
+          {budgetViewMode === 'estimated' && (
+            <>
+              {categories && categories.length > 0 ? (
+                <Accordion type="multiple" className="space-y-2">
+                  {categories.map((cat) => (
+                    <CategoryCard
+                      key={cat.id}
+                      category={cat}
+                      lineItems={lineItemsByCategory[cat.id] || []}
+                      currency={activeBudget.currency}
+                      canEdit={canEdit}
+                      isLocked={isLocked}
+                      onEditCategory={handleOpenCategoryModal}
+                      onDeleteCategory={handleDeleteCategory}
+                      onAddLineItem={(catId) => handleOpenLineItemModal(catId)}
+                      onEditLineItem={(item) => handleOpenLineItemModal(item.category_id || '', item)}
+                      onDeleteLineItem={handleDeleteLineItem}
+                      onViewLineItemDetails={(item) => {
+                        setDetailsLineItem(item);
+                        setShowLineItemDetailsModal(true);
+                      }}
+                    />
+                  ))}
+                </Accordion>
+              ) : (
+                <div className="text-center py-8 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+                  <FolderOpen className="w-10 h-10 text-muted-gray/30 mx-auto mb-3" />
+                  <p className="text-muted-gray">No categories yet</p>
+                  {canEdit && !isLocked && (
+                    <Button
+                      variant="link"
+                      className="text-accent-yellow"
+                      onClick={() => handleOpenCategoryModal()}
+                    >
+                      Add your first category
+                    </Button>
+                  )}
+                </div>
               )}
-            </div>
+            </>
+          )}
+
+          {/* Actual Budget View - shows expenses with source details */}
+          {budgetViewMode === 'actual' && (
+            <>
+              {actualsLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-16 w-full" />
+                  ))}
+                </div>
+              ) : budgetActualsData?.actuals && budgetActualsData.actuals.length > 0 ? (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm text-muted-gray">
+                      {budgetActualsData.actuals.length} expense{budgetActualsData.actuals.length !== 1 ? 's' : ''} recorded
+                    </h4>
+                    <div className="text-sm text-bone-white font-medium">
+                      Total: {formatCurrency(budgetActualsData.total_amount, activeBudget.currency)}
+                    </div>
+                  </div>
+
+                  {/* Group actuals by category > submitter > source_type */}
+                  {(() => {
+                    // Group by category, then by submitter+source_type within each category
+                    type SubmitterGroup = {
+                      submitterName: string;
+                      sourceType: string;
+                      actuals: BudgetActual[];
+                    };
+                    type CategoryGroup = {
+                      categoryName: string;
+                      totalAmount: number;
+                      submitterGroups: SubmitterGroup[];
+                    };
+
+                    const categoryMap = new Map<string, CategoryGroup>();
+
+                    budgetActualsData.actuals.forEach((actual) => {
+                      const catName = actual.category_name || 'Uncategorized';
+                      const submitterName = actual.submitter_full_name || actual.submitter_name || 'Unknown';
+                      const sourceType = actual.source_type || 'manual';
+                      const groupKey = `${submitterName}:${sourceType}`;
+
+                      if (!categoryMap.has(catName)) {
+                        categoryMap.set(catName, {
+                          categoryName: catName,
+                          totalAmount: 0,
+                          submitterGroups: [],
+                        });
+                      }
+
+                      const category = categoryMap.get(catName)!;
+                      category.totalAmount += actual.amount;
+
+                      let submitterGroup = category.submitterGroups.find(
+                        (g) => g.submitterName === submitterName && g.sourceType === sourceType
+                      );
+
+                      if (!submitterGroup) {
+                        submitterGroup = { submitterName, sourceType, actuals: [] };
+                        category.submitterGroups.push(submitterGroup);
+                      }
+
+                      submitterGroup.actuals.push(actual);
+                    });
+
+                    const categories = Array.from(categoryMap.values());
+
+                    return categories.map((category) => (
+                      <div key={category.categoryName} className="border border-muted-gray/20 rounded-lg overflow-hidden">
+                        <div className="bg-charcoal-black/50 px-4 py-3 flex items-center justify-between">
+                          <span className="font-medium text-bone-white">{category.categoryName}</span>
+                          <span className="font-medium text-bone-white">
+                            {formatCurrency(category.totalAmount, activeBudget.currency)}
+                          </span>
+                        </div>
+                        <div className="p-2 space-y-2">
+                          {category.submitterGroups.map((group) => (
+                            <SubmitterActualsGroup
+                              key={`${group.submitterName}:${group.sourceType}`}
+                              submitterName={group.submitterName}
+                              sourceType={group.sourceType}
+                              actuals={group.actuals}
+                              currency={activeBudget.currency}
+                              onViewActualDetail={setSelectedActualId}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              ) : (
+                <div className="text-center py-8 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+                  <Receipt className="w-10 h-10 text-muted-gray/30 mx-auto mb-3" />
+                  <p className="text-muted-gray mb-2">No actual expenses recorded yet</p>
+                  <p className="text-xs text-muted-gray max-w-md mx-auto">
+                    Expenses are automatically recorded when receipts, mileage, kit rentals, per diem,
+                    purchase orders, and invoices are approved.
+                  </p>
+                </div>
+              )}
+            </>
           )}
         </TabsContent>
 
@@ -1446,49 +2092,49 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                 title="ABOVE THE LINE"
                 total={topSheet.above_the_line.total}
                 categories={topSheet.above_the_line.categories}
-                currency={budget.currency}
+                currency={activeBudget.currency}
               />
 
               <TopSheetSection
                 title="PRODUCTION"
                 total={topSheet.production.total}
                 categories={topSheet.production.categories}
-                currency={budget.currency}
+                currency={activeBudget.currency}
               />
 
               <TopSheetSection
                 title="POST-PRODUCTION"
                 total={topSheet.post.total}
                 categories={topSheet.post.categories}
-                currency={budget.currency}
+                currency={activeBudget.currency}
               />
 
               <TopSheetSection
                 title="OTHER / INDIRECT"
                 total={topSheet.other.total}
                 categories={topSheet.other.categories}
-                currency={budget.currency}
+                currency={activeBudget.currency}
               />
 
               {/* Totals */}
               <div className="border border-muted-gray/30 rounded-lg overflow-hidden">
                 <div className="bg-charcoal-black/70 px-4 py-3 flex items-center justify-between">
                   <span className="text-muted-gray">SUBTOTAL</span>
-                  <span className="font-bold text-bone-white">{formatCurrency(topSheet.subtotal, budget.currency)}</span>
+                  <span className="font-bold text-bone-white">{formatCurrency(topSheet.subtotal, activeBudget.currency)}</span>
                 </div>
                 <div className="px-4 py-2 flex items-center justify-between text-sm border-t border-muted-gray/20">
                   <span className="text-muted-gray">Contingency ({topSheet.contingency_percent}%)</span>
-                  <span className="text-bone-white">{formatCurrency(topSheet.contingency_amount, budget.currency)}</span>
+                  <span className="text-bone-white">{formatCurrency(topSheet.contingency_amount, activeBudget.currency)}</span>
                 </div>
                 {topSheet.fringes_total > 0 && (
                   <div className="px-4 py-2 flex items-center justify-between text-sm border-t border-muted-gray/20">
                     <span className="text-muted-gray">Fringes</span>
-                    <span className="text-bone-white">{formatCurrency(topSheet.fringes_total, budget.currency)}</span>
+                    <span className="text-bone-white">{formatCurrency(topSheet.fringes_total, activeBudget.currency)}</span>
                   </div>
                 )}
                 <div className="bg-accent-yellow px-4 py-3 flex items-center justify-between">
                   <span className="font-bold text-charcoal-black">GRAND TOTAL</span>
-                  <span className="font-bold text-charcoal-black text-lg">{formatCurrency(topSheet.grand_total, budget.currency)}</span>
+                  <span className="font-bold text-charcoal-black text-lg">{formatCurrency(topSheet.grand_total, activeBudget.currency)}</span>
                 </div>
               </div>
 
@@ -1817,7 +2463,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
               <span className="text-lg font-bold text-bone-white">
                 {formatCurrency(
                   (lineItemForm.rate_amount || 0) * (lineItemForm.quantity || 1),
-                  budget.currency
+                  activeBudget.currency
                 )}
               </span>
             </div>
@@ -1844,6 +2490,132 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Line Item Details Modal */}
+      <Dialog open={showLineItemDetailsModal} onOpenChange={setShowLineItemDetailsModal}>
+        <DialogContent className="bg-deep-black border-muted-gray/30 max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">
+              {detailsLineItem?.description || 'Line Item Details'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {detailsLineItem && activeBudget && (
+            <div className="space-y-6 max-h-[70vh] overflow-y-auto">
+              {/* Financial Summary */}
+              <div className="grid grid-cols-3 gap-4">
+                <div className="bg-charcoal-black/50 p-4 rounded-lg">
+                  <div className="text-sm text-muted-gray">Estimated</div>
+                  <div className="text-xl font-bold text-bone-white">
+                    {formatCurrency(detailsLineItem.estimated_total, activeBudget.currency)}
+                  </div>
+                </div>
+                <div className="bg-charcoal-black/50 p-4 rounded-lg">
+                  <div className="text-sm text-muted-gray">Actual</div>
+                  <div className="text-xl font-bold text-bone-white">
+                    {formatCurrency(detailsLineItem.actual_total, activeBudget.currency)}
+                  </div>
+                </div>
+                <div className="bg-charcoal-black/50 p-4 rounded-lg">
+                  <div className="text-sm text-muted-gray">Variance</div>
+                  <div className={`text-xl font-bold ${
+                    detailsLineItem.actual_total > detailsLineItem.estimated_total
+                      ? 'text-red-400'
+                      : detailsLineItem.actual_total < detailsLineItem.estimated_total
+                        ? 'text-green-400'
+                        : 'text-bone-white'
+                  }`}>
+                    {formatCurrency(detailsLineItem.actual_total - detailsLineItem.estimated_total, activeBudget.currency)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Rate Details */}
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-muted-gray">Rate Details</h4>
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div className="text-bone-white">
+                    <span className="text-muted-gray">Rate Type: </span>
+                    {RATE_TYPE_LABELS[detailsLineItem.rate_type] || detailsLineItem.rate_type}
+                  </div>
+                  <div className="text-bone-white">
+                    <span className="text-muted-gray">Rate: </span>
+                    {formatCurrency(detailsLineItem.rate_amount, activeBudget.currency)}
+                  </div>
+                  <div className="text-bone-white">
+                    <span className="text-muted-gray">Quantity: </span>
+                    {detailsLineItem.quantity} {detailsLineItem.units || RATE_TYPE_LABELS[detailsLineItem.rate_type]}
+                  </div>
+                  {detailsLineItem.vendor_name && (
+                    <div className="text-bone-white">
+                      <span className="text-muted-gray">Vendor: </span>
+                      {detailsLineItem.vendor_name}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* References */}
+              {(detailsLineItem.po_number || detailsLineItem.invoice_reference || detailsLineItem.account_code) && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium text-muted-gray">References</h4>
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    {detailsLineItem.account_code && (
+                      <div className="text-bone-white">
+                        <span className="text-muted-gray">Account: </span>
+                        {detailsLineItem.account_code}
+                      </div>
+                    )}
+                    {detailsLineItem.po_number && (
+                      <div className="text-bone-white">
+                        <span className="text-muted-gray">PO #: </span>
+                        {detailsLineItem.po_number}
+                      </div>
+                    )}
+                    {detailsLineItem.invoice_reference && (
+                      <div className="text-bone-white">
+                        <span className="text-muted-gray">Invoice: </span>
+                        {detailsLineItem.invoice_reference}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              {(detailsLineItem.notes || detailsLineItem.internal_notes) && (
+                <div className="space-y-2">
+                  <h4 className="text-sm font-medium text-muted-gray">Notes</h4>
+                  {detailsLineItem.notes && (
+                    <p className="text-sm text-bone-white">{detailsLineItem.notes}</p>
+                  )}
+                  {detailsLineItem.internal_notes && (
+                    <p className="text-sm text-muted-gray italic">{detailsLineItem.internal_notes}</p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLineItemDetailsModal(false)}>
+              Close
+            </Button>
+            {canEdit && !isLocked && detailsLineItem && (
+              <Button
+                onClick={() => {
+                  setShowLineItemDetailsModal(false);
+                  handleOpenLineItemModal(detailsLineItem.category_id || '', detailsLineItem);
+                }}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                <Edit className="w-4 h-4 mr-2" />
+                Edit
+              </Button>
+            )}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 
@@ -2008,6 +2780,15 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Actual Detail Modal */}
+      <ActualDetailModal
+        projectId={projectId}
+        actualId={selectedActualId}
+        open={!!selectedActualId}
+        onClose={() => setSelectedActualId(null)}
+        canEdit={canEdit}
+      />
     </div>
   );
 };

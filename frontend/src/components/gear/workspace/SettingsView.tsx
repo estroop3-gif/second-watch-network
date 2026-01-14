@@ -34,6 +34,8 @@ import {
   CheckCircle2,
   AlertCircle,
   ClipboardList,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -76,7 +78,7 @@ import {
   useGearLocations,
   useGearOrganization,
 } from '@/hooks/gear';
-import { useMarketplaceSettings, useShippingSettings } from '@/hooks/gear/useGearMarketplace';
+import { useMarketplaceSettings, useShippingSettings, useUpdateLocationPrivacy } from '@/hooks/gear/useGearMarketplace';
 import type {
   GearOrganization,
   GearOrganizationMember,
@@ -406,6 +408,9 @@ function GeneralSettings({ orgId, organization }: { orgId: string; organization:
           </div>
         </CardContent>
       </Card>
+
+      {/* Location Settings */}
+      <LocationSettingsCard orgId={orgId} organization={organization} />
     </div>
   );
 }
@@ -2477,5 +2482,335 @@ function LocationsSettings({ orgId }: { orgId: string }) {
         ))}
       </div>
     </div>
+  );
+}
+
+// ============================================================================
+// LOCATION SETTINGS CARD
+// ============================================================================
+
+// US State abbreviations for select
+const US_STATES = [
+  { code: 'AL', name: 'Alabama' }, { code: 'AK', name: 'Alaska' }, { code: 'AZ', name: 'Arizona' },
+  { code: 'AR', name: 'Arkansas' }, { code: 'CA', name: 'California' }, { code: 'CO', name: 'Colorado' },
+  { code: 'CT', name: 'Connecticut' }, { code: 'DE', name: 'Delaware' }, { code: 'FL', name: 'Florida' },
+  { code: 'GA', name: 'Georgia' }, { code: 'HI', name: 'Hawaii' }, { code: 'ID', name: 'Idaho' },
+  { code: 'IL', name: 'Illinois' }, { code: 'IN', name: 'Indiana' }, { code: 'IA', name: 'Iowa' },
+  { code: 'KS', name: 'Kansas' }, { code: 'KY', name: 'Kentucky' }, { code: 'LA', name: 'Louisiana' },
+  { code: 'ME', name: 'Maine' }, { code: 'MD', name: 'Maryland' }, { code: 'MA', name: 'Massachusetts' },
+  { code: 'MI', name: 'Michigan' }, { code: 'MN', name: 'Minnesota' }, { code: 'MS', name: 'Mississippi' },
+  { code: 'MO', name: 'Missouri' }, { code: 'MT', name: 'Montana' }, { code: 'NE', name: 'Nebraska' },
+  { code: 'NV', name: 'Nevada' }, { code: 'NH', name: 'New Hampshire' }, { code: 'NJ', name: 'New Jersey' },
+  { code: 'NM', name: 'New Mexico' }, { code: 'NY', name: 'New York' }, { code: 'NC', name: 'North Carolina' },
+  { code: 'ND', name: 'North Dakota' }, { code: 'OH', name: 'Ohio' }, { code: 'OK', name: 'Oklahoma' },
+  { code: 'OR', name: 'Oregon' }, { code: 'PA', name: 'Pennsylvania' }, { code: 'RI', name: 'Rhode Island' },
+  { code: 'SC', name: 'South Carolina' }, { code: 'SD', name: 'South Dakota' }, { code: 'TN', name: 'Tennessee' },
+  { code: 'TX', name: 'Texas' }, { code: 'UT', name: 'Utah' }, { code: 'VT', name: 'Vermont' },
+  { code: 'VA', name: 'Virginia' }, { code: 'WA', name: 'Washington' }, { code: 'WV', name: 'West Virginia' },
+  { code: 'WI', name: 'Wisconsin' }, { code: 'WY', name: 'Wyoming' }, { code: 'DC', name: 'Washington D.C.' },
+];
+
+function LocationSettingsCard({ orgId, organization }: { orgId: string; organization: GearOrganization }) {
+  const { settings, isLoading, updateSettings } = useMarketplaceSettings(orgId);
+  const { updatePrivacy } = useUpdateLocationPrivacy();
+
+  // Editing state
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Local address state
+  const [addressLine1, setAddressLine1] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+  const [hideExactAddress, setHideExactAddress] = useState(false);
+
+  // Error state
+  const [error, setError] = useState<string | null>(null);
+
+  // Sync with settings when loaded
+  useEffect(() => {
+    if (settings) {
+      setAddressLine1(settings.address_line1 || '');
+      setCity(settings.city || '');
+      setState(settings.state || '');
+      setPostalCode(settings.postal_code || '');
+      setHideExactAddress(settings.hide_exact_address || false);
+    }
+  }, [settings]);
+
+  const handleSave = async () => {
+    // Validate
+    if (!addressLine1.trim()) {
+      setError('Street address is required');
+      return;
+    }
+    if (!city.trim()) {
+      setError('City is required');
+      return;
+    }
+    if (!state) {
+      setError('State is required');
+      return;
+    }
+    if (!postalCode.trim()) {
+      setError('ZIP code is required');
+      return;
+    }
+
+    setError(null);
+    setIsSaving(true);
+
+    try {
+      // Geocode the new address using AWS Location Service via API
+      const fullAddress = `${addressLine1}, ${city}, ${state} ${postalCode}, US`;
+      const API_BASE = import.meta.env.VITE_API_URL || '';
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`${API_BASE}/api/v1/gear/marketplace/geocode`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({ address: fullAddress }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        setError(errorData.detail || 'Could not find that address. Please check and try again.');
+        setIsSaving(false);
+        return;
+      }
+
+      const data = await response.json();
+      const latitude = data.latitude;
+      const longitude = data.longitude;
+
+      // Update marketplace settings with new location
+      await updateSettings.mutateAsync({
+        address_line1: addressLine1.trim(),
+        city: city.trim(),
+        state: state,
+        postal_code: postalCode.trim(),
+        country: 'US',
+        location_latitude: latitude,
+        location_longitude: longitude,
+        public_location_display: hideExactAddress ? `${city}, ${state}` : `${addressLine1}, ${city}, ${state}`,
+        hide_exact_address: hideExactAddress,
+      });
+
+      setIsEditing(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save location');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    // Reset to saved values
+    if (settings) {
+      setAddressLine1(settings.address_line1 || '');
+      setCity(settings.city || '');
+      setState(settings.state || '');
+      setPostalCode(settings.postal_code || '');
+      setHideExactAddress(settings.hide_exact_address || false);
+    }
+    setError(null);
+    setIsEditing(false);
+  };
+
+  const handlePrivacyToggle = async (checked: boolean) => {
+    setHideExactAddress(checked);
+
+    // If not editing, update immediately
+    if (!isEditing && settings) {
+      const publicDisplay = checked
+        ? `${settings.city || city}, ${settings.state || state}`
+        : `${settings.address_line1 || addressLine1}, ${settings.city || city}, ${settings.state || state}`;
+
+      await updatePrivacy.updatePrivacy.mutateAsync({
+        orgId,
+        hideExactAddress: checked,
+        publicDisplay,
+      });
+    }
+  };
+
+  if (isLoading) {
+    return <Skeleton className="h-64" />;
+  }
+
+  const hasLocation = settings?.location_latitude && settings?.location_longitude;
+  const displayAddress = settings?.hide_exact_address
+    ? `${settings?.city || ''}, ${settings?.state || ''}`
+    : settings?.public_location_display || 'No location set';
+
+  return (
+    <Card className="bg-charcoal-black/50 border-muted-gray/30">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-accent-yellow" />
+              Location
+            </CardTitle>
+            <CardDescription>Your gear house location for marketplace search</CardDescription>
+          </div>
+          {!isEditing && (
+            <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+              <Edit className="w-4 h-4 mr-2" />
+              Edit
+            </Button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {isEditing ? (
+          // Editing Mode
+          <>
+            <div>
+              <Label htmlFor="address">Street Address *</Label>
+              <Input
+                id="address"
+                value={addressLine1}
+                onChange={(e) => setAddressLine1(e.target.value)}
+                placeholder="123 Main Street"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="city">City *</Label>
+                <Input
+                  id="city"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="Los Angeles"
+                />
+              </div>
+              <div>
+                <Label htmlFor="state">State *</Label>
+                <Select value={state} onValueChange={setState}>
+                  <SelectTrigger id="state">
+                    <SelectValue placeholder="Select state" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {US_STATES.map((s) => (
+                      <SelectItem key={s.code} value={s.code}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="zip">ZIP Code *</Label>
+                <Input
+                  id="zip"
+                  value={postalCode}
+                  onChange={(e) => setPostalCode(e.target.value)}
+                  placeholder="90001"
+                  maxLength={10}
+                />
+              </div>
+            </div>
+
+            {/* Privacy Toggle */}
+            <div className="flex items-center justify-between py-2 px-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/20">
+              <div className="flex items-center gap-2">
+                {hideExactAddress ? (
+                  <EyeOff className="w-4 h-4 text-muted-gray" />
+                ) : (
+                  <Eye className="w-4 h-4 text-accent-yellow" />
+                )}
+                <div>
+                  <p className="text-sm text-bone-white">Keep address private</p>
+                  <p className="text-xs text-muted-gray">
+                    {hideExactAddress
+                      ? `Only "${city || 'City'}, ${state || 'State'}" will be shown in the marketplace`
+                      : 'Full address will be visible in the marketplace'}
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={hideExactAddress}
+                onCheckedChange={setHideExactAddress}
+              />
+            </div>
+
+            {error && (
+              <div className="rounded-md bg-red-500/10 border border-red-500/30 p-3">
+                <p className="text-sm text-red-500">{error}</p>
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={handleCancel} disabled={isSaving}>
+                Cancel
+              </Button>
+              <Button onClick={handleSave} disabled={isSaving}>
+                {isSaving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Save Location
+              </Button>
+            </div>
+          </>
+        ) : (
+          // Display Mode
+          <>
+            <div className="flex items-start gap-3">
+              <div className="flex-1">
+                <p className="text-bone-white font-medium">{displayAddress}</p>
+                {hasLocation && (
+                  <p className="text-xs text-muted-gray mt-1">
+                    Coordinates: {settings?.location_latitude?.toFixed(4)}, {settings?.location_longitude?.toFixed(4)}
+                  </p>
+                )}
+              </div>
+              {hasLocation && (
+                <Badge variant="secondary" className="flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  Verified
+                </Badge>
+              )}
+            </div>
+
+            {/* Privacy Toggle (quick access) */}
+            <div className="flex items-center justify-between py-2 px-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/20">
+              <div className="flex items-center gap-2">
+                {settings?.hide_exact_address ? (
+                  <EyeOff className="w-4 h-4 text-muted-gray" />
+                ) : (
+                  <Eye className="w-4 h-4 text-accent-yellow" />
+                )}
+                <div>
+                  <p className="text-sm text-bone-white">Address privacy</p>
+                  <p className="text-xs text-muted-gray">
+                    {settings?.hide_exact_address
+                      ? 'Only city and state shown in marketplace'
+                      : 'Full address visible in marketplace'}
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={settings?.hide_exact_address || false}
+                onCheckedChange={handlePrivacyToggle}
+                disabled={updatePrivacy.isPending}
+              />
+            </div>
+
+            {!hasLocation && (
+              <div className="flex items-center gap-2 text-amber-500 text-sm">
+                <AlertCircle className="w-4 h-4" />
+                <span>No location set. Add an address to appear in marketplace search.</span>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }

@@ -50,6 +50,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface DealMemoStatusProps {
   dealMemo: DealMemo;
@@ -511,13 +512,13 @@ export function DealMemoSummary({ dealMemo, onClick }: DealMemoSummaryProps) {
         {dealMemo.start_date && (
           <div>
             <span className="text-muted-foreground">Start:</span>{' '}
-            <span>{new Date(dealMemo.start_date).toLocaleDateString()}</span>
+            <span>{parseLocalDate(dealMemo.start_date).toLocaleDateString()}</span>
           </div>
         )}
         {dealMemo.end_date && (
           <div>
             <span className="text-muted-foreground">End:</span>{' '}
-            <span>{new Date(dealMemo.end_date).toLocaleDateString()}</span>
+            <span>{parseLocalDate(dealMemo.end_date).toLocaleDateString()}</span>
           </div>
         )}
       </div>

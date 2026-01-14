@@ -71,7 +71,20 @@ import {
   Image as ImageIcon,
   Clock,
   X,
+  List,
+  LayoutGrid,
+  Grid3X3,
+  Link2,
 } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
@@ -88,6 +101,7 @@ import {
   useDeletePanel,
   useReorderSections,
   useReorderPanels,
+  usePanelImageUpload,
   getStoryboardExportUrl,
   calculateTotalDuration,
   formatDuration,
@@ -97,7 +111,16 @@ import {
   Storyboard,
   StoryboardSection,
   StoryboardPanel,
+  StoryboardViewMode,
+  // For entity connections
+  useEpisodes,
+  useScenes,
+  useShotLists,
+  useMoodboards,
+  useProject,
 } from '@/hooks/backlot';
+import { PanelImageUploader } from './storyboard/PanelImageUploader';
+import { generateStoryboardSummaryPdf } from './storyboard-summary-pdf';
 
 interface StoryboardViewProps {
   projectId: string;
@@ -110,6 +133,7 @@ function PanelCard({
   index,
   canEdit,
   isLocked,
+  onView,
   onEdit,
   onDelete,
   onMoveUp,
@@ -121,6 +145,7 @@ function PanelCard({
   index: number;
   canEdit: boolean;
   isLocked: boolean;
+  onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onMoveUp: () => void;
@@ -133,12 +158,15 @@ function PanelCard({
   const moveInfo = CAMERA_MOVES.find((m) => m.value === panel.camera_move);
 
   return (
-    <Card className="bg-white/5 border-white/10 group hover:border-white/20 transition-colors">
+    <Card
+      className="bg-white/5 border-white/10 group hover:border-white/20 transition-colors cursor-pointer"
+      onClick={onView}
+    >
       <CardContent className="p-3">
         <div className="flex gap-3">
           {/* Reorder Handle */}
           {canModify && (
-            <div className="flex flex-col items-center gap-0.5 pt-1">
+            <div className="flex flex-col items-center gap-0.5 pt-1" onClick={(e) => e.stopPropagation()}>
               <Button
                 size="icon"
                 variant="ghost"
@@ -161,16 +189,18 @@ function PanelCard({
             </div>
           )}
 
-          {/* Thumbnail Area */}
-          <div className="w-32 h-20 bg-white/10 rounded flex items-center justify-center flex-shrink-0">
+          {/* Thumbnail Area - Read Only */}
+          <div className="w-32 h-20 flex-shrink-0 bg-white/5 rounded overflow-hidden">
             {panel.reference_image_url ? (
               <img
                 src={panel.reference_image_url}
-                alt={panel.title || `Panel ${index + 1}`}
-                className="w-full h-full object-cover rounded"
+                alt="Panel reference"
+                className="w-full h-full object-cover"
               />
             ) : (
-              <ImageIcon className="w-8 h-8 text-muted-gray" />
+              <div className="w-full h-full flex items-center justify-center">
+                <ImageIcon className="w-6 h-6 text-muted-gray" />
+              </div>
             )}
           </div>
 
@@ -210,7 +240,7 @@ function PanelCard({
               </div>
               {canModify && (
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                  <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
                     <Button
                       size="icon"
                       variant="ghost"
@@ -220,12 +250,12 @@ function PanelCard({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={onEdit}>
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(); }}>
                       <Pencil className="w-4 h-4 mr-2" />
                       Edit Panel
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={onDelete} className="text-red-400">
+                    <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDelete(); }} className="text-red-400">
                       <Trash2 className="w-4 h-4 mr-2" />
                       Delete
                     </DropdownMenuItem>
@@ -246,16 +276,177 @@ function PanelCard({
   );
 }
 
+// Panel List View - Table layout
+function PanelListView({
+  panels,
+  canEdit,
+  isLocked,
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  panels: StoryboardPanel[];
+  canEdit: boolean;
+  isLocked: boolean;
+  onView: (panel: StoryboardPanel) => void;
+  onEdit: (panel: StoryboardPanel) => void;
+  onDelete: (panelId: string) => void;
+}) {
+  const canModify = canEdit && !isLocked;
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow className="border-white/10 hover:bg-transparent">
+          <TableHead className="w-12 text-muted-gray">#</TableHead>
+          <TableHead className="w-16 text-muted-gray">Image</TableHead>
+          <TableHead className="text-muted-gray">Title</TableHead>
+          <TableHead className="text-muted-gray">Shot</TableHead>
+          <TableHead className="text-muted-gray">Move</TableHead>
+          <TableHead className="w-20 text-muted-gray">Duration</TableHead>
+          {canModify && <TableHead className="w-12"></TableHead>}
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {panels.map((panel, idx) => {
+          const shotInfo = SHOT_SIZES.find((s) => s.value === panel.shot_size);
+          const moveInfo = CAMERA_MOVES.find((m) => m.value === panel.camera_move);
+          return (
+            <TableRow
+              key={panel.id}
+              className="border-white/10 cursor-pointer hover:bg-white/5"
+              onClick={() => onView(panel)}
+            >
+              <TableCell className="text-muted-gray">{idx + 1}</TableCell>
+              <TableCell>
+                <div className="w-12 h-8 bg-white/5 rounded overflow-hidden">
+                  {panel.reference_image_url ? (
+                    <img src={panel.reference_image_url} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <ImageIcon className="w-3 h-3 text-muted-gray" />
+                    </div>
+                  )}
+                </div>
+              </TableCell>
+              <TableCell className="text-bone-white">{panel.title || `Panel ${idx + 1}`}</TableCell>
+              <TableCell className="text-muted-gray">{shotInfo?.label || panel.shot_size || '-'}</TableCell>
+              <TableCell className="text-muted-gray">{moveInfo?.label || panel.camera_move || '-'}</TableCell>
+              <TableCell className="text-muted-gray">{panel.duration_seconds ? `${panel.duration_seconds}s` : '-'}</TableCell>
+              {canModify && (
+                <TableCell>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                      <Button size="icon" variant="ghost" className="h-8 w-8">
+                        <MoreVertical className="w-4 h-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(panel); }}>
+                        <Pencil className="w-4 h-4 mr-2" />
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDelete(panel.id); }} className="text-red-400">
+                        <Trash2 className="w-4 h-4 mr-2" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
+              )}
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+// Panel Grid View - Thumbnail grid
+function PanelGridView({
+  panels,
+  onView,
+}: {
+  panels: StoryboardPanel[];
+  onView: (panel: StoryboardPanel) => void;
+}) {
+  return (
+    <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+      {panels.map((panel, idx) => (
+        <div
+          key={panel.id}
+          className="relative aspect-video bg-white/5 rounded cursor-pointer hover:ring-2 hover:ring-accent-yellow/50 transition-all overflow-hidden group"
+          onClick={() => onView(panel)}
+        >
+          {panel.reference_image_url ? (
+            <img src={panel.reference_image_url} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center">
+              <ImageIcon className="w-6 h-6 text-muted-gray mb-1" />
+              <span className="text-xs text-muted-gray">#{idx + 1}</span>
+            </div>
+          )}
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent p-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <p className="text-xs text-bone-white truncate">{panel.title || `Panel ${idx + 1}`}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Panel Filmstrip View - Horizontal scroll
+function PanelFilmstripView({
+  panels,
+  onView,
+}: {
+  panels: StoryboardPanel[];
+  onView: (panel: StoryboardPanel) => void;
+}) {
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-3 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent">
+      {panels.map((panel, idx) => (
+        <div
+          key={panel.id}
+          className="flex-shrink-0 w-48 cursor-pointer hover:scale-105 transition-transform"
+          onClick={() => onView(panel)}
+        >
+          <div className="aspect-video bg-white/5 rounded-lg overflow-hidden border-2 border-white/10 hover:border-accent-yellow/50">
+            {panel.reference_image_url ? (
+              <img src={panel.reference_image_url} className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <ImageIcon className="w-8 h-8 text-muted-gray" />
+              </div>
+            )}
+          </div>
+          <div className="mt-2 px-1">
+            <p className="text-sm text-bone-white truncate">{panel.title || `Panel ${idx + 1}`}</p>
+            <p className="text-xs text-muted-gray">
+              #{idx + 1}
+              {panel.shot_size && ` • ${SHOT_SIZES.find((s) => s.value === panel.shot_size)?.label || panel.shot_size}`}
+            </p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Section Component
+type PanelViewModeType = 'list' | 'card' | 'grid' | 'filmstrip';
+
 function SectionBlock({
   section,
   sectionIndex,
   totalSections,
   canEdit,
   isLocked,
+  panelViewMode,
   onEditSection,
   onDeleteSection,
   onAddPanel,
+  onViewPanel,
   onEditPanel,
   onDeletePanel,
   onMoveSection,
@@ -266,9 +457,11 @@ function SectionBlock({
   totalSections: number;
   canEdit: boolean;
   isLocked: boolean;
+  panelViewMode: PanelViewModeType;
   onEditSection: (section: StoryboardSection) => void;
   onDeleteSection: (sectionId: string) => void;
   onAddPanel: (sectionId: string) => void;
+  onViewPanel: (panel: StoryboardPanel) => void;
   onEditPanel: (panel: StoryboardPanel) => void;
   onDeletePanel: (panelId: string) => void;
   onMoveSection: (sectionId: string, direction: 'up' | 'down') => void;
@@ -348,7 +541,7 @@ function SectionBlock({
       </div>
 
       {/* Panels */}
-      <div className="p-4 space-y-3">
+      <div className="p-4">
         {panels.length === 0 ? (
           <div className="text-center py-8 text-muted-gray">
             <ImageIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -366,21 +559,44 @@ function SectionBlock({
             )}
           </div>
         ) : (
-          panels.map((panel, idx) => (
-            <PanelCard
-              key={panel.id}
-              panel={panel}
-              index={idx}
-              canEdit={canEdit}
-              isLocked={isLocked}
-              onEdit={() => onEditPanel(panel)}
-              onDelete={() => onDeletePanel(panel.id)}
-              onMoveUp={() => onMovePanel(panel.id, section.id, 'up')}
-              onMoveDown={() => onMovePanel(panel.id, section.id, 'down')}
-              isFirst={idx === 0}
-              isLast={idx === panels.length - 1}
-            />
-          ))
+          <>
+            {panelViewMode === 'list' && (
+              <PanelListView
+                panels={panels}
+                canEdit={canEdit}
+                isLocked={isLocked}
+                onView={onViewPanel}
+                onEdit={onEditPanel}
+                onDelete={onDeletePanel}
+              />
+            )}
+            {panelViewMode === 'card' && (
+              <div className="space-y-3">
+                {panels.map((panel, idx) => (
+                  <PanelCard
+                    key={panel.id}
+                    panel={panel}
+                    index={idx}
+                    canEdit={canEdit}
+                    isLocked={isLocked}
+                    onView={() => onViewPanel(panel)}
+                    onEdit={() => onEditPanel(panel)}
+                    onDelete={() => onDeletePanel(panel.id)}
+                    onMoveUp={() => onMovePanel(panel.id, section.id, 'up')}
+                    onMoveDown={() => onMovePanel(panel.id, section.id, 'down')}
+                    isFirst={idx === 0}
+                    isLast={idx === panels.length - 1}
+                  />
+                ))}
+              </div>
+            )}
+            {panelViewMode === 'grid' && (
+              <PanelGridView panels={panels} onView={onViewPanel} />
+            )}
+            {panelViewMode === 'filmstrip' && (
+              <PanelFilmstripView panels={panels} onView={onViewPanel} />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -390,6 +606,11 @@ function SectionBlock({
 export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
   // View state - list or detail
   const [selectedStoryboardId, setSelectedStoryboardId] = useState<string | null>(null);
+  // View mode for storyboard list (list/card/grid)
+  const [viewMode, setViewMode] = useState<StoryboardViewMode>('card');
+  // View mode for panels within storyboard detail
+  type PanelViewMode = 'list' | 'card' | 'grid' | 'filmstrip';
+  const [panelViewMode, setPanelViewMode] = useState<PanelViewMode>('card');
 
   // Dialog states
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -404,12 +625,21 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
   const [formTitle, setFormTitle] = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formAspectRatio, setFormAspectRatio] = useState('16:9');
+  // Entity connections for storyboard
+  const [formEpisodeId, setFormEpisodeId] = useState('');
+  const [formSceneId, setFormSceneId] = useState('');
+  const [formShotListId, setFormShotListId] = useState('');
+  const [formMoodboardId, setFormMoodboardId] = useState('');
 
   // Form state for section
   const [sectionTitle, setSectionTitle] = useState('');
+  // Entity connections for section
+  const [sectionSceneId, setSectionSceneId] = useState('');
+  const [sectionShotListId, setSectionShotListId] = useState('');
   const [editingSection, setEditingSection] = useState<StoryboardSection | null>(null);
 
   // Form state for panel
+  const [viewingPanel, setViewingPanel] = useState<StoryboardPanel | null>(null);
   const [editingPanel, setEditingPanel] = useState<StoryboardPanel | null>(null);
   const [panelSectionId, setPanelSectionId] = useState<string | null>(null);
   const [panelForm, setPanelForm] = useState({
@@ -425,6 +655,9 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
     duration_seconds: '',
     reference_image_url: '',
   });
+  // Staged file for new panel image upload
+  const [pendingImageFile, setPendingImageFile] = useState<File | null>(null);
+  const [pendingImagePreview, setPendingImagePreview] = useState<string | null>(null);
 
   // Delete targets
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -444,6 +677,15 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
     refetch: refetchDetail,
   } = useStoryboard(projectId, selectedStoryboardId);
 
+  // Entity queries for connections
+  const { data: episodes } = useEpisodes(projectId);
+  const { scenes } = useScenes({ projectId });
+  const { shotLists } = useShotLists({ projectId });
+  const { data: moodboards } = useMoodboards(projectId);
+
+  // Project info for export summary
+  const { data: project } = useProject(projectId);
+
   // Mutations
   const createStoryboard = useCreateStoryboard(projectId);
   const updateStoryboard = useUpdateStoryboard(projectId);
@@ -456,6 +698,17 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
   const deletePanel = useDeletePanel(projectId, selectedStoryboardId);
   const reorderSections = useReorderSections(projectId, selectedStoryboardId);
   const reorderPanels = useReorderPanels(projectId, selectedStoryboardId);
+  const panelImageUpload = usePanelImageUpload(projectId, selectedStoryboardId);
+
+  // Handle file selection for new panel (staging mode)
+  const handlePendingImageFile = useCallback((file: File | null) => {
+    // Revoke old preview URL to prevent memory leak
+    if (pendingImagePreview) {
+      URL.revokeObjectURL(pendingImagePreview);
+    }
+    setPendingImageFile(file);
+    setPendingImagePreview(file ? URL.createObjectURL(file) : null);
+  }, [pendingImagePreview]);
 
   // Computed values
   const isLocked = storyboard?.status === 'LOCKED';
@@ -476,17 +729,25 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
         title: formTitle.trim(),
         description: formDescription.trim() || undefined,
         aspect_ratio: formAspectRatio,
+        episode_id: formEpisodeId || undefined,
+        scene_id: formSceneId || undefined,
+        shot_list_id: formShotListId || undefined,
+        moodboard_id: formMoodboardId || undefined,
       });
       setFormTitle('');
       setFormDescription('');
       setFormAspectRatio('16:9');
+      setFormEpisodeId('');
+      setFormSceneId('');
+      setFormShotListId('');
+      setFormMoodboardId('');
       setShowCreateDialog(false);
       setSelectedStoryboardId(result.id);
       toast.success('Storyboard created');
     } catch (err: any) {
       toast.error(err.message || 'Failed to create storyboard');
     }
-  }, [createStoryboard, formTitle, formDescription, formAspectRatio]);
+  }, [createStoryboard, formTitle, formDescription, formAspectRatio, formEpisodeId, formSceneId, formShotListId, formMoodboardId]);
 
   const handleUpdateStoryboard = useCallback(async () => {
     if (!selectedStoryboardId || !formTitle.trim()) return;
@@ -538,30 +799,42 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
       return;
     }
     try {
-      await createSection.mutateAsync({ title: sectionTitle.trim() });
+      await createSection.mutateAsync({
+        title: sectionTitle.trim(),
+        scene_id: sectionSceneId || undefined,
+        shot_list_id: sectionShotListId || undefined,
+      });
       setSectionTitle('');
+      setSectionSceneId('');
+      setSectionShotListId('');
       setShowSectionDialog(false);
       toast.success('Section added');
     } catch (err: any) {
       toast.error(err.message || 'Failed to add section');
     }
-  }, [createSection, sectionTitle]);
+  }, [createSection, sectionTitle, sectionSceneId, sectionShotListId]);
 
   const handleUpdateSection = useCallback(async () => {
     if (!editingSection || !sectionTitle.trim()) return;
     try {
       await updateSection.mutateAsync({
         sectionId: editingSection.id,
-        data: { title: sectionTitle.trim() },
+        data: {
+          title: sectionTitle.trim(),
+          scene_id: sectionSceneId || undefined,
+          shot_list_id: sectionShotListId || undefined,
+        },
       });
       setEditingSection(null);
       setSectionTitle('');
+      setSectionSceneId('');
+      setSectionShotListId('');
       setShowSectionDialog(false);
       toast.success('Section updated');
     } catch (err: any) {
       toast.error(err.message || 'Failed to update section');
     }
-  }, [updateSection, editingSection, sectionTitle]);
+  }, [updateSection, editingSection, sectionTitle, sectionSceneId, sectionShotListId]);
 
   const handleDeleteSection = useCallback(async () => {
     if (!deleteTargetId) return;
@@ -605,10 +878,27 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
         });
         toast.success('Panel updated');
       } else {
-        await createPanel.mutateAsync(data);
-        toast.success('Panel added');
+        // Create the panel first
+        const newPanel = await createPanel.mutateAsync(data);
+
+        // If there's a pending image, upload it now that we have the panel ID
+        if (pendingImageFile && newPanel?.id) {
+          try {
+            await panelImageUpload.mutateAsync({
+              panelId: newPanel.id,
+              file: pendingImageFile,
+            });
+            toast.success('Panel added with image');
+          } catch (imgErr: any) {
+            toast.success('Panel added');
+            toast.error('Image upload failed: ' + (imgErr.message || 'Unknown error'));
+          }
+        } else {
+          toast.success('Panel added');
+        }
       }
 
+      // Clean up
       setEditingPanel(null);
       setPanelSectionId(null);
       setPanelForm({
@@ -624,11 +914,17 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
         duration_seconds: '',
         reference_image_url: '',
       });
+      // Clean up pending image
+      if (pendingImagePreview) {
+        URL.revokeObjectURL(pendingImagePreview);
+      }
+      setPendingImageFile(null);
+      setPendingImagePreview(null);
       setShowPanelDialog(false);
     } catch (err: any) {
       toast.error(err.message || 'Failed to save panel');
     }
-  }, [createPanel, updatePanel, editingPanel, panelSectionId, panelForm]);
+  }, [createPanel, updatePanel, editingPanel, panelSectionId, panelForm, pendingImageFile, pendingImagePreview, panelImageUpload]);
 
   const handleDeletePanel = useCallback(async () => {
     if (!deleteTargetId) return;
@@ -709,6 +1005,24 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
     }
   }, [projectId, selectedStoryboardId, storyboard?.title]);
 
+  // Export executive summary of all storyboards
+  const handleExportSummary = useCallback(async () => {
+    if (!storyboards || storyboards.length === 0) {
+      toast.error('No storyboards to export');
+      return;
+    }
+
+    try {
+      await generateStoryboardSummaryPdf({
+        projectName: project?.title || 'Project',
+        storyboards,
+      });
+      toast.success('Executive summary exported');
+    } catch (error) {
+      toast.error((error as Error).message || 'Failed to export summary');
+    }
+  }, [storyboards, project?.title]);
+
   const openEditStoryboardDialog = useCallback(() => {
     if (storyboard) {
       setFormTitle(storyboard.title);
@@ -734,10 +1048,21 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
       duration_seconds: '',
       reference_image_url: '',
     });
+    // Clear any pending image from previous dialog
+    if (pendingImagePreview) {
+      URL.revokeObjectURL(pendingImagePreview);
+    }
+    setPendingImageFile(null);
+    setPendingImagePreview(null);
     setShowPanelDialog(true);
+  }, [pendingImagePreview]);
+
+  const openViewPanel = useCallback((panel: StoryboardPanel) => {
+    setViewingPanel(panel);
   }, []);
 
   const openEditPanel = useCallback((panel: StoryboardPanel) => {
+    setViewingPanel(null); // Close view dialog if open
     setEditingPanel(panel);
     setPanelSectionId(null);
     setPanelForm({
@@ -753,12 +1078,20 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
       duration_seconds: panel.duration_seconds?.toString() || '',
       reference_image_url: panel.reference_image_url || '',
     });
+    // Clear any pending image (not used in edit mode)
+    if (pendingImagePreview) {
+      URL.revokeObjectURL(pendingImagePreview);
+    }
+    setPendingImageFile(null);
+    setPendingImagePreview(null);
     setShowPanelDialog(true);
-  }, []);
+  }, [pendingImagePreview]);
 
   const openEditSection = useCallback((section: StoryboardSection) => {
     setEditingSection(section);
     setSectionTitle(section.title);
+    setSectionSceneId(section.scene_id || '');
+    setSectionShotListId(section.shot_list_id || '');
     setShowSectionDialog(true);
   }, []);
 
@@ -803,12 +1136,35 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
               Plan your shots visually with storyboard frames
             </p>
           </div>
-          {canEdit && (
-            <Button onClick={() => setShowCreateDialog(true)} className="gap-2">
-              <Plus className="w-4 h-4" />
-              New Storyboard
-            </Button>
-          )}
+          <div className="flex items-center gap-3">
+            {/* View Mode Toggle */}
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as StoryboardViewMode)}>
+              <TabsList className="bg-white/5">
+                <TabsTrigger value="list" className="gap-1 px-2">
+                  <List className="w-4 h-4" />
+                </TabsTrigger>
+                <TabsTrigger value="card" className="gap-1 px-2">
+                  <LayoutGrid className="w-4 h-4" />
+                </TabsTrigger>
+                <TabsTrigger value="grid" className="gap-1 px-2">
+                  <Grid3X3 className="w-4 h-4" />
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {/* Export Summary Button - only show when there are storyboards */}
+            {storyboards && storyboards.length > 0 && (
+              <Button variant="outline" onClick={handleExportSummary} className="gap-2">
+                <FileText className="w-4 h-4" />
+                Export Summary
+              </Button>
+            )}
+            {canEdit && (
+              <Button onClick={() => setShowCreateDialog(true)} className="gap-2">
+                <Plus className="w-4 h-4" />
+                New Storyboard
+              </Button>
+            )}
+          </div>
         </div>
 
         {/* Storyboard Grid */}
@@ -827,46 +1183,172 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
             )}
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {storyboards.map((sb) => (
-              <Card
-                key={sb.id}
-                className="bg-white/5 border-white/10 hover:border-white/20 cursor-pointer transition-colors"
-                onClick={() => setSelectedStoryboardId(sb.id)}
-              >
-                <CardHeader className="pb-2">
-                  <div className="flex items-start justify-between">
-                    <CardTitle className="text-lg">{sb.title}</CardTitle>
-                    {sb.status === 'LOCKED' && (
-                      <Badge variant="outline" className="border-yellow-500/50 text-yellow-400">
-                        <Lock className="w-3 h-3 mr-1" />
-                        Locked
-                      </Badge>
-                    )}
+          <>
+            {/* List View */}
+            {viewMode === 'list' && (
+              <div className="border border-white/10 rounded-lg overflow-hidden">
+                <table className="w-full">
+                  <thead className="bg-white/5">
+                    <tr className="text-left text-sm text-muted-gray">
+                      <th className="px-4 py-3">Title</th>
+                      <th className="px-4 py-3">Aspect</th>
+                      <th className="px-4 py-3">Sections</th>
+                      <th className="px-4 py-3">Panels</th>
+                      <th className="px-4 py-3">Linked To</th>
+                      <th className="px-4 py-3">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {storyboards.map((sb) => (
+                      <tr
+                        key={sb.id}
+                        className="hover:bg-white/5 cursor-pointer transition-colors"
+                        onClick={() => setSelectedStoryboardId(sb.id)}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-bone-white">{sb.title}</div>
+                          {sb.description && (
+                            <div className="text-xs text-muted-gray line-clamp-1">{sb.description}</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-sm text-muted-gray">{sb.aspect_ratio}</td>
+                        <td className="px-4 py-3 text-sm text-muted-gray">{sb.section_count || 0}</td>
+                        <td className="px-4 py-3 text-sm text-muted-gray">{sb.panel_count || 0}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {sb.episode && (
+                              <Badge variant="outline" className="text-xs border-blue-500/50 text-blue-400">
+                                {sb.episode.episode_code}
+                              </Badge>
+                            )}
+                            {sb.scene && (
+                              <Badge variant="outline" className="text-xs border-green-500/50 text-green-400">
+                                Scene {sb.scene.scene_number}
+                              </Badge>
+                            )}
+                            {sb.shot_list && (
+                              <Badge variant="outline" className="text-xs border-purple-500/50 text-purple-400">
+                                {sb.shot_list.title}
+                              </Badge>
+                            )}
+                            {!sb.episode && !sb.scene && !sb.shot_list && (
+                              <span className="text-xs text-muted-gray">-</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          {sb.status === 'LOCKED' ? (
+                            <Badge variant="outline" className="border-yellow-500/50 text-yellow-400">
+                              <Lock className="w-3 h-3 mr-1" />
+                              Locked
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="border-white/20 text-muted-gray">
+                              Draft
+                            </Badge>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Card View */}
+            {viewMode === 'card' && (
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {storyboards.map((sb) => (
+                  <Card
+                    key={sb.id}
+                    className="bg-white/5 border-white/10 hover:border-white/20 cursor-pointer transition-colors"
+                    onClick={() => setSelectedStoryboardId(sb.id)}
+                  >
+                    <CardHeader className="pb-2">
+                      <div className="flex items-start justify-between">
+                        <CardTitle className="text-lg">{sb.title}</CardTitle>
+                        {sb.status === 'LOCKED' && (
+                          <Badge variant="outline" className="border-yellow-500/50 text-yellow-400">
+                            <Lock className="w-3 h-3 mr-1" />
+                            Locked
+                          </Badge>
+                        )}
+                      </div>
+                      {sb.description && (
+                        <CardDescription className="line-clamp-2">{sb.description}</CardDescription>
+                      )}
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center gap-4 text-sm text-muted-gray">
+                        <span className="flex items-center gap-1">
+                          <Film className="w-4 h-4" />
+                          {sb.aspect_ratio}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <FileText className="w-4 h-4" />
+                          {sb.section_count || 0} sections
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <ImageIcon className="w-4 h-4" />
+                          {sb.panel_count || 0} panels
+                        </span>
+                      </div>
+                      {/* Entity connection badges */}
+                      {(sb.episode || sb.scene || sb.shot_list) && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {sb.episode && (
+                            <Badge variant="outline" className="text-xs border-blue-500/50 text-blue-400">
+                              <Link2 className="w-3 h-3 mr-1" />
+                              {sb.episode.episode_code}
+                            </Badge>
+                          )}
+                          {sb.scene && (
+                            <Badge variant="outline" className="text-xs border-green-500/50 text-green-400">
+                              <Link2 className="w-3 h-3 mr-1" />
+                              Scene {sb.scene.scene_number}
+                            </Badge>
+                          )}
+                          {sb.shot_list && (
+                            <Badge variant="outline" className="text-xs border-purple-500/50 text-purple-400">
+                              <Link2 className="w-3 h-3 mr-1" />
+                              {sb.shot_list.title}
+                            </Badge>
+                          )}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+
+            {/* Grid/Thumbnail View */}
+            {viewMode === 'grid' && (
+              <div className="grid gap-3 grid-cols-2 md:grid-cols-4 lg:grid-cols-6">
+                {storyboards.map((sb) => (
+                  <div
+                    key={sb.id}
+                    className="bg-white/5 border border-white/10 rounded-lg overflow-hidden hover:border-white/20 cursor-pointer transition-colors group"
+                    onClick={() => setSelectedStoryboardId(sb.id)}
+                  >
+                    {/* Thumbnail placeholder */}
+                    <div className="aspect-video bg-white/10 flex items-center justify-center">
+                      <Images className="w-8 h-8 text-muted-gray group-hover:text-bone-white transition-colors" />
+                    </div>
+                    <div className="p-2">
+                      <h4 className="text-sm font-medium text-bone-white truncate">{sb.title}</h4>
+                      <p className="text-xs text-muted-gray">
+                        {sb.panel_count || 0} panels
+                        {sb.status === 'LOCKED' && (
+                          <Lock className="w-3 h-3 ml-1 inline text-yellow-400" />
+                        )}
+                      </p>
+                    </div>
                   </div>
-                  {sb.description && (
-                    <CardDescription className="line-clamp-2">{sb.description}</CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent>
-                  <div className="flex items-center gap-4 text-sm text-muted-gray">
-                    <span className="flex items-center gap-1">
-                      <Film className="w-4 h-4" />
-                      {sb.aspect_ratio}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <FileText className="w-4 h-4" />
-                      {sb.section_count || 0} sections
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <ImageIcon className="w-4 h-4" />
-                      {sb.panel_count || 0} panels
-                    </span>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
 
         {/* Create Dialog */}
@@ -910,6 +1392,80 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
                     ))}
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Entity Connections */}
+              <div className="pt-2 border-t border-white/10">
+                <p className="text-sm text-muted-gray mb-3 flex items-center gap-1">
+                  <Link2 className="w-4 h-4" />
+                  Link to (Optional)
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Episode</Label>
+                    <Select value={formEpisodeId || '__none__'} onValueChange={(v) => setFormEpisodeId(v === '__none__' ? '' : v)}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {(episodes || []).map((ep: any) => (
+                          <SelectItem key={ep.id} value={ep.id}>
+                            {ep.episode_code} - {ep.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Scene</Label>
+                    <Select value={formSceneId || '__none__'} onValueChange={(v) => setFormSceneId(v === '__none__' ? '' : v)}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {(scenes || []).map((scene: any) => (
+                          <SelectItem key={scene.id} value={scene.id}>
+                            {scene.scene_number} - {scene.set_name || 'Scene'}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Shot List</Label>
+                    <Select value={formShotListId || '__none__'} onValueChange={(v) => setFormShotListId(v === '__none__' ? '' : v)}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {(shotLists || []).map((sl: any) => (
+                          <SelectItem key={sl.id} value={sl.id}>
+                            {sl.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Mood Board</Label>
+                    <Select value={formMoodboardId || '__none__'} onValueChange={(v) => setFormMoodboardId(v === '__none__' ? '' : v)}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">None</SelectItem>
+                        {(moodboards || []).map((mb: any) => (
+                          <SelectItem key={mb.id} value={mb.id}>
+                            {mb.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
               </div>
             </div>
             <DialogFooter>
@@ -998,6 +1554,23 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Panel View Mode Toggle */}
+          <Tabs value={panelViewMode} onValueChange={(v) => setPanelViewMode(v as PanelViewMode)}>
+            <TabsList className="h-8 bg-white/5">
+              <TabsTrigger value="list" className="px-2 h-7" title="List View">
+                <List className="w-4 h-4" />
+              </TabsTrigger>
+              <TabsTrigger value="card" className="px-2 h-7" title="Card View">
+                <LayoutGrid className="w-4 h-4" />
+              </TabsTrigger>
+              <TabsTrigger value="grid" className="px-2 h-7" title="Grid View">
+                <Grid3X3 className="w-4 h-4" />
+              </TabsTrigger>
+              <TabsTrigger value="filmstrip" className="px-2 h-7" title="Filmstrip View">
+                <Film className="w-4 h-4" />
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           {canEdit && (
             <Button
               variant="outline"
@@ -1021,6 +1594,14 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
           <Button variant="outline" onClick={handleExport} className="gap-2">
             <Download className="w-4 h-4" />
             Export CSV
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => window.open(`/backlot/${projectId}/storyboards/${selectedStoryboardId}/print`, '_blank')}
+            className="gap-2"
+          >
+            <Printer className="w-4 h-4" />
+            Print
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1065,6 +1646,8 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
           onClick={() => {
             setEditingSection(null);
             setSectionTitle('');
+            setSectionSceneId('');
+            setSectionShotListId('');
             setShowSectionDialog(true);
           }}
           className="gap-2"
@@ -1087,6 +1670,8 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
               onClick={() => {
                 setEditingSection(null);
                 setSectionTitle('');
+                setSectionSceneId('');
+                setSectionShotListId('');
                 setShowSectionDialog(true);
               }}
             >
@@ -1105,12 +1690,14 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
               totalSections={sortedSections.length}
               canEdit={canEdit}
               isLocked={isLocked}
+              panelViewMode={panelViewMode}
               onEditSection={openEditSection}
               onDeleteSection={(id) => {
                 setDeleteTargetId(id);
                 setShowDeleteSectionDialog(true);
               }}
               onAddPanel={openAddPanel}
+              onViewPanel={openViewPanel}
               onEditPanel={openEditPanel}
               onDeletePanel={(id) => {
                 setDeleteTargetId(id);
@@ -1210,6 +1797,48 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
                 onChange={(e) => setSectionTitle(e.target.value)}
                 placeholder="e.g., Act 1, Scene 5"
               />
+            </div>
+
+            {/* Entity Connections */}
+            <div className="pt-2 border-t border-white/10">
+              <p className="text-sm text-muted-gray mb-3 flex items-center gap-1">
+                <Link2 className="w-4 h-4" />
+                Link to (Optional)
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label className="text-xs">Scene</Label>
+                  <Select value={sectionSceneId || '__none__'} onValueChange={(v) => setSectionSceneId(v === '__none__' ? '' : v)}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      {(scenes || []).map((scene: any) => (
+                        <SelectItem key={scene.id} value={scene.id}>
+                          {scene.scene_number} - {scene.set_name || 'Scene'}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Shot List</Label>
+                  <Select value={sectionShotListId || '__none__'} onValueChange={(v) => setSectionShotListId(v === '__none__' ? '' : v)}>
+                    <SelectTrigger className="h-9">
+                      <SelectValue placeholder="None" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__">None</SelectItem>
+                      {(shotLists || []).map((sl: any) => (
+                        <SelectItem key={sl.id} value={sl.id}>
+                          {sl.title}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1369,14 +1998,30 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
               </div>
             </div>
             <div className="space-y-2">
-              <Label>Reference Image URL</Label>
-              <Input
-                value={panelForm.reference_image_url}
-                onChange={(e) =>
-                  setPanelForm((p) => ({ ...p, reference_image_url: e.target.value }))
-                }
-                placeholder="https://..."
-              />
+              <Label>Reference Image</Label>
+              {editingPanel ? (
+                <PanelImageUploader
+                  projectId={projectId}
+                  storyboardId={selectedStoryboardId!}
+                  panelId={editingPanel.id}
+                  currentImageUrl={panelForm.reference_image_url || null}
+                  onImageUploaded={(url) =>
+                    setPanelForm((p) => ({ ...p, reference_image_url: url }))
+                  }
+                  onImageRemoved={() =>
+                    setPanelForm((p) => ({ ...p, reference_image_url: '' }))
+                  }
+                  className="h-32"
+                />
+              ) : (
+                <PanelImageUploader
+                  projectId={projectId}
+                  storyboardId={selectedStoryboardId!}
+                  onFileSelected={handlePendingImageFile}
+                  stagedPreviewUrl={pendingImagePreview}
+                  className="h-32"
+                />
+              )}
             </div>
           </div>
           <DialogFooter>
@@ -1389,6 +2034,99 @@ export function StoryboardView({ projectId, canEdit }: StoryboardViewProps) {
             >
               {editingPanel ? 'Save' : 'Add Panel'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Panel Dialog (Read-only) */}
+      <Dialog open={!!viewingPanel} onOpenChange={(open) => !open && setViewingPanel(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{viewingPanel?.title || 'Panel Details'}</DialogTitle>
+          </DialogHeader>
+          {viewingPanel && (
+            <div className="space-y-4">
+              {/* Image */}
+              {viewingPanel.reference_image_url && (
+                <div className="aspect-video bg-black/20 rounded-lg overflow-hidden">
+                  <img
+                    src={viewingPanel.reference_image_url}
+                    alt="Panel reference"
+                    className="w-full h-full object-contain"
+                  />
+                </div>
+              )}
+
+              {/* Shot Info */}
+              <div className="flex flex-wrap gap-2">
+                {viewingPanel.shot_size && (
+                  <Badge variant="outline" className="border-blue-500/50 text-blue-400">
+                    {SHOT_SIZES.find((s) => s.value === viewingPanel.shot_size)?.label || viewingPanel.shot_size}
+                  </Badge>
+                )}
+                {viewingPanel.camera_move && (
+                  <Badge variant="outline" className="border-green-500/50 text-green-400">
+                    {CAMERA_MOVES.find((m) => m.value === viewingPanel.camera_move)?.label || viewingPanel.camera_move}
+                  </Badge>
+                )}
+                {viewingPanel.lens && (
+                  <Badge variant="outline" className="border-purple-500/50 text-purple-400">
+                    {viewingPanel.lens}
+                  </Badge>
+                )}
+                {viewingPanel.duration_seconds && (
+                  <Badge variant="outline" className="border-yellow-500/50 text-yellow-400">
+                    <Clock className="w-3 h-3 mr-1" />
+                    {viewingPanel.duration_seconds}s
+                  </Badge>
+                )}
+              </div>
+
+              {/* Details */}
+              <div className="grid grid-cols-1 gap-3 text-sm">
+                {viewingPanel.framing && (
+                  <div>
+                    <span className="text-muted-gray">Framing:</span>{' '}
+                    <span className="text-bone-white">{viewingPanel.framing}</span>
+                  </div>
+                )}
+                {viewingPanel.action && (
+                  <div>
+                    <span className="text-muted-gray">Action:</span>{' '}
+                    <span className="text-bone-white">{viewingPanel.action}</span>
+                  </div>
+                )}
+                {viewingPanel.dialogue && (
+                  <div>
+                    <span className="text-muted-gray">Dialogue:</span>{' '}
+                    <span className="text-bone-white italic">"{viewingPanel.dialogue}"</span>
+                  </div>
+                )}
+                {viewingPanel.audio && (
+                  <div>
+                    <span className="text-muted-gray">Audio:</span>{' '}
+                    <span className="text-bone-white">{viewingPanel.audio}</span>
+                  </div>
+                )}
+                {viewingPanel.notes && (
+                  <div>
+                    <span className="text-muted-gray">Notes:</span>{' '}
+                    <span className="text-bone-white">{viewingPanel.notes}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewingPanel(null)}>
+              Close
+            </Button>
+            {canEdit && !isLocked && viewingPanel && (
+              <Button onClick={() => openEditPanel(viewingPanel)}>
+                <Pencil className="w-4 h-4 mr-2" />
+                Edit Panel
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

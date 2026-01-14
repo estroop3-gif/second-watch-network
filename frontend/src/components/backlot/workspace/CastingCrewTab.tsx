@@ -98,6 +98,7 @@ import {
   Bell,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface CastingCrewTabProps {
   projectId: string;
@@ -396,8 +397,8 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
                         {person.start_date && (
                           <p className="text-xs text-muted-gray mt-1">
                             <Calendar className="w-3 h-3 inline mr-1" />
-                            {format(new Date(person.start_date), 'MMM d')}
-                            {person.end_date && ` - ${format(new Date(person.end_date), 'MMM d')}`}
+                            {format(parseLocalDate(person.start_date), 'MMM d')}
+                            {person.end_date && ` - ${format(parseLocalDate(person.end_date), 'MMM d')}`}
                           </p>
                         )}
                         {/* Document Status Badges */}
@@ -602,8 +603,8 @@ function RoleCard({ role, onDelete, onViewApplications }: RoleCardProps) {
               {role.start_date && (
                 <span className="flex items-center gap-1">
                   <Calendar className="w-4 h-4" />
-                  {format(new Date(role.start_date), 'MMM d')}
-                  {role.end_date && ` - ${format(new Date(role.end_date), 'MMM d')}`}
+                  {format(parseLocalDate(role.start_date), 'MMM d')}
+                  {role.end_date && ` - ${format(parseLocalDate(role.end_date), 'MMM d')}`}
                 </span>
               )}
               {role.days_estimated && (
@@ -957,7 +958,7 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
                     </Badge>
                     {request.due_date && (
                       <span className="text-xs text-muted-gray">
-                        Due: {format(new Date(request.due_date), 'MMM d')}
+                        Due: {format(parseLocalDate(request.due_date), 'MMM d')}
                       </span>
                     )}
                   </div>
@@ -1167,13 +1168,13 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
                     {showDealMemoDetails.start_date && (
                       <div>
                         <span className="text-muted-foreground">Start:</span>{' '}
-                        <span>{format(new Date(showDealMemoDetails.start_date), 'MMM d, yyyy')}</span>
+                        <span>{format(parseLocalDate(showDealMemoDetails.start_date), 'MMM d, yyyy')}</span>
                       </div>
                     )}
                     {showDealMemoDetails.end_date && (
                       <div>
                         <span className="text-muted-foreground">End:</span>{' '}
-                        <span>{format(new Date(showDealMemoDetails.end_date), 'MMM d, yyyy')}</span>
+                        <span>{format(parseLocalDate(showDealMemoDetails.end_date), 'MMM d, yyyy')}</span>
                       </div>
                     )}
                   </CardContent>

@@ -35,9 +35,21 @@ export interface StoryBeat {
   title: string;
   content?: string;
   notes?: string;
+  page_start?: number;
+  page_end?: number;
+  emotional_tone?: string;
+  primary_character_id?: string;
+  primary_character?: StoryCharacter;
   created_at: string;
   updated_at: string;
   character_arcs?: CharacterArc[];
+}
+
+export interface BeatTemplate {
+  id: string;
+  name: string;
+  beat_count: number;
+  description: string;
 }
 
 export interface StoryCharacter {
@@ -47,6 +59,12 @@ export interface StoryCharacter {
   role?: string; // protagonist, antagonist, supporting, minor
   arc_summary?: string;
   notes?: string;
+  contact_id?: string;
+  contact?: {
+    id: string;
+    name: string;
+    email?: string;
+  };
   created_at: string;
   updated_at: string;
   arcs?: CharacterArc[];
@@ -209,6 +227,10 @@ export function useCreateBeat(projectId: string, storyId: string) {
       act_marker?: string;
       content?: string;
       notes?: string;
+      page_start?: number;
+      page_end?: number;
+      emotional_tone?: string;
+      primary_character_id?: string;
     }) => {
       const token = localStorage.getItem('access_token');
       const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats`, {
@@ -239,6 +261,10 @@ export function useUpdateBeat(projectId: string, storyId: string) {
         act_marker?: string;
         content?: string;
         notes?: string;
+        page_start?: number;
+        page_end?: number;
+        emotional_tone?: string;
+        primary_character_id?: string;
       };
     }) => {
       const token = localStorage.getItem('access_token');
@@ -330,6 +356,7 @@ export function useCreateCharacter(projectId: string, storyId: string) {
       role?: string;
       arc_summary?: string;
       notes?: string;
+      contact_id?: string;
     }) => {
       const token = localStorage.getItem('access_token');
       const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters`, {
@@ -350,6 +377,35 @@ export function useCreateCharacter(projectId: string, storyId: string) {
   });
 }
 
+export function useCreateCharacterFromContact(projectId: string, storyId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: {
+      contact_id: string;
+      role?: string;
+      arc_summary?: string;
+      notes?: string;
+    }) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/from-contact`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) throw new Error('Failed to create character from contact');
+      return response.json() as Promise<StoryCharacter>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
+      queryClient.invalidateQueries({ queryKey: storyKeys.characters(projectId, storyId) });
+    },
+  });
+}
+
 export function useUpdateCharacter(projectId: string, storyId: string) {
   const queryClient = useQueryClient();
 
@@ -361,6 +417,7 @@ export function useUpdateCharacter(projectId: string, storyId: string) {
         role?: string;
         arc_summary?: string;
         notes?: string;
+        contact_id?: string | null;
       };
     }) => {
       const token = localStorage.getItem('access_token');
@@ -499,4 +556,346 @@ export function useStoryPrintData(projectId: string | null, storyId: string | nu
 export function getStoryExportUrl(projectId: string, storyId: string): string {
   const token = localStorage.getItem('access_token');
   return `/api/v1/backlot/projects/${projectId}/stories/${storyId}/export.csv?token=${token}`;
+}
+
+// =====================================================
+// Connection Types
+// =====================================================
+
+export interface BeatSceneLink {
+  id: string;
+  beat_id: string;
+  scene_id: string;
+  relationship: 'features' | 'setup' | 'payoff' | 'reference';
+  notes?: string;
+  created_at: string;
+  scene?: {
+    id: string;
+    scene_number: string;
+    int_ext?: string;
+    location?: string;
+    time_of_day?: string;
+    synopsis?: string;
+  };
+}
+
+export interface StoryEpisodeLink {
+  id: string;
+  story_id: string;
+  episode_id: string;
+  relationship: 'primary' | 'subplot' | 'arc';
+  notes?: string;
+  created_at: string;
+  episode?: {
+    id: string;
+    episode_number: number;
+    episode_code: string;
+    title: string;
+    logline?: string;
+  };
+}
+
+export interface CharacterCastLink {
+  id: string;
+  character_id: string;
+  role_id: string;
+  notes?: string;
+  created_at: string;
+  role?: {
+    id: string;
+    name: string;
+    description?: string;
+    cast_member_id?: string;
+  };
+  cast_member?: {
+    id: string;
+    user_id?: string;
+    role?: string;
+  };
+}
+
+// =====================================================
+// Connection Query Keys
+// =====================================================
+
+const connectionKeys = {
+  beatScenes: (projectId: string, storyId: string, beatId: string) =>
+    ['story-beat-scenes', projectId, storyId, beatId] as const,
+  storyEpisodes: (projectId: string, storyId: string) =>
+    ['story-episodes', projectId, storyId] as const,
+  characterCast: (projectId: string, storyId: string, characterId: string) =>
+    ['story-character-cast', projectId, storyId, characterId] as const,
+};
+
+// =====================================================
+// Beat-Scene Connection Hooks
+// =====================================================
+
+export function useBeatSceneLinks(projectId: string | null, storyId: string | null, beatId: string | null) {
+  return useQuery({
+    queryKey: connectionKeys.beatScenes(projectId || '', storyId || '', beatId || ''),
+    queryFn: async () => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to fetch beat scene links');
+      const data = await response.json();
+      return data.links as BeatSceneLink[];
+    },
+    enabled: !!projectId && !!storyId && !!beatId,
+  });
+}
+
+export function useLinkBeatToScene(projectId: string, storyId: string, beatId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: {
+      scene_id: string;
+      relationship?: 'features' | 'setup' | 'payoff' | 'reference';
+      notes?: string;
+    }) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+        }
+      );
+      if (!response.ok) throw new Error('Failed to link beat to scene');
+      return response.json() as Promise<BeatSceneLink>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.beatScenes(projectId, storyId, beatId) });
+    },
+  });
+}
+
+export function useUnlinkBeatFromScene(projectId: string, storyId: string, beatId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (linkId: string) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/beats/${beatId}/scenes/${linkId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to unlink beat from scene');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.beatScenes(projectId, storyId, beatId) });
+    },
+  });
+}
+
+// =====================================================
+// Story-Episode Connection Hooks
+// =====================================================
+
+export function useStoryEpisodeLinks(projectId: string | null, storyId: string | null) {
+  return useQuery({
+    queryKey: connectionKeys.storyEpisodes(projectId || '', storyId || ''),
+    queryFn: async () => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to fetch story episode links');
+      const data = await response.json();
+      return data.links as StoryEpisodeLink[];
+    },
+    enabled: !!projectId && !!storyId,
+  });
+}
+
+export function useLinkStoryToEpisode(projectId: string, storyId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: {
+      episode_id: string;
+      relationship?: 'primary' | 'subplot' | 'arc';
+      notes?: string;
+    }) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+        }
+      );
+      if (!response.ok) throw new Error('Failed to link story to episode');
+      return response.json() as Promise<StoryEpisodeLink>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.storyEpisodes(projectId, storyId) });
+    },
+  });
+}
+
+export function useUnlinkStoryFromEpisode(projectId: string, storyId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (linkId: string) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/episodes/${linkId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to unlink story from episode');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.storyEpisodes(projectId, storyId) });
+    },
+  });
+}
+
+// =====================================================
+// Character-Cast Connection Hooks
+// =====================================================
+
+export function useCharacterCastLinks(projectId: string | null, storyId: string | null, characterId: string | null) {
+  return useQuery({
+    queryKey: connectionKeys.characterCast(projectId || '', storyId || '', characterId || ''),
+    queryFn: async () => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!response.ok) throw new Error('Failed to fetch character cast links');
+      const data = await response.json();
+      return data.links as CharacterCastLink[];
+    },
+    enabled: !!projectId && !!storyId && !!characterId,
+  });
+}
+
+export function useLinkCharacterToCast(projectId: string, storyId: string, characterId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: {
+      role_id: string;
+      notes?: string;
+    }) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(data),
+        }
+      );
+      if (!response.ok) throw new Error('Failed to link character to cast');
+      return response.json() as Promise<CharacterCastLink>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.characterCast(projectId, storyId, characterId) });
+    },
+  });
+}
+
+export function useUnlinkCharacterFromCast(projectId: string, storyId: string, characterId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (linkId: string) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(
+        `/api/v1/backlot/projects/${projectId}/stories/${storyId}/characters/${characterId}/cast/${linkId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      if (!response.ok) throw new Error('Failed to unlink character from cast');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: connectionKeys.characterCast(projectId, storyId, characterId) });
+    },
+  });
+}
+
+// =====================================================
+// Beat Sheet Template Hooks
+// =====================================================
+
+export function useBeatTemplates(projectId: string, storyId: string | null) {
+  return useQuery({
+    queryKey: ['beat-templates', projectId, storyId],
+    queryFn: async () => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/templates`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error('Failed to fetch templates');
+      const data = await response.json();
+      return data.templates as BeatTemplate[];
+    },
+    enabled: !!projectId && !!storyId,
+  });
+}
+
+export function useApplyTemplate(projectId: string, storyId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ template }: { template: string }) => {
+      const token = localStorage.getItem('access_token');
+      const response = await fetch(`/api/v1/backlot/projects/${projectId}/stories/${storyId}/apply-template`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ template }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to apply template');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: storyKeys.detail(projectId, storyId) });
+    },
+  });
+}
+
+// =====================================================
+// PDF Export
+// =====================================================
+
+export function getBeatSheetPdfUrl(projectId: string, storyId: string): string {
+  const token = localStorage.getItem('access_token');
+  return `/api/v1/backlot/projects/${projectId}/stories/${storyId}/export.pdf?token=${token}`;
 }

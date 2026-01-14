@@ -38,6 +38,7 @@ import {
   BUDGET_STATUS_COLORS,
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface AnalyticsViewProps {
   projectId: string;
@@ -471,7 +472,7 @@ const TimeScheduleSection: React.FC<{ projectId: string }> = ({ projectId }) => 
                     <tr key={day.day_number} className="border-b border-muted-gray/10">
                       <td className="py-2 text-bone-white">Day {day.day_number}</td>
                       <td className="py-2 text-muted-gray">
-                        {day.date ? new Date(day.date).toLocaleDateString() : '-'}
+                        {day.date ? parseLocalDate(day.date).toLocaleDateString() : '-'}
                       </td>
                       <td className="py-2 text-right text-bone-white">{day.pages_planned}</td>
                       <td className="py-2 text-right text-green-400">{day.pages_shot}</td>

@@ -33,6 +33,12 @@ export interface StoryboardSection {
   created_at: string;
   updated_at: string;
   panels?: StoryboardPanel[];
+  // Entity connections
+  scene_id?: string | null;
+  shot_list_id?: string | null;
+  // Joined entity data
+  scene?: { id: string; scene_number: string; set_name?: string };
+  shot_list?: { id: string; title: string };
 }
 
 export interface Storyboard {
@@ -48,7 +54,20 @@ export interface Storyboard {
   sections?: StoryboardSection[];
   panel_count?: number;
   section_count?: number;
+  // Entity connections
+  episode_id?: string | null;
+  scene_id?: string | null;
+  shot_list_id?: string | null;
+  moodboard_id?: string | null;
+  // Joined entity data
+  episode?: { id: string; title: string; episode_code: string };
+  scene?: { id: string; scene_number: string; set_name?: string };
+  shot_list?: { id: string; title: string };
+  moodboard?: { id: string; title: string };
 }
+
+// View mode type for storyboard display
+export type StoryboardViewMode = 'list' | 'card' | 'grid';
 
 export interface StoryboardPrintData {
   storyboard: Storyboard;
@@ -148,6 +167,11 @@ export function useCreateStoryboard(projectId: string | null) {
       title: string;
       description?: string;
       aspect_ratio?: string;
+      // Entity connections
+      episode_id?: string;
+      scene_id?: string;
+      shot_list_id?: string;
+      moodboard_id?: string;
     }) => {
       if (!projectId) throw new Error('Project ID required');
       return api.post(`/api/v1/backlot/projects/${projectId}/storyboards`, data);
@@ -175,6 +199,11 @@ export function useUpdateStoryboard(projectId: string | null) {
         description: string;
         aspect_ratio: string;
         status: 'DRAFT' | 'LOCKED';
+        // Entity connections
+        episode_id: string | null;
+        scene_id: string | null;
+        shot_list_id: string | null;
+        moodboard_id: string | null;
       }>;
     }) => {
       if (!projectId) throw new Error('Project ID required');
@@ -216,7 +245,12 @@ export function useCreateSection(projectId: string | null, storyboardId: string 
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: { title: string }) => {
+    mutationFn: async (data: {
+      title: string;
+      // Entity connections
+      scene_id?: string;
+      shot_list_id?: string;
+    }) => {
       if (!projectId || !storyboardId) throw new Error('Project and Storyboard IDs required');
       return api.post(
         `/api/v1/backlot/projects/${projectId}/storyboards/${storyboardId}/sections`,
@@ -243,7 +277,12 @@ export function useUpdateSection(projectId: string | null, storyboardId: string 
       data,
     }: {
       sectionId: string;
-      data: { title: string };
+      data: Partial<{
+        title: string;
+        // Entity connections
+        scene_id: string | null;
+        shot_list_id: string | null;
+      }>;
     }) => {
       if (!projectId || !storyboardId) throw new Error('Project and Storyboard IDs required');
       return api.patch(
@@ -500,4 +539,194 @@ export function getShotSizeInfo(value: string) {
  */
 export function getCameraMoveInfo(value: string) {
   return CAMERA_MOVES.find((m) => m.value === value);
+}
+
+// =====================================================
+// Panel Image Upload
+// =====================================================
+
+/**
+ * Upload an image to a storyboard panel using presigned URL pattern
+ */
+export function usePanelImageUpload(projectId: string | null, storyboardId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ panelId, file }: { panelId: string; file: File }) => {
+      if (!projectId || !storyboardId) throw new Error('Project and Storyboard IDs required');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+      const baseUrl = import.meta.env.VITE_API_URL || '';
+
+      // Step 1: Get presigned upload URL
+      const urlResponse = await fetch(
+        `${baseUrl}/api/v1/backlot/projects/${projectId}/storyboards/${storyboardId}/panels/${panelId}/upload-url`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            file_name: file.name,
+            content_type: file.type,
+            file_size: file.size,
+          }),
+        }
+      );
+
+      if (!urlResponse.ok) {
+        const error = await urlResponse.json().catch(() => ({ detail: 'Failed to get upload URL' }));
+        throw new Error(error.detail);
+      }
+
+      const { upload_url, file_url } = await urlResponse.json();
+
+      // Step 2: Upload file to S3
+      const uploadResponse = await fetch(upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload file to S3');
+      }
+
+      // Step 3: Update panel with file URL
+      await api.put(
+        `/api/v1/backlot/projects/${projectId}/storyboards/${storyboardId}/panels/${panelId}`,
+        { reference_image_url: file_url }
+      );
+
+      return { file_url };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: storyboardKeys.detail(projectId || '', storyboardId || ''),
+      });
+    },
+  });
+}
+
+// =====================================================
+// Call Sheet Storyboard Links
+// =====================================================
+
+/**
+ * Fetch storyboards linked to a call sheet
+ */
+export function useCallSheetStoryboards(callSheetId: string | null) {
+  return useQuery({
+    queryKey: ['call-sheet-storyboards', callSheetId],
+    queryFn: async (): Promise<Storyboard[]> => {
+      if (!callSheetId) throw new Error('Call Sheet ID required');
+      const response = await api.get(`/api/v1/backlot/call-sheets/${callSheetId}/storyboards`);
+      return response.storyboards || [];
+    },
+    enabled: !!callSheetId,
+    staleTime: 30000,
+  });
+}
+
+/**
+ * Link/unlink storyboards to call sheets
+ */
+export function useCallSheetStoryboardLink() {
+  const queryClient = useQueryClient();
+
+  const link = useMutation({
+    mutationFn: async ({
+      callSheetId,
+      storyboardId,
+    }: {
+      callSheetId: string;
+      storyboardId: string;
+    }) => {
+      return api.post(
+        `/api/v1/backlot/call-sheets/${callSheetId}/storyboards/${storyboardId}/link`
+      );
+    },
+    onSuccess: (_, { callSheetId }) => {
+      queryClient.invalidateQueries({ queryKey: ['call-sheet-storyboards', callSheetId] });
+    },
+  });
+
+  const unlink = useMutation({
+    mutationFn: async ({
+      callSheetId,
+      storyboardId,
+    }: {
+      callSheetId: string;
+      storyboardId: string;
+    }) => {
+      return api.delete(
+        `/api/v1/backlot/call-sheets/${callSheetId}/storyboards/${storyboardId}/link`
+      );
+    },
+    onSuccess: (_, { callSheetId }) => {
+      queryClient.invalidateQueries({ queryKey: ['call-sheet-storyboards', callSheetId] });
+    },
+  });
+
+  return { link, unlink };
+}
+
+// =====================================================
+// Query by Entity
+// =====================================================
+
+/**
+ * Fetch storyboards linked to a specific scene
+ */
+export function useStoryboardsByScene(projectId: string | null, sceneId: string | null) {
+  return useQuery({
+    queryKey: ['storyboards-by-scene', projectId, sceneId],
+    queryFn: async (): Promise<Storyboard[]> => {
+      if (!projectId || !sceneId) throw new Error('Project and Scene IDs required');
+      const response = await api.get(
+        `/api/v1/backlot/projects/${projectId}/storyboards/by-scene/${sceneId}`
+      );
+      return response.storyboards || [];
+    },
+    enabled: !!projectId && !!sceneId,
+    staleTime: 30000,
+  });
+}
+
+/**
+ * Fetch storyboards linked to a specific episode
+ */
+export function useStoryboardsByEpisode(projectId: string | null, episodeId: string | null) {
+  return useQuery({
+    queryKey: ['storyboards-by-episode', projectId, episodeId],
+    queryFn: async (): Promise<Storyboard[]> => {
+      if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
+      const response = await api.get(
+        `/api/v1/backlot/projects/${projectId}/storyboards/by-episode/${episodeId}`
+      );
+      return response.storyboards || [];
+    },
+    enabled: !!projectId && !!episodeId,
+    staleTime: 30000,
+  });
+}
+
+/**
+ * Fetch storyboards linked to a specific shot list
+ */
+export function useStoryboardsByShotList(projectId: string | null, shotListId: string | null) {
+  return useQuery({
+    queryKey: ['storyboards-by-shot-list', projectId, shotListId],
+    queryFn: async (): Promise<Storyboard[]> => {
+      if (!projectId || !shotListId) throw new Error('Project and Shot List IDs required');
+      const response = await api.get(
+        `/api/v1/backlot/projects/${projectId}/storyboards/by-shot-list/${shotListId}`
+      );
+      return response.storyboards || [];
+    },
+    enabled: !!projectId && !!shotListId,
+    staleTime: 30000,
+  });
 }

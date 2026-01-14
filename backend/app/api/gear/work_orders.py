@@ -38,6 +38,7 @@ class WorkOrderCreate(BaseModel):
     destination_location_id: Optional[str] = None
     assigned_to: Optional[str] = None
     items: List[WorkOrderItemInput] = []
+    rental_request_id: Optional[str] = None  # If creating from rental request
 
 
 class WorkOrderUpdate(BaseModel):
@@ -127,6 +128,9 @@ async def list_work_orders(
     if status:
         conditions.append("wo.status = :status")
         params["status"] = status
+    else:
+        # Default: exclude checked_out and cancelled work orders
+        conditions.append("wo.status NOT IN ('checked_out', 'cancelled')")
 
     if assigned_to:
         conditions.append("wo.assigned_to = :assigned_to")
@@ -285,6 +289,81 @@ async def create_work_order(
                     "notes": item.notes,
                 }
             )
+
+    # If this work order was created from a rental request, mark the request as converted
+    if data.rental_request_id:
+        execute_update(
+            """
+            UPDATE gear_rental_requests
+            SET status = 'converted', updated_at = NOW()
+            WHERE id = :request_id
+            """,
+            {"request_id": data.rental_request_id}
+        )
+
+        # NEW: Auto-create backlot gear items if rental request is linked to a project
+        if data.backlot_project_id and data.items:
+            # Get rental request details
+            rental_request = execute_single(
+                """
+                SELECT rr.*, org.name as rental_house_name
+                FROM gear_rental_requests rr
+                JOIN organizations org ON org.id = rr.rental_house_org_id
+                WHERE rr.id = :request_id
+                """,
+                {"request_id": data.rental_request_id}
+            )
+
+            if rental_request:
+                # Create a backlot gear item for each work order item with an asset
+                for wo_item in data.items:
+                    if wo_item.asset_id:
+                        # Get asset details
+                        asset = execute_single(
+                            "SELECT name, manufacturer_serial FROM gear_assets WHERE id = :id",
+                            {"id": wo_item.asset_id}
+                        )
+
+                        if asset:
+                            # Use a default daily rate if not provided
+                            daily_rate = 100.00  # Default placeholder rate
+
+                            gear_item = execute_insert(
+                                """
+                                INSERT INTO backlot_gear_items (
+                                    project_id, name, description,
+                                    is_owned, rental_house,
+                                    rental_cost_per_day,
+                                    rental_weekly_rate,
+                                    rental_monthly_rate,
+                                    pickup_date, return_date,
+                                    status, serial_number, notes
+                                )
+                                VALUES (
+                                    :project_id, :name, :description,
+                                    FALSE, :rental_house,
+                                    :daily_rate,
+                                    :weekly_rate,
+                                    :monthly_rate,
+                                    :pickup_date, :return_date,
+                                    'reserved', :serial_number, :notes
+                                )
+                                RETURNING *
+                                """,
+                                {
+                                    "project_id": data.backlot_project_id,
+                                    "name": asset["name"],
+                                    "description": wo_item.notes,
+                                    "rental_house": rental_request.get("rental_house_name", "Rental House"),
+                                    "daily_rate": daily_rate,
+                                    "weekly_rate": daily_rate * 7 * 0.85,  # 15% weekly discount
+                                    "monthly_rate": daily_rate * 30 * 0.75,  # 25% monthly discount
+                                    "pickup_date": data.pickup_date,
+                                    "return_date": data.expected_return_date,
+                                    "serial_number": asset.get("manufacturer_serial"),
+                                    "notes": f"Work Order: {work_order['reference_number'] or work_order['id']}\nRental Request: {data.rental_request_id}",
+                                }
+                            )
 
     return {"work_order": work_order}
 
@@ -453,7 +532,7 @@ async def delete_work_order(
             detail="Can only delete draft or cancelled work orders"
         )
 
-    execute_query(
+    execute_update(
         """
         DELETE FROM gear_work_orders
         WHERE id = :id AND organization_id = :org_id
@@ -524,7 +603,7 @@ async def remove_work_order_item(
     if existing["status"] in ("checked_out", "cancelled"):
         raise HTTPException(status_code=400, detail="Cannot modify checked out or cancelled work order")
 
-    execute_query(
+    execute_update(
         """
         DELETE FROM gear_work_order_items
         WHERE id = :item_id AND work_order_id = :work_order_id
@@ -899,7 +978,7 @@ async def checkout_from_work_order(
     for item in items:
         if item.get("asset_id"):
             # Add to transaction
-            execute_insert(
+            execute_update(
                 """
                 INSERT INTO gear_transaction_items (
                     transaction_id, asset_id, quantity, notes
@@ -916,7 +995,7 @@ async def checkout_from_work_order(
             )
 
             # Update asset status
-            execute_query(
+            execute_update(
                 """
                 UPDATE gear_assets
                 SET status = 'checked_out',
@@ -932,7 +1011,7 @@ async def checkout_from_work_order(
 
         elif item.get("kit_instance_id"):
             # Add kit to transaction
-            execute_insert(
+            execute_update(
                 """
                 INSERT INTO gear_transaction_items (
                     transaction_id, kit_instance_id, quantity, notes
@@ -949,7 +1028,7 @@ async def checkout_from_work_order(
             )
 
             # Update kit status
-            execute_query(
+            execute_update(
                 """
                 UPDATE gear_kit_instances
                 SET status = 'checked_out', updated_at = NOW()

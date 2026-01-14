@@ -187,7 +187,7 @@ async def get_my_reputation(
         SELECT o.name
         FROM organization_members om
         JOIN organizations o ON o.id = om.organization_id
-        WHERE om.organization_id = :org_id AND om.user_id = :user_id AND om.is_active = TRUE
+        WHERE om.organization_id = :org_id AND om.user_id = :user_id AND om.status = 'active'
         """,
         {"org_id": org_id, "user_id": profile_id}
     )

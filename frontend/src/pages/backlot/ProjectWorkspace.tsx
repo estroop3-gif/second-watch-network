@@ -888,7 +888,15 @@ const ProjectWorkspace: React.FC = () => {
             />
           )}
           {activeView === 'expenses' && (
-            <ExpensesView projectId={project.id} canEdit={permission?.canEdit || false} />
+            <ExpensesView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              onNavigateToTab={(tab, subTab) => {
+                startTransition(() => {
+                  setActiveView(tab as BacklotWorkspaceView);
+                });
+              }}
+            />
           )}
           {activeView === 'invoices' && (
             <InvoicesView

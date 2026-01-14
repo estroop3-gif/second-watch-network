@@ -83,6 +83,7 @@ import {
   Play,
   HardDrive,
 } from 'lucide-react';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useAssets,
   useAssetsSummary,
@@ -788,7 +789,7 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
                       <div className="flex items-center gap-2">
                         {deliverable.due_date && (
                           <Badge variant="outline" className="text-xs border-muted-gray/30 text-muted-gray">
-                            Due: {new Date(deliverable.due_date).toLocaleDateString()}
+                            Due: {parseLocalDate(deliverable.due_date).toLocaleDateString()}
                           </Badge>
                         )}
 

@@ -24,6 +24,7 @@ import {
 import { BacklotProject } from '@/types/backlot';
 import { useProjectDashboard, useProject } from '@/hooks/backlot';
 import { formatDistanceToNow, format, isAfter, isBefore, addDays } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface ProjectOverviewProps {
   project: BacklotProject;
@@ -91,7 +92,7 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project: initialProje
   // Find upcoming shoot days
   const today = new Date();
   const upcomingDays = days
-    .filter((d) => isAfter(new Date(d.date), addDays(today, -1)) && !d.is_completed)
+    .filter((d) => isAfter(parseLocalDate(d.date), addDays(today, -1)) && !d.is_completed)
     .slice(0, 3);
 
   return (
@@ -145,13 +146,13 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project: initialProje
             {project.target_start_date && (
               <div className="text-sm text-muted-gray">
                 <span className="text-bone-white">Start:</span>{' '}
-                {format(new Date(project.target_start_date), 'MMM d, yyyy')}
+                {format(parseLocalDate(project.target_start_date), 'MMM d, yyyy')}
               </div>
             )}
             {project.target_end_date && (
               <div className="text-sm text-muted-gray">
                 <span className="text-bone-white">Wrap:</span>{' '}
-                {format(new Date(project.target_end_date), 'MMM d, yyyy')}
+                {format(parseLocalDate(project.target_end_date), 'MMM d, yyyy')}
               </div>
             )}
           </div>
@@ -253,15 +254,15 @@ const ProjectOverview: React.FC<ProjectOverviewProps> = ({ project: initialProje
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="font-medium text-bone-white">
-                        Day {day.day_number}: {day.title || format(new Date(day.date), 'EEEE')}
+                        Day {day.day_number}: {day.title || format(parseLocalDate(day.date), 'EEEE')}
                       </div>
                       <div className="text-sm text-muted-gray">
-                        {format(new Date(day.date), 'MMMM d, yyyy')}
+                        {format(parseLocalDate(day.date), 'MMMM d, yyyy')}
                         {day.general_call_time && ` • Call: ${day.general_call_time}`}
                       </div>
                     </div>
                     <Badge variant="outline" className="border-muted-gray/30 text-xs">
-                      {formatDistanceToNow(new Date(day.date), { addSuffix: true })}
+                      {formatDistanceToNow(parseLocalDate(day.date), { addSuffix: true })}
                     </Badge>
                   </div>
                 </div>

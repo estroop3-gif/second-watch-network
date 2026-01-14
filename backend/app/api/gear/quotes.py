@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user
-from app.core.database import execute_query, execute_single, execute_insert
+from app.core.database import execute_query, execute_single, execute_insert, execute_update
 
 from app.services import gear_service
 
@@ -139,6 +139,11 @@ class ExtensionResponse(BaseModel):
     denial_reason: Optional[str] = None
 
 
+class RejectRequestInput(BaseModel):
+    """Request to reject a rental request with optional reason."""
+    reason: Optional[str] = None
+
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -194,6 +199,135 @@ def generate_order_number(org_id: str) -> str:
     return f"RO-{num:05d}"
 
 
+async def validate_item_availability(
+    asset_id: str,
+    listing_id: str | None,
+    start_date: date,
+    end_date: date,
+    org_id: str
+) -> tuple[bool, str]:
+    """
+    Check if gear is available for requested dates.
+
+    Checks:
+    1. Asset status (must be available/reserved)
+    2. Overlapping rental orders
+    3. Overlapping internal checkouts
+    4. Work order reservations (always for checked-out, conditionally for pre-checkout)
+    5. Blackout dates
+
+    Returns: (is_available, reason_if_not_available)
+    """
+    # Check asset status
+    asset = execute_single(
+        "SELECT status FROM gear_assets WHERE id = :asset_id",
+        {"asset_id": asset_id}
+    )
+
+    if not asset:
+        return (False, "Asset not found")
+
+    # Only reject permanently unavailable assets
+    # Allow checked_out/under_repair/in_transit if dates don't conflict (checked below)
+    if asset["status"] in ("retired", "lost"):
+        return (False, f"Asset is {asset.get('status', 'unavailable')}")
+
+    # Check overlapping rental orders
+    overlapping = execute_single(
+        """
+        SELECT COUNT(*) as count
+        FROM gear_rental_orders ro
+        JOIN gear_rental_order_items roi ON roi.order_id = ro.id
+        WHERE roi.asset_id = :asset_id
+          AND ro.status IN ('confirmed', 'building', 'packed',
+                           'ready_for_pickup', 'picked_up', 'in_use')
+          AND ro.rental_start_date <= :end_date
+          AND ro.rental_end_date >= :start_date
+        """,
+        {"asset_id": asset_id, "start_date": start_date, "end_date": end_date}
+    )
+
+    if overlapping and overlapping["count"] > 0:
+        return (False, "Already rented for these dates")
+
+    # Check overlapping internal checkouts
+    internal_checkout = execute_single(
+        """
+        SELECT COUNT(*) as count
+        FROM gear_transactions gt
+        JOIN gear_transaction_items gti ON gti.transaction_id = gt.id
+        WHERE gti.asset_id = :asset_id
+          AND gt.organization_id = :org_id
+          AND gt.transaction_type = 'internal_checkout'
+          AND gt.status IN ('pending', 'in_progress')
+          AND gt.returned_at IS NULL
+          AND gt.scheduled_at IS NOT NULL
+          AND gt.expected_return_at IS NOT NULL
+          AND DATE(gt.scheduled_at) <= :end_date
+          AND DATE(gt.expected_return_at) >= :start_date
+        """,
+        {"asset_id": asset_id, "org_id": org_id, "start_date": start_date, "end_date": end_date}
+    )
+
+    if internal_checkout and internal_checkout["count"] > 0:
+        return (False, "Internal checkout scheduled for these dates")
+
+    # Check work orders
+    # ALWAYS blocks checked-out work orders (asset physically with custodian)
+    # Conditionally blocks pre-checkout work orders based on rental house setting
+    settings = execute_single(
+        "SELECT work_order_reserves_dates FROM gear_marketplace_settings WHERE organization_id = :org_id",
+        {"org_id": org_id}
+    )
+
+    reserves_dates = settings.get("work_order_reserves_dates", False) if settings else False
+
+    wo_overlap = execute_single(
+        """
+        SELECT COUNT(*) as count
+        FROM gear_work_orders wo
+        JOIN gear_work_order_items woi ON woi.work_order_id = wo.id
+        WHERE woi.asset_id = :asset_id
+          AND wo.organization_id = :org_id
+          AND wo.expected_return_date IS NOT NULL
+          AND wo.pickup_date <= :end_date
+          AND wo.expected_return_date >= :start_date
+          AND (
+            -- Always block checked-out work orders (mandatory)
+            wo.status = 'checked_out'
+            OR
+            -- Conditionally block pre-checkout work orders (optional, rental house setting)
+            (wo.status IN ('in_progress', 'ready') AND :reserves_dates = TRUE)
+          )
+        """,
+        {"asset_id": asset_id, "org_id": org_id, "start_date": start_date, "end_date": end_date, "reserves_dates": reserves_dates}
+    )
+
+    if wo_overlap and wo_overlap["count"] > 0:
+        return (False, "Reserved for work order")
+
+    # Check blackout dates
+    if listing_id:
+        listing = execute_single(
+            "SELECT blackout_dates FROM gear_marketplace_listings WHERE id = :id",
+            {"id": listing_id}
+        )
+
+        if listing:
+            blackout_dates = listing.get("blackout_dates", []) or []
+            for bd in blackout_dates:
+                if bd.get("start") and bd.get("end"):
+                    try:
+                        bd_start = datetime.strptime(bd["start"], "%Y-%m-%d").date()
+                        bd_end = datetime.strptime(bd["end"], "%Y-%m-%d").date()
+                        if bd_start <= end_date and bd_end >= start_date:
+                            return (False, "Blackout period")
+                    except (ValueError, TypeError):
+                        continue
+
+    return (True, "")
+
+
 # ============================================================================
 # RENTAL REQUEST ENDPOINTS (Renter Side)
 # ============================================================================
@@ -214,7 +348,7 @@ async def create_rental_request(
     user_org = execute_single(
         """
         SELECT organization_id FROM organization_members
-        WHERE user_id = :user_id AND is_active = TRUE
+        WHERE user_id = :user_id AND status = 'active'
         ORDER BY role = 'owner' DESC, role = 'admin' DESC
         LIMIT 1
         """,
@@ -229,6 +363,56 @@ async def create_rental_request(
     # Validate items
     if not data.items:
         raise HTTPException(status_code=400, detail="At least one item is required")
+
+    # Validate availability for items with specific assets
+    validated_items = []
+    unavailable_items = []
+
+    for item_data in data.items:
+        if item_data.asset_id:
+            # Get the rental house org_id - either from request or from asset's owner
+            rental_house_id = data.rental_house_org_id
+            if not rental_house_id:
+                # Get asset's organization
+                asset_org = execute_single(
+                    "SELECT organization_id FROM gear_assets WHERE id = :asset_id",
+                    {"asset_id": item_data.asset_id}
+                )
+                if asset_org:
+                    rental_house_id = asset_org["organization_id"]
+
+            if rental_house_id:
+                is_available, reason = await validate_item_availability(
+                    asset_id=item_data.asset_id,
+                    listing_id=item_data.listing_id,
+                    start_date=data.rental_start_date,
+                    end_date=data.rental_end_date,
+                    org_id=rental_house_id
+                )
+
+                if is_available:
+                    validated_items.append(item_data)
+                else:
+                    unavailable_items.append({
+                        "asset_id": item_data.asset_id,
+                        "listing_id": item_data.listing_id,
+                        "reason": reason
+                    })
+            else:
+                validated_items.append(item_data)
+        else:
+            # Category requests always pass
+            validated_items.append(item_data)
+
+    # If NO items available, reject entirely
+    if not validated_items:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "No items are available for the requested dates",
+                "unavailable_items": unavailable_items
+            }
+        )
 
     try:
         request_number = generate_request_number(org_id)
@@ -288,9 +472,10 @@ async def create_rental_request(
 
         request_id = request["id"]
 
-        # Create request items
-        for idx, item in enumerate(data.items):
-            execute_insert(
+        # Create request items (using validated items only)
+        created_items = []
+        for idx, item in enumerate(validated_items):
+            created_item = execute_insert(
                 """
                 INSERT INTO gear_rental_request_items (
                     request_id,
@@ -309,6 +494,7 @@ async def create_rental_request(
                     :notes,
                     :sort_order
                 )
+                RETURNING *
                 """,
                 {
                     "request_id": request_id,
@@ -320,10 +506,11 @@ async def create_rental_request(
                     "sort_order": idx
                 }
             )
+            created_items.append(created_item)
 
         # Store budget integration info if provided
         if data.budget_line_item_id or data.auto_create_budget_line:
-            execute_query(
+            execute_update(
                 """
                 UPDATE gear_rental_requests
                 SET budget_line_item_id = :budget_line_item_id,
@@ -337,7 +524,17 @@ async def create_rental_request(
                 }
             )
 
-        return {"request": request}
+        # Build response with warning if items were removed
+        response = {"request": request, "items": created_items}
+
+        if unavailable_items:
+            response["warning"] = {
+                "message": f"{len(unavailable_items)} item(s) were unavailable and removed from your request",
+                "unavailable_items": unavailable_items,
+                "items_kept": len(validated_items)
+            }
+
+        return response
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create request: {str(e)}")
@@ -357,7 +554,7 @@ async def list_my_requests(
     user_orgs = execute_query(
         """
         SELECT organization_id FROM organization_members
-        WHERE user_id = :user_id AND is_active = TRUE
+        WHERE user_id = :user_id AND status = 'active'
         """,
         {"user_id": profile_id}
     )
@@ -441,7 +638,7 @@ async def get_request(
     user_orgs = execute_query(
         """
         SELECT organization_id FROM organization_members
-        WHERE user_id = :user_id AND is_active = TRUE
+        WHERE user_id = :user_id AND status = 'active'
         """,
         {"user_id": profile_id}
     )
@@ -505,7 +702,7 @@ async def cancel_request(
 
     # Verify ownership
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]
@@ -522,6 +719,84 @@ async def cancel_request(
     )
 
     return {"success": True, "message": "Request cancelled"}
+
+
+@router.post("/request/{request_id}/reject")
+async def reject_request(
+    request_id: str,
+    data: RejectRequestInput,
+    user=Depends(get_current_user)
+):
+    """Reject a rental request (rental house side)."""
+    profile_id = get_profile_id(user)
+
+    request = execute_single(
+        "SELECT * FROM gear_rental_requests WHERE id = :id",
+        {"id": request_id}
+    )
+
+    if not request:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    # Verify rental house access
+    if not request["rental_house_org_id"]:
+        raise HTTPException(status_code=400, detail="Request has no rental house assigned")
+
+    user_orgs = execute_query(
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
+        {"user_id": profile_id}
+    )
+    user_org_ids = [o["organization_id"] for o in user_orgs]
+
+    if request["rental_house_org_id"] not in user_org_ids:
+        raise HTTPException(status_code=403, detail="Only the rental house can reject this request")
+
+    if request["status"] in ("converted", "cancelled", "rejected"):
+        raise HTTPException(status_code=400, detail="Request cannot be rejected")
+
+    # Update request status
+    if data.reason:
+        # Update with rejection reason
+        current_notes = request.get("notes", "")
+        new_notes = f"{current_notes}\n\nRejection reason: {data.reason}" if current_notes else f"Rejection reason: {data.reason}"
+        execute_update(
+            """
+            UPDATE gear_rental_requests
+            SET status = 'rejected', notes = :notes, updated_at = NOW()
+            WHERE id = :id
+            """,
+            {"id": request_id, "notes": new_notes}
+        )
+    else:
+        # Update without reason
+        execute_update(
+            "UPDATE gear_rental_requests SET status = 'rejected', updated_at = NOW() WHERE id = :id",
+            {"id": request_id}
+        )
+
+    # Create notification for requester
+    try:
+        from app.core.database import get_client
+        client = get_client()
+
+        notification_message = f"Your rental request '{request.get('title', 'Request')}' has been rejected"
+        if data.reason:
+            notification_message += f": {data.reason}"
+
+        client.table("notifications").insert({
+            "user_id": request["requested_by_user_id"],
+            "type": "gear_request_rejected",
+            "title": "Rental Request Rejected",
+            "message": notification_message,
+            "data": {
+                "request_id": request_id,
+                "reason": data.reason,
+            }
+        }).execute()
+    except Exception:
+        pass  # Don't fail if notification fails
+
+    return {"success": True, "message": "Request rejected"}
 
 
 # ============================================================================
@@ -771,7 +1046,7 @@ async def get_quote(
 
     # Verify access
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]
@@ -804,9 +1079,10 @@ async def get_quote(
 async def approve_quote(
     quote_id: str,
     payment_method: Optional[str] = Query(None, description="stripe or invoice"),
+    create_work_order: bool = Query(True, description="Auto-create work order for staging"),
     user=Depends(get_current_user)
 ):
-    """Approve a quote (renter side). Creates a rental order."""
+    """Approve a quote (renter side). Creates rental order, work order (optional), and backlot gear items."""
     profile_id = get_profile_id(user)
 
     quote = execute_single(
@@ -825,7 +1101,7 @@ async def approve_quote(
 
     # Verify ownership
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]
@@ -911,14 +1187,17 @@ async def approve_quote(
 
         order_id = order["id"]
 
-        # Copy quote items to order items
+        # Copy quote items to order items AND create backlot gear items
         quote_items = execute_query(
             "SELECT * FROM gear_rental_quote_items WHERE quote_id = :quote_id ORDER BY sort_order",
             {"quote_id": quote_id}
         )
 
+        created_gear_items = []
+
         for item in quote_items:
-            execute_insert(
+            # Create rental order item
+            order_item = execute_insert(
                 """
                 INSERT INTO gear_rental_order_items (
                     order_id,
@@ -939,6 +1218,7 @@ async def approve_quote(
                     :line_total,
                     :sort_order
                 )
+                RETURNING *
                 """,
                 {
                     "order_id": order_id,
@@ -952,15 +1232,158 @@ async def approve_quote(
                 }
             )
 
+            # Create backlot gear item if project linked
+            if quote.get("backlot_project_id"):
+                # Fetch asset details for naming
+                asset = None
+                if item.get("asset_id"):
+                    asset = execute_single(
+                        "SELECT * FROM gear_assets WHERE id = :id",
+                        {"id": item["asset_id"]}
+                    )
+
+                # Get rental house org name
+                org = execute_single(
+                    "SELECT name FROM organizations WHERE id = :id",
+                    {"id": quote["rental_house_org_id"]}
+                )
+
+                gear_item_name = asset["name"] if asset else item.get("item_description", "Rental Item")
+
+                # Calculate weekly/monthly rates from quoted_rate based on rate_type
+                # rate_type comes from the quote item, not the order item
+                daily_rate = item.get("quoted_rate", 0)
+                rate_type = item.get("rate_type", "daily")
+
+                if rate_type == "weekly":
+                    weekly_rate = daily_rate
+                    monthly_rate = daily_rate * 4.3  # ~4.3 weeks per month
+                    daily_equiv = daily_rate / 7
+                elif rate_type == "monthly":
+                    monthly_rate = daily_rate
+                    weekly_rate = daily_rate / 4.3
+                    daily_equiv = daily_rate / 30
+                else:  # daily
+                    daily_equiv = daily_rate
+                    weekly_rate = daily_rate * 7 * 0.85  # 15% weekly discount
+                    monthly_rate = daily_rate * 30 * 0.75  # 25% monthly discount
+
+                gear_item = execute_insert(
+                    """
+                    INSERT INTO backlot_gear_items (
+                        project_id, name, category, description,
+                        is_owned, rental_house,
+                        rental_cost_per_day, rental_rate_type,
+                        rental_weekly_rate, rental_monthly_rate,
+                        pickup_date, return_date,
+                        status, gear_rental_order_item_id,
+                        serial_number, notes
+                    )
+                    VALUES (
+                        :project_id, :name, :category, :description,
+                        FALSE, :rental_house,
+                        :daily_rate, :rate_type,
+                        :weekly_rate, :monthly_rate,
+                        :pickup_date, :return_date,
+                        'reserved', :order_item_id,
+                        :serial_number, :notes
+                    )
+                    RETURNING *
+                    """,
+                    {
+                        "project_id": quote["backlot_project_id"],
+                        "name": gear_item_name,
+                        "category": asset.get("category_id") if asset else None,
+                        "description": item.get("item_description"),
+                        "rental_house": org.get("name") if org else "Rental House",
+                        "daily_rate": daily_equiv,
+                        "rate_type": rate_type,
+                        "weekly_rate": weekly_rate,
+                        "monthly_rate": monthly_rate,
+                        "pickup_date": quote["rental_start_date"],
+                        "return_date": quote["rental_end_date"],
+                        "order_item_id": order_item["id"],
+                        "serial_number": asset.get("serial_number") if asset else None,
+                        "notes": f"Rental Order: {order_number}",
+                    }
+                )
+
+                # Update reverse link
+                execute_query(
+                    """
+                    UPDATE gear_rental_order_items
+                    SET backlot_gear_item_id = :gear_id
+                    WHERE id = :item_id
+                    """,
+                    {"gear_id": gear_item["id"], "item_id": order_item["id"]}
+                )
+
+                created_gear_items.append(gear_item)
+
         # Update request status
         execute_query(
             "UPDATE gear_rental_requests SET status = 'converted', updated_at = NOW() WHERE id = :id",
             {"id": quote["request_id"]}
         )
 
-        # Handle budget integration if configured
-        if quote.get("auto_create_budget_line") and quote.get("backlot_project_id"):
-            # Auto-create budget line item for this rental
+        # Auto-create work order if requested
+        work_order = None
+        if create_work_order:
+            work_order = execute_insert(
+                """
+                INSERT INTO gear_work_orders (
+                    organization_id, gear_rental_order_id,
+                    title, notes, status,
+                    created_by, backlot_project_id,
+                    pickup_date, expected_return_date
+                )
+                VALUES (
+                    :org_id, :order_id,
+                    :title, :notes, 'draft',
+                    :created_by, :project_id,
+                    :pickup_date, :return_date
+                )
+                RETURNING *
+                """,
+                {
+                    "org_id": quote["rental_house_org_id"],
+                    "order_id": order["id"],
+                    "title": f"Rental Order {order_number}",
+                    "notes": f"Prepare equipment for rental order {order_number}",
+                    "created_by": profile_id,
+                    "project_id": quote.get("backlot_project_id"),
+                    "pickup_date": quote["rental_start_date"],
+                    "return_date": quote["rental_end_date"],
+                }
+            )
+
+            # Add items to work order
+            for item in quote_items:
+                if item.get("asset_id"):
+                    execute_insert(
+                        """
+                        INSERT INTO gear_work_order_items (
+                            work_order_id, asset_id, quantity, notes
+                        )
+                        VALUES (:wo_id, :asset_id, :quantity, :notes)
+                        """,
+                        {
+                            "wo_id": work_order["id"],
+                            "asset_id": item["asset_id"],
+                            "quantity": item.get("quantity", 1),
+                            "notes": item.get("item_description"),
+                        }
+                    )
+
+        # Sync rental to budget if configured
+        if quote.get("backlot_project_id") and created_gear_items:
+            await _sync_rental_to_budget(
+                project_id=quote["backlot_project_id"],
+                gear_items=created_gear_items,
+                order=order
+            )
+        elif quote.get("auto_create_budget_line") and quote.get("backlot_project_id"):
+            # Fallback: old budget integration (single line item)
             execute_insert(
                 """
                 INSERT INTO backlot_budget_line_items (
@@ -993,11 +1416,104 @@ async def approve_quote(
         return {
             "success": True,
             "order": order,
+            "work_order": work_order,
+            "gear_items_created": len(created_gear_items),
             "message": f"Quote approved. Rental order {order_number} created."
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to approve quote: {str(e)}")
+
+
+async def _sync_rental_to_budget(project_id: str, gear_items: List[Dict[str, Any]], order: Dict[str, Any]):
+    """Sync rental gear items to budget line items."""
+    # Check if project has active budget
+    budget = execute_single(
+        """
+        SELECT id FROM backlot_budgets
+        WHERE project_id = :project_id AND is_active = TRUE
+        LIMIT 1
+        """,
+        {"project_id": project_id}
+    )
+
+    if not budget:
+        # No active budget, create individual line items without budget_id
+        for item in gear_items:
+            # Calculate total cost based on rental period
+            rental_days = (order["rental_end_date"] - order["rental_start_date"]).days + 1
+            total_cost = item["rental_cost_per_day"] * rental_days
+
+            execute_insert(
+                """
+                INSERT INTO backlot_budget_line_items (
+                    project_id,
+                    category,
+                    sub_category,
+                    description,
+                    estimated_cost,
+                    actual_cost,
+                    notes
+                ) VALUES (
+                    :project_id,
+                    'Equipment Rentals',
+                    :sub_category,
+                    :description,
+                    :cost,
+                    0,
+                    :notes
+                )
+                """,
+                {
+                    "project_id": project_id,
+                    "sub_category": item.get("category") or "General",
+                    "description": f"{item['name']} - Rental",
+                    "cost": total_cost,
+                    "notes": f"Auto-synced from rental order {order['order_number']}. "
+                            f"{rental_days} days @ ${item['rental_cost_per_day']}/day"
+                }
+            )
+    else:
+        # Active budget exists, create line items with budget_id
+        for item in gear_items:
+            rental_days = (order["rental_end_date"] - order["rental_start_date"]).days + 1
+            total_cost = item["rental_cost_per_day"] * rental_days
+
+            # Use upsert logic in case the budget system supports source tracking
+            execute_query(
+                """
+                INSERT INTO backlot_budget_line_items (
+                    budget_id,
+                    project_id,
+                    category,
+                    sub_category,
+                    description,
+                    estimated_cost,
+                    actual_cost,
+                    notes
+                ) VALUES (
+                    :budget_id,
+                    :project_id,
+                    'Equipment Rentals',
+                    :sub_category,
+                    :description,
+                    :cost,
+                    0,
+                    :notes
+                )
+                """,
+                {
+                    "budget_id": budget["id"],
+                    "project_id": project_id,
+                    "sub_category": item.get("category") or "General",
+                    "description": f"{item['name']} - Rental",
+                    "cost": total_cost,
+                    "notes": f"Auto-synced from rental order {order['order_number']}. "
+                            f"{rental_days} days @ ${item['rental_cost_per_day']}/day. "
+                            f"Weekly rate: ${item.get('rental_weekly_rate', 0)}, "
+                            f"Monthly rate: ${item.get('rental_monthly_rate', 0)}"
+                }
+            )
 
 
 @router.post("/quote/{quote_id}/reject")
@@ -1024,7 +1540,7 @@ async def reject_quote(
 
     # Verify ownership
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]

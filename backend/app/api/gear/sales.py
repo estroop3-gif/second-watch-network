@@ -95,7 +95,7 @@ def check_org_member(user_id: str, org_id: str, require_admin: bool = False) -> 
     member = execute_single(
         f"""
         SELECT id FROM organization_members
-        WHERE user_id = :user_id AND organization_id = :org_id AND is_active = TRUE
+        WHERE user_id = :user_id AND organization_id = :org_id AND status = 'active'
         {role_check}
         """,
         {"user_id": user_id, "org_id": org_id}
@@ -166,7 +166,7 @@ async def make_offer(
     buyer_org = execute_single(
         """
         SELECT organization_id FROM organization_members
-        WHERE user_id = :user_id AND is_active = TRUE
+        WHERE user_id = :user_id AND status = 'active'
         LIMIT 1
         """,
         {"user_id": profile_id}
@@ -192,7 +192,7 @@ async def make_offer(
     seller_member = execute_single(
         """
         SELECT user_id FROM organization_members
-        WHERE organization_id = :org_id AND role IN ('owner', 'admin') AND is_active = TRUE
+        WHERE organization_id = :org_id AND role IN ('owner', 'admin') AND status = 'active'
         LIMIT 1
         """,
         {"org_id": str(listing["organization_id"])}

@@ -59,6 +59,7 @@ import {
   BacklotContactStatus,
 } from '@/types/backlot';
 import { formatDistanceToNow, format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 interface ContactsViewProps {
@@ -179,13 +180,13 @@ const ContactCard: React.FC<{
             {contact.last_contact_date && (
               <span className="flex items-center gap-1">
                 <MessageSquare className="w-3 h-3" />
-                Last contact: {format(new Date(contact.last_contact_date), 'MMM d')}
+                Last contact: {format(parseLocalDate(contact.last_contact_date), 'MMM d')}
               </span>
             )}
             {contact.next_follow_up_date && (
               <span className="flex items-center gap-1">
                 <Calendar className="w-3 h-3" />
-                Follow up: {format(new Date(contact.next_follow_up_date), 'MMM d')}
+                Follow up: {format(parseLocalDate(contact.next_follow_up_date), 'MMM d')}
               </span>
             )}
           </div>

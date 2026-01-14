@@ -6,6 +6,22 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
 // Types
+// Category options for moodboard items
+export const MOODBOARD_CATEGORIES = [
+  'Lighting',
+  'Wardrobe',
+  'Location',
+  'Props',
+  'Color',
+  'Character',
+  'Mood',
+  'Other',
+] as const;
+
+export type MoodboardCategory = typeof MOODBOARD_CATEGORIES[number];
+
+export type AspectRatio = 'landscape' | 'portrait' | 'square';
+
 export interface MoodboardItem {
   id: string;
   project_id: string;
@@ -17,6 +33,10 @@ export interface MoodboardItem {
   title: string | null;
   notes: string | null;
   tags: string[];
+  category: MoodboardCategory | null;
+  rating: number | null;
+  color_palette: string[];
+  aspect_ratio: AspectRatio | null;
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
@@ -272,6 +292,10 @@ export function useCreateItem(projectId: string | null, moodboardId: string | nu
       title?: string;
       notes?: string;
       tags?: string[];
+      category?: MoodboardCategory | null;
+      rating?: number | null;
+      color_palette?: string[];
+      aspect_ratio?: AspectRatio | null;
     }) => {
       if (!projectId || !moodboardId) throw new Error('Project ID and Moodboard ID required');
       return api.post(
@@ -306,6 +330,10 @@ export function useUpdateItem(projectId: string | null, moodboardId: string | nu
         title: string;
         notes: string;
         tags: string[];
+        category: MoodboardCategory | null;
+        rating: number | null;
+        color_palette: string[];
+        aspect_ratio: AspectRatio | null;
       }>;
     }) => {
       if (!projectId || !moodboardId) throw new Error('Project ID and Moodboard ID required');
@@ -318,6 +346,28 @@ export function useUpdateItem(projectId: string | null, moodboardId: string | nu
       queryClient.invalidateQueries({
         queryKey: moodboardKeys.detail(projectId || '', moodboardId || ''),
       });
+    },
+  });
+}
+
+/**
+ * Get presigned URL for uploading moodboard item image
+ */
+export function useItemImageUpload(
+  projectId: string | null | undefined,
+  moodboardId: string | null | undefined
+) {
+  return useMutation({
+    mutationFn: async (data: {
+      file_name: string;
+      content_type: string;
+      file_size: number;
+    }) => {
+      if (!projectId || !moodboardId) throw new Error('Project ID and Moodboard ID required');
+      return api.post(
+        `/api/v1/backlot/projects/${projectId}/moodboards/${moodboardId}/items/upload-url`,
+        data
+      );
     },
   });
 }

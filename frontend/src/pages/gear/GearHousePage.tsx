@@ -12,6 +12,9 @@ import {
   ChevronRight,
   Loader2,
   Globe,
+  MapPin,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -29,6 +32,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import {
   Select,
   SelectContent,
@@ -40,6 +44,7 @@ import {
 import { useGearOrganizations } from '@/hooks/gear';
 import type { GearOrganization, CreateOrganizationInput, OrganizationType } from '@/types/gear';
 import { cn } from '@/lib/utils';
+import AddressAutocomplete from '@/components/gear/AddressAutocomplete';
 
 export default function GearHousePage() {
   const navigate = useNavigate();
@@ -188,17 +193,67 @@ interface CreateOrganizationModalProps {
   isSubmitting: boolean;
 }
 
+// US State abbreviations for select
+const US_STATES = [
+  { code: 'AL', name: 'Alabama' }, { code: 'AK', name: 'Alaska' }, { code: 'AZ', name: 'Arizona' },
+  { code: 'AR', name: 'Arkansas' }, { code: 'CA', name: 'California' }, { code: 'CO', name: 'Colorado' },
+  { code: 'CT', name: 'Connecticut' }, { code: 'DE', name: 'Delaware' }, { code: 'FL', name: 'Florida' },
+  { code: 'GA', name: 'Georgia' }, { code: 'HI', name: 'Hawaii' }, { code: 'ID', name: 'Idaho' },
+  { code: 'IL', name: 'Illinois' }, { code: 'IN', name: 'Indiana' }, { code: 'IA', name: 'Iowa' },
+  { code: 'KS', name: 'Kansas' }, { code: 'KY', name: 'Kentucky' }, { code: 'LA', name: 'Louisiana' },
+  { code: 'ME', name: 'Maine' }, { code: 'MD', name: 'Maryland' }, { code: 'MA', name: 'Massachusetts' },
+  { code: 'MI', name: 'Michigan' }, { code: 'MN', name: 'Minnesota' }, { code: 'MS', name: 'Mississippi' },
+  { code: 'MO', name: 'Missouri' }, { code: 'MT', name: 'Montana' }, { code: 'NE', name: 'Nebraska' },
+  { code: 'NV', name: 'Nevada' }, { code: 'NH', name: 'New Hampshire' }, { code: 'NJ', name: 'New Jersey' },
+  { code: 'NM', name: 'New Mexico' }, { code: 'NY', name: 'New York' }, { code: 'NC', name: 'North Carolina' },
+  { code: 'ND', name: 'North Dakota' }, { code: 'OH', name: 'Ohio' }, { code: 'OK', name: 'Oklahoma' },
+  { code: 'OR', name: 'Oregon' }, { code: 'PA', name: 'Pennsylvania' }, { code: 'RI', name: 'Rhode Island' },
+  { code: 'SC', name: 'South Carolina' }, { code: 'SD', name: 'South Dakota' }, { code: 'TN', name: 'Tennessee' },
+  { code: 'TX', name: 'Texas' }, { code: 'UT', name: 'Utah' }, { code: 'VT', name: 'Vermont' },
+  { code: 'VA', name: 'Virginia' }, { code: 'WA', name: 'Washington' }, { code: 'WV', name: 'West Virginia' },
+  { code: 'WI', name: 'Wisconsin' }, { code: 'WY', name: 'Wyoming' }, { code: 'DC', name: 'Washington D.C.' },
+];
+
 function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: CreateOrganizationModalProps) {
+  // Basic info
   const [name, setName] = useState('');
   const [orgType, setOrgType] = useState<OrganizationType>('production_company');
   const [description, setDescription] = useState('');
   const [website, setWebsite] = useState('');
+
+  // Address fields (required)
+  const [addressLine1, setAddressLine1] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+
+  // Privacy toggle
+  const [hideExactAddress, setHideExactAddress] = useState(false);
+
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Validation
     if (!name.trim()) {
       setError('Organization name is required');
+      return;
+    }
+    if (!addressLine1.trim()) {
+      setError('Street address is required');
+      return;
+    }
+    if (!city.trim()) {
+      setError('City is required');
+      return;
+    }
+    if (!state) {
+      setError('State is required');
+      return;
+    }
+    if (!postalCode.trim()) {
+      setError('ZIP code is required');
       return;
     }
 
@@ -209,12 +264,23 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
         org_type: orgType,
         description: description.trim() || undefined,
         website: website.trim() || undefined,
+        address_line1: addressLine1.trim(),
+        city: city.trim(),
+        state: state,
+        postal_code: postalCode.trim(),
+        country: 'US',
+        hide_exact_address: hideExactAddress,
       });
       // Reset form
       setName('');
       setOrgType('production_company');
       setDescription('');
       setWebsite('');
+      setAddressLine1('');
+      setCity('');
+      setState('');
+      setPostalCode('');
+      setHideExactAddress(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create organization');
     }
@@ -222,15 +288,15 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col">
+        <DialogHeader className="flex-shrink-0">
           <DialogTitle>Create Organization</DialogTitle>
           <DialogDescription>
             Set up a new organization to manage equipment and gear
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto flex-1 pr-2">
           <div>
             <Label htmlFor="name">Organization Name *</Label>
             <Input
@@ -258,6 +324,96 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
             </p>
           </div>
 
+          {/* Location Section */}
+          <div className="space-y-3 pt-2 border-t border-muted-gray/20">
+            <div className="flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-accent-yellow" />
+              <Label className="text-bone-white font-medium">Location *</Label>
+            </div>
+            <p className="text-xs text-muted-gray">
+              Your location helps others find your equipment in the marketplace
+            </p>
+
+            <div>
+              <Label htmlFor="address">Street Address *</Label>
+              <AddressAutocomplete
+                value={addressLine1}
+                onChange={setAddressLine1}
+                onSelect={(suggestion) => {
+                  // Auto-fill address fields from suggestion
+                  if (suggestion.street) setAddressLine1(suggestion.street);
+                  if (suggestion.city) setCity(suggestion.city);
+                  if (suggestion.state) setState(suggestion.state);
+                  if (suggestion.postal_code) setPostalCode(suggestion.postal_code);
+                }}
+                placeholder="Start typing an address..."
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="city">City *</Label>
+                <Input
+                  id="city"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="Los Angeles"
+                />
+              </div>
+              <div>
+                <Label htmlFor="state">State *</Label>
+                <Select value={state} onValueChange={setState}>
+                  <SelectTrigger id="state">
+                    <SelectValue placeholder="Select state" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {US_STATES.map((s) => (
+                      <SelectItem key={s.code} value={s.code}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="zip">ZIP Code *</Label>
+                <Input
+                  id="zip"
+                  value={postalCode}
+                  onChange={(e) => setPostalCode(e.target.value)}
+                  placeholder="90001"
+                  maxLength={10}
+                />
+              </div>
+            </div>
+
+            {/* Privacy Toggle */}
+            <div className="flex items-center justify-between py-2 px-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/20">
+              <div className="flex items-center gap-2">
+                {hideExactAddress ? (
+                  <EyeOff className="w-4 h-4 text-muted-gray" />
+                ) : (
+                  <Eye className="w-4 h-4 text-accent-yellow" />
+                )}
+                <div>
+                  <p className="text-sm text-bone-white">Keep address private</p>
+                  <p className="text-xs text-muted-gray">
+                    {hideExactAddress
+                      ? `Only "${city || 'City'}, ${state || 'State'}" will be shown in the marketplace`
+                      : 'Full address will be visible in the marketplace'}
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={hideExactAddress}
+                onCheckedChange={setHideExactAddress}
+              />
+            </div>
+          </div>
+
           <div>
             <Label htmlFor="description">Description (optional)</Label>
             <Textarea
@@ -265,7 +421,7 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Brief description of your organization..."
-              rows={3}
+              rows={2}
             />
           </div>
 

@@ -8,8 +8,12 @@
  * - Per Diem (meal allowances)
  * - Purchase Orders (budget requests)
  * - Summary (aggregate reporting)
+ *
+ * Supports deep linking via URL params:
+ * - ?view=expenses&tab=kit-rentals&item={source_id}
  */
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +43,7 @@ import {
 interface ExpensesViewProps {
   projectId: string;
   canEdit: boolean;
+  onNavigateToTab?: (tab: string, subTab?: string) => void;
 }
 
 // Tab configuration
@@ -83,8 +88,36 @@ const EXPENSE_TABS = [
 
 type ExpenseTabId = typeof EXPENSE_TABS[number]['id'];
 
-export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) {
+export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: ExpensesViewProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<ExpenseTabId>('receipts');
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+
+  // Handle deep link URL params on mount
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    const itemId = searchParams.get('item');
+
+    // Set tab from URL if valid
+    if (tab && EXPENSE_TABS.some(t => t.id === tab)) {
+      setActiveTab(tab as ExpenseTabId);
+    }
+
+    // Set selected item if provided
+    if (itemId) {
+      setSelectedItemId(itemId);
+      // Clear item param after handling to avoid re-selecting on refresh
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete('item');
+      setSearchParams(newParams, { replace: true });
+    }
+  }, []); // Only run on mount
+
+  // Clear selected item when tab changes
+  const handleTabChange = (value: string) => {
+    setActiveTab(value as ExpenseTabId);
+    setSelectedItemId(null);
+  };
 
   // Fetch summary for quick stats
   const { data: summaryData } = useExpenseSummary(projectId);
@@ -210,7 +243,7 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
       {/* Tab Navigation */}
       <Tabs
         value={activeTab}
-        onValueChange={(value) => setActiveTab(value as ExpenseTabId)}
+        onValueChange={handleTabChange}
         className="flex-1 flex flex-col min-h-0"
       >
         <TabsList className="flex-shrink-0 w-full justify-start h-auto p-1 bg-muted/50">
@@ -242,23 +275,49 @@ export default function ExpensesView({ projectId, canEdit }: ExpensesViewProps) 
         {/* Tab Content */}
         <div className="flex-1 min-h-0 mt-4">
           <TabsContent value="receipts" className="h-full m-0">
-            <ReceiptsView projectId={projectId} canEdit={canEdit} />
+            <ReceiptsView
+              projectId={projectId}
+              canEdit={canEdit}
+              highlightedItemId={activeTab === 'receipts' ? selectedItemId : null}
+              onItemViewed={() => setSelectedItemId(null)}
+            />
           </TabsContent>
 
           <TabsContent value="mileage" className="h-full m-0">
-            <MileageView projectId={projectId} canEdit={canEdit} />
+            <MileageView
+              projectId={projectId}
+              canEdit={canEdit}
+              highlightedItemId={activeTab === 'mileage' ? selectedItemId : null}
+              onItemViewed={() => setSelectedItemId(null)}
+            />
           </TabsContent>
 
           <TabsContent value="kit-rentals" className="h-full m-0">
-            <KitRentalsView projectId={projectId} canEdit={canEdit} />
+            <KitRentalsView
+              projectId={projectId}
+              canEdit={canEdit}
+              highlightedItemId={activeTab === 'kit-rentals' ? selectedItemId : null}
+              onItemViewed={() => setSelectedItemId(null)}
+            />
           </TabsContent>
 
           <TabsContent value="per-diem" className="h-full m-0">
-            <PerDiemView projectId={projectId} canEdit={canEdit} />
+            <PerDiemView
+              projectId={projectId}
+              canEdit={canEdit}
+              onNavigateToTab={onNavigateToTab}
+              highlightedItemId={activeTab === 'per-diem' ? selectedItemId : null}
+              onItemViewed={() => setSelectedItemId(null)}
+            />
           </TabsContent>
 
           <TabsContent value="purchase-orders" className="h-full m-0">
-            <PurchaseOrdersView projectId={projectId} canEdit={canEdit} />
+            <PurchaseOrdersView
+              projectId={projectId}
+              canEdit={canEdit}
+              highlightedItemId={activeTab === 'purchase-orders' ? selectedItemId : null}
+              onItemViewed={() => setSelectedItemId(null)}
+            />
           </TabsContent>
 
           <TabsContent value="summary" className="h-full m-0">

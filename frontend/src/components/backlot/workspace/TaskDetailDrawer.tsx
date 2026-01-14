@@ -63,6 +63,7 @@ import {
   TaskUpdateInput,
 } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 interface TaskDetailDrawerProps {
@@ -390,14 +391,14 @@ const TaskDetailDrawer: React.FC<TaskDetailDrawerProps> = ({
                     >
                       <CalendarIcon className="mr-2 h-4 w-4" />
                       {task.due_date
-                        ? format(new Date(task.due_date), 'PPP')
+                        ? format(parseLocalDate(task.due_date), 'PPP')
                         : 'Pick a date'}
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-auto p-0" align="start">
                     <Calendar
                       mode="single"
-                      selected={task.due_date ? new Date(task.due_date) : undefined}
+                      selected={task.due_date ? parseLocalDate(task.due_date) : undefined}
                       onSelect={handleDueDateChange}
                       initialFocus
                     />

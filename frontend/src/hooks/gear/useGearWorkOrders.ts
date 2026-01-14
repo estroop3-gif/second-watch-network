@@ -255,7 +255,39 @@ export function useWorkOrderMutations(orgId: string) {
         method: 'POST',
         body: JSON.stringify({ scanned_value: scannedValue }),
       }),
-    onSuccess: (_, { workOrderId }) => {
+    onMutate: async ({ workOrderId, itemId, staged }) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['gear-work-order', orgId, workOrderId] });
+
+      // Snapshot previous value
+      const previousWorkOrder = queryClient.getQueryData(['gear-work-order', orgId, workOrderId]);
+
+      // Optimistically update
+      queryClient.setQueryData(['gear-work-order', orgId, workOrderId], (old: any) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items?.map((item: any) =>
+            item.id === itemId
+              ? { ...item, is_staged: staged, staged_at: staged ? new Date().toISOString() : null }
+              : item
+          ),
+        };
+      });
+
+      return { previousWorkOrder };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousWorkOrder) {
+        queryClient.setQueryData(
+          ['gear-work-order', orgId, variables.workOrderId],
+          context.previousWorkOrder
+        );
+      }
+    },
+    onSettled: (_, __, { workOrderId }) => {
+      // Refetch to ensure consistency
       invalidateWorkOrders();
       queryClient.invalidateQueries({ queryKey: ['gear-work-order', orgId, workOrderId] });
     },
@@ -268,7 +300,43 @@ export function useWorkOrderMutations(orgId: string) {
         method: 'POST',
         body: JSON.stringify({ scanned_value: scannedValue }),
       }),
-    onSuccess: (_, { workOrderId }) => {
+    onMutate: async ({ workOrderId, scannedValue }) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['gear-work-order', orgId, workOrderId] });
+
+      // Snapshot previous value
+      const previousWorkOrder = queryClient.getQueryData(['gear-work-order', orgId, workOrderId]);
+
+      // Optimistically update - find item by scanned value and mark as staged
+      queryClient.setQueryData(['gear-work-order', orgId, workOrderId], (old: any) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items?.map((item: any) => {
+            // Check if this item matches the scanned value
+            const matches = item.asset_barcode === scannedValue ||
+                           item.asset_qr_code === scannedValue ||
+                           item.asset_internal_id === scannedValue;
+            return matches
+              ? { ...item, is_staged: true, staged_at: new Date().toISOString() }
+              : item;
+          }),
+        };
+      });
+
+      return { previousWorkOrder };
+    },
+    onError: (err, variables, context) => {
+      // Rollback on error
+      if (context?.previousWorkOrder) {
+        queryClient.setQueryData(
+          ['gear-work-order', orgId, variables.workOrderId],
+          context.previousWorkOrder
+        );
+      }
+    },
+    onSettled: (_, __, { workOrderId }) => {
+      // Refetch to ensure consistency
       invalidateWorkOrders();
       queryClient.invalidateQueries({ queryKey: ['gear-work-order', orgId, workOrderId] });
     },

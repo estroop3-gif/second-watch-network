@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { SceneHubData } from '@/hooks/backlot';
 import { Receipt, Plus, MapPin, Building, Calendar, DollarSign, Paperclip } from 'lucide-react';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface SceneReceiptsTabProps {
   hub: SceneHubData;
@@ -167,7 +168,7 @@ function ReceiptRow({
             {receipt.receipt_date && (
               <span className="text-xs text-muted-gray flex items-center gap-1">
                 <Calendar className="w-3 h-3" />
-                {new Date(receipt.receipt_date).toLocaleDateString()}
+                {parseLocalDate(receipt.receipt_date).toLocaleDateString()}
               </span>
             )}
           </div>

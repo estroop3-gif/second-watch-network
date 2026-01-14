@@ -30,6 +30,7 @@ import { EnrichedProfileProvider } from "./context/EnrichedProfileContext";
 import { SocketProvider } from "./context/SocketContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { DashboardSettingsProvider } from "./context/DashboardSettingsContext";
+import { GearCartProvider } from "./context/GearCartContext";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
 import ThemeEditorPage from "./pages/ThemeEditorPage";
@@ -135,6 +136,11 @@ const MoodboardPrintPage = React.lazy(() =>
   import("./pages/backlot/MoodboardPrintPage")
 );
 
+// Lazy load storyboard print page
+const StoryboardPrintPage = React.lazy(() =>
+  import("./pages/backlot/StoryboardPrintPage")
+);
+
 // Lazy load story print page
 const StoryPrintPage = React.lazy(() =>
   import("./pages/backlot/StoryPrintPage")
@@ -203,6 +209,7 @@ const App = () => (
           <EnrichedProfileProvider>
             <DashboardSettingsProvider>
               <SocketProvider>
+                <GearCartProvider>
                 <PlatformStatusGate>
                   <TooltipProvider>
             <Toaster />
@@ -303,6 +310,11 @@ const App = () => (
                     <Route path="/backlot/:projectId/moodboards/:moodboardId/print" element={
                       <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
                         <MoodboardPrintPage />
+                      </Suspense>
+                    } />
+                    <Route path="/backlot/:projectId/storyboards/:storyboardId/print" element={
+                      <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
+                        <StoryboardPrintPage />
                       </Suspense>
                     } />
                     <Route path="/backlot/:projectId/stories/:storyId/print" element={
@@ -411,6 +423,7 @@ const App = () => (
             </BrowserRouter>
                   </TooltipProvider>
                 </PlatformStatusGate>
+                </GearCartProvider>
               </SocketProvider>
             </DashboardSettingsProvider>
           </EnrichedProfileProvider>

@@ -4,7 +4,7 @@ Gear House Marketplace API
 Endpoints for browsing, listing, and managing the gear rental marketplace.
 """
 from typing import Optional, List, Dict, Any
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
@@ -275,6 +275,7 @@ def validate_listing_type_pricing(listing_type: str, daily_rate: Optional[float]
 async def search_marketplace(
     q: Optional[str] = Query(None, description="Search query"),
     category_id: Optional[str] = Query(None),
+    organization_id: Optional[str] = Query(None, description="Filter to only listings from this organization"),
     min_price: Optional[float] = Query(None),
     max_price: Optional[float] = Query(None),
     location: Optional[str] = Query(None),
@@ -282,6 +283,7 @@ async def search_marketplace(
     listing_type: Optional[str] = Query(None, description="Filter by listing type: rent, sale, or both"),
     available_from: Optional[date] = Query(None),
     available_to: Optional[date] = Query(None),
+    timezone: Optional[str] = Query(None, description="User's timezone (e.g., 'America/Los_Angeles')"),
     group_by_org: bool = Query(False, description="Group results by organization/rental house"),
     priority_org_ids: Optional[str] = Query(None, description="Comma-separated org IDs to prioritize in results (e.g., cart items)"),
     limit: int = Query(50, ge=1, le=100),
@@ -305,6 +307,25 @@ async def search_marketplace(
         "total": 123
     }
     """
+    # Validate and normalize date range
+    # If only one date is provided, use it for both start and end (single day)
+    if available_from or available_to:
+        # Set defaults for missing dates
+        if available_from and not available_to:
+            # Only start date: Check availability for just that date
+            available_to = available_from
+        elif available_to and not available_from:
+            # Only end date: Check availability for just that date
+            available_from = available_to
+
+        # Validate date range
+        if available_from > available_to:
+            raise HTTPException(status_code=400, detail="available_from must be before available_to")
+        if available_from < date.today():
+            raise HTTPException(status_code=400, detail="Dates must be in the future")
+        if (available_to - available_from).days > 90:
+            raise HTTPException(status_code=400, detail="Date range cannot exceed 90 days")
+
     # Build the query dynamically based on filters
     conditions = ["ms.is_marketplace_enabled = TRUE", "ml.is_listed = TRUE"]
     params: Dict[str, Any] = {"limit": limit, "offset": offset}
@@ -334,6 +355,10 @@ async def search_marketplace(
         conditions.append("ms.lister_type = :lister_type")
         params["lister_type"] = lister_type
 
+    if organization_id:
+        conditions.append("ml.organization_id = :organization_id")
+        params["organization_id"] = organization_id
+
     # Filter by listing type: show rent listings, sale listings, or both
     if listing_type:
         if listing_type == "rent":
@@ -341,6 +366,69 @@ async def search_marketplace(
         elif listing_type == "sale":
             conditions.append("(ml.listing_type = 'sale' OR ml.listing_type = 'both')")
         # If listing_type == 'both', don't add filter - show all
+
+    # Date availability filtering (applies if either date provided)
+    if available_from or available_to:
+        # Use user's timezone if provided, otherwise default to UTC
+        tz = timezone if timezone else 'UTC'
+
+        conditions.append(f"""
+            -- Exclude permanently unavailable assets only
+            -- Allow checked_out/under_repair/in_transit if dates don't overlap
+            a.status NOT IN ('retired', 'lost')
+
+            -- Filter out assets with overlapping rental orders
+            AND NOT EXISTS (
+                SELECT 1 FROM gear_rental_orders ro
+                JOIN gear_rental_order_items roi ON roi.order_id = ro.id
+                WHERE roi.asset_id = ml.asset_id
+                  AND ro.status IN ('confirmed', 'building', 'packed',
+                                   'ready_for_pickup', 'picked_up', 'in_use')
+                  AND ro.rental_start_date <= :available_to
+                  AND ro.rental_end_date >= :available_from
+            )
+
+            -- Filter out assets with overlapping internal checkouts
+            -- Includes both active checkouts and scheduled future checkouts
+            -- Uses user's timezone ({tz}) for TIMESTAMPTZ comparison
+            AND NOT EXISTS (
+                SELECT 1 FROM gear_transactions gt
+                JOIN gear_transaction_items gti ON gti.transaction_id = gt.id
+                WHERE gti.asset_id = ml.asset_id
+                  AND gt.organization_id = ml.organization_id
+                  AND gt.transaction_type = 'internal_checkout'
+                  AND gt.status IN ('pending', 'in_progress')
+                  AND gt.returned_at IS NULL
+                  AND gt.scheduled_at IS NOT NULL
+                  AND gt.expected_return_at IS NOT NULL
+                  AND DATE(gt.scheduled_at AT TIME ZONE '{tz}') <= :available_to
+                  AND DATE(gt.expected_return_at AT TIME ZONE '{tz}') >= :available_from
+            )
+
+            -- Filter out assets in work orders
+            -- ALWAYS blocks checked-out work orders (asset physically with custodian)
+            -- Conditionally blocks pre-checkout work orders based on rental house setting
+            AND NOT EXISTS (
+                SELECT 1 FROM gear_work_orders wo
+                JOIN gear_work_order_items woi ON woi.work_order_id = wo.id
+                LEFT JOIN gear_marketplace_settings gms ON gms.organization_id = wo.organization_id
+                WHERE woi.asset_id = ml.asset_id
+                  AND wo.organization_id = ml.organization_id
+                  AND wo.expected_return_date IS NOT NULL
+                  AND wo.pickup_date <= :available_to
+                  AND wo.expected_return_date >= :available_from
+                  AND (
+                    -- Always block checked-out work orders (mandatory)
+                    wo.status = 'checked_out'
+                    OR
+                    -- Conditionally block pre-checkout work orders (optional, rental house setting)
+                    (wo.status IN ('in_progress', 'ready')
+                     AND COALESCE(gms.work_order_reserves_dates, FALSE) = TRUE)
+                  )
+            )
+        """)
+        params["available_from"] = available_from
+        params["available_to"] = available_to
 
     where_clause = " AND ".join(conditions)
 
@@ -408,6 +496,38 @@ async def search_marketplace(
         """,
         params
     )
+
+    # Filter blackout dates if date range provided
+    if available_from and available_to:
+        filtered_listings = []
+        for listing in listings:
+            # Get blackout dates for this listing
+            blackout_result = execute_single(
+                "SELECT blackout_dates FROM gear_marketplace_listings WHERE id = :id",
+                {"id": listing["id"]}
+            )
+
+            if blackout_result:
+                blackout_dates = blackout_result.get("blackout_dates", []) or []
+                is_blacked_out = False
+
+                for bd in blackout_dates:
+                    if bd.get("start") and bd.get("end"):
+                        try:
+                            bd_start = datetime.strptime(bd["start"], "%Y-%m-%d").date()
+                            bd_end = datetime.strptime(bd["end"], "%Y-%m-%d").date()
+                            if bd_start <= available_to and bd_end >= available_from:
+                                is_blacked_out = True
+                                break
+                        except (ValueError, TypeError):
+                            continue
+
+                if not is_blacked_out:
+                    filtered_listings.append(listing)
+            else:
+                filtered_listings.append(listing)
+
+        listings = filtered_listings
 
     # Transform flat results into nested structure expected by frontend
     transformed_listings = [transform_listing_to_nested(listing) for listing in listings]
@@ -1420,3 +1540,930 @@ async def get_renter_reputation(
         }
 
     return {"reputation": reputation}
+
+
+# ============================================================================
+# LOCATION-BASED SEARCH
+# ============================================================================
+
+class MarketplacePreferencesUpdate(BaseModel):
+    """Update marketplace search preferences."""
+    search_latitude: Optional[float] = None
+    search_longitude: Optional[float] = None
+    search_location_name: Optional[str] = None
+    location_source: Optional[str] = None  # 'browser', 'profile', 'manual'
+    search_radius_miles: Optional[int] = None  # 25, 50, 100, 250
+    view_mode: Optional[str] = None  # 'map', 'grid', 'list'
+    result_mode: Optional[str] = None  # 'gear_houses', 'gear_items'
+    delivery_to_me_only: Optional[bool] = None
+
+
+@router.get("/search/nearby")
+async def search_marketplace_nearby(
+    lat: float = Query(..., ge=-90, le=90, description="User latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="User longitude"),
+    radius_miles: int = Query(50, description="Search radius in miles"),
+    result_mode: str = Query("gear_houses", description="Return gear_houses or gear_items"),
+    delivery_to_me_only: bool = Query(False, description="Only show gear houses that deliver to user"),
+    q: Optional[str] = Query(None, description="Search query"),
+    category_id: Optional[str] = Query(None),
+    lister_type: Optional[str] = Query(None),
+    verified_only: bool = Query(False),
+    available_from: Optional[date] = Query(None, description="Filter by availability start date"),
+    available_to: Optional[date] = Query(None, description="Filter by availability end date"),
+    timezone: Optional[str] = Query(None, description="User's timezone (e.g., 'America/Los_Angeles')"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user=Depends(get_current_user)
+):
+    """
+    Search marketplace with proximity sorting using Haversine formula.
+    Returns either gear houses or individual gear items based on result_mode.
+    """
+    # Validate and normalize date range
+    # If only one date is provided, use it for both start and end (single day)
+    if available_from or available_to:
+        # Set defaults for missing dates
+        if available_from and not available_to:
+            # Only start date: Check availability for just that date
+            available_to = available_from
+        elif available_to and not available_from:
+            # Only end date: Check availability for just that date
+            available_from = available_to
+
+        # Validate date range
+        if available_from > available_to:
+            raise HTTPException(status_code=400, detail="available_from must be before available_to")
+        if available_from < date.today():
+            raise HTTPException(status_code=400, detail="Dates must be in the future")
+        if (available_to - available_from).days > 90:
+            raise HTTPException(status_code=400, detail="Date range cannot exceed 90 days")
+
+    profile_id = get_profile_id(user)
+    params: Dict[str, Any] = {
+        "user_lat": lat,
+        "user_lng": lng,
+        "radius_miles": radius_miles,
+        "limit": limit,
+        "offset": offset
+    }
+
+    # Build conditions
+    conditions = [
+        "ms.is_marketplace_enabled = TRUE",
+        "ms.location_latitude IS NOT NULL",
+        "ms.location_longitude IS NOT NULL"
+    ]
+
+    if verified_only:
+        conditions.append("ms.is_verified = TRUE")
+
+    if lister_type:
+        conditions.append("ms.lister_type = :lister_type")
+        params["lister_type"] = lister_type
+
+    if delivery_to_me_only:
+        conditions.append("ms.offers_delivery = TRUE")
+        conditions.append("ms.delivery_radius_miles >= haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude)")
+
+    where_clause = " AND ".join(conditions)
+
+    if result_mode == "gear_houses":
+        # Return gear houses sorted by distance
+        query = f"""
+            WITH gear_house_data AS (
+                SELECT
+                    o.id,
+                    o.name,
+                    ms.marketplace_name,
+                    ms.marketplace_description,
+                    ms.marketplace_logo_url,
+                    CASE WHEN ms.hide_exact_address THEN ms.public_location_display ELSE ms.marketplace_location END as location_display,
+                    ms.location_latitude,
+                    ms.location_longitude,
+                    ms.lister_type,
+                    ms.is_verified,
+                    ms.offers_delivery,
+                    ms.delivery_radius_miles,
+                    ms.delivery_base_fee,
+                    ms.delivery_per_mile_fee,
+                    ms.contact_email,
+                    ms.contact_phone,
+                    haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) as distance_miles,
+                    (SELECT COUNT(*) FROM gear_marketplace_listings ml WHERE ml.organization_id = o.id AND ml.is_listed = TRUE) as listing_count,
+                    EXISTS(SELECT 1 FROM gear_house_favorites f WHERE f.organization_id = o.id AND f.profile_id = :profile_id) as is_favorited
+                FROM organizations o
+                JOIN gear_marketplace_settings ms ON ms.organization_id = o.id
+                WHERE {where_clause}
+                  AND haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) <= :radius_miles
+            )
+            SELECT *
+            FROM gear_house_data
+            WHERE listing_count > 0
+            ORDER BY distance_miles ASC
+            LIMIT :limit OFFSET :offset
+        """
+        params["profile_id"] = profile_id
+        gear_houses = execute_query(query, params)
+
+        # Enrich with top categories and featured items
+        enriched = []
+        for gh in gear_houses:
+            # Get top categories
+            top_categories = execute_query(
+                """
+                SELECT c.id, c.name, COUNT(*) as count
+                FROM gear_marketplace_listings ml
+                JOIN gear_assets a ON a.id = ml.asset_id
+                JOIN gear_categories c ON c.id = a.category_id
+                WHERE ml.organization_id = :org_id AND ml.is_listed = TRUE
+                GROUP BY c.id, c.name
+                ORDER BY count DESC
+                LIMIT 4
+                """,
+                {"org_id": gh["id"]}
+            )
+
+            # Get featured items (up to 4)
+            featured_items = execute_query(
+                """
+                SELECT
+                    ml.id, ml.daily_rate, ml.weekly_rate, ml.monthly_rate,
+                    a.id as asset_id, a.name, a.photos_current as photos
+                FROM gear_marketplace_listings ml
+                JOIN gear_assets a ON a.id = ml.asset_id
+                WHERE ml.organization_id = :org_id AND ml.is_listed = TRUE
+                ORDER BY ml.created_at DESC
+                LIMIT 4
+                """,
+                {"org_id": gh["id"]}
+            )
+
+            # Calculate delivery eligibility
+            can_deliver = False
+            estimated_delivery_fee = None
+            if gh.get("offers_delivery") and gh.get("delivery_radius_miles"):
+                if gh["distance_miles"] and gh["distance_miles"] <= gh["delivery_radius_miles"]:
+                    can_deliver = True
+                    base_fee = float(gh.get("delivery_base_fee") or 0)
+                    per_mile = float(gh.get("delivery_per_mile_fee") or 0)
+                    estimated_delivery_fee = base_fee + (per_mile * gh["distance_miles"])
+
+            enriched.append({
+                **gh,
+                "distance_miles": round(float(gh["distance_miles"]), 1) if gh["distance_miles"] else None,
+                "can_deliver_to_user": can_deliver,
+                "estimated_delivery_fee": round(estimated_delivery_fee, 2) if estimated_delivery_fee else None,
+                "top_categories": top_categories,
+                "featured_items": [
+                    {
+                        "id": fi["id"],
+                        "asset_id": fi["asset_id"],
+                        "name": fi["name"],
+                        "daily_rate": fi["daily_rate"],
+                        "photo_url": fi["photos"][0] if fi.get("photos") else None
+                    }
+                    for fi in featured_items
+                ]
+            })
+
+        # Get total count
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM organizations o
+            JOIN gear_marketplace_settings ms ON ms.organization_id = o.id
+            WHERE {where_clause}
+              AND haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) <= :radius_miles
+              AND (SELECT COUNT(*) FROM gear_marketplace_listings ml WHERE ml.organization_id = o.id AND ml.is_listed = TRUE) > 0
+        """
+        count_result = execute_single(count_query, params)
+
+        return {
+            "gear_houses": enriched,
+            "total": count_result["total"] if count_result else 0,
+            "user_location": {"lat": lat, "lng": lng},
+            "radius_miles": radius_miles
+        }
+
+    else:
+        # Return gear items sorted by distance
+        item_conditions = conditions + ["ml.is_listed = TRUE"]
+        if q:
+            item_conditions.append("(a.name ILIKE :q OR a.description ILIKE :q OR a.make ILIKE :q OR a.model ILIKE :q)")
+            params["q"] = f"%{q}%"
+        if category_id:
+            item_conditions.append("a.category_id = :category_id")
+            params["category_id"] = category_id
+
+        # Date availability filtering (applies if either date provided)
+        if available_from or available_to:
+            # Use user's timezone if provided, otherwise default to UTC
+            tz = timezone if timezone else 'UTC'
+
+            item_conditions.append(f"""
+                -- Exclude permanently unavailable assets only
+                -- Allow checked_out/under_repair/in_transit if dates don't overlap
+                a.status NOT IN ('retired', 'lost')
+
+                -- Filter out assets with overlapping rental orders
+                AND NOT EXISTS (
+                    SELECT 1 FROM gear_rental_orders ro
+                    JOIN gear_rental_order_items roi ON roi.order_id = ro.id
+                    WHERE roi.asset_id = ml.asset_id
+                      AND ro.status IN ('confirmed', 'building', 'packed',
+                                       'ready_for_pickup', 'picked_up', 'in_use')
+                      AND ro.rental_start_date <= :available_to
+                      AND ro.rental_end_date >= :available_from
+                )
+
+                -- Filter out assets with overlapping internal checkouts
+                -- Includes both active checkouts and scheduled future checkouts
+                -- Uses user's timezone ({tz}) for TIMESTAMPTZ comparison
+                AND NOT EXISTS (
+                    SELECT 1 FROM gear_transactions gt
+                    JOIN gear_transaction_items gti ON gti.transaction_id = gt.id
+                    WHERE gti.asset_id = ml.asset_id
+                      AND gt.organization_id = ml.organization_id
+                      AND gt.transaction_type = 'internal_checkout'
+                      AND gt.status IN ('pending', 'in_progress')
+                      AND gt.returned_at IS NULL
+                      AND gt.scheduled_at IS NOT NULL
+                      AND gt.expected_return_at IS NOT NULL
+                      AND DATE(gt.scheduled_at AT TIME ZONE '{tz}') <= :available_to
+                      AND DATE(gt.expected_return_at AT TIME ZONE '{tz}') >= :available_from
+                )
+
+                -- Filter out assets in work orders
+                AND NOT EXISTS (
+                    SELECT 1 FROM gear_work_orders wo
+                    JOIN gear_work_order_items woi ON woi.work_order_id = wo.id
+                    LEFT JOIN gear_marketplace_settings gms ON gms.organization_id = wo.organization_id
+                    WHERE woi.asset_id = ml.asset_id
+                      AND wo.organization_id = ml.organization_id
+                      AND wo.expected_return_date IS NOT NULL
+                      AND wo.pickup_date <= :available_to
+                      AND wo.expected_return_date >= :available_from
+                      AND (
+                        wo.status = 'checked_out'
+                        OR
+                        (wo.status IN ('in_progress', 'ready')
+                         AND COALESCE(gms.work_order_reserves_dates, FALSE) = TRUE)
+                      )
+                )
+            """)
+            params["available_from"] = available_from
+            params["available_to"] = available_to
+
+        item_where = " AND ".join(item_conditions)
+
+        listings = execute_query(
+            f"""
+            SELECT
+                ml.*,
+                a.name as asset_name,
+                a.description as asset_description,
+                a.make, a.model,
+                a.photos_current as photos,
+                a.category_id,
+                c.name as category_name,
+                o.id as org_id,
+                o.name as organization_name,
+                ms.marketplace_name,
+                ms.marketplace_logo_url,
+                CASE WHEN ms.hide_exact_address THEN ms.public_location_display ELSE ms.marketplace_location END as location_display,
+                ms.lister_type,
+                ms.is_verified,
+                ms.offers_delivery,
+                ms.delivery_radius_miles,
+                haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) as distance_miles
+            FROM gear_marketplace_listings ml
+            JOIN gear_marketplace_settings ms ON ms.organization_id = ml.organization_id
+            JOIN gear_assets a ON a.id = ml.asset_id
+            JOIN organizations o ON o.id = ml.organization_id
+            LEFT JOIN gear_categories c ON c.id = a.category_id
+            WHERE {item_where}
+              AND haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) <= :radius_miles
+            ORDER BY distance_miles ASC
+            LIMIT :limit OFFSET :offset
+            """,
+            params
+        )
+
+        # Transform and add distance info
+        transformed = []
+        for listing in listings:
+            can_deliver = False
+            if listing.get("offers_delivery") and listing.get("delivery_radius_miles"):
+                if listing["distance_miles"] and listing["distance_miles"] <= listing["delivery_radius_miles"]:
+                    can_deliver = True
+
+            transformed.append({
+                **transform_listing_to_nested(listing),
+                "distance_miles": round(float(listing["distance_miles"]), 1) if listing["distance_miles"] else None,
+                "can_deliver_to_user": can_deliver,
+                "location_display": listing.get("location_display")
+            })
+
+        # Get total count
+        count_result = execute_single(
+            f"""
+            SELECT COUNT(*) as total
+            FROM gear_marketplace_listings ml
+            JOIN gear_marketplace_settings ms ON ms.organization_id = ml.organization_id
+            JOIN gear_assets a ON a.id = ml.asset_id
+            WHERE {item_where}
+              AND haversine_distance_miles(:user_lat, :user_lng, ms.location_latitude, ms.location_longitude) <= :radius_miles
+            """,
+            params
+        )
+
+        return {
+            "listings": transformed,
+            "total": count_result["total"] if count_result else 0,
+            "user_location": {"lat": lat, "lng": lng},
+            "radius_miles": radius_miles
+        }
+
+
+# ============================================================================
+# MARKETPLACE SEARCH PREFERENCES
+# ============================================================================
+
+@router.get("/preferences/{project_id}")
+async def get_marketplace_preferences(
+    project_id: str,
+    user=Depends(get_current_user)
+):
+    """Get user's marketplace search preferences for a project."""
+    profile_id = get_profile_id(user)
+
+    prefs = execute_single(
+        """
+        SELECT * FROM gear_marketplace_search_preferences
+        WHERE project_id = :project_id AND profile_id = :profile_id
+        """,
+        {"project_id": project_id, "profile_id": profile_id}
+    )
+
+    if not prefs:
+        # Return defaults
+        return {
+            "preferences": {
+                "project_id": project_id,
+                "profile_id": profile_id,
+                "search_latitude": None,
+                "search_longitude": None,
+                "search_location_name": None,
+                "location_source": "profile",
+                "search_radius_miles": 50,
+                "view_mode": "grid",
+                "result_mode": "gear_houses",
+                "delivery_to_me_only": False
+            }
+        }
+
+    return {"preferences": prefs}
+
+
+@router.put("/preferences/{project_id}")
+async def update_marketplace_preferences(
+    project_id: str,
+    data: MarketplacePreferencesUpdate,
+    user=Depends(get_current_user)
+):
+    """Update user's marketplace search preferences for a project."""
+    profile_id = get_profile_id(user)
+
+    # Build update fields
+    update_fields = []
+    params = {"project_id": project_id, "profile_id": profile_id}
+
+    if data.search_latitude is not None:
+        update_fields.append("search_latitude = :search_latitude")
+        params["search_latitude"] = data.search_latitude
+    if data.search_longitude is not None:
+        update_fields.append("search_longitude = :search_longitude")
+        params["search_longitude"] = data.search_longitude
+    if data.search_location_name is not None:
+        update_fields.append("search_location_name = :search_location_name")
+        params["search_location_name"] = data.search_location_name
+    if data.location_source is not None:
+        update_fields.append("location_source = :location_source")
+        params["location_source"] = data.location_source
+    if data.search_radius_miles is not None:
+        update_fields.append("search_radius_miles = :search_radius_miles")
+        params["search_radius_miles"] = data.search_radius_miles
+    if data.view_mode is not None:
+        update_fields.append("view_mode = :view_mode")
+        params["view_mode"] = data.view_mode
+    if data.result_mode is not None:
+        update_fields.append("result_mode = :result_mode")
+        params["result_mode"] = data.result_mode
+    if data.delivery_to_me_only is not None:
+        update_fields.append("delivery_to_me_only = :delivery_to_me_only")
+        params["delivery_to_me_only"] = data.delivery_to_me_only
+
+    # Build column names and values for insert (excluding updated_at which uses NOW())
+    insert_columns = ["project_id", "profile_id"] + [f.split(' = ')[0] for f in update_fields]
+    insert_values = [":project_id", ":profile_id"] + [":" + f.split(' = ')[0] for f in update_fields]
+
+    # Add updated_at for both insert and update
+    insert_columns.append("updated_at")
+    insert_values.append("NOW()")
+    update_fields.append("updated_at = NOW()")
+
+    # Upsert preferences
+    result = execute_single(
+        f"""
+        INSERT INTO gear_marketplace_search_preferences ({', '.join(insert_columns)})
+        VALUES ({', '.join(insert_values)})
+        ON CONFLICT (project_id, profile_id)
+        DO UPDATE SET {', '.join(update_fields)}
+        RETURNING *
+        """,
+        params
+    )
+
+    return {"preferences": result}
+
+
+# ============================================================================
+# GEAR HOUSE FAVORITES
+# ============================================================================
+
+@router.get("/favorites")
+async def get_gear_house_favorites(
+    project_id: Optional[str] = Query(None, description="Filter favorites by project"),
+    user=Depends(get_current_user)
+):
+    """Get user's favorite gear houses."""
+    profile_id = get_profile_id(user)
+    params = {"profile_id": profile_id}
+
+    project_filter = ""
+    if project_id:
+        project_filter = "AND (f.project_id = :project_id OR f.project_id IS NULL)"
+        params["project_id"] = project_id
+
+    favorites = execute_query(
+        f"""
+        SELECT
+            f.id,
+            f.organization_id,
+            f.project_id,
+            f.notes,
+            f.created_at,
+            o.name as organization_name,
+            ms.marketplace_name,
+            ms.marketplace_logo_url,
+            CASE WHEN ms.hide_exact_address THEN ms.public_location_display ELSE ms.marketplace_location END as location_display,
+            ms.location_latitude,
+            ms.location_longitude,
+            ms.lister_type,
+            ms.is_verified,
+            ms.offers_delivery,
+            ms.delivery_radius_miles,
+            (SELECT COUNT(*) FROM gear_marketplace_listings ml WHERE ml.organization_id = o.id AND ml.is_listed = TRUE) as listing_count
+        FROM gear_house_favorites f
+        JOIN organizations o ON o.id = f.organization_id
+        LEFT JOIN gear_marketplace_settings ms ON ms.organization_id = o.id
+        WHERE f.profile_id = :profile_id {project_filter}
+        ORDER BY f.created_at DESC
+        """,
+        params
+    )
+
+    return {"favorites": favorites}
+
+
+@router.post("/favorites/{org_id}")
+async def add_gear_house_favorite(
+    org_id: str,
+    project_id: Optional[str] = Query(None, description="Associate favorite with a project"),
+    notes: Optional[str] = Query(None, description="Optional notes"),
+    user=Depends(get_current_user)
+):
+    """Add a gear house to favorites."""
+    profile_id = get_profile_id(user)
+
+    # Verify org exists and is a marketplace
+    org = execute_single(
+        """
+        SELECT o.id, ms.is_marketplace_enabled
+        FROM organizations o
+        LEFT JOIN gear_marketplace_settings ms ON ms.organization_id = o.id
+        WHERE o.id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if not org.get("is_marketplace_enabled"):
+        raise HTTPException(status_code=400, detail="Organization is not a marketplace")
+
+    # Upsert favorite
+    result = execute_single(
+        """
+        INSERT INTO gear_house_favorites (profile_id, organization_id, project_id, notes)
+        VALUES (:profile_id, :org_id, :project_id, :notes)
+        ON CONFLICT (profile_id, organization_id)
+        DO UPDATE SET project_id = COALESCE(:project_id, gear_house_favorites.project_id),
+                      notes = COALESCE(:notes, gear_house_favorites.notes)
+        RETURNING *
+        """,
+        {"profile_id": profile_id, "org_id": org_id, "project_id": project_id, "notes": notes}
+    )
+
+    return {"favorite": result}
+
+
+@router.delete("/favorites/{org_id}")
+async def remove_gear_house_favorite(
+    org_id: str,
+    user=Depends(get_current_user)
+):
+    """Remove a gear house from favorites."""
+    profile_id = get_profile_id(user)
+
+    execute_delete(
+        """
+        DELETE FROM gear_house_favorites
+        WHERE profile_id = :profile_id AND organization_id = :org_id
+        """,
+        {"profile_id": profile_id, "org_id": org_id}
+    )
+
+    return {"success": True}
+
+
+# ============================================================================
+# GEOCODING
+# ============================================================================
+
+@router.post("/organizations/{org_id}/geocode")
+async def geocode_organization_location(
+    org_id: str,
+    user=Depends(get_current_user)
+):
+    """
+    Auto-geocode organization location from address.
+    Updates gear_marketplace_settings with coordinates.
+    """
+    profile_id = get_profile_id(user)
+    require_org_access(org_id, profile_id, roles=["admin", "owner", "manager"])
+
+    # Get org address info
+    org = execute_single(
+        """
+        SELECT o.id, o.name, o.address_line1, o.city, o.state, o.postal_code, o.country,
+               ms.marketplace_location
+        FROM organizations o
+        LEFT JOIN gear_marketplace_settings ms ON ms.organization_id = o.id
+        WHERE o.id = :org_id
+        """,
+        {"org_id": org_id}
+    )
+
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    # Build address string for geocoding
+    address_parts = []
+    if org.get("marketplace_location"):
+        address_parts.append(org["marketplace_location"])
+    else:
+        if org.get("address_line1"):
+            address_parts.append(org["address_line1"])
+        if org.get("city"):
+            address_parts.append(org["city"])
+        if org.get("state"):
+            address_parts.append(org["state"])
+        if org.get("postal_code"):
+            address_parts.append(org["postal_code"])
+        if org.get("country"):
+            address_parts.append(org["country"])
+
+    if not address_parts:
+        raise HTTPException(status_code=400, detail="No address information available to geocode")
+
+    address_string = ", ".join(address_parts)
+
+    # Use AWS Location Service for geocoding
+    from app.services.geocoding import geocode_address as aws_geocode
+
+    try:
+        result = aws_geocode(address_string)
+        if not result:
+            raise HTTPException(status_code=404, detail="Could not geocode address")
+
+        lat = result['lat']
+        lng = result['lon']
+        display_name = result.get('display_name', address_string)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Geocoding service error: {str(e)}")
+
+    # Extract city, state for public display
+    public_display = ""
+    if org.get("city") and org.get("state"):
+        public_display = f"{org['city']}, {org['state']}"
+    elif display_name:
+        # Try to extract city, state from display_name
+        parts = display_name.split(", ")
+        if len(parts) >= 2:
+            public_display = f"{parts[0]}, {parts[1]}"
+
+    # Update marketplace settings with coordinates
+    updated = execute_single(
+        """
+        UPDATE gear_marketplace_settings
+        SET location_latitude = :lat,
+            location_longitude = :lng,
+            location_geocoded_at = NOW(),
+            location_geocode_source = 'aws',
+            public_location_display = :public_display
+        WHERE organization_id = :org_id
+        RETURNING *
+        """,
+        {"org_id": org_id, "lat": lat, "lng": lng, "public_display": public_display}
+    )
+
+    if not updated:
+        # Create settings if they don't exist
+        updated = execute_insert(
+            """
+            INSERT INTO gear_marketplace_settings (organization_id, location_latitude, location_longitude, location_geocoded_at, location_geocode_source, public_location_display)
+            VALUES (:org_id, :lat, :lng, NOW(), 'aws', :public_display)
+            RETURNING *
+            """,
+            {"org_id": org_id, "lat": lat, "lng": lng, "public_display": public_display}
+        )
+
+    return {
+        "success": True,
+        "latitude": lat,
+        "longitude": lng,
+        "public_location_display": public_display,
+        "geocoded_address": address_string
+    }
+
+
+@router.put("/organizations/{org_id}/location-privacy")
+async def update_location_privacy(
+    org_id: str,
+    hide_exact_address: bool = Query(...),
+    public_location_display: Optional[str] = Query(None, description="Display text when address is hidden (e.g., 'Tampa, FL')"),
+    user=Depends(get_current_user)
+):
+    """Update location privacy settings for a gear house."""
+    profile_id = get_profile_id(user)
+    require_org_access(org_id, profile_id, roles=["admin", "owner", "manager"])
+
+    result = execute_single(
+        """
+        UPDATE gear_marketplace_settings
+        SET hide_exact_address = :hide_exact_address,
+            public_location_display = COALESCE(:public_location_display, public_location_display)
+        WHERE organization_id = :org_id
+        RETURNING *
+        """,
+        {"org_id": org_id, "hide_exact_address": hide_exact_address, "public_location_display": public_location_display}
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Marketplace settings not found")
+
+    return {"settings": result}
+
+
+# ============================================================================
+# COMMUNITY SEARCH PREFERENCES (Profile-level, for Community tabs)
+# ============================================================================
+
+class CommunityPreferencesUpdate(BaseModel):
+    """Update schema for community search preferences."""
+    search_latitude: Optional[float] = None
+    search_longitude: Optional[float] = None
+    search_location_name: Optional[str] = None
+    location_source: Optional[str] = None
+    search_radius_miles: Optional[int] = None
+    view_mode: Optional[str] = None
+
+
+@router.get("/community/preferences")
+async def get_community_preferences(
+    user=Depends(get_current_user)
+):
+    """Get community search preferences for current user (profile-level)."""
+    profile_id = get_profile_id(user)
+
+    prefs = execute_single(
+        """
+        SELECT * FROM gear_community_search_preferences
+        WHERE profile_id = :profile_id
+        """,
+        {"profile_id": profile_id}
+    )
+
+    if not prefs:
+        # Return defaults if no preferences exist
+        return {
+            "preferences": {
+                "profile_id": profile_id,
+                "search_latitude": None,
+                "search_longitude": None,
+                "search_location_name": None,
+                "location_source": "profile",
+                "search_radius_miles": 50,
+                "view_mode": "grid"
+            }
+        }
+
+    return {"preferences": prefs}
+
+
+@router.put("/community/preferences")
+async def update_community_preferences(
+    data: CommunityPreferencesUpdate,
+    user=Depends(get_current_user)
+):
+    """Update community search preferences (profile-level)."""
+    profile_id = get_profile_id(user)
+
+    # Build update fields
+    update_fields = []
+    params = {"profile_id": profile_id}
+
+    if data.search_latitude is not None:
+        update_fields.append("search_latitude = :search_latitude")
+        params["search_latitude"] = data.search_latitude
+    if data.search_longitude is not None:
+        update_fields.append("search_longitude = :search_longitude")
+        params["search_longitude"] = data.search_longitude
+    if data.search_location_name is not None:
+        update_fields.append("search_location_name = :search_location_name")
+        params["search_location_name"] = data.search_location_name
+    if data.location_source is not None:
+        update_fields.append("location_source = :location_source")
+        params["location_source"] = data.location_source
+    if data.search_radius_miles is not None:
+        update_fields.append("search_radius_miles = :search_radius_miles")
+        params["search_radius_miles"] = data.search_radius_miles
+    if data.view_mode is not None:
+        update_fields.append("view_mode = :view_mode")
+        params["view_mode"] = data.view_mode
+
+    # Build column names and values for insert
+    insert_columns = ["profile_id"] + [f.split(' = ')[0] for f in update_fields]
+    insert_values = [":profile_id"] + [":" + f.split(' = ')[0] for f in update_fields]
+
+    # Add updated_at
+    insert_columns.append("updated_at")
+    insert_values.append("NOW()")
+    update_fields.append("updated_at = NOW()")
+
+    # Upsert preferences
+    result = execute_single(
+        f"""
+        INSERT INTO gear_community_search_preferences ({', '.join(insert_columns)})
+        VALUES ({', '.join(insert_values)})
+        ON CONFLICT (profile_id)
+        DO UPDATE SET {', '.join(update_fields)}
+        RETURNING *
+        """,
+        params
+    )
+
+    return {"preferences": result}
+
+
+# ============================================================================
+# GEOCODING ENDPOINT
+# ============================================================================
+
+class GeocodeRequest(BaseModel):
+    """Request schema for geocoding an address."""
+    address: str
+
+
+@router.post("/geocode")
+async def geocode_address_endpoint(
+    data: GeocodeRequest,
+    user=Depends(get_current_user)
+):
+    """
+    Geocode an address to coordinates using AWS Location Service.
+    """
+    from app.services.geocoding import geocode_address as aws_geocode
+
+    if not data.address or len(data.address.strip()) < 3:
+        raise HTTPException(status_code=400, detail="Address is required")
+
+    try:
+        result = aws_geocode(data.address.strip())
+        if not result:
+            raise HTTPException(status_code=404, detail="Could not geocode address")
+
+        return {
+            "success": True,
+            "latitude": result['lat'],
+            "longitude": result['lon'],
+            "display_name": result.get('display_name', data.address),
+            "address_components": result.get('address_components', {})
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Geocoding service error: {str(e)}")
+
+
+class ReverseGeocodeRequest(BaseModel):
+    """Request schema for reverse geocoding coordinates."""
+    latitude: float
+    longitude: float
+
+
+@router.post("/reverse-geocode")
+async def reverse_geocode_endpoint(
+    data: ReverseGeocodeRequest,
+    user=Depends(get_current_user)
+):
+    """
+    Reverse geocode coordinates to an address using AWS Location Service.
+    """
+    from app.services.geocoding import reverse_geocode as aws_reverse_geocode
+
+    try:
+        result = aws_reverse_geocode(data.latitude, data.longitude)
+        if not result:
+            return {
+                "success": True,
+                "display_name": None,
+                "city": None,
+                "state": None
+            }
+
+        # Parse city and state from the result
+        parts = result.split(', ') if result else []
+        city = parts[0] if len(parts) > 0 else None
+        state = parts[1] if len(parts) > 1 else None
+
+        return {
+            "success": True,
+            "display_name": result,
+            "city": city,
+            "state": state
+        }
+    except Exception as e:
+        # Don't fail on reverse geocode errors - just return empty
+        return {
+            "success": True,
+            "display_name": None,
+            "city": None,
+            "state": None
+        }
+
+
+class AddressAutocompleteRequest(BaseModel):
+    """Request schema for address autocomplete."""
+    query: str
+    max_results: int = 5
+
+
+@router.post("/address-autocomplete")
+async def address_autocomplete_endpoint(
+    data: AddressAutocompleteRequest,
+    user=Depends(get_current_user)
+):
+    """
+    Get address suggestions for autocomplete using AWS Location Service.
+    """
+    from app.services.geocoding import search_places
+
+    if not data.query or len(data.query.strip()) < 3:
+        return {"success": True, "suggestions": []}
+
+    try:
+        results = search_places(data.query.strip(), max_results=min(data.max_results, 10))
+
+        suggestions = []
+        for result in results:
+            suggestions.append({
+                "label": result.get('label', ''),
+                "street": result.get('street'),
+                "city": result.get('city'),
+                "state": result.get('state'),
+                "postal_code": result.get('postal_code'),
+                "latitude": result.get('lat'),
+                "longitude": result.get('lon'),
+            })
+
+        return {
+            "success": True,
+            "suggestions": suggestions
+        }
+    except Exception as e:
+        print(f"Address autocomplete error: {e}")
+        return {"success": True, "suggestions": []}

@@ -39,7 +39,7 @@ export type EpisodeDeliveryStatus =
 export type EpisodeSubjectType = 'CAST' | 'CREW' | 'CONTRIBUTOR' | 'OTHER';
 export type EpisodeListItemKind = 'INTERVIEW' | 'SCENE' | 'SEGMENT';
 export type DeliverableStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'READY_FOR_REVIEW' | 'APPROVED' | 'DELIVERED';
-export type ApprovalType = 'EDIT_LOCK' | 'DELIVERY_APPROVAL';
+export type ApprovalType = 'EDIT_LOCK' | 'DELIVERY_APPROVAL' | 'ROUGH_CUT' | 'FINE_CUT' | 'PICTURE_LOCK' | 'COLOR' | 'SOUND';
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 export interface Season {
@@ -90,6 +90,8 @@ export interface EpisodeSubject {
   role: string | null;
   contact_info: string | null;
   notes: string | null;
+  contact_id: string | null;
+  contact_name: string | null; // Populated from join
   created_at: string;
   updated_at: string;
 }
@@ -100,6 +102,8 @@ export interface EpisodeLocation {
   name: string;
   address: string | null;
   notes: string | null;
+  project_location_id: string | null;
+  project_location_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -134,6 +138,8 @@ export interface EpisodeDeliverable {
   due_date: string | null;
   owner_user_id: string | null;
   notes: string | null;
+  project_deliverable_id: string | null;
+  project_deliverable_name: string | null; // Populated from join
   created_at: string;
   updated_at: string;
 }
@@ -142,7 +148,9 @@ export interface EpisodeAssetLink {
   id: string;
   episode_id: string;
   label: string;
-  url: string;
+  url: string | null;
+  asset_id: string | null;
+  asset_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -286,6 +294,16 @@ export const DELIVERABLE_STATUSES_CONFIG: { value: DeliverableStatus; label: str
   { value: 'DELIVERED', label: 'Delivered', color: 'bg-emerald-500' },
 ];
 
+export const APPROVAL_TYPES: { value: ApprovalType; label: string; description: string }[] = [
+  { value: 'ROUGH_CUT', label: 'Rough Cut', description: 'First assembly review' },
+  { value: 'FINE_CUT', label: 'Fine Cut', description: 'Refined edit review' },
+  { value: 'PICTURE_LOCK', label: 'Picture Lock', description: 'Final picture approval - no more visual changes' },
+  { value: 'COLOR', label: 'Color Grade', description: 'Color correction approval' },
+  { value: 'SOUND', label: 'Sound Mix', description: 'Audio mix approval' },
+  { value: 'DELIVERY_APPROVAL', label: 'Delivery Approval', description: 'Final delivery package approval' },
+  { value: 'EDIT_LOCK', label: 'Edit Lock', description: 'Lock episode to prevent further edits' },
+];
+
 // =====================================================
 // Query Keys
 // =====================================================
@@ -303,6 +321,7 @@ const episodeKeys = {
   storyboards: (projectId: string, unlinkedOnly?: boolean) =>
     [...episodeKeys.all, 'storyboards', projectId, unlinkedOnly] as const,
   settings: (projectId: string) => [...episodeKeys.all, 'settings', projectId] as const,
+  allMilestones: (projectId: string) => [...episodeKeys.all, 'allMilestones', projectId] as const,
   print: (projectId: string, seasonId?: string) =>
     [...episodeKeys.all, 'print', projectId, seasonId] as const,
 };
@@ -393,14 +412,20 @@ export function useEpisodes(
   });
 }
 
+// Helper to check if string looks like a UUID
+const isValidUUID = (str: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+
 export function useEpisode(projectId: string | null, episodeId: string | null) {
+  // Only enable if episodeId is a valid UUID (prevents "all-milestones" etc from being passed)
+  const isValidEpisodeId = !!episodeId && isValidUUID(episodeId);
+
   return useQuery({
     queryKey: episodeKeys.detail(projectId || '', episodeId || ''),
     queryFn: async (): Promise<EpisodeDetail> => {
       if (!projectId || !episodeId) throw new Error('Project ID and Episode ID required');
       return api.get(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}`);
     },
-    enabled: !!projectId && !!episodeId,
+    enabled: !!projectId && isValidEpisodeId,
     staleTime: 30000,
   });
 }
@@ -462,22 +487,32 @@ export function useDeleteEpisode(projectId: string | null) {
 // Subject Hooks
 // =====================================================
 
+// Data type for creating/updating subjects with contact info
+export interface SubjectWithContactData {
+  subject_type: EpisodeSubjectType;
+  name: string;
+  role?: string;
+  // Contact fields
+  company?: string;
+  email?: string;
+  phone?: string;
+  role_interest?: string;
+  status?: string;
+  source?: string;
+  notes?: string;
+}
+
 export function useCreateSubject(projectId: string | null, episodeId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (data: {
-      subject_type: EpisodeSubjectType;
-      name: string;
-      role?: string;
-      contact_info?: string;
-      notes?: string;
-    }) => {
+    mutationFn: async (data: SubjectWithContactData) => {
       if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
       return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/subjects`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+      queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] }); // Also refresh contacts
     },
   });
 }
@@ -486,12 +521,13 @@ export function useUpdateSubject(projectId: string | null, episodeId: string | n
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ subjectId, data }: { subjectId: string; data: Partial<EpisodeSubject> }) => {
+    mutationFn: async ({ subjectId, data }: { subjectId: string; data: Partial<SubjectWithContactData> }) => {
       if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
       return api.put(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/subjects/${subjectId}`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+      queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] }); // Also refresh contacts
     },
   });
 }
@@ -506,6 +542,23 @@ export function useDeleteSubject(projectId: string | null, episodeId: string | n
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+    },
+  });
+}
+
+export function useLinkContact(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (contactId: string) => {
+      if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/subjects/link-contact`, {
+        contact_id: contactId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+      queryClient.invalidateQueries({ queryKey: ['backlot-contacts'] });
     },
   });
 }
@@ -549,6 +602,22 @@ export function useDeleteLocation(projectId: string | null, episodeId: string | 
     mutationFn: async (locationId: string) => {
       if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
       return api.delete(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/locations/${locationId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+    },
+  });
+}
+
+export function useLinkProjectLocation(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (projectLocationId: string) => {
+      if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/locations/link`, {
+        project_location_id: projectLocationId,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
@@ -741,6 +810,22 @@ export function useDeleteDeliverable(projectId: string | null, episodeId: string
   });
 }
 
+export function useLinkProjectDeliverable(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (projectDeliverableId: string) => {
+      if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/deliverables/link`, {
+        project_deliverable_id: projectDeliverableId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+    },
+  });
+}
+
 export function useApplyDeliverableTemplate(projectId: string | null, episodeId: string | null) {
   const queryClient = useQueryClient();
 
@@ -782,6 +867,22 @@ export function useDeleteAssetLink(projectId: string | null, episodeId: string |
     mutationFn: async (linkId: string) => {
       if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
       return api.delete(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/asset-links/${linkId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+    },
+  });
+}
+
+export function useLinkAsset(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (assetId: string) => {
+      if (!projectId || !episodeId) throw new Error('Project and Episode IDs required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/asset-links/link-asset`, {
+        asset_id: assetId,
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
@@ -945,6 +1046,45 @@ export function useUnlockEpisode(projectId: string | null, episodeId: string | n
 }
 
 // =====================================================
+// Milestone Import Hooks
+// =====================================================
+
+export interface MilestoneWithEpisode extends EpisodeMilestone {
+  episode_code: string;
+  episode_title: string;
+}
+
+export function useAllMilestones(projectId: string | null) {
+  return useQuery({
+    queryKey: episodeKeys.allMilestones(projectId || ''),
+    queryFn: async (): Promise<MilestoneWithEpisode[]> => {
+      if (!projectId) throw new Error('Project ID required');
+      const response = await api.get(`/api/v1/backlot/projects/${projectId}/episodes/all-milestones`);
+      return response.milestones;
+    },
+    enabled: !!projectId,
+    staleTime: 30000,
+  });
+}
+
+export function useImportMilestones(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (milestoneIds: string[]) => {
+      if (!projectId) throw new Error('Project ID required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/production-days/from-milestones`, {
+        milestone_ids: milestoneIds,
+      });
+    },
+    onSuccess: () => {
+      // Invalidate production days to refresh schedule
+      queryClient.invalidateQueries({ queryKey: ['backlot', 'production-days', projectId] });
+    },
+  });
+}
+
+// =====================================================
 // Settings Hooks
 // =====================================================
 
@@ -1040,6 +1180,10 @@ export function getDeliveryStatusInfo(status: EpisodeDeliveryStatus) {
 
 export function getDeliverableStatusInfo(status: DeliverableStatus) {
   return DELIVERABLE_STATUSES_CONFIG.find((s) => s.value === status);
+}
+
+export function getApprovalTypeInfo(type: ApprovalType) {
+  return APPROVAL_TYPES.find((t) => t.value === type);
 }
 
 export function formatEpisodeCode(seasonNumber: number | null, episodeNumber: number): string {

@@ -37,6 +37,9 @@ import {
   Edit3,
   Trash2,
   RefreshCw,
+  Send,
+  Navigation,
+  Search,
 } from 'lucide-react';
 import {
   useMileageEntries,
@@ -46,19 +49,21 @@ import {
   useApproveMileage,
   useRejectMileage,
   useMarkMileageReimbursed,
+  useSubmitMileageForApproval,
+  useBulkSubmitMileageForApproval,
   useExpenseSettings,
+  useSearchPlaces,
+  useCalculateRoute,
   useBudget,
   MileageEntry,
   CreateMileageData,
+  PlaceSuggestion,
   MILEAGE_PURPOSE_OPTIONS,
   EXPENSE_STATUS_CONFIG,
   formatCurrency,
   calculateMileageTotal,
 } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
-import BudgetCategorySelect from '../shared/BudgetCategorySelect';
-import BudgetLineItemSelect from '../shared/BudgetLineItemSelect';
-import SceneSelect from '../shared/SceneSelect';
 
 interface MileageViewProps {
   projectId: string;
@@ -85,8 +90,12 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
   const approveMileage = useApproveMileage(projectId);
   const rejectMileage = useRejectMileage(projectId);
   const markReimbursed = useMarkMileageReimbursed(projectId);
+  const submitForApproval = useSubmitMileageForApproval(projectId);
+  const bulkSubmitForApproval = useBulkSubmitMileageForApproval(projectId);
 
-  // Calculate totals
+  // Calculate totals including drafts
+  const draftEntries = entries.filter(e => e.status === 'draft');
+  const totalDraft = draftEntries.reduce((sum, e) => sum + (e.total_amount || 0), 0);
   const totalPending = entries
     .filter(e => e.status === 'pending')
     .reduce((sum, e) => sum + (e.total_amount || 0), 0);
@@ -94,9 +103,27 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
     .filter(e => e.status === 'approved')
     .reduce((sum, e) => sum + (e.total_amount || 0), 0);
 
+  const handleSubmitForApproval = async (id: string) => {
+    try {
+      await submitForApproval.mutateAsync(id);
+    } catch (error) {
+      console.error('Failed to submit for approval:', error);
+    }
+  };
+
+  const handleBulkSubmitForApproval = async () => {
+    if (draftEntries.length === 0) return;
+    try {
+      const entryIds = draftEntries.map(e => e.id);
+      await bulkSubmitForApproval.mutateAsync(entryIds);
+    } catch (error) {
+      console.error('Failed to bulk submit:', error);
+    }
+  };
+
   const handleApprove = async (id: string) => {
     try {
-      await approveMileage.mutateAsync(id);
+      await approveMileage.mutateAsync({ mileageId: id });
     } catch (error) {
       console.error('Failed to approve:', error);
     }
@@ -155,6 +182,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="approved">Approved</SelectItem>
               <SelectItem value="rejected">Rejected</SelectItem>
@@ -171,12 +199,48 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
         </Button>
       </div>
 
+      {/* Ready for Approval Card */}
+      {draftEntries.length > 0 && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  {draftEntries.length} mileage {draftEntries.length === 1 ? 'entry' : 'entries'} ready for approval
+                </p>
+                <p className="text-lg font-semibold">{formatCurrency(totalDraft)}</p>
+              </div>
+              <Button
+                onClick={handleBulkSubmitForApproval}
+                disabled={bulkSubmitForApproval.isPending}
+                className="bg-amber-500 hover:bg-amber-600 text-black"
+              >
+                {bulkSubmitForApproval.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4 mr-2" />
+                )}
+                Send All for Approval
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card className="bg-charcoal-black border-muted-gray/20">
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">{entries.length}</div>
             <div className="text-sm text-muted-foreground">Total Entries</div>
+          </CardContent>
+        </Card>
+        <Card className="bg-charcoal-black border-muted-gray/20">
+          <CardContent className="pt-4">
+            <div className="text-2xl font-bold text-gray-400">
+              {formatCurrency(totalDraft)}
+            </div>
+            <div className="text-sm text-muted-foreground">Draft</div>
           </CardContent>
         </Card>
         <Card className="bg-charcoal-black border-muted-gray/20">
@@ -193,14 +257,6 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
               {formatCurrency(totalApproved)}
             </div>
             <div className="text-sm text-muted-foreground">Approved</div>
-          </CardContent>
-        </Card>
-        <Card className="bg-charcoal-black border-muted-gray/20">
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold">
-              ${settings?.mileage_rate ?? 0.67}/mi
-            </div>
-            <div className="text-sm text-muted-foreground">Current Rate</div>
           </CardContent>
         </Card>
       </div>
@@ -233,6 +289,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
               onEdit={() => setEditingEntry(entry)}
               onDelete={() => handleDelete(entry.id)}
               onMarkReimbursed={() => handleMarkReimbursed(entry.id)}
+              onSubmitForApproval={() => handleSubmitForApproval(entry.id)}
             />
           ))
         )}
@@ -248,6 +305,7 @@ function MileageView({ projectId, canEdit }: MileageViewProps) {
         }}
         entry={editingEntry}
         defaultRate={settings?.mileage_rate ?? 0.67}
+        requireLocations={settings?.require_mileage_locations ?? false}
       />
 
       {/* Reject Modal */}
@@ -291,6 +349,7 @@ interface MileageEntryCardProps {
   onEdit: () => void;
   onDelete: () => void;
   onMarkReimbursed: () => void;
+  onSubmitForApproval: () => void;
 }
 
 function MileageEntryCard({
@@ -301,6 +360,7 @@ function MileageEntryCard({
   onEdit,
   onDelete,
   onMarkReimbursed,
+  onSubmitForApproval,
 }: MileageEntryCardProps) {
   const statusConfig = EXPENSE_STATUS_CONFIG[entry.status as keyof typeof EXPENSE_STATUS_CONFIG];
   const purposeLabel = MILEAGE_PURPOSE_OPTIONS.find(p => p.value === entry.purpose)?.label || entry.purpose;
@@ -362,6 +422,25 @@ function MileageEntryCard({
             </div>
 
             <div className="flex items-center gap-2 justify-end mt-3">
+              {entry.status === 'draft' && (
+                <>
+                  <Button variant="ghost" size="icon" onClick={onEdit}>
+                    <Edit3 className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={onDelete}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={onSubmitForApproval}
+                    className="text-amber-500 border-amber-500/50 hover:bg-amber-500/10"
+                  >
+                    <Send className="w-4 h-4 mr-1" />
+                    Submit
+                  </Button>
+                </>
+              )}
               {entry.status === 'pending' && (
                 <>
                   <Button variant="ghost" size="icon" onClick={onEdit}>
@@ -406,12 +485,123 @@ function MileageEntryCard({
   );
 }
 
+interface AddressInputProps {
+  projectId: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSelect: (place: PlaceSuggestion) => void;
+  placeholder?: string;
+  label: string;
+  id: string;
+  required?: boolean;
+}
+
+function AddressInput({
+  projectId,
+  value,
+  onChange,
+  onSelect,
+  placeholder,
+  label,
+  id,
+  required,
+}: AddressInputProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<PlaceSuggestion[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const { searchPlaces } = useSearchPlaces(projectId);
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+
+  // Debounced search
+  React.useEffect(() => {
+    if (value.length < 3) {
+      setSuggestions([]);
+      setIsOpen(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      const results = await searchPlaces(value);
+      setSuggestions(results);
+      setIsOpen(results.length > 0);
+      setIsSearching(false);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [value, searchPlaces]);
+
+  // Close dropdown when clicking outside
+  React.useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        dropdownRef.current &&
+        !dropdownRef.current.contains(e.target as Node) &&
+        inputRef.current &&
+        !inputRef.current.contains(e.target as Node)
+      ) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSelect = (place: PlaceSuggestion) => {
+    onChange(place.label);
+    onSelect(place);
+    setIsOpen(false);
+  };
+
+  return (
+    <div className="space-y-2 relative">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="relative">
+        <Navigation className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          ref={inputRef}
+          id={id}
+          value={value}
+          onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="pl-10 pr-8"
+          required={required}
+          autoComplete="off"
+        />
+        {isSearching && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 animate-spin text-muted-foreground" />
+        )}
+      </div>
+      {isOpen && suggestions.length > 0 && (
+        <div
+          ref={dropdownRef}
+          className="absolute z-50 w-full mt-1 bg-charcoal-black border border-muted-gray/30 rounded-md shadow-lg max-h-48 overflow-y-auto"
+        >
+          {suggestions.map((place, idx) => (
+            <button
+              key={place.place_id || idx}
+              type="button"
+              className="w-full px-3 py-2 text-left text-sm hover:bg-muted-gray/20 flex items-start gap-2"
+              onClick={() => handleSelect(place)}
+            >
+              <MapPin className="w-4 h-4 mt-0.5 text-muted-foreground shrink-0" />
+              <span className="line-clamp-2">{place.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface MileageFormModalProps {
   projectId: string;
   isOpen: boolean;
   onClose: () => void;
   entry?: MileageEntry | null;
   defaultRate: number;
+  requireLocations?: boolean;
 }
 
 function MileageFormModal({
@@ -420,6 +610,7 @@ function MileageFormModal({
   onClose,
   entry,
   defaultRate,
+  requireLocations = false,
 }: MileageFormModalProps) {
   const [formData, setFormData] = useState<CreateMileageData>({
     date: entry?.date || new Date().toISOString().split('T')[0],
@@ -435,13 +626,40 @@ function MileageFormModal({
     budget_line_item_id: (entry as any)?.budget_line_item_id || null,
   });
 
+  const [startPlace, setStartPlace] = useState<PlaceSuggestion | null>(null);
+  const [endPlace, setEndPlace] = useState<PlaceSuggestion | null>(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+
   const { data: budget } = useBudget(projectId);
   const budgetId = budget?.id || null;
   const createMileage = useCreateMileage(projectId);
   const updateMileage = useUpdateMileage(projectId);
+  const calculateRoute = useCalculateRoute(projectId);
 
   const isEditing = !!entry;
   const isPending = createMileage.isPending || updateMileage.isPending;
+
+  // Auto-calculate distance when both addresses are selected
+  React.useEffect(() => {
+    if (startPlace && endPlace && formData.start_location && formData.end_location) {
+      setIsCalculating(true);
+      calculateRoute.mutateAsync({
+        startAddress: formData.start_location,
+        endAddress: formData.end_location,
+      }).then(result => {
+        if (result.distance_miles) {
+          setFormData(prev => ({
+            ...prev,
+            miles: Math.round(result.distance_miles * 10) / 10, // Round to 1 decimal
+          }));
+        }
+      }).catch(err => {
+        console.error('Route calculation failed:', err);
+      }).finally(() => {
+        setIsCalculating(false);
+      });
+    }
+  }, [startPlace, endPlace]);
 
   // Update form when entry changes
   React.useEffect(() => {
@@ -460,6 +678,8 @@ function MileageFormModal({
         budget_line_item_id: (entry as any)?.budget_line_item_id || null,
         scene_id: entry.scene_id || null,
       });
+      setStartPlace(null);
+      setEndPlace(null);
     } else {
       setFormData({
         date: new Date().toISOString().split('T')[0],
@@ -475,6 +695,8 @@ function MileageFormModal({
         budget_line_item_id: null,
         scene_id: null,
       });
+      setStartPlace(null);
+      setEndPlace(null);
     }
   }, [entry, defaultRate]);
 
@@ -509,49 +731,63 @@ function MileageFormModal({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="date">Date</Label>
-              <Input
-                id="date"
-                type="date"
-                value={formData.date}
-                onChange={e => setFormData({ ...formData, date: e.target.value })}
-                required
-              />
-            </div>
-            <div className="space-y-2">
+          <div className="space-y-2">
+            <Label htmlFor="date">Date</Label>
+            <Input
+              id="date"
+              type="date"
+              value={formData.date}
+              onChange={e => setFormData({ ...formData, date: e.target.value })}
+              required
+            />
+          </div>
+
+          <AddressInput
+            projectId={projectId}
+            id="start_address"
+            label="Start Address"
+            value={formData.start_location || ''}
+            onChange={value => setFormData({ ...formData, start_location: value })}
+            onSelect={place => setStartPlace(place)}
+            placeholder="Search for start address..."
+            required={requireLocations}
+          />
+
+          <AddressInput
+            projectId={projectId}
+            id="end_address"
+            label="End Address"
+            value={formData.end_location || ''}
+            onChange={value => setFormData({ ...formData, end_location: value })}
+            onSelect={place => setEndPlace(place)}
+            placeholder="Search for end address..."
+            required={requireLocations}
+          />
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
               <Label htmlFor="miles">Miles</Label>
-              <Input
-                id="miles"
-                type="number"
-                step="0.1"
-                min="0"
-                value={formData.miles || ''}
-                onChange={e => setFormData({ ...formData, miles: parseFloat(e.target.value) || 0 })}
-                required
-              />
+              {isCalculating && (
+                <span className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Calculating...
+                </span>
+              )}
             </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="start_location">Start Location</Label>
             <Input
-              id="start_location"
-              value={formData.start_location || ''}
-              onChange={e => setFormData({ ...formData, start_location: e.target.value })}
-              placeholder="e.g., Home, Office"
+              id="miles"
+              type="number"
+              step="0.1"
+              min="0"
+              value={formData.miles || ''}
+              onChange={e => setFormData({ ...formData, miles: parseFloat(e.target.value) || 0 })}
+              required
             />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="end_location">End Location</Label>
-            <Input
-              id="end_location"
-              value={formData.end_location || ''}
-              onChange={e => setFormData({ ...formData, end_location: e.target.value })}
-              placeholder="e.g., Set, Equipment House"
-            />
+            {startPlace && endPlace && formData.miles > 0 && (
+              <p className="text-xs text-muted-foreground">
+                Distance auto-calculated from addresses
+              </p>
+            )}
           </div>
 
           <div className="flex items-center space-x-2">
@@ -606,47 +842,6 @@ function MileageFormModal({
               rows={2}
             />
           </div>
-
-          {/* Budget Linking */}
-          {budgetId && (
-            <div className="space-y-4 pt-2 border-t border-muted-gray/10">
-              <div className="text-xs font-medium text-muted-gray uppercase tracking-wider">
-                Budget Allocation
-              </div>
-              <BudgetCategorySelect
-                projectId={projectId}
-                value={formData.budget_category_id || null}
-                onChange={(categoryId) => {
-                  setFormData({
-                    ...formData,
-                    budget_category_id: categoryId,
-                    budget_line_item_id: null, // Reset line item when category changes
-                  });
-                }}
-                label="Budget Category"
-                placeholder="Select category (optional)"
-              />
-              <BudgetLineItemSelect
-                budgetId={budgetId}
-                categoryId={formData.budget_category_id || null}
-                value={formData.budget_line_item_id || null}
-                onChange={(lineItemId) => {
-                  setFormData({ ...formData, budget_line_item_id: lineItemId });
-                }}
-                label="Budget Line Item"
-                placeholder="Select line item (optional)"
-              />
-              <SceneSelect
-                projectId={projectId}
-                value={formData.scene_id || null}
-                onChange={(sceneId) => {
-                  setFormData({ ...formData, scene_id: sceneId });
-                }}
-                label="Related Scene"
-                placeholder="Select scene (optional)"
-              />
-            </div>
-          )}
 
           <Card className="bg-charcoal-black/50 border-muted-gray/20">
             <CardContent className="py-3">

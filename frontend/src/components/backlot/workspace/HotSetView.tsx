@@ -51,6 +51,7 @@ import {
   Target,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { useProductionDays, useCallSheets } from '@/hooks/backlot';
 import {
   useHotSetSessions,
@@ -465,12 +466,12 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               </CardHeader>
               <CardContent className="space-y-3">
                 {productionDays
-                  .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                  .sort((a, b) => parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime())
                   .map((day) => {
                     const existingSession = sessions?.find((s) => s.production_day_id === day.id);
                     const hasSession = !!existingSession;
-                    const isPast = new Date(day.date) < new Date(new Date().toDateString());
-                    const isToday = new Date(day.date).toDateString() === new Date().toDateString();
+                    const isPast = parseLocalDate(day.date) < new Date(new Date().toDateString());
+                    const isToday = parseLocalDate(day.date).toDateString() === new Date().toDateString();
 
                     return (
                       <div
@@ -517,7 +518,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="font-medium text-bone-white">
-                              {new Date(day.date).toLocaleDateString('en-US', {
+                              {parseLocalDate(day.date).toLocaleDateString('en-US', {
                                 weekday: 'long',
                                 month: 'short',
                                 day: 'numeric',
@@ -899,7 +900,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                 <SelectContent>
                   {availableDays.map((day) => (
                     <SelectItem key={day.id} value={day.id}>
-                      Day {day.day_number} - {new Date(day.date).toLocaleDateString()}
+                      Day {day.day_number} - {parseLocalDate(day.date).toLocaleDateString()}
                       {day.title && ` - ${day.title}`}
                     </SelectItem>
                   ))}

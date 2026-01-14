@@ -21,12 +21,16 @@ async def list_notifications(
     try:
         client = get_client()
         query = client.table("notifications").select("*").eq("user_id", user_id)
-        
+
         if status:
-            query = query.eq("status", status)
+            # Convert status to is_read boolean
+            if status == "unread":
+                query = query.eq("is_read", False)
+            elif status == "read":
+                query = query.eq("is_read", True)
         if type:
             query = query.eq("type", type)
-        
+
         response = query.range(skip, skip + limit - 1).order("created_at", desc=True).execute()
         return response.data
     except Exception as e:
@@ -62,7 +66,7 @@ async def mark_notifications_read(notification_ids: List[str]):
     """Mark notifications as read"""
     try:
         client = get_client()
-        client.table("notifications").update({"status": "read"}).in_("id", notification_ids).execute()
+        client.table("notifications").update({"is_read": True}).in_("id", notification_ids).execute()
         return {"message": "Notifications marked as read"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -84,7 +88,7 @@ async def mark_all_notifications_read(user_id: str, tab: str = "all"):
     """Mark all notifications as read, optionally filtered by tab/type"""
     try:
         client = get_client()
-        query = client.table("notifications").update({"status": "read"}).eq("user_id", user_id).eq("status", "unread")
+        query = client.table("notifications").update({"is_read": True}).eq("user_id", user_id).eq("is_read", False)
 
         # Filter by type based on tab
         if tab == "messages":

@@ -102,6 +102,7 @@ import {
   CallSheetTemplateDefinition,
 } from '@/lib/backlot/callSheetTemplates';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import { CallSheetPeopleManager } from './CallSheetPeopleManager';
 
@@ -1973,7 +1974,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                     <option value="">No linked production day</option>
                     {days.map((day) => (
                       <option key={day.id} value={day.id}>
-                        Day {day.day_number} - {format(new Date(day.date), 'MMM d, yyyy')}
+                        Day {day.day_number} - {format(parseLocalDate(day.date), 'MMM d, yyyy')}
                         {day.title && ` - ${day.title}`}
                       </option>
                     ))}

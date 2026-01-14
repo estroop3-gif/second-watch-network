@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gear Marketplace Date Filters - Inspection Guide</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #f0f0f0;
+        }
+        h1 {
+            color: #fcdc58;
+            border-bottom: 2px solid #fcdc58;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #ff3c3c;
+            margin-top: 30px;
+        }
+        .section {
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .step {
+            background: #333;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #fcdc58;
+        }
+        .code {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+        .success {
+            color: #4ade80;
+            font-weight: bold;
+        }
+        .warning {
+            color: #facc15;
+            font-weight: bold;
+        }
+        .error {
+            color: #ff3c3c;
+            font-weight: bold;
+        }
+        .checklist {
+            list-style: none;
+            padding: 0;
+        }
+        .checklist li {
+            padding: 8px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        .checklist li:before {
+            content: "☐";
+            position: absolute;
+            left: 0;
+            font-size: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th, td {
+            border: 1px solid #444;
+            padding: 10px;
+            text-align: left;
+        }
+        th {
+            background: #3a3a3a;
+            color: #fcdc58;
+        }
+        .button {
+            display: inline-block;
+            background: #ff3c3c;
+            color: white;
+            padding: 10px 20px;
+            text-decoration: none;
+            border-radius: 4px;
+            margin: 10px 5px;
+        }
+        .button:hover {
+            background: #cc3030;
+        }
+        .screenshot {
+            max-width: 100%;
+            border: 2px solid #444;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Gear Marketplace Date Filters - Inspection Guide</h1>
+
+    <div class="section">
+        <h2>📋 Quick Start</h2>
+        <p><strong>Issue:</strong> User reports date range filters are not visible in the gear marketplace.</p>
+        <p><strong>Expected Location:</strong></p>
+        <ul>
+            <li><strong>Location 1:</strong> MarketplaceView toolbar (when in "Rentals" mode)</li>
+            <li><strong>Location 2:</strong> GearHouseDrawer (below search bar)</li>
+        </ul>
+        <a href="http://localhost:8080" class="button" target="_blank">Open App →</a>
+    </div>
+
+    <div class="section">
+        <h2>🎯 Manual Testing Steps</h2>
+
+        <div class="step">
+            <h3>Step 1: Navigate to Marketplace</h3>
+            <ol>
+                <li>Open <a href="http://localhost:8080" target="_blank">http://localhost:8080</a></li>
+                <li>Log in with valid credentials</li>
+                <li>Click <strong>"Gear"</strong> in the navigation</li>
+                <li>Click on any <strong>organization card</strong></li>
+                <li>Click the <strong>"Marketplace"</strong> tab</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 2: Check MarketplaceView Toolbar</h3>
+            <ol>
+                <li>Ensure you're on the <strong>"Browse"</strong> tab</li>
+                <li>Ensure <strong>"Rentals"</strong> mode is active (NOT "For Sale")</li>
+                <li>Look for the toolbar with filters</li>
+                <li><span class="success">✓ EXPECTED:</span> You should see:
+                    <ul>
+                        <li>Search box</li>
+                        <li>Category dropdown</li>
+                        <li>Lister Type dropdown</li>
+                        <li>"Verified Only" button</li>
+                        <li><strong>→ Date input "From"</strong></li>
+                        <li><strong>→ Text "to"</strong></li>
+                        <li><strong>→ Date input "To"</strong></li>
+                        <li>View toggle buttons (Grid/List, Grouped/Flat)</li>
+                    </ul>
+                </li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 3: Test Date Filter Functionality</h3>
+            <ol>
+                <li>Click on the first date input field</li>
+                <li>Select tomorrow's date</li>
+                <li>Click on the second date input field</li>
+                <li>Select a date one week from now</li>
+                <li><span class="success">✓ EXPECTED:</span> An "X" clear button should appear</li>
+                <li>Click the clear button</li>
+                <li><span class="success">✓ EXPECTED:</span> Both dates should be cleared</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 4: Verify "For Sale" Mode Behavior</h3>
+            <ol>
+                <li>Click the <strong>"For Sale"</strong> button</li>
+                <li><span class="success">✓ EXPECTED:</span> Date filters should disappear</li>
+                <li>Click back to <strong>"Rentals"</strong></li>
+                <li><span class="success">✓ EXPECTED:</span> Date filters should reappear</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 5: Check GearHouseDrawer</h3>
+            <ol>
+                <li>Click the <strong>"Rental Houses"</strong> tab</li>
+                <li>Click on any rental house card</li>
+                <li><span class="success">✓ EXPECTED:</span> A drawer slides in from the right</li>
+                <li>Look for the filter section at the top:
+                    <ul>
+                        <li>Search box</li>
+                        <li>Category dropdown</li>
+                        <li><strong>→ Date input "Available from"</strong></li>
+                        <li><strong>→ Text "to"</strong></li>
+                        <li><strong>→ Date input "Available to"</strong></li>
+                    </ul>
+                </li>
+                <li>Enter dates and verify "Clear" button appears</li>
+            </ol>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>🔧 Browser DevTools Inspection</h2>
+
+        <div class="step">
+            <h3>Open DevTools</h3>
+            <p>Press <code>F12</code> or <code>Right-click → Inspect</code></p>
+        </div>
+
+        <div class="step">
+            <h3>Check 1: Are date inputs in the DOM?</h3>
+            <p>In the <strong>Console</strong> tab, run:</p>
+            <div class="code">
+document.querySelectorAll('input[type="date"]').length
+            </div>
+            <p><span class="success">✓ Expected:</span> Should return <strong>2</strong> or more (depending on which view you're on)</p>
+            <p><span class="error">✗ If 0:</span> Date inputs are not rendering at all</p>
+        </div>
+
+        <div class="step">
+            <h3>Check 2: Are they visible?</h3>
+            <div class="code">
+const inputs = document.querySelectorAll('input[type="date"]');
+inputs.forEach((input, i) => {
+    const style = window.getComputedStyle(input);
+    console.log(`Input ${i}:`, {
+        display: style.display,
+        visibility: style.visibility,
+        opacity: style.opacity,
+        width: style.width,
+        height: style.height
+    });
+});
+            </div>
+            <p><span class="success">✓ Expected:</span></p>
+            <ul>
+                <li>display: not "none"</li>
+                <li>visibility: "visible"</li>
+                <li>opacity: "1"</li>
+                <li>width: "140px" (or similar)</li>
+            </ul>
+        </div>
+
+        <div class="step">
+            <h3>Check 3: React state inspection</h3>
+            <p>In the <strong>Components</strong> tab (React DevTools):</p>
+            <ol>
+                <li>Find the <strong>MarketplaceView</strong> component</li>
+                <li>Check these state values:
+                    <ul>
+                        <li><code>browseMode</code> should be <code>"rentals"</code></li>
+                        <li><code>activeTab</code> should be <code>"browse"</code></li>
+                        <li><code>dateRange</code> should be an object</li>
+                    </ul>
+                </li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Check 4: Console errors</h3>
+            <p>Look for any red error messages in the Console tab</p>
+            <p>Common issues:</p>
+            <ul>
+                <li>Import errors</li>
+                <li>Undefined component errors</li>
+                <li>TypeScript compilation errors</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>🐛 Common Issues & Fixes</h2>
+
+        <table>
+            <tr>
+                <th>Issue</th>
+                <th>Symptom</th>
+                <th>Solution</th>
+            </tr>
+            <tr>
+                <td>Not in Rentals mode</td>
+                <td>Date filters not visible</td>
+                <td>Click "Rentals" button (NOT "For Sale")</td>
+            </tr>
+            <tr>
+                <td>Wrong tab active</td>
+                <td>Wrong UI showing</td>
+                <td>Click "Browse" tab (NOT "My Listings")</td>
+            </tr>
+            <tr>
+                <td>CSS hiding inputs</td>
+                <td>Inputs in DOM but invisible</td>
+                <td>Check computed styles in DevTools</td>
+            </tr>
+            <tr>
+                <td>Screen too narrow</td>
+                <td>Inputs wrapping or hidden</td>
+                <td>Make browser window wider</td>
+            </tr>
+            <tr>
+                <td>Build not updated</td>
+                <td>Old code running</td>
+                <td>Hard refresh (Ctrl+Shift+R)</td>
+            </tr>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>✅ Verification Checklist</h2>
+        <ul class="checklist">
+            <li>Frontend dev server is running (npm run dev)</li>
+            <li>Logged in with valid credentials</li>
+            <li>Navigated to: Gear → Organization → Marketplace tab</li>
+            <li>"Browse" tab is active</li>
+            <li>"Rentals" mode is selected (NOT "For Sale")</li>
+            <li>Two date input fields are visible in toolbar</li>
+            <li>Date inputs are between "Verified Only" button and view toggles</li>
+            <li>Can enter dates in both fields</li>
+            <li>Clear button (X) appears after entering dates</li>
+            <li>Clear button clears both dates</li>
+            <li>Switching to "For Sale" hides date filters</li>
+            <li>Switching back to "Rentals" shows date filters</li>
+            <li>In "Rental Houses" tab, clicking a house opens drawer</li>
+            <li>Drawer shows date filters below search/category</li>
+            <li>No console errors</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>📸 Screenshot Analysis</h2>
+        <p>Run the automated test to capture screenshots:</p>
+        <div class="code">
+cd /home/estro/second-watch-network/frontend
+npx playwright test tests/e2e/gear-marketplace-date-filters-manual.spec.ts --headed
+        </div>
+        <p>Screenshots will be saved to:</p>
+        <div class="code">
+frontend/tests/screenshots/marketplace-manual/
+        </div>
+        <p>Review these files:</p>
+        <ul>
+            <li><code>06-rentals-mode-active.png</code> - Should show date filters</li>
+            <li><code>07-dates-entered.png</code> - Should show entered dates</li>
+            <li><code>10-drawer-opened.png</code> - Should show drawer with filters</li>
+        </ul>
+    </div>
+
+    <div class="section">
+        <h2>📝 Code Reference</h2>
+        <p><strong>MarketplaceView.tsx</strong> - Lines 312-348</p>
+        <div class="code">
+{/* Date Range Filter (only show for rentals) */}
+{browseMode === 'rentals' && (
+  &lt;div className="flex items-center gap-2 border-l border-white/10 pl-2"&gt;
+    &lt;Input type="date" ... /&gt;
+    &lt;span className="text-muted-gray"&gt;to&lt;/span&gt;
+    &lt;Input type="date" ... /&gt;
+    &lt;Button&gt;&lt;X /&gt;&lt;/Button&gt;
+  &lt;/div&gt;
+)}
+        </div>
+
+        <p><strong>GearHouseDrawer.tsx</strong> - Lines 250-289</p>
+        <div class="code">
+{/* Date Range Filter */}
+&lt;div className="flex items-center gap-2"&gt;
+  &lt;div className="flex-1"&gt;
+    &lt;Input type="date" placeholder="Available from" /&gt;
+  &lt;/div&gt;
+  &lt;span&gt;to&lt;/span&gt;
+  &lt;div className="flex-1"&gt;
+    &lt;Input type="date" placeholder="Available to" /&gt;
+  &lt;/div&gt;
+  &lt;Button&gt;Clear&lt;/Button&gt;
+&lt;/div&gt;
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>📞 Report Findings</h2>
+        <p>After completing the inspection, document:</p>
+        <ul>
+            <li><strong>Are date filters visible?</strong> Yes / No</li>
+            <li><strong>Which location?</strong> Toolbar / Drawer / Both / Neither</li>
+            <li><strong>Are you in Rentals mode?</strong> Yes / No</li>
+            <li><strong>Any console errors?</strong> Yes (list them) / No</li>
+            <li><strong>Browser and version:</strong> (e.g., Chrome 120)</li>
+            <li><strong>Screen size:</strong> (e.g., 1920x1080)</li>
+        </ul>
+    </div>
+
+    <footer style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #444; text-align: center; color: #888;">
+        <p>Gear Marketplace Date Filters Inspection Guide | Generated: 2026-01-13</p>
+    </footer>
+</body>
+</html>

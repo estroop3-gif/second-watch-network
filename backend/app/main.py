@@ -62,6 +62,7 @@ from app.api import (
     project_files,  # Project file management
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
+from app.api import org_messages  # Organization messaging
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -359,6 +360,7 @@ app.include_router(client_metrics.router, prefix=f"{settings.API_V1_PREFIX}/clie
 
 # Gear House - Equipment Management
 app.include_router(gear_router, prefix=f"{settings.API_V1_PREFIX}/gear", tags=["Gear House"])
+app.include_router(org_messages.router, prefix=settings.API_V1_PREFIX, tags=["Organization Messages"])
 
 # Mount Socket.IO for real-time communications
 try:

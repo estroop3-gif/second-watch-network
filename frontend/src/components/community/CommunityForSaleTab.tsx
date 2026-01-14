@@ -1,8 +1,8 @@
 /**
  * CommunityForSaleTab - Browse gear for sale from the community
- * Embedded for-sale browser for the Community page
+ * Embedded for-sale browser for the Community page with location-based search
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Search,
   Grid,
@@ -14,6 +14,7 @@ import {
   DollarSign,
   Tag,
   ShoppingCart,
+  Map,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -35,8 +36,22 @@ import {
 } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
-import { useMarketplaceSearch } from '@/hooks/gear/useGearMarketplace';
-import type { GearMarketplaceListing, GearMarketplaceSearchFilters, SaleCondition } from '@/types/gear';
+import {
+  useMarketplaceSearch,
+  useMarketplaceNearbySearch,
+  useCommunityMarketplaceLocation,
+} from '@/hooks/gear/useGearMarketplace';
+import MarketplaceLocationBar from '@/components/gear/marketplace/MarketplaceLocationBar';
+import MarketplaceMapView from '@/components/gear/marketplace/MarketplaceMapView';
+import GearHouseCard from '@/components/gear/marketplace/GearHouseCard';
+import type {
+  GearMarketplaceListing,
+  GearMarketplaceSearchFilters,
+  SaleCondition,
+  ViewMode,
+  RadiusMiles,
+  MarketplaceOrganizationEnriched,
+} from '@/types/gear';
 import { useAuth } from '@/context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 
@@ -52,28 +67,83 @@ const CommunityForSaleTab: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  // View state
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  // Location and preferences from community hook
+  const {
+    currentLocation,
+    preferences,
+    requestBrowserLocation,
+    setManualLocation,
+    initializeLocation,
+    isUpdating,
+    updatePreferences,
+  } = useCommunityMarketplaceLocation();
+
+  // View mode from preferences or default to grid
+  const viewMode: ViewMode = preferences?.view_mode || 'grid';
+  const radiusMiles: RadiusMiles = preferences?.search_radius_miles || 50;
 
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState('');
   const [conditionFilter, setConditionFilter] = useState<SaleCondition | ''>('');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
 
-  // Build filters - only show sale listings
-  const filters: GearMarketplaceSearchFilters = {
+  // Initialize location on mount
+  useEffect(() => {
+    if (!currentLocation) {
+      initializeLocation();
+    }
+  }, []);
+
+  // Location-based search (when location is available)
+  const nearbySearch = useMarketplaceNearbySearch(
+    currentLocation
+      ? {
+          lat: currentLocation.latitude,
+          lng: currentLocation.longitude,
+          radius_miles: radiusMiles,
+          result_mode: 'listings', // Show individual listings for sale
+          listing_type: 'sale',
+          q: searchQuery || undefined,
+          condition: conditionFilter || undefined,
+          verified_only: verifiedOnly || undefined,
+        }
+      : null
+  );
+
+  // Fallback search when no location
+  const fallbackFilters: GearMarketplaceSearchFilters = {
     search: searchQuery || undefined,
-    listing_type: 'sale', // Only sales for this tab
+    listing_type: 'sale',
     condition: conditionFilter || undefined,
     verified_only: verifiedOnly || undefined,
   };
+  const fallbackSearch = useMarketplaceSearch(fallbackFilters, { enabled: !currentLocation });
 
-  // Data fetching
-  const { listings, total, isLoading } = useMarketplaceSearch(filters);
+  // Use nearby results when we have location, otherwise fallback
+  const gearHouses = nearbySearch.gearHouses;
+  const nearbyListings = nearbySearch.listings;
+  const listings = currentLocation ? nearbyListings : fallbackSearch.listings;
+  const total = currentLocation ? nearbySearch.total : fallbackSearch.total;
+  const isLoading = currentLocation ? nearbySearch.isLoading : fallbackSearch.isLoading;
+
+  // Handle view mode change
+  const handleViewModeChange = (mode: ViewMode) => {
+    updatePreferences.mutate({ view_mode: mode });
+  };
+
+  // Handle radius change
+  const handleRadiusChange = (radius: RadiusMiles) => {
+    updatePreferences.mutate({ search_radius_miles: radius });
+  };
 
   const handleViewListing = (listing: GearMarketplaceListing) => {
     // TODO: Open sale listing detail dialog
     console.log('View listing:', listing);
+  };
+
+  const handleViewGearHouse = (gearHouse: MarketplaceOrganizationEnriched) => {
+    // Navigate to gear house profile
+    navigate(`/community/gear-house/${gearHouse.id}`);
   };
 
   const handleSellYourGear = () => {
@@ -99,6 +169,16 @@ const CommunityForSaleTab: React.FC = () => {
           </Button>
         )}
       </div>
+
+      {/* Location Bar */}
+      <MarketplaceLocationBar
+        currentLocation={currentLocation}
+        radiusMiles={radiusMiles}
+        onRadiusChange={handleRadiusChange}
+        onRequestBrowserLocation={requestBrowserLocation}
+        onSetManualLocation={setManualLocation}
+        isUpdating={isUpdating}
+      />
 
       {/* Search & Filters */}
       <div className="flex flex-col gap-4 rounded-lg border border-white/10 bg-white/5 p-4 lg:flex-row lg:items-center">
@@ -142,16 +222,26 @@ const CommunityForSaleTab: React.FC = () => {
 
           <div className="flex items-center gap-1 border-l border-white/10 pl-2">
             <Button
+              variant={viewMode === 'map' ? 'default' : 'ghost'}
+              size="icon"
+              onClick={() => handleViewModeChange('map')}
+              title="Map view"
+            >
+              <Map className="h-4 w-4" />
+            </Button>
+            <Button
               variant={viewMode === 'grid' ? 'default' : 'ghost'}
               size="icon"
-              onClick={() => setViewMode('grid')}
+              onClick={() => handleViewModeChange('grid')}
+              title="Grid view"
             >
               <Grid className="h-4 w-4" />
             </Button>
             <Button
               variant={viewMode === 'list' ? 'default' : 'ghost'}
               size="icon"
-              onClick={() => setViewMode('list')}
+              onClick={() => handleViewModeChange('list')}
+              title="List view"
             >
               <List className="h-4 w-4" />
             </Button>
@@ -164,12 +254,24 @@ const CommunityForSaleTab: React.FC = () => {
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-muted-gray" />
         </div>
+      ) : viewMode === 'map' && currentLocation ? (
+        // Map View - show gear houses with items for sale
+        <div className="h-[500px]">
+          <MarketplaceMapView
+            gearHouses={gearHouses}
+            userLocation={currentLocation}
+            radiusMiles={radiusMiles}
+            onViewGearHouse={handleViewGearHouse}
+          />
+        </div>
       ) : listings.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
           <Tag className="mb-4 h-12 w-12 text-muted-gray" />
           <h3 className="mb-2 text-lg font-medium text-bone-white">No items for sale</h3>
           <p className="text-sm text-muted-gray mb-4">
-            Try adjusting your search filters or check back later for new listings.
+            {currentLocation
+              ? 'Try increasing your search radius or check back later for new listings.'
+              : 'Set your location to find items for sale near you, or try adjusting your search filters.'}
           </p>
           {user && (
             <Button onClick={handleSellYourGear} variant="outline" className="gap-2">
@@ -181,7 +283,9 @@ const CommunityForSaleTab: React.FC = () => {
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-muted-gray">
-            Showing {listings.length} of {total} items for sale
+            {currentLocation
+              ? `Showing ${listings.length} item${listings.length !== 1 ? 's' : ''} for sale within ${radiusMiles} miles`
+              : `Showing ${listings.length} of ${total} items for sale`}
           </p>
 
           <div
@@ -195,7 +299,7 @@ const CommunityForSaleTab: React.FC = () => {
               <SaleListingCard
                 key={listing.id}
                 listing={listing}
-                viewMode={viewMode}
+                viewMode={viewMode === 'map' ? 'grid' : viewMode}
                 onView={() => handleViewListing(listing)}
               />
             ))}

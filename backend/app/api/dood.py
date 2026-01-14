@@ -42,6 +42,8 @@ class SubjectCreate(BaseModel):
     subject_type: str = Field(..., pattern='^(CAST|BACKGROUND|CREW|OTHER)$')
     department: Optional[str] = None
     notes: Optional[str] = None
+    source_type: Optional[str] = None  # cast_member, crew_member, contact, team_member
+    source_id: Optional[str] = None  # ID from source table
 
 
 class SubjectUpdate(BaseModel):
@@ -206,70 +208,142 @@ async def get_dood_range(
 @router.post("/projects/{project_id}/dood/days/generate")
 async def generate_dood_days(
     project_id: str,
-    request: GenerateDaysRequest,
     authorization: str = Header(None)
 ):
     """
-    Generate production days for a date range.
-    Idempotent - skips dates that already have days.
+    Sync production days from the schedule.
+    Returns all existing production days for this project - does NOT create new days.
+    Days should be created in the Schedule tab first.
     """
     user = await get_current_user_from_token(authorization)
     await verify_project_access(project_id, user["id"])
 
-    start_date = parse_date(request.start)
-    end_date = parse_date(request.end)
-    validate_date_range(start_date, end_date)
+    client = get_client()
+
+    # Fetch all existing production days from the schedule
+    result = client.table("backlot_production_days").select(
+        "id, date, day_number, title, day_type, notes"
+    ).eq("project_id", project_id).order("date").execute()
+
+    days = result.data or []
+
+    return {
+        "count": len(days),
+        "days": days,
+        "message": "Synced from schedule" if days else "No production days found. Create days in the Schedule tab first."
+    }
+
+
+@router.get("/projects/{project_id}/dood/available-subjects")
+async def get_available_subjects(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Fetch all available people from cast roles, team members, and contacts
+    for adding as DOOD subjects.
+    """
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
 
     client = get_client()
 
-    # Get existing days in range
-    existing_result = client.table("backlot_production_days").select(
-        "date"
-    ).eq("project_id", project_id).gte("date", request.start).lte("date", request.end).execute()
+    # Fetch cast roles (project roles with character_name) - filter nulls in Python
+    cast_result = client.table("backlot_project_roles").select(
+        "id, character_name, user_id, title"
+    ).eq("project_id", project_id).execute()
 
-    existing_dates = set()
-    if existing_result.data:
-        for d in existing_result.data:
-            # Handle both date string and datetime formats
-            date_val = d["date"]
-            if isinstance(date_val, str):
-                existing_dates.add(date_val[:10])  # Take YYYY-MM-DD part
-            else:
-                existing_dates.add(date_val.strftime("%Y-%m-%d"))
+    # Fetch contacts
+    contacts_result = client.table("backlot_project_contacts").select(
+        "id, name, role_interest, contact_type, company"
+    ).eq("project_id", project_id).execute()
 
-    # Get max day_number
-    max_day_result = client.table("backlot_production_days").select(
-        "day_number"
-    ).eq("project_id", project_id).order("day_number", desc=True).limit(1).execute()
+    # Fetch team members (crew)
+    team_result = client.table("backlot_project_members").select(
+        "id, user_id, production_role, department"
+    ).eq("project_id", project_id).execute()
 
-    next_day_number = 1
-    if max_day_result.data and max_day_result.data[0].get("day_number"):
-        next_day_number = max_day_result.data[0]["day_number"] + 1
+    # Collect user_ids to fetch profiles
+    user_ids = set()
+    for c in (cast_result.data or []):
+        if c.get("user_id"):
+            user_ids.add(c["user_id"])
+    for t in (team_result.data or []):
+        if t.get("user_id"):
+            user_ids.add(t["user_id"])
 
-    # Generate missing days
-    created_days = []
-    current_date = start_date
-    while current_date <= end_date:
-        date_str = current_date.strftime("%Y-%m-%d")
-        if date_str not in existing_dates:
-            # Store as noon UTC to avoid timezone issues
-            day_datetime = f"{date_str}T12:00:00Z"
-            day_data = {
-                "project_id": project_id,
-                "date": day_datetime,
-                "day_number": next_day_number,
-                "day_type": "SHOOT",
-                "title": f"Day {next_day_number}"
+    # Fetch profiles for user_ids
+    profiles_map = {}
+    if user_ids:
+        profiles_result = client.table("profiles").select(
+            "id, full_name, display_name"
+        ).in_("id", list(user_ids)).execute()
+        for p in (profiles_result.data or []):
+            profiles_map[p["id"]] = p
+
+    # Get existing DOOD subjects to filter out already-added people
+    existing_subjects = client.table("dood_subjects").select(
+        "source_id, source_type"
+    ).eq("project_id", project_id).execute()
+
+    existing_map = set()
+    for subj in (existing_subjects.data or []):
+        if subj.get("source_id") and subj.get("source_type"):
+            existing_map.add(f"{subj['source_type']}:{subj['source_id']}")
+
+    # Mark which ones are already added
+    # Cast roles - transform to expected format, filter to only those with character_name
+    cast = []
+    for c in (cast_result.data or []):
+        # Only include roles that have a character name (cast roles)
+        if not c.get("character_name"):
+            continue
+        actor_name = None
+        user_id = c.get("user_id")
+        if user_id and user_id in profiles_map:
+            profile = profiles_map[user_id]
+            actor_name = profile.get("full_name") or profile.get("display_name")
+        cast.append({
+            "id": c["id"],
+            "character_name": c.get("character_name"),
+            "actor_name": actor_name,
+            "profile_id": user_id,
+            "already_added": f"cast_member:{c['id']}" in existing_map
+        })
+
+    # Contacts
+    contacts = []
+    for c in (contacts_result.data or []):
+        c["already_added"] = f"contact:{c['id']}" in existing_map
+        contacts.append(c)
+
+    # Team members (crew) - add profile info
+    team = []
+    for t in (team_result.data or []):
+        user_id = t.get("user_id")
+        profile_data = None
+        if user_id and user_id in profiles_map:
+            profile = profiles_map[user_id]
+            profile_data = {
+                "id": profile.get("id"),
+                "full_name": profile.get("full_name"),
+                "display_name": profile.get("display_name")
             }
-            result = client.table("backlot_production_days").insert(day_data).execute()
-            if result.data:
-                created_days.append(result.data[0])
-                next_day_number += 1
-        current_date += timedelta(days=1)
+        team.append({
+            "id": t["id"],
+            "user_id": user_id,
+            "production_role": t.get("production_role"),
+            "department": t.get("department"),
+            "profiles": profile_data,
+            "already_added": f"team_member:{t['id']}" in existing_map
+        })
 
+    # Return empty crew array since we use team for crew now
     return {
-        "created_count": len(created_days),
-        "created_days": created_days
+        "cast": cast,
+        "crew": [],  # Crew functionality merged into team
+        "contacts": contacts,
+        "team": team
     }
 
 
@@ -303,7 +377,9 @@ async def create_subject(
         "subject_type": request.subject_type,
         "department": request.department,
         "notes": request.notes,
-        "sort_order": next_order
+        "sort_order": next_order,
+        "source_type": request.source_type,
+        "source_id": request.source_id
     }
 
     result = client.table("dood_subjects").insert(subject_data).execute()
@@ -618,6 +694,74 @@ async def export_dood_csv(
         media_type="text/csv",
         headers={
             "Content-Disposition": f"attachment; filename=dood_{project_id}_{start}_{end}.csv"
+        }
+    )
+
+
+@router.get("/projects/{project_id}/dood/export.pdf")
+async def export_dood_pdf(
+    project_id: str,
+    start: str = Query(..., description="Start date YYYY-MM-DD"),
+    end: str = Query(..., description="End date YYYY-MM-DD"),
+    authorization: str = Header(None)
+):
+    """
+    Export DOOD grid as PDF for the given date range.
+    """
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    start_date = parse_date(start)
+    end_date = parse_date(end)
+    validate_date_range(start_date, end_date)
+
+    client = get_client()
+
+    # Get project title
+    project_result = client.table("backlot_projects").select("title").eq("id", project_id).single().execute()
+    project_title = project_result.data.get("title", "Untitled Project") if project_result.data else "Untitled Project"
+
+    # Get days in range
+    days_result = client.table("backlot_production_days").select(
+        "id, date, day_number, title, day_type"
+    ).eq("project_id", project_id).gte("date", start).lte("date", end).order("date").execute()
+
+    days = days_result.data or []
+    day_ids = [d["id"] for d in days]
+
+    # Get subjects
+    subjects_result = client.table("dood_subjects").select(
+        "id, display_name, subject_type, department"
+    ).eq("project_id", project_id).order("sort_order").order("created_at").execute()
+
+    subjects = subjects_result.data or []
+
+    # Get assignments
+    assignments = []
+    if day_ids:
+        assignments_result = client.table("dood_assignments").select(
+            "id, subject_id, day_id, code, notes"
+        ).eq("project_id", project_id).in_("day_id", day_ids).execute()
+        assignments = assignments_result.data or []
+
+    # Generate PDF
+    from app.services.dood_pdf_service import generate_dood_pdf
+
+    pdf_bytes = await generate_dood_pdf(
+        project_title=project_title,
+        days=days,
+        subjects=subjects,
+        assignments=assignments,
+        date_range_start=start,
+        date_range_end=end,
+    )
+
+    # Return as PDF response
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=dood_{project_id}_{start}_{end}.pdf"
         }
     )
 

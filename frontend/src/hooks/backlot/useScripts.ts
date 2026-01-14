@@ -296,9 +296,8 @@ export function useScenes(options: UseScenesOptions) {
       if (has_breakdown !== undefined) params.append('has_breakdown', String(has_breakdown));
       if (search) params.append('search', search);
 
-      const response = await fetch(
-        `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes?${params}`,
-        {
+      const url = `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes?${params}`;
+      const response = await fetch(url, {
           headers: {
             Authorization: `Bearer ${token}`,
           },

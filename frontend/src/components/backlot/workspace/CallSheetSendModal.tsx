@@ -42,6 +42,7 @@ import {
   CallSheetRecipientMode,
 } from '@/types/backlot';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 interface CallSheetSendModalProps {
@@ -207,7 +208,7 @@ const CallSheetSendModal: React.FC<CallSheetSendModalProps> = ({
           <div className="flex flex-wrap gap-3 text-sm text-muted-gray">
             <div className="flex items-center gap-1">
               <Calendar className="w-4 h-4" />
-              {format(new Date(callSheet.date), 'EEE, MMM d, yyyy')}
+              {format(parseLocalDate(callSheet.date), 'EEE, MMM d, yyyy')}
             </div>
             {callSheet.general_call_time && (
               <div className="flex items-center gap-1">

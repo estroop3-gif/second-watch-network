@@ -45,6 +45,10 @@ class BeatCreate(BaseModel):
     title: str = Field(..., min_length=1)
     content: Optional[str] = None
     notes: Optional[str] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    emotional_tone: Optional[str] = None
+    primary_character_id: Optional[str] = None
 
 
 class BeatUpdate(BaseModel):
@@ -52,6 +56,10 @@ class BeatUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     notes: Optional[str] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    emotional_tone: Optional[str] = None
+    primary_character_id: Optional[str] = None
 
 
 class BeatReorder(BaseModel):
@@ -65,10 +73,19 @@ class CharacterCreate(BaseModel):
     role: Optional[str] = None  # protagonist, antagonist, supporting, minor
     arc_summary: Optional[str] = None
     notes: Optional[str] = None
+    contact_id: Optional[str] = None  # Link to project contact
 
 
 class CharacterUpdate(BaseModel):
     name: Optional[str] = None
+    role: Optional[str] = None
+    arc_summary: Optional[str] = None
+    notes: Optional[str] = None
+    contact_id: Optional[str] = None  # Link to project contact
+
+
+class CharacterFromContact(BaseModel):
+    contact_id: str = Field(..., min_length=1)
     role: Optional[str] = None
     arc_summary: Optional[str] = None
     notes: Optional[str] = None
@@ -244,8 +261,23 @@ async def get_story(
     # Get beats ordered
     beats = client.table("backlot_story_beats").select("*").eq("story_id", story_id).order("sort_order").execute()
 
-    # Get characters
+    # Get characters with contact info
     characters = client.table("backlot_story_characters").select("*").eq("story_id", story_id).order("name").execute()
+
+    # Fetch contact info for characters with contact_id
+    contact_ids = [c["contact_id"] for c in (characters.data or []) if c.get("contact_id")]
+    contacts_map = {}
+    if contact_ids:
+        contacts_result = client.table("backlot_project_contacts").select("id, name, email, phone").in_("id", contact_ids).execute()
+        for contact in (contacts_result.data or []):
+            contacts_map[contact["id"]] = contact
+
+    # Attach contact info to characters
+    for character in (characters.data or []):
+        if character.get("contact_id") and character["contact_id"] in contacts_map:
+            character["contact"] = contacts_map[character["contact_id"]]
+        else:
+            character["contact"] = None
 
     # Get all character arcs for this story's beats
     beat_ids = [b["id"] for b in (beats.data or [])]
@@ -359,6 +391,10 @@ async def create_beat(
         "title": request.title,
         "content": request.content,
         "notes": request.notes,
+        "page_start": request.page_start,
+        "page_end": request.page_end,
+        "emotional_tone": request.emotional_tone,
+        "primary_character_id": request.primary_character_id,
     }
 
     result = client.table("backlot_story_beats").insert(beat_data).execute()
@@ -397,6 +433,14 @@ async def update_beat(
         update_data["content"] = request.content
     if request.notes is not None:
         update_data["notes"] = request.notes
+    if request.page_start is not None:
+        update_data["page_start"] = request.page_start
+    if request.page_end is not None:
+        update_data["page_end"] = request.page_end
+    if request.emotional_tone is not None:
+        update_data["emotional_tone"] = request.emotional_tone
+    if request.primary_character_id is not None:
+        update_data["primary_character_id"] = request.primary_character_id if request.primary_character_id else None
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -521,11 +565,55 @@ async def create_character(
         "notes": request.notes,
     }
 
+    # Add contact_id if provided
+    if request.contact_id:
+        character_data["contact_id"] = request.contact_id
+
     result = client.table("backlot_story_characters").insert(character_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create character")
 
     return result.data[0]
+
+
+@router.post("/projects/{project_id}/stories/{story_id}/characters/from-contact")
+async def create_character_from_contact(
+    project_id: str,
+    story_id: str,
+    request: CharacterFromContact,
+    authorization: str = Header(None)
+):
+    """Create a character from an existing project contact."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Get contact info
+    contact = client.table("backlot_project_contacts").select("id, name, email").eq("id", request.contact_id).eq("project_id", project_id).execute()
+    if not contact.data:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    contact_data = contact.data[0]
+
+    character_data = {
+        "story_id": story_id,
+        "name": contact_data["name"],
+        "role": request.role,
+        "arc_summary": request.arc_summary,
+        "notes": request.notes,
+        "contact_id": request.contact_id,
+    }
+
+    result = client.table("backlot_story_characters").insert(character_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create character")
+
+    # Return character with contact info
+    char = result.data[0]
+    char["contact"] = contact_data
+    return char
 
 
 @router.put("/projects/{project_id}/stories/{story_id}/characters/{character_id}")
@@ -557,6 +645,8 @@ async def update_character(
         update_data["arc_summary"] = request.arc_summary
     if request.notes is not None:
         update_data["notes"] = request.notes
+    if request.contact_id is not None:
+        update_data["contact_id"] = request.contact_id if request.contact_id else None
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -708,10 +798,12 @@ async def delete_character_arc(
 async def export_story_csv(
     project_id: str,
     story_id: str,
-    authorization: str = Header(None)
+    authorization: str = Header(None),
+    token: str = Query(None)  # Allow token as query param for new window opening
 ):
     """Export story to CSV."""
-    user = await get_current_user_from_token(authorization)
+    auth_token = authorization or (f"Bearer {token}" if token else None)
+    user = await get_current_user_from_token(auth_token)
     await verify_project_access(project_id, user["id"])
 
     client = get_client()
@@ -858,3 +950,539 @@ async def get_story_print_data(
         "characters": characters.data or [],
         "generated_at": datetime.utcnow().isoformat(),
     }
+
+
+# =====================================================
+# Story Connection Models
+# =====================================================
+
+class BeatSceneLinkCreate(BaseModel):
+    scene_id: str
+    relationship: Optional[str] = Field(default='features')
+    notes: Optional[str] = None
+
+
+class StoryEpisodeLinkCreate(BaseModel):
+    episode_id: str
+    relationship: Optional[str] = Field(default='primary')
+    notes: Optional[str] = None
+
+
+class CharacterCastLinkCreate(BaseModel):
+    role_id: str
+    notes: Optional[str] = None
+
+
+# =====================================================
+# Beat-Scene Connection Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/stories/{story_id}/beats/{beat_id}/scenes")
+async def list_beat_scene_links(
+    project_id: str,
+    story_id: str,
+    beat_id: str,
+    authorization: str = Header(None)
+):
+    """List all scenes linked to a beat."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify beat exists
+    beat = client.table("backlot_story_beats").select("id").eq("id", beat_id).eq("story_id", story_id).execute()
+    if not beat.data:
+        raise HTTPException(status_code=404, detail="Beat not found")
+
+    # Get links with scene data
+    links = client.table("backlot_story_beat_scenes").select("*").eq("beat_id", beat_id).execute()
+
+    # Enrich with scene data
+    result = []
+    for link in (links.data or []):
+        scene = client.table("backlot_scenes").select("id, scene_number, int_ext, location, time_of_day, synopsis").eq("id", link["scene_id"]).execute()
+        if scene.data:
+            link["scene"] = scene.data[0]
+            result.append(link)
+
+    return {"links": result}
+
+
+@router.post("/projects/{project_id}/stories/{story_id}/beats/{beat_id}/scenes")
+async def link_beat_to_scene(
+    project_id: str,
+    story_id: str,
+    beat_id: str,
+    request: BeatSceneLinkCreate,
+    authorization: str = Header(None)
+):
+    """Link a beat to a scene."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify beat exists
+    beat = client.table("backlot_story_beats").select("id").eq("id", beat_id).eq("story_id", story_id).execute()
+    if not beat.data:
+        raise HTTPException(status_code=404, detail="Beat not found")
+
+    # Verify scene exists and belongs to project
+    scene = client.table("backlot_scenes").select("id").eq("id", request.scene_id).eq("project_id", project_id).execute()
+    if not scene.data:
+        raise HTTPException(status_code=404, detail="Scene not found")
+
+    # Check if link already exists
+    existing = client.table("backlot_story_beat_scenes").select("id").eq("beat_id", beat_id).eq("scene_id", request.scene_id).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Beat is already linked to this scene")
+
+    link_data = {
+        "beat_id": beat_id,
+        "scene_id": request.scene_id,
+        "relationship": request.relationship or 'features',
+        "notes": request.notes,
+    }
+
+    result = client.table("backlot_story_beat_scenes").insert(link_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create link")
+
+    return result.data[0]
+
+
+@router.delete("/projects/{project_id}/stories/{story_id}/beats/{beat_id}/scenes/{link_id}")
+async def unlink_beat_from_scene(
+    project_id: str,
+    story_id: str,
+    beat_id: str,
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a beat-scene link."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify link exists
+    link = client.table("backlot_story_beat_scenes").select("id").eq("id", link_id).eq("beat_id", beat_id).execute()
+    if not link.data:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    client.table("backlot_story_beat_scenes").delete().eq("id", link_id).execute()
+
+    return {"success": True}
+
+
+# =====================================================
+# Story-Episode Connection Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/stories/{story_id}/episodes")
+async def list_story_episode_links(
+    project_id: str,
+    story_id: str,
+    authorization: str = Header(None)
+):
+    """List all episodes linked to a story."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Get links with episode data
+    links = client.table("backlot_story_episodes").select("*").eq("story_id", story_id).execute()
+
+    # Enrich with episode data
+    result = []
+    for link in (links.data or []):
+        episode = client.table("episodes").select("id, episode_number, episode_code, title, logline").eq("id", link["episode_id"]).execute()
+        if episode.data:
+            link["episode"] = episode.data[0]
+            result.append(link)
+
+    return {"links": result}
+
+
+@router.post("/projects/{project_id}/stories/{story_id}/episodes")
+async def link_story_to_episode(
+    project_id: str,
+    story_id: str,
+    request: StoryEpisodeLinkCreate,
+    authorization: str = Header(None)
+):
+    """Link a story to an episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify episode exists and belongs to project
+    episode = client.table("episodes").select("id").eq("id", request.episode_id).eq("project_id", project_id).execute()
+    if not episode.data:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    # Check if link already exists
+    existing = client.table("backlot_story_episodes").select("id").eq("story_id", story_id).eq("episode_id", request.episode_id).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Story is already linked to this episode")
+
+    link_data = {
+        "story_id": story_id,
+        "episode_id": request.episode_id,
+        "relationship": request.relationship or 'primary',
+        "notes": request.notes,
+    }
+
+    result = client.table("backlot_story_episodes").insert(link_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create link")
+
+    return result.data[0]
+
+
+@router.delete("/projects/{project_id}/stories/{story_id}/episodes/{link_id}")
+async def unlink_story_from_episode(
+    project_id: str,
+    story_id: str,
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a story-episode link."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify link exists
+    link = client.table("backlot_story_episodes").select("id").eq("id", link_id).eq("story_id", story_id).execute()
+    if not link.data:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    client.table("backlot_story_episodes").delete().eq("id", link_id).execute()
+
+    return {"success": True}
+
+
+# =====================================================
+# Character-Cast Connection Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/stories/{story_id}/characters/{character_id}/cast")
+async def list_character_cast_links(
+    project_id: str,
+    story_id: str,
+    character_id: str,
+    authorization: str = Header(None)
+):
+    """List all cast members linked to a story character."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify character exists
+    character = client.table("backlot_story_characters").select("id").eq("id", character_id).eq("story_id", story_id).execute()
+    if not character.data:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    # Get links with role data
+    links = client.table("backlot_story_character_cast").select("*").eq("character_id", character_id).execute()
+
+    # Enrich with role/cast data
+    result = []
+    for link in (links.data or []):
+        role = client.table("backlot_project_roles").select("id, name, description, cast_member_id").eq("id", link["role_id"]).execute()
+        if role.data:
+            link["role"] = role.data[0]
+            # Get cast member info if assigned
+            if role.data[0].get("cast_member_id"):
+                cast = client.table("backlot_cast_members").select("id, user_id, role").eq("id", role.data[0]["cast_member_id"]).execute()
+                if cast.data:
+                    link["cast_member"] = cast.data[0]
+            result.append(link)
+
+    return {"links": result}
+
+
+@router.post("/projects/{project_id}/stories/{story_id}/characters/{character_id}/cast")
+async def link_character_to_cast(
+    project_id: str,
+    story_id: str,
+    character_id: str,
+    request: CharacterCastLinkCreate,
+    authorization: str = Header(None)
+):
+    """Link a story character to a project role (cast member)."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify character exists
+    character = client.table("backlot_story_characters").select("id").eq("id", character_id).eq("story_id", story_id).execute()
+    if not character.data:
+        raise HTTPException(status_code=404, detail="Character not found")
+
+    # Verify role exists and belongs to project
+    role = client.table("backlot_project_roles").select("id").eq("id", request.role_id).eq("project_id", project_id).execute()
+    if not role.data:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    # Check if link already exists
+    existing = client.table("backlot_story_character_cast").select("id").eq("character_id", character_id).eq("role_id", request.role_id).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Character is already linked to this role")
+
+    link_data = {
+        "character_id": character_id,
+        "role_id": request.role_id,
+        "notes": request.notes,
+    }
+
+    result = client.table("backlot_story_character_cast").insert(link_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create link")
+
+    return result.data[0]
+
+
+@router.delete("/projects/{project_id}/stories/{story_id}/characters/{character_id}/cast/{link_id}")
+async def unlink_character_from_cast(
+    project_id: str,
+    story_id: str,
+    character_id: str,
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove a character-cast link."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    client = get_client()
+
+    # Verify link exists
+    link = client.table("backlot_story_character_cast").select("id").eq("id", link_id).eq("character_id", character_id).execute()
+    if not link.data:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    client.table("backlot_story_character_cast").delete().eq("id", link_id).execute()
+
+    return {"success": True}
+
+
+# =====================================================
+# Beat Sheet Templates
+# =====================================================
+
+SAVE_THE_CAT_TEMPLATE = [
+    {"title": "Opening Image", "act_marker": "ACT 1", "page_start": 1, "page_end": 1, "emotional_tone": "establishing"},
+    {"title": "Theme Stated", "act_marker": "ACT 1", "page_start": 5, "page_end": 5, "emotional_tone": "contemplative"},
+    {"title": "Set-Up", "act_marker": "ACT 1", "page_start": 1, "page_end": 10, "emotional_tone": "introducing"},
+    {"title": "Catalyst", "act_marker": "ACT 1", "page_start": 12, "page_end": 12, "emotional_tone": "surprising"},
+    {"title": "Debate", "act_marker": "ACT 1", "page_start": 12, "page_end": 25, "emotional_tone": "uncertain"},
+    {"title": "Break into Two", "act_marker": "ACT 1", "page_start": 25, "page_end": 25, "emotional_tone": "determined"},
+    {"title": "B Story", "act_marker": "ACT 2", "page_start": 30, "page_end": 30, "emotional_tone": "warm"},
+    {"title": "Fun and Games", "act_marker": "ACT 2", "page_start": 30, "page_end": 55, "emotional_tone": "exciting"},
+    {"title": "Midpoint", "act_marker": "ACT 2", "page_start": 55, "page_end": 55, "emotional_tone": "pivotal"},
+    {"title": "Bad Guys Close In", "act_marker": "ACT 2", "page_start": 55, "page_end": 75, "emotional_tone": "tense"},
+    {"title": "All Is Lost", "act_marker": "ACT 2", "page_start": 75, "page_end": 75, "emotional_tone": "devastating"},
+    {"title": "Dark Night of the Soul", "act_marker": "ACT 2", "page_start": 75, "page_end": 85, "emotional_tone": "despairing"},
+    {"title": "Break into Three", "act_marker": "ACT 3", "page_start": 85, "page_end": 85, "emotional_tone": "hopeful"},
+    {"title": "Finale", "act_marker": "ACT 3", "page_start": 85, "page_end": 110, "emotional_tone": "triumphant"},
+    {"title": "Final Image", "act_marker": "ACT 3", "page_start": 110, "page_end": 110, "emotional_tone": "resolved"},
+]
+
+THREE_ACT_TEMPLATE = [
+    {"title": "Setup", "act_marker": "ACT 1", "page_start": 1, "page_end": 10, "emotional_tone": "establishing"},
+    {"title": "Inciting Incident", "act_marker": "ACT 1", "page_start": 10, "page_end": 15, "emotional_tone": "surprising"},
+    {"title": "First Act Turn", "act_marker": "ACT 1", "page_start": 25, "page_end": 30, "emotional_tone": "determined"},
+    {"title": "Rising Action", "act_marker": "ACT 2", "page_start": 30, "page_end": 55, "emotional_tone": "exciting"},
+    {"title": "Midpoint", "act_marker": "ACT 2", "page_start": 55, "page_end": 60, "emotional_tone": "pivotal"},
+    {"title": "Complications", "act_marker": "ACT 2", "page_start": 60, "page_end": 85, "emotional_tone": "tense"},
+    {"title": "Climax", "act_marker": "ACT 3", "page_start": 85, "page_end": 100, "emotional_tone": "triumphant"},
+    {"title": "Resolution", "act_marker": "ACT 3", "page_start": 100, "page_end": 110, "emotional_tone": "resolved"},
+]
+
+HEROS_JOURNEY_TEMPLATE = [
+    {"title": "Ordinary World", "act_marker": "ACT 1", "page_start": 1, "page_end": 10, "emotional_tone": "establishing"},
+    {"title": "Call to Adventure", "act_marker": "ACT 1", "page_start": 10, "page_end": 15, "emotional_tone": "surprising"},
+    {"title": "Refusal of the Call", "act_marker": "ACT 1", "page_start": 15, "page_end": 20, "emotional_tone": "uncertain"},
+    {"title": "Meeting the Mentor", "act_marker": "ACT 1", "page_start": 20, "page_end": 25, "emotional_tone": "warm"},
+    {"title": "Crossing the Threshold", "act_marker": "ACT 1", "page_start": 25, "page_end": 30, "emotional_tone": "determined"},
+    {"title": "Tests, Allies, Enemies", "act_marker": "ACT 2", "page_start": 30, "page_end": 55, "emotional_tone": "exciting"},
+    {"title": "Approach to Inmost Cave", "act_marker": "ACT 2", "page_start": 55, "page_end": 60, "emotional_tone": "tense"},
+    {"title": "Ordeal", "act_marker": "ACT 2", "page_start": 60, "page_end": 75, "emotional_tone": "devastating"},
+    {"title": "Reward", "act_marker": "ACT 2", "page_start": 75, "page_end": 85, "emotional_tone": "hopeful"},
+    {"title": "The Road Back", "act_marker": "ACT 3", "page_start": 85, "page_end": 95, "emotional_tone": "tense"},
+    {"title": "Resurrection", "act_marker": "ACT 3", "page_start": 95, "page_end": 105, "emotional_tone": "triumphant"},
+    {"title": "Return with Elixir", "act_marker": "ACT 3", "page_start": 105, "page_end": 110, "emotional_tone": "resolved"},
+]
+
+TEMPLATES = {
+    "save-the-cat": SAVE_THE_CAT_TEMPLATE,
+    "three-act": THREE_ACT_TEMPLATE,
+    "heros-journey": HEROS_JOURNEY_TEMPLATE,
+}
+
+
+class ApplyTemplateRequest(BaseModel):
+    template: str = Field(..., pattern='^(save-the-cat|three-act|heros-journey)$')
+
+
+@router.post("/projects/{project_id}/stories/{story_id}/apply-template")
+async def apply_template(
+    project_id: str,
+    story_id: str,
+    request: ApplyTemplateRequest,
+    authorization: str = Header(None)
+):
+    """Apply a beat sheet template to a story. Adds template beats to existing beats."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_story_access(story_id, project_id)
+
+    template = TEMPLATES.get(request.template)
+    if not template:
+        raise HTTPException(status_code=400, detail="Invalid template")
+
+    client = get_client()
+
+    # Get current max sort order
+    current_sort = get_next_beat_sort_order(story_id)
+
+    # Insert all template beats
+    created_beats = []
+    for idx, beat_data in enumerate(template):
+        new_beat = {
+            "story_id": story_id,
+            "sort_order": current_sort + idx,
+            "title": beat_data["title"],
+            "act_marker": beat_data["act_marker"],
+            "page_start": beat_data.get("page_start"),
+            "page_end": beat_data.get("page_end"),
+            "emotional_tone": beat_data.get("emotional_tone"),
+        }
+        result = client.table("backlot_story_beats").insert(new_beat).execute()
+        if result.data:
+            created_beats.append(result.data[0])
+
+    return {
+        "success": True,
+        "beats_created": len(created_beats),
+        "template": request.template,
+        "beats": created_beats,
+    }
+
+
+@router.get("/projects/{project_id}/stories/{story_id}/templates")
+async def list_templates(
+    project_id: str,
+    story_id: str,
+    authorization: str = Header(None)
+):
+    """Get available beat sheet templates."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    return {
+        "templates": [
+            {"id": "save-the-cat", "name": "Save the Cat", "beat_count": 15, "description": "Blake Snyder's 15-beat structure"},
+            {"id": "three-act", "name": "Three-Act Structure", "beat_count": 8, "description": "Classic three-act screenplay structure"},
+            {"id": "heros-journey", "name": "Hero's Journey", "beat_count": 12, "description": "Joseph Campbell's monomyth structure"},
+        ]
+    }
+
+
+@router.get("/projects/{project_id}/stories/{story_id}/export.pdf")
+async def export_beat_sheet_pdf(
+    project_id: str,
+    story_id: str,
+    authorization: str = Header(None),
+    token: str = Query(None)  # Allow token as query param for new window opening
+):
+    """Export beat sheet as PDF with full page per beat."""
+    auth_token = authorization or (f"Bearer {token}" if token else None)
+    user = await get_current_user_from_token(auth_token)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get project info
+    project = client.table("backlot_projects").select("title").eq("id", project_id).execute()
+    project_title = project.data[0]["title"] if project.data else "Project"
+
+    # Get story with beats and characters
+    story = client.table("backlot_stories").select("*").eq("id", story_id).eq("project_id", project_id).execute()
+    if not story.data:
+        raise HTTPException(status_code=404, detail="Beat sheet not found")
+
+    beat_sheet = story.data[0]
+
+    # Get beats ordered
+    beats = client.table("backlot_story_beats").select("*").eq("story_id", story_id).order("sort_order").execute()
+
+    # Get characters
+    characters = client.table("backlot_story_characters").select("*").eq("story_id", story_id).order("name").execute()
+
+    # Get all character arcs for beats
+    beat_ids = [b["id"] for b in (beats.data or [])]
+    character_arcs_by_beat: Dict[str, List[Dict]] = {bid: [] for bid in beat_ids}
+
+    if beat_ids:
+        arcs = client.table("backlot_character_arcs").select("*").in_("beat_id", beat_ids).execute()
+        for arc in (arcs.data or []):
+            if arc["beat_id"] in character_arcs_by_beat:
+                character_arcs_by_beat[arc["beat_id"]].append(arc)
+
+    # Get scene links for beats
+    scene_links_by_beat: Dict[str, List[Dict]] = {bid: [] for bid in beat_ids}
+
+    if beat_ids:
+        links = client.table("backlot_story_beat_scenes").select("*, scene:backlot_scenes(*)").in_("beat_id", beat_ids).execute()
+        for link in (links.data or []):
+            if link["beat_id"] in scene_links_by_beat:
+                scene_links_by_beat[link["beat_id"]].append(link)
+
+    # Generate HTML
+    from app.services.beat_sheet_pdf_service import generate_beat_sheet_pdf_html
+
+    html = generate_beat_sheet_pdf_html(
+        project_title=project_title,
+        beat_sheet_title=beat_sheet.get("title", "Beat Sheet"),
+        beat_sheet=beat_sheet,
+        beats=beats.data or [],
+        characters=characters.data or [],
+        character_arcs_by_beat=character_arcs_by_beat,
+        scene_links_by_beat=scene_links_by_beat,
+    )
+
+    # Generate PDF
+    try:
+        from weasyprint import HTML
+        pdf_bytes = HTML(string=html).write_pdf()
+    except ImportError:
+        raise HTTPException(status_code=500, detail="PDF generation not available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+
+    # Return PDF response
+    filename = f"{beat_sheet.get('title', 'beat_sheet').replace(' ', '_')}_beat_sheet.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )

@@ -877,6 +877,62 @@ export interface BacklotGearItem {
   assigned_day?: BacklotProductionDay;
 }
 
+// Backlot Gear Item Enriched (with rental order data)
+export interface BacklotGearItemEnriched extends BacklotGearItem {
+  // Rental order linkage
+  gear_rental_order_item_id?: string | null;
+  rental_order_id?: string;
+  rental_order?: {
+    id: string;
+    order_number: string;
+    status: string;
+    rental_start_date: string;
+    rental_end_date: string;
+    rental_house_org_id: string;
+    rental_house_name?: string;
+    rental_house_avatar?: string;
+  };
+
+  // Work order linkage
+  work_order_id?: string;
+  work_order?: {
+    id: string;
+    title: string;
+    status: string;
+    notes: string;
+  };
+
+  // Rate details
+  rental_rate_type?: 'daily' | 'weekly' | 'monthly' | 'flat';
+  rental_weekly_rate?: number | null;
+  rental_monthly_rate?: number | null;
+
+  // Delivery tracking
+  delivery_tracking_number?: string;
+  delivery_status?: string;
+}
+
+// Backlot Rental Summary
+export interface BacklotRentalSummary {
+  active_rentals_count: number;
+  total_daily_cost: number;
+  total_weekly_cost: number;
+  total_monthly_cost: number;
+  upcoming_pickups: Array<{
+    order_id: string;
+    item_name: string;
+    pickup_date: string;
+    days_until: number;
+  }>;
+  pending_returns: Array<{
+    order_id: string;
+    item_name: string;
+    return_date: string;
+    days_until: number;
+    is_overdue: boolean;
+  }>;
+}
+
 // Project Update
 export interface BacklotProjectUpdate {
   id: string;
@@ -1606,7 +1662,7 @@ export type BacklotLineItemRateType = 'flat' | 'daily' | 'weekly' | 'hourly' | '
 export type BacklotPaymentMethod = 'cash' | 'card' | 'check' | 'wire' | 'petty_cash';
 
 // Reimbursement Status
-export type BacklotReimbursementStatus = 'not_applicable' | 'pending' | 'approved' | 'reimbursed';
+export type BacklotReimbursementStatus = 'not_applicable' | 'pending' | 'approved' | 'reimbursed' | 'changes_requested' | 'denied';
 
 // =====================================================
 // PROFESSIONAL BUDGET TYPES (New)
@@ -1894,6 +1950,7 @@ export interface BacklotReceipt {
   is_verified: boolean;
   payment_method: BacklotPaymentMethod | null;
   reimbursement_status: BacklotReimbursementStatus;
+  rejection_reason: string | null;
   reimbursement_to: string | null;
   notes: string | null;
   created_by_user_id: string;
@@ -2107,6 +2164,7 @@ export interface ReceiptFilters {
   budget_line_item_id?: string;
   daily_budget_id?: string;
   search?: string;
+  reimbursement_status?: BacklotReimbursementStatus;
 }
 
 // CSV Export types for tax/accounting

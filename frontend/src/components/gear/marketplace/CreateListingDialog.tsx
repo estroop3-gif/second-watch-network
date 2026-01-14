@@ -16,6 +16,7 @@ import {
   ArrowLeft,
   Truck,
   Calendar,
+  Percent,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -33,7 +34,6 @@ import {
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { cn } from '@/lib/utils';
 
@@ -203,13 +203,25 @@ export function CreateListingDialog({
   // Common settings (Step 2)
   const [minRentalDays, setMinRentalDays] = useState<string>('1');
   const [maxRentalDays, setMaxRentalDays] = useState<string>('');
+  const [advanceBookingDays, setAdvanceBookingDays] = useState<string>('1');
   const [depositAmount, setDepositAmount] = useState<string>('');
   const [depositPercent, setDepositPercent] = useState<string>('');
   const [depositType, setDepositType] = useState<'amount' | 'percent'>('percent');
   const [insuranceRequired, setInsuranceRequired] = useState(false);
   const [insuranceDailyRate, setInsuranceDailyRate] = useState<string>('');
+  const [weeklyDiscountPercent, setWeeklyDiscountPercent] = useState<string>('');
+  const [monthlyDiscountPercent, setMonthlyDiscountPercent] = useState<string>('');
+  const [quantityDiscountThreshold, setQuantityDiscountThreshold] = useState<string>('');
+  const [quantityDiscountPercent, setQuantityDiscountPercent] = useState<string>('');
   const [rentalNotes, setRentalNotes] = useState('');
   const [pickupInstructions, setPickupInstructions] = useState('');
+
+  // Delivery options (Step 2)
+  const [offersDelivery, setOffersDelivery] = useState(false);
+  const [deliveryRadiusMiles, setDeliveryRadiusMiles] = useState<string>('');
+  const [deliveryFee, setDeliveryFee] = useState<string>('');
+  const [offersShipping, setOffersShipping] = useState(false);
+  const [shippingFee, setShippingFee] = useState<string>('');
 
   // Initialize rates from asset data
   useEffect(() => {
@@ -315,14 +327,25 @@ export function CreateListingDialog({
             daily_rate: daily,
             weekly_rate: weekly,
             monthly_rate: monthly,
+            weekly_discount_percent: weeklyDiscountPercent ? parseFloat(weeklyDiscountPercent) : undefined,
+            monthly_discount_percent: monthlyDiscountPercent ? parseFloat(monthlyDiscountPercent) : undefined,
+            quantity_discount_threshold: quantityDiscountThreshold ? parseInt(quantityDiscountThreshold) : undefined,
+            quantity_discount_percent: quantityDiscountPercent ? parseFloat(quantityDiscountPercent) : undefined,
             min_rental_days: parseInt(minRentalDays) || 1,
             max_rental_days: maxRentalDays ? parseInt(maxRentalDays) : undefined,
+            advance_booking_days: advanceBookingDays ? parseInt(advanceBookingDays) : 1,
             deposit_amount: depositType === 'amount' && depositAmount ? parseFloat(depositAmount) : undefined,
             deposit_percent: depositType === 'percent' && depositPercent ? parseFloat(depositPercent) : undefined,
             insurance_required: insuranceRequired,
             insurance_daily_rate: insuranceRequired && insuranceDailyRate ? parseFloat(insuranceDailyRate) : undefined,
             rental_notes: rentalNotes || undefined,
             pickup_instructions: pickupInstructions || undefined,
+            // Delivery options
+            offers_delivery: offersDelivery,
+            delivery_radius_miles: offersDelivery && deliveryRadiusMiles ? parseInt(deliveryRadiusMiles) : undefined,
+            delivery_fee: offersDelivery && deliveryFee ? parseFloat(deliveryFee) : undefined,
+            offers_shipping: offersShipping,
+            shipping_fee: offersShipping && shippingFee ? parseFloat(shippingFee) : undefined,
             // Sale fields (for future bulk sale support)
             sale_price: undefined,
             sale_condition: undefined,
@@ -341,14 +364,26 @@ export function CreateListingDialog({
           daily_rate: (listingType === 'rent' || listingType === 'both') ? parseFloat(dailyRate) : undefined,
           weekly_rate: weeklyRate ? parseFloat(weeklyRate) : undefined,
           monthly_rate: monthlyRate ? parseFloat(monthlyRate) : undefined,
+          // Rental options
+          weekly_discount_percent: weeklyDiscountPercent ? parseFloat(weeklyDiscountPercent) : undefined,
+          monthly_discount_percent: monthlyDiscountPercent ? parseFloat(monthlyDiscountPercent) : undefined,
+          quantity_discount_threshold: quantityDiscountThreshold ? parseInt(quantityDiscountThreshold) : undefined,
+          quantity_discount_percent: quantityDiscountPercent ? parseFloat(quantityDiscountPercent) : undefined,
           min_rental_days: parseInt(minRentalDays) || 1,
           max_rental_days: maxRentalDays ? parseInt(maxRentalDays) : undefined,
+          advance_booking_days: advanceBookingDays ? parseInt(advanceBookingDays) : 1,
           deposit_amount: depositType === 'amount' && depositAmount ? parseFloat(depositAmount) : undefined,
           deposit_percent: depositType === 'percent' && depositPercent ? parseFloat(depositPercent) : undefined,
           insurance_required: insuranceRequired,
           insurance_daily_rate: insuranceRequired && insuranceDailyRate ? parseFloat(insuranceDailyRate) : undefined,
           rental_notes: rentalNotes || undefined,
           pickup_instructions: pickupInstructions || undefined,
+          // Delivery options
+          offers_delivery: offersDelivery,
+          delivery_radius_miles: offersDelivery && deliveryRadiusMiles ? parseInt(deliveryRadiusMiles) : undefined,
+          delivery_fee: offersDelivery && deliveryFee ? parseFloat(deliveryFee) : undefined,
+          offers_shipping: offersShipping,
+          shipping_fee: offersShipping && shippingFee ? parseFloat(shippingFee) : undefined,
           // Sale pricing (required if sale or both)
           sale_price: (listingType === 'sale' || listingType === 'both') ? parseFloat(salePrice) : undefined,
           sale_condition: (listingType === 'sale' || listingType === 'both') ? saleCondition || undefined : undefined,
@@ -383,13 +418,24 @@ export function CreateListingDialog({
     // Common settings
     setMinRentalDays('1');
     setMaxRentalDays('');
+    setAdvanceBookingDays('1');
     setDepositAmount('');
     setDepositPercent('');
     setDepositType('percent');
     setInsuranceRequired(false);
     setInsuranceDailyRate('');
+    setWeeklyDiscountPercent('');
+    setMonthlyDiscountPercent('');
+    setQuantityDiscountThreshold('');
+    setQuantityDiscountPercent('');
     setRentalNotes('');
     setPickupInstructions('');
+    // Delivery options
+    setOffersDelivery(false);
+    setDeliveryRadiusMiles('');
+    setDeliveryFee('');
+    setOffersShipping(false);
+    setShippingFee('');
   };
 
   const handleClose = () => {
@@ -717,7 +763,7 @@ export function CreateListingDialog({
           Rental Duration
         </h4>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           <div className="space-y-2">
             <Label htmlFor="minRentalDays">Minimum Days</Label>
             <Input
@@ -729,13 +775,13 @@ export function CreateListingDialog({
               onChange={(e) => setMinRentalDays(e.target.value)}
               className="w-full"
             />
-            <p className="text-xs text-muted-gray">Shortest rental period allowed</p>
+            <p className="text-xs text-muted-gray">Shortest rental period</p>
           </div>
 
           <div className="space-y-2">
             <Label htmlFor="maxRentalDays">
               Maximum Days
-              <span className="text-xs text-muted-gray ml-1">(optional)</span>
+              <span className="text-xs text-muted-gray ml-1">(opt.)</span>
             </Label>
             <Input
               id="maxRentalDays"
@@ -749,15 +795,127 @@ export function CreateListingDialog({
             />
             <p className="text-xs text-muted-gray">Leave blank for no limit</p>
           </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="advanceBookingDays">
+              Advance Notice
+              <span className="text-xs text-muted-gray ml-1">(opt.)</span>
+            </Label>
+            <Input
+              id="advanceBookingDays"
+              type="number"
+              min="0"
+              max="365"
+              placeholder="1"
+              value={advanceBookingDays}
+              onChange={(e) => setAdvanceBookingDays(e.target.value)}
+              className="w-full"
+            />
+            <p className="text-xs text-muted-gray">Days in advance to book</p>
+          </div>
         </div>
       </div>
 
       <Separator className="bg-white/10" />
 
-      {/* Deposit Section */}
+      {/* Discounts Section */}
       <div className="space-y-4">
         <h4 className="flex items-center gap-2 font-medium text-bone-white">
-          <Shield className="h-4 w-4 text-blue-400" />
+          <Percent className="h-4 w-4 text-green-400" />
+          Discounts
+          <span className="text-xs text-muted-gray font-normal">(Optional)</span>
+        </h4>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="weeklyDiscountPercent">Weekly Rental Discount</Label>
+            <div className="relative">
+              <Input
+                id="weeklyDiscountPercent"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                placeholder="0"
+                value={weeklyDiscountPercent}
+                onChange={(e) => setWeeklyDiscountPercent(e.target.value)}
+                className="pr-8"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-gray">%</span>
+            </div>
+            <p className="text-xs text-muted-gray">Discount for 7+ day rentals</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="monthlyDiscountPercent">Monthly Rental Discount</Label>
+            <div className="relative">
+              <Input
+                id="monthlyDiscountPercent"
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                placeholder="0"
+                value={monthlyDiscountPercent}
+                onChange={(e) => setMonthlyDiscountPercent(e.target.value)}
+                className="pr-8"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-gray">%</span>
+            </div>
+            <p className="text-xs text-muted-gray">Discount for 30+ day rentals</p>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/5 p-4 space-y-3">
+          <Label className="text-bone-white">Quantity Discount</Label>
+          <p className="text-xs text-muted-gray">
+            Offer a discount when renting multiple items together
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="quantityDiscountThreshold" className="text-xs text-muted-gray">
+                Minimum Items
+              </Label>
+              <Input
+                id="quantityDiscountThreshold"
+                type="number"
+                min="2"
+                max="100"
+                placeholder="e.g., 3"
+                value={quantityDiscountThreshold}
+                onChange={(e) => setQuantityDiscountThreshold(e.target.value)}
+                className="w-full"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="quantityDiscountPercent" className="text-xs text-muted-gray">
+                Discount
+              </Label>
+              <div className="relative">
+                <Input
+                  id="quantityDiscountPercent"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  placeholder="e.g., 10"
+                  value={quantityDiscountPercent}
+                  onChange={(e) => setQuantityDiscountPercent(e.target.value)}
+                  className="pr-8"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-gray">%</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <Separator className="bg-white/10" />
+
+      {/* Security Deposit Section */}
+      <div className="space-y-4">
+        <h4 className="flex items-center gap-2 font-medium text-bone-white">
+          <DollarSign className="h-4 w-4 text-orange-400" />
           Security Deposit
           <span className="text-xs text-muted-gray font-normal">(Optional)</span>
         </h4>
@@ -872,6 +1030,105 @@ export function CreateListingDialog({
 
       <Separator className="bg-white/10" />
 
+      {/* Delivery & Shipping Section */}
+      <div className="space-y-4">
+        <h4 className="flex items-center gap-2 font-medium text-bone-white">
+          <Truck className="h-4 w-4 text-purple-400" />
+          Delivery & Shipping
+          <span className="text-xs text-muted-gray font-normal">(Optional)</span>
+        </h4>
+
+        {/* Local Delivery */}
+        <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 p-4">
+          <div>
+            <Label className="text-bone-white">Offer Local Delivery</Label>
+            <p className="text-xs text-muted-gray">
+              Deliver to renters within your area
+            </p>
+          </div>
+          <Switch
+            checked={offersDelivery}
+            onCheckedChange={setOffersDelivery}
+          />
+        </div>
+
+        {offersDelivery && (
+          <div className="space-y-3 pl-4 border-l-2 border-purple-400/30">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="deliveryRadiusMiles">Delivery Radius</Label>
+                <div className="relative">
+                  <Input
+                    id="deliveryRadiusMiles"
+                    type="number"
+                    min="1"
+                    max="500"
+                    placeholder="50"
+                    value={deliveryRadiusMiles}
+                    onChange={(e) => setDeliveryRadiusMiles(e.target.value)}
+                    className="pr-12"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-gray">miles</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="deliveryFee">Delivery Fee</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="deliveryFee"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="0.00"
+                    value={deliveryFee}
+                    onChange={(e) => setDeliveryFee(e.target.value)}
+                    className="pl-7"
+                  />
+                </div>
+                <p className="text-xs text-muted-gray">Base fee for delivery</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Shipping */}
+        <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 p-4">
+          <div>
+            <Label className="text-bone-white">Offer Shipping</Label>
+            <p className="text-xs text-muted-gray">
+              Ship to renters anywhere
+            </p>
+          </div>
+          <Switch
+            checked={offersShipping}
+            onCheckedChange={setOffersShipping}
+          />
+        </div>
+
+        {offersShipping && (
+          <div className="space-y-2 pl-4 border-l-2 border-purple-400/30">
+            <Label htmlFor="shippingFee">Flat Rate Shipping Fee</Label>
+            <div className="relative w-32">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+              <Input
+                id="shippingFee"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={shippingFee}
+                onChange={(e) => setShippingFee(e.target.value)}
+                className="pl-7"
+              />
+            </div>
+            <p className="text-xs text-muted-gray">Leave blank for calculated rates</p>
+          </div>
+        )}
+      </div>
+
+      <Separator className="bg-white/10" />
+
       {/* Pickup & Notes Section */}
       <div className="space-y-4">
         <h4 className="flex items-center gap-2 font-medium text-bone-white">
@@ -921,7 +1178,7 @@ export function CreateListingDialog({
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className={cn(
-        "max-h-[90vh] flex flex-col p-0",
+        "max-h-[85vh] flex flex-col p-0 overflow-hidden",
         isBulkMode ? "max-w-3xl" : "max-w-xl"
       )}>
         <DialogHeader className="px-6 pt-6 pb-4 border-b border-white/10 flex-shrink-0">
@@ -982,11 +1239,11 @@ export function CreateListingDialog({
           </div>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           <div className="p-6">
             {step === 1 ? renderStep1() : renderStep2()}
           </div>
-        </ScrollArea>
+        </div>
 
         <DialogFooter className="px-6 py-4 border-t border-white/10 flex-shrink-0">
           {step === 1 ? (

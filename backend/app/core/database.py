@@ -244,11 +244,14 @@ class DatabaseTable:
 
         # Remove embedded joins from the select columns
         clean_cols = re.sub(pattern, '', columns)
-        # Clean up extra commas and whitespace
-        clean_cols = re.sub(r',\s*,', ',', clean_cols)
-        clean_cols = re.sub(r',\s*$', '', clean_cols)
-        clean_cols = re.sub(r'^\s*,', '', clean_cols)
-        clean_cols = clean_cols.strip()
+        # Clean up extra commas and whitespace - repeat until no changes
+        prev = None
+        while prev != clean_cols:
+            prev = clean_cols
+            clean_cols = re.sub(r',\s*,', ',', clean_cols)  # multiple commas -> single
+        clean_cols = re.sub(r',\s*$', '', clean_cols)  # trailing comma
+        clean_cols = re.sub(r'^\s*,', '', clean_cols)  # leading comma
+        clean_cols = clean_cols.strip().rstrip(',').strip()  # final cleanup
 
         return clean_cols if clean_cols else "*"
 

@@ -292,6 +292,11 @@ class UpdateLineItemRequest(BaseModel):
     service_date_end: Optional[str] = None
 
 
+class LineItemReorderRequest(BaseModel):
+    line_item_id: str
+    direction: str  # "UP" or "DOWN"
+
+
 class InvoiceSummary(BaseModel):
     total_invoices: int = 0
     draft_count: int = 0
@@ -1169,6 +1174,85 @@ async def delete_line_item(
     return {"success": True}
 
 
+@router.post("/projects/{project_id}/invoices/{invoice_id}/line-items/reorder")
+async def reorder_line_item(
+    project_id: str,
+    invoice_id: str,
+    request: LineItemReorderRequest,
+    authorization: str = Header(None)
+):
+    """Move a line item up or down in the list."""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = get_profile_id_from_cognito_id(current_user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="User profile not found")
+
+    if request.direction not in ("UP", "DOWN"):
+        raise HTTPException(status_code=400, detail="Direction must be 'UP' or 'DOWN'")
+
+    client = get_client()
+
+    # Verify invoice ownership and editable status
+    invoice = execute_single(
+        "SELECT * FROM backlot_invoices WHERE id = :id AND project_id = :project_id",
+        {"id": invoice_id, "project_id": project_id}
+    )
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if invoice["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to edit this invoice")
+
+    # Only allow reordering on editable invoices
+    editable_statuses = ["draft", "changes_requested"]
+    if invoice["status"] not in editable_statuses:
+        raise HTTPException(status_code=400, detail="Cannot reorder line items on non-editable invoice")
+
+    # Get current line item
+    current_item = execute_single(
+        "SELECT * FROM backlot_invoice_line_items WHERE id = :id AND invoice_id = :invoice_id",
+        {"id": request.line_item_id, "invoice_id": invoice_id}
+    )
+
+    if not current_item:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    current_order = current_item["sort_order"]
+
+    # Find adjacent item based on direction
+    if request.direction == "UP":
+        # Find item with next lower sort_order
+        adjacent = execute_single(
+            """SELECT * FROM backlot_invoice_line_items
+               WHERE invoice_id = :invoice_id AND sort_order < :current_order
+               ORDER BY sort_order DESC LIMIT 1""",
+            {"invoice_id": invoice_id, "current_order": current_order}
+        )
+    else:  # DOWN
+        # Find item with next higher sort_order
+        adjacent = execute_single(
+            """SELECT * FROM backlot_invoice_line_items
+               WHERE invoice_id = :invoice_id AND sort_order > :current_order
+               ORDER BY sort_order ASC LIMIT 1""",
+            {"invoice_id": invoice_id, "current_order": current_order}
+        )
+
+    if not adjacent:
+        # Already at top/bottom, nothing to do
+        return {"success": True, "message": "Already at boundary"}
+
+    adjacent_order = adjacent["sort_order"]
+
+    # Swap sort_order values using temp value to avoid constraint conflicts
+    temp_order = 999999
+    client.table("backlot_invoice_line_items").update({"sort_order": temp_order}).eq("id", request.line_item_id).execute()
+    client.table("backlot_invoice_line_items").update({"sort_order": current_order}).eq("id", adjacent["id"]).execute()
+    client.table("backlot_invoice_line_items").update({"sort_order": adjacent_order}).eq("id", request.line_item_id).execute()
+
+    return {"success": True}
+
+
 # =============================================================================
 # STATUS ACTIONS
 # =============================================================================
@@ -1408,6 +1492,14 @@ async def approve_invoice(
         update_data["approval_notes"] = request.notes
 
     client.table("backlot_invoices").update(update_data).eq("id", invoice_id).execute()
+
+    # Record invoice line items to budget actuals (skips already-recorded sources)
+    line_items_result = client.table("backlot_invoice_line_items").select("*").eq(
+        "invoice_id", invoice_id
+    ).execute()
+    if line_items_result.data:
+        from app.services.budget_actuals import record_invoice_line_items
+        record_invoice_line_items(invoice, line_items_result.data, user_id)
 
     return {"success": True, "status": "approved"}
 
@@ -1741,7 +1833,7 @@ async def import_expenses(
 
             item_data = {
                 "invoice_id": invoice_id,
-                "description": f"Reimbursement - {r['description'] or 'Receipt'}",
+                "description": f"Reimbursement - {r['vendor_name'] or r['description'] or 'Receipt'}",
                 "rate_type": "flat",
                 "rate_amount": amount,
                 "quantity": 1,

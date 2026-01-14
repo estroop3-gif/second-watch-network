@@ -4,11 +4,13 @@
 import React from 'react';
 import { differenceInDays, format } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
-import { Briefcase, User, Calendar, DollarSign, CalendarRange, Tag } from 'lucide-react';
+import { Briefcase, User, Calendar, DollarSign, CalendarRange, Tag, Building2, ExternalLink, Package, Boxes } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
 import { useKitRental } from '@/hooks/backlot';
 import { cn } from '@/lib/utils';
+import { Link } from 'react-router-dom';
 
 interface KitRentalDetailContentProps {
   projectId: string;
@@ -29,6 +31,12 @@ const RENTAL_TYPE_LABELS = {
   daily: 'Daily Rate',
   weekly: 'Weekly Rate',
   flat: 'Flat Rate',
+} as const;
+
+const GEAR_SOURCE_CONFIG = {
+  asset: { label: 'Gear House Asset', icon: Building2, className: 'text-purple-400 border-purple-400/30 bg-purple-500/10' },
+  kit: { label: 'Gear House Kit', icon: Boxes, className: 'text-purple-400 border-purple-400/30 bg-purple-500/10' },
+  lite: { label: 'Personal Gear', icon: User, className: 'text-blue-400 border-blue-400/30 bg-blue-500/10' },
 } as const;
 
 export default function KitRentalDetailContent({ projectId, kitRentalId }: KitRentalDetailContentProps) {
@@ -85,6 +93,68 @@ export default function KitRentalDetailContent({ projectId, kitRentalId }: KitRe
           {statusConfig.label}
         </Badge>
       </div>
+
+      {/* Gear Source Info */}
+      {kitRental.gear_source_type && (
+        <div className={cn(
+          'rounded-lg p-4 border',
+          GEAR_SOURCE_CONFIG[kitRental.gear_source_type as keyof typeof GEAR_SOURCE_CONFIG]?.className || 'border-muted-gray/10 bg-charcoal-black/50'
+        )}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {(() => {
+                const config = GEAR_SOURCE_CONFIG[kitRental.gear_source_type as keyof typeof GEAR_SOURCE_CONFIG];
+                if (config) {
+                  const Icon = config.icon;
+                  return <Icon className="w-5 h-5" />;
+                }
+                return <Package className="w-5 h-5" />;
+              })()}
+              <div>
+                <p className="text-sm font-medium text-bone-white">
+                  {GEAR_SOURCE_CONFIG[kitRental.gear_source_type as keyof typeof GEAR_SOURCE_CONFIG]?.label || 'Linked Equipment'}
+                </p>
+                {/* Show linked asset/kit name if available */}
+                {kitRental.gear_asset_name && (
+                  <p className="text-xs text-muted-gray">
+                    {kitRental.gear_asset_name}
+                    {kitRental.gear_asset_internal_id && ` (${kitRental.gear_asset_internal_id})`}
+                  </p>
+                )}
+                {kitRental.gear_kit_name && (
+                  <p className="text-xs text-muted-gray">{kitRental.gear_kit_name}</p>
+                )}
+                {kitRental.gear_organization_name && (
+                  <p className="text-xs text-muted-gray/70">{kitRental.gear_organization_name}</p>
+                )}
+              </div>
+            </div>
+
+            {/* View in Gear House link */}
+            {kitRental.gear_organization_id && (kitRental.gear_asset_id || kitRental.gear_kit_instance_id) && (
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="text-xs"
+              >
+                <Link
+                  to={
+                    kitRental.gear_source_type === 'lite'
+                      ? '/gear/personal'
+                      : `/gear/${kitRental.gear_organization_id}/assets${kitRental.gear_asset_id ? `?asset=${kitRental.gear_asset_id}` : ''}`
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="w-3 h-3 mr-1" />
+                  View in Gear House
+                </Link>
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Total Amount and Rental Period */}
       <div className="grid grid-cols-2 gap-4">

@@ -49,16 +49,18 @@ export function SyncStatusBadge({
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge
-              variant="outline"
-              className={cn(
-                'text-xs gap-1 bg-slate-500/10 text-slate-400 border-slate-500/30',
-                className
-              )}
-            >
-              <Link2Off className="h-3 w-3" />
-              No Call Sheet
-            </Badge>
+            <span className="inline-flex">
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-xs gap-1 bg-slate-500/10 text-slate-400 border-slate-500/30',
+                  className
+                )}
+              >
+                <Link2Off className="h-3 w-3" />
+                No Call Sheet
+              </Badge>
+            </span>
           </TooltipTrigger>
           <TooltipContent>
             <p>No call sheet is linked to this production day</p>
@@ -74,16 +76,18 @@ export function SyncStatusBadge({
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Badge
-              variant="outline"
-              className={cn(
-                'text-xs gap-1 bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
-                className
-              )}
-            >
-              <Check className="h-3 w-3" />
-              In Sync
-            </Badge>
+            <span className="inline-flex">
+              <Badge
+                variant="outline"
+                className={cn(
+                  'text-xs gap-1 bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+                  className
+                )}
+              >
+                <Check className="h-3 w-3" />
+                In Sync
+              </Badge>
+            </span>
           </TooltipTrigger>
           <TooltipContent>
             <p>Production day and call sheet are synchronized</p>

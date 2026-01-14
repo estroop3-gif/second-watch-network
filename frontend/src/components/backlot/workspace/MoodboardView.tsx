@@ -70,7 +70,12 @@ import {
   ExternalLink,
   FolderOpen,
   Link2,
+  List,
+  LayoutGrid,
+  Grid3X3,
+  Star,
 } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import {
@@ -87,11 +92,22 @@ import {
   useUpdateMoodboardItem,
   useDeleteMoodboardItem,
   useReorderMoodboardItems,
+  useMoodboardItemImageUpload,
   getMoodboardExportUrl,
   Moodboard,
   MoodboardSection,
   MoodboardItem,
+  MOODBOARD_CATEGORIES,
+  type MoodboardCategory,
+  type AspectRatio,
 } from '@/hooks/backlot';
+import {
+  MoodboardItemUploader,
+  MoodboardGridView,
+  MoodboardListView,
+  MoodboardMasonryView,
+} from './moodboard';
+import { analyzeImage } from '@/lib/colorExtraction';
 
 interface MoodboardViewProps {
   projectId: string;
@@ -246,6 +262,21 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
   const [editingItem, setEditingItem] = useState<MoodboardItem | null>(null);
   const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
 
+  // View mode for items
+  type ItemViewMode = 'grid' | 'list' | 'masonry';
+  const [itemViewMode, setItemViewMode] = useState<ItemViewMode>('grid');
+
+  // Image input mode (url or upload)
+  const [imageInputMode, setImageInputMode] = useState<'url' | 'upload'>('url');
+
+  // Staged upload data (for when creating new item via upload)
+  const [stagedUpload, setStagedUpload] = useState<{
+    file: File;
+    previewUrl: string;
+    colorPalette: string[];
+    aspectRatio: AspectRatio;
+  } | null>(null);
+
   // Form states
   const [formData, setFormData] = useState({ title: '', description: '' });
   const [sectionFormData, setSectionFormData] = useState({ title: '' });
@@ -256,6 +287,10 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
     title: '',
     notes: '',
     tags: '',
+    category: null as MoodboardCategory | null,
+    rating: null as number | null,
+    color_palette: [] as string[],
+    aspect_ratio: null as AspectRatio | null,
   });
 
   // Filter states
@@ -282,6 +317,7 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
   const updateItem = useUpdateMoodboardItem(projectId, selectedMoodboardId);
   const deleteItem = useDeleteMoodboardItem(projectId, selectedMoodboardId);
   const reorderItems = useReorderMoodboardItems(projectId, selectedMoodboardId);
+  const getItemUploadUrl = useMoodboardItemImageUpload(projectId, selectedMoodboardId);
 
   // Filtered items
   const filteredItems = useMemo(() => {
@@ -417,15 +453,70 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
         .split(',')
         .map((t) => t.trim())
         .filter((t) => t);
-      await createItem.mutateAsync({
+
+      let finalImageUrl = itemFormData.image_url;
+      const colorPalette = stagedUpload?.colorPalette || itemFormData.color_palette;
+      const aspectRatio = stagedUpload?.aspectRatio || itemFormData.aspect_ratio;
+
+      // If we have a staged file upload, upload it to S3 first
+      if (stagedUpload) {
+        try {
+          // Get presigned URL from backend
+          const { upload_url, file_url } = await getItemUploadUrl.mutateAsync({
+            file_name: stagedUpload.file.name,
+            content_type: stagedUpload.file.type || 'image/jpeg',
+            file_size: stagedUpload.file.size,
+          });
+
+          // Upload file to S3
+          const uploadResponse = await fetch(upload_url, {
+            method: 'PUT',
+            body: stagedUpload.file,
+            headers: {
+              'Content-Type': stagedUpload.file.type || 'image/jpeg',
+            },
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error('Failed to upload image to storage');
+          }
+
+          finalImageUrl = file_url;
+        } catch (uploadErr: any) {
+          toast.error(uploadErr.message || 'Failed to upload image');
+          return;
+        }
+      }
+
+      // Validate we have an image URL
+      if (!finalImageUrl || !finalImageUrl.startsWith('http')) {
+        toast.error('Please provide a valid image URL or upload an image');
+        return;
+      }
+
+      // Validate source_url if provided
+      if (itemFormData.source_url && !itemFormData.source_url.startsWith('http')) {
+        toast.error('Source URL must start with http:// or https://');
+        return;
+      }
+
+      const itemData = {
         section_id: itemFormData.section_id,
-        image_url: itemFormData.image_url,
+        image_url: finalImageUrl,
         source_url: itemFormData.source_url || undefined,
         title: itemFormData.title || undefined,
         notes: itemFormData.notes || undefined,
         tags: tags.length > 0 ? tags : undefined,
-      });
+        category: itemFormData.category || undefined,
+        rating: itemFormData.rating || undefined,
+        color_palette: colorPalette.length > 0 ? colorPalette : undefined,
+        aspect_ratio: aspectRatio || undefined,
+      };
+      console.log('[Moodboard] Creating item with data:', itemData);
+      await createItem.mutateAsync(itemData);
       setShowItemDialog(false);
+      setStagedUpload(null);
+      setImageInputMode('url');
       setItemFormData({
         section_id: null,
         image_url: '',
@@ -433,12 +524,29 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
         title: '',
         notes: '',
         tags: '',
+        category: null,
+        rating: null,
+        color_palette: [],
+        aspect_ratio: null,
       });
       toast.success('Item added');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to add item');
+      console.error('Create item error:', err);
+      // Extract validation error details if present
+      let errorMsg = 'Failed to add item';
+      if (err.response?.data?.detail) {
+        const detail = err.response.data.detail;
+        if (Array.isArray(detail)) {
+          errorMsg = detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join(', ');
+        } else if (typeof detail === 'string') {
+          errorMsg = detail;
+        }
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      toast.error(errorMsg);
     }
-  }, [createItem, itemFormData]);
+  }, [createItem, itemFormData, stagedUpload, getItemUploadUrl]);
 
   const handleUpdateItem = useCallback(async () => {
     if (!editingItem) return;
@@ -447,19 +555,72 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
         .split(',')
         .map((t) => t.trim())
         .filter((t) => t);
+
+      let finalImageUrl = itemFormData.image_url;
+      const colorPalette = stagedUpload?.colorPalette || itemFormData.color_palette;
+      const aspectRatio = stagedUpload?.aspectRatio || itemFormData.aspect_ratio;
+
+      // If we have a staged file upload, upload it to S3 first
+      if (stagedUpload) {
+        try {
+          // Get presigned URL from backend
+          const { upload_url, file_url } = await getItemUploadUrl.mutateAsync({
+            file_name: stagedUpload.file.name,
+            content_type: stagedUpload.file.type || 'image/jpeg',
+            file_size: stagedUpload.file.size,
+          });
+
+          // Upload file to S3
+          const uploadResponse = await fetch(upload_url, {
+            method: 'PUT',
+            body: stagedUpload.file,
+            headers: {
+              'Content-Type': stagedUpload.file.type || 'image/jpeg',
+            },
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error('Failed to upload image to storage');
+          }
+
+          finalImageUrl = file_url;
+        } catch (uploadErr: any) {
+          toast.error(uploadErr.message || 'Failed to upload image');
+          return;
+        }
+      }
+
+      // Validate we have an image URL
+      if (!finalImageUrl || !finalImageUrl.startsWith('http')) {
+        toast.error('Please provide a valid image URL or upload an image');
+        return;
+      }
+
+      // Validate source_url if provided
+      if (itemFormData.source_url && !itemFormData.source_url.startsWith('http')) {
+        toast.error('Source URL must start with http:// or https://');
+        return;
+      }
+
       await updateItem.mutateAsync({
         itemId: editingItem.id,
         data: {
           section_id: itemFormData.section_id,
-          image_url: itemFormData.image_url,
+          image_url: finalImageUrl,
           source_url: itemFormData.source_url || undefined,
           title: itemFormData.title || undefined,
           notes: itemFormData.notes || undefined,
           tags: tags,
+          category: itemFormData.category,
+          rating: itemFormData.rating,
+          color_palette: colorPalette,
+          aspect_ratio: aspectRatio,
         },
       });
       setShowItemDialog(false);
       setEditingItem(null);
+      setStagedUpload(null);
+      setImageInputMode('url');
       setItemFormData({
         section_id: null,
         image_url: '',
@@ -467,12 +628,29 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
         title: '',
         notes: '',
         tags: '',
+        category: null,
+        rating: null,
+        color_palette: [],
+        aspect_ratio: null,
       });
       toast.success('Item updated');
     } catch (err: any) {
-      toast.error(err.message || 'Failed to update item');
+      console.error('Update item error:', err);
+      // Extract validation error details if present
+      let errorMsg = 'Failed to update item';
+      if (err.response?.data?.detail) {
+        const detail = err.response.data.detail;
+        if (Array.isArray(detail)) {
+          errorMsg = detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join(', ');
+        } else if (typeof detail === 'string') {
+          errorMsg = detail;
+        }
+      } else if (err.message) {
+        errorMsg = err.message;
+      }
+      toast.error(errorMsg);
     }
-  }, [updateItem, editingItem, itemFormData]);
+  }, [updateItem, editingItem, itemFormData, stagedUpload, getItemUploadUrl]);
 
   const handleDeleteItem = useCallback(async () => {
     if (!deletingItemId) return;
@@ -521,7 +699,13 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
       title: item.title || '',
       notes: item.notes || '',
       tags: (item.tags || []).join(', '),
+      category: item.category as MoodboardCategory | null,
+      rating: item.rating,
+      color_palette: item.color_palette || [],
+      aspect_ratio: item.aspect_ratio as AspectRatio | null,
     });
+    setStagedUpload(null);
+    setImageInputMode('url');
     setShowItemDialog(true);
   };
 
@@ -744,6 +928,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                 size="sm"
                 onClick={() => {
                   setEditingItem(null);
+                  setStagedUpload(null);
+                  setImageInputMode('url');
                   setItemFormData({
                     section_id: selectedSectionFilter,
                     image_url: '',
@@ -751,6 +937,10 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                     title: '',
                     notes: '',
                     tags: '',
+                    category: null,
+                    rating: null,
+                    color_palette: [],
+                    aspect_ratio: null,
                   });
                   setShowItemDialog(true);
                 }}
@@ -792,13 +982,13 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
             className="pl-9"
           />
         </div>
-        <Select value={tagFilter || ''} onValueChange={(v) => setTagFilter(v || null)}>
+        <Select value={tagFilter || '__all__'} onValueChange={(v) => setTagFilter(v === '__all__' ? null : v)}>
           <SelectTrigger className="w-40">
             <Tag className="w-4 h-4 mr-2" />
             <SelectValue placeholder="All tags" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All tags</SelectItem>
+            <SelectItem value="__all__">All tags</SelectItem>
             {(moodboard.all_tags || []).map((tag) => (
               <SelectItem key={tag} value={tag}>
                 {tag}
@@ -819,6 +1009,23 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
             Clear
           </Button>
         )}
+
+        {/* View Mode Toggle */}
+        <div className="ml-auto">
+          <Tabs value={itemViewMode} onValueChange={(v) => setItemViewMode(v as ItemViewMode)}>
+            <TabsList className="h-9">
+              <TabsTrigger value="grid" className="px-3">
+                <Grid3X3 className="w-4 h-4" />
+              </TabsTrigger>
+              <TabsTrigger value="list" className="px-3">
+                <List className="w-4 h-4" />
+              </TabsTrigger>
+              <TabsTrigger value="masonry" className="px-3">
+                <LayoutGrid className="w-4 h-4" />
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
       </div>
 
       {/* Main Content */}
@@ -957,6 +1164,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                       <Button
                         onClick={() => {
                           setEditingItem(null);
+                          setStagedUpload(null);
+                          setImageInputMode('url');
                           setItemFormData({
                             section_id: selectedSectionFilter,
                             image_url: '',
@@ -964,6 +1173,10 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                             title: '',
                             notes: '',
                             tags: '',
+                            category: null,
+                            rating: null,
+                            color_palette: [],
+                            aspect_ratio: null,
                           });
                           setShowItemDialog(true);
                         }}
@@ -977,28 +1190,34 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
               );
             }
 
+            // Render based on view mode
+            if (itemViewMode === 'list') {
+              return (
+                <MoodboardListView
+                  items={itemsToShow}
+                  onItemClick={openEditItem}
+                  canEdit={canEdit}
+                />
+              );
+            }
+
+            if (itemViewMode === 'masonry') {
+              return (
+                <MoodboardMasonryView
+                  items={itemsToShow}
+                  onItemClick={openEditItem}
+                  canEdit={canEdit}
+                />
+              );
+            }
+
+            // Default grid view with ItemCard (includes edit controls)
             return (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {itemsToShow.map((item, idx) => (
-                  <ItemCard
-                    key={item.id}
-                    item={item}
-                    index={idx}
-                    canEdit={canEdit}
-                    onEdit={() => openEditItem(item)}
-                    onDelete={() => {
-                      setDeletingItemId(item.id);
-                      setShowDeleteItemConfirm(true);
-                    }}
-                    onMoveUp={() => handleReorderItem(item.id, 'UP')}
-                    onMoveDown={() => handleReorderItem(item.id, 'DOWN')}
-                    onMoveToSection={(sectionId) => handleMoveItemToSection(item.id, sectionId)}
-                    isFirst={idx === 0}
-                    isLast={idx === itemsToShow.length - 1}
-                    sections={moodboard.sections || []}
-                  />
-                ))}
-              </div>
+              <MoodboardGridView
+                items={itemsToShow}
+                onItemClick={openEditItem}
+                canEdit={canEdit}
+              />
             );
           })()}
         </div>
@@ -1155,42 +1374,128 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+            {/* Image Input - URL or Upload tabs */}
             <div className="space-y-2">
-              <Label>Image URL *</Label>
-              <Input
-                value={itemFormData.image_url}
-                onChange={(e) =>
-                  setItemFormData((f) => ({ ...f, image_url: e.target.value }))
-                }
-                placeholder="https://..."
-              />
-              {itemFormData.image_url &&
-                itemFormData.image_url.startsWith('http') && (
-                  <div className="aspect-video bg-white/10 rounded overflow-hidden">
-                    <img
-                      src={itemFormData.image_url}
-                      alt="Preview"
-                      className="w-full h-full object-contain"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).style.display = 'none';
-                      }}
-                    />
-                  </div>
-                )}
+              <Label>Image *</Label>
+              <Tabs value={imageInputMode} onValueChange={(v) => setImageInputMode(v as 'url' | 'upload')}>
+                <TabsList className="w-full">
+                  <TabsTrigger value="url" className="flex-1 gap-2">
+                    <Link2 className="w-4 h-4" />
+                    URL
+                  </TabsTrigger>
+                  <TabsTrigger value="upload" className="flex-1 gap-2">
+                    <ImageIcon className="w-4 h-4" />
+                    Upload
+                  </TabsTrigger>
+                </TabsList>
+                <TabsContent value="url" className="mt-3">
+                  <Input
+                    value={itemFormData.image_url}
+                    onChange={async (e) => {
+                      const url = e.target.value;
+                      setItemFormData((f) => ({ ...f, image_url: url }));
+                      // Auto-analyze image when URL is valid
+                      if (url.startsWith('http')) {
+                        try {
+                          const result = await analyzeImage(url);
+                          setItemFormData((f) => ({
+                            ...f,
+                            color_palette: result.colorPalette,
+                            aspect_ratio: result.aspectRatio,
+                          }));
+                        } catch (err) {
+                          // Clear color/aspect if analysis fails (e.g., CORS blocked)
+                          console.warn('Image analysis failed:', err);
+                          setItemFormData((f) => ({
+                            ...f,
+                            color_palette: [],
+                            aspect_ratio: null,
+                          }));
+                        }
+                      }
+                    }}
+                    placeholder="https://..."
+                  />
+                  {itemFormData.image_url &&
+                    itemFormData.image_url.startsWith('http') && (
+                      <div className="aspect-video bg-white/10 rounded overflow-hidden mt-2">
+                        <img
+                          src={itemFormData.image_url}
+                          alt="Preview"
+                          className="w-full h-full object-contain"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                          }}
+                        />
+                      </div>
+                    )}
+                </TabsContent>
+                <TabsContent value="upload" className="mt-3">
+                  <MoodboardItemUploader
+                    onFileStaged={(result) => {
+                      if (result) {
+                        setStagedUpload({
+                          file: result.file,
+                          previewUrl: result.previewUrl,
+                          colorPalette: result.colorPalette,
+                          aspectRatio: result.aspectRatio,
+                        });
+                        setItemFormData((f) => ({
+                          ...f,
+                          image_url: result.previewUrl,
+                          color_palette: result.colorPalette,
+                          aspect_ratio: result.aspectRatio,
+                        }));
+                      } else {
+                        setStagedUpload(null);
+                        setItemFormData((f) => ({
+                          ...f,
+                          image_url: '',
+                          color_palette: [],
+                          aspect_ratio: null,
+                        }));
+                      }
+                    }}
+                    stagedPreviewUrl={stagedUpload?.previewUrl}
+                  />
+                  {stagedUpload && (
+                    <div className="mt-3 p-2 bg-green-500/10 border border-green-500/30 rounded text-sm text-green-400 flex items-center justify-between">
+                      <span>Image ready: {stagedUpload.file.name}</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setStagedUpload(null);
+                          setItemFormData((f) => ({
+                            ...f,
+                            image_url: '',
+                            color_palette: [],
+                            aspect_ratio: null,
+                          }));
+                        }}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
             </div>
+
+            {/* Section */}
             <div className="space-y-2">
               <Label>Section</Label>
               <Select
-                value={itemFormData.section_id || ''}
+                value={itemFormData.section_id || '__none__'}
                 onValueChange={(v) =>
-                  setItemFormData((f) => ({ ...f, section_id: v || null }))
+                  setItemFormData((f) => ({ ...f, section_id: v === '__none__' ? null : v }))
                 }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Unsorted" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Unsorted</SelectItem>
+                  <SelectItem value="__none__">Unsorted</SelectItem>
                   {(moodboard.sections || []).map((section) => (
                     <SelectItem key={section.id} value={section.id}>
                       {section.title}
@@ -1199,6 +1504,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Title */}
             <div className="space-y-2">
               <Label>Title</Label>
               <Input
@@ -1207,6 +1514,99 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                 placeholder="Optional title"
               />
             </div>
+
+            {/* Category and Rating row */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Category</Label>
+                <Select
+                  value={itemFormData.category || '__none__'}
+                  onValueChange={(v) =>
+                    setItemFormData((f) => ({
+                      ...f,
+                      category: v === '__none__' ? null : (v as MoodboardCategory),
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">No category</SelectItem>
+                    {MOODBOARD_CATEGORIES.map((cat) => (
+                      <SelectItem key={cat} value={cat}>
+                        {cat}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Rating</Label>
+                <div className="flex items-center gap-1 h-10">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() =>
+                        setItemFormData((f) => ({
+                          ...f,
+                          rating: f.rating === star ? null : star,
+                        }))
+                      }
+                      className="p-1 hover:scale-110 transition-transform"
+                    >
+                      <Star
+                        className={cn(
+                          'w-5 h-5',
+                          itemFormData.rating !== null && star <= itemFormData.rating
+                            ? 'fill-accent-yellow text-accent-yellow'
+                            : 'text-muted-gray hover:text-accent-yellow/50'
+                        )}
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Color Palette (auto-extracted, read-only display) */}
+            {itemFormData.color_palette.length > 0 && (
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2">
+                  Color Palette
+                  <Badge variant="outline" className="text-xs font-normal">
+                    Auto-extracted
+                  </Badge>
+                </Label>
+                <div className="flex items-center gap-2">
+                  {itemFormData.color_palette.map((color, i) => (
+                    <div
+                      key={i}
+                      className="w-8 h-8 rounded border border-white/20"
+                      style={{ backgroundColor: color }}
+                      title={color}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Aspect Ratio (auto-detected, read-only) */}
+            {itemFormData.aspect_ratio && (
+              <div className="space-y-2">
+                <Label className="flex items-center gap-2">
+                  Aspect Ratio
+                  <Badge variant="outline" className="text-xs font-normal">
+                    Auto-detected
+                  </Badge>
+                </Label>
+                <Badge className="capitalize">{itemFormData.aspect_ratio}</Badge>
+              </div>
+            )}
+
+            {/* Source URL */}
             <div className="space-y-2">
               <Label>Source URL</Label>
               <Input
@@ -1217,6 +1617,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                 placeholder="https://... (where did you find this?)"
               />
             </div>
+
+            {/* Tags */}
             <div className="space-y-2">
               <Label>Tags</Label>
               <Input
@@ -1225,6 +1627,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                 placeholder="Comma-separated: color, lighting, mood"
               />
             </div>
+
+            {/* Notes */}
             <div className="space-y-2">
               <Label>Notes</Label>
               <Textarea
@@ -1242,8 +1646,8 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
             <Button
               onClick={editingItem ? handleUpdateItem : handleCreateItem}
               disabled={
-                !itemFormData.image_url ||
-                !itemFormData.image_url.startsWith('http') ||
+                (!itemFormData.image_url && !stagedUpload) ||
+                (itemFormData.image_url && !itemFormData.image_url.startsWith('http') && !stagedUpload) ||
                 createItem.isPending ||
                 updateItem.isPending
               }

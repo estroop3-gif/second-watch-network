@@ -552,7 +552,7 @@ async def create_return_label(
     rental_house_access = False
 
     renter_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     renter_org_ids = [o["organization_id"] for o in renter_orgs]

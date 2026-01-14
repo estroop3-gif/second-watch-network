@@ -49,6 +49,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useCheckinSessions,
   useCreateCheckinSession,
@@ -281,7 +282,7 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
                               {day && (
                                 <p className="text-sm text-muted-gray mt-1">
                                   Day {day.day_number} -{' '}
-                                  {new Date(day.date).toLocaleDateString()}
+                                  {parseLocalDate(day.date).toLocaleDateString()}
                                 </p>
                               )}
                             </div>
@@ -429,7 +430,7 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
                             {day && (
                               <div className="text-sm text-muted-gray">
                                 Day {day.day_number} -{' '}
-                                {new Date(day.date).toLocaleDateString()}
+                                {parseLocalDate(day.date).toLocaleDateString()}
                               </div>
                             )}
                             {userCheckin && (
@@ -510,7 +511,7 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
                       <TableRow key={checkin.id} className="border-muted-gray/20">
                         <TableCell>
                           {checkin.shoot_date
-                            ? new Date(checkin.shoot_date).toLocaleDateString()
+                            ? parseLocalDate(checkin.shoot_date).toLocaleDateString()
                             : '-'}
                         </TableCell>
                         <TableCell className="capitalize">
@@ -586,7 +587,7 @@ const CheckInView: React.FC<CheckInViewProps> = ({ projectId, canManage }) => {
                   <SelectItem value="none">No specific day</SelectItem>
                   {productionDays?.map((day) => (
                     <SelectItem key={day.id} value={day.id}>
-                      Day {day.day_number} - {new Date(day.date).toLocaleDateString()}
+                      Day {day.day_number} - {parseLocalDate(day.date).toLocaleDateString()}
                     </SelectItem>
                   ))}
                 </SelectContent>

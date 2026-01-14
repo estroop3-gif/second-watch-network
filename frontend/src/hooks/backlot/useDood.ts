@@ -21,7 +21,56 @@ export interface DoodSubject {
   department: string | null;
   notes: string | null;
   sort_order: number;
+  source_type: string | null;
+  source_id: string | null;
   created_at?: string;
+}
+
+// Types for available subjects from Cast/Crew/Contacts/Team
+export interface AvailableCastMember {
+  id: string;
+  character_name: string | null;
+  actor_name: string | null;
+  profile_id: string | null;
+  already_added: boolean;
+}
+
+export interface AvailableCrewMember {
+  id: string;
+  name: string;
+  role: string | null;
+  department: string | null;
+  profile_id: string | null;
+  already_added: boolean;
+}
+
+export interface AvailableContact {
+  id: string;
+  name: string;
+  role_interest: string | null;
+  contact_type: string | null;
+  company: string | null;
+  already_added: boolean;
+}
+
+export interface AvailableTeamMember {
+  id: string;
+  user_id: string;
+  production_role: string | null;
+  department: string | null;
+  profiles: {
+    id: string;
+    full_name: string | null;
+    display_name: string | null;
+  } | null;
+  already_added: boolean;
+}
+
+export interface AvailableSubjectsData {
+  cast: AvailableCastMember[];
+  crew: AvailableCrewMember[];
+  contacts: AvailableContact[];
+  team: AvailableTeamMember[];
 }
 
 export interface DoodAssignment {
@@ -74,6 +123,8 @@ const doodKeys = {
     [...doodKeys.all, 'range', projectId, start, end] as const,
   subjects: (projectId: string) =>
     [...doodKeys.all, 'subjects', projectId] as const,
+  availableSubjects: (projectId: string) =>
+    [...doodKeys.all, 'available-subjects', projectId] as const,
   versions: (projectId: string) =>
     [...doodKeys.all, 'versions', projectId] as const,
 };
@@ -97,24 +148,24 @@ export function useDoodRange(projectId: string | null, start: string, end: strin
 }
 
 /**
- * Generate days for a date range
+ * Sync days from the Schedule tab (fetches existing production days)
  */
-export function useGenerateDoodDays(projectId: string | null) {
+export function useSyncDoodDaysFromSchedule(projectId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ start, end }: { start: string; end: string }) => {
+    mutationFn: async () => {
       if (!projectId) throw new Error('Project ID required');
-      return api.post(`/api/v1/backlot/projects/${projectId}/dood/days/generate`, {
-        start,
-        end,
-      });
+      return api.post(`/api/v1/backlot/projects/${projectId}/dood/days/generate`, {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: doodKeys.all });
     },
   });
 }
+
+// Legacy alias for backwards compatibility
+export const useGenerateDoodDays = useSyncDoodDaysFromSchedule;
 
 /**
  * Create a new subject
@@ -128,12 +179,16 @@ export function useCreateDoodSubject(projectId: string | null) {
       subject_type: string;
       department?: string;
       notes?: string;
+      source_type?: string;  // cast_member, crew_member, contact, team_member
+      source_id?: string;    // ID from source table
     }) => {
       if (!projectId) throw new Error('Project ID required');
       return api.post(`/api/v1/backlot/projects/${projectId}/dood/subjects`, data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: doodKeys.all });
+      // Also invalidate available subjects since the added person will be marked
+      queryClient.invalidateQueries({ queryKey: doodKeys.availableSubjects(projectId || '') });
     },
   });
 }
@@ -249,11 +304,38 @@ export function useDoodVersions(projectId: string | null) {
 }
 
 /**
+ * Fetch available subjects from Cast, Crew, Contacts, and Team
+ * for adding to the DOOD
+ */
+export function useAvailableDoodSubjects(projectId: string | null) {
+  return useQuery({
+    queryKey: doodKeys.availableSubjects(projectId || ''),
+    queryFn: async (): Promise<AvailableSubjectsData> => {
+      if (!projectId) throw new Error('Project ID required');
+      const response = await api.get(
+        `/api/v1/backlot/projects/${projectId}/dood/available-subjects`
+      );
+      return response as AvailableSubjectsData;
+    },
+    enabled: !!projectId,
+    staleTime: 30000,
+  });
+}
+
+/**
  * Build export CSV URL
  */
 export function getDoodExportUrl(projectId: string, start: string, end: string): string {
   const baseUrl = import.meta.env.VITE_API_URL || '';
   return `${baseUrl}/api/v1/backlot/projects/${projectId}/dood/export.csv?start=${start}&end=${end}`;
+}
+
+/**
+ * Build export PDF URL
+ */
+export function getDoodPdfExportUrl(projectId: string, start: string, end: string): string {
+  const baseUrl = import.meta.env.VITE_API_URL || '';
+  return `${baseUrl}/api/v1/backlot/projects/${projectId}/dood/export.pdf?start=${start}&end=${end}`;
 }
 
 /**

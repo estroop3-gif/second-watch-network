@@ -9,6 +9,7 @@ import { NotificationBell } from './NotificationBell';
 import { UserNavMenuItems } from './UserNavMenuItems';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
+import { CartIcon } from '@/components/gear/cart';
 
 const AppHeader = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -44,6 +45,7 @@ const AppHeader = () => {
           <Button asChild className="bg-accent-yellow text-charcoal-black hover:bg-bone-white hover:text-charcoal-black font-bold rounded-[4px] uppercase">
             <Link to="/watch-now">Watch Now</Link>
           </Button>
+          <CartIcon />
           <NotificationBell />
           <UserNav />
         </div>
@@ -51,6 +53,7 @@ const AppHeader = () => {
 
       {/* Mobile Nav */}
       <div className="md:hidden flex items-center gap-2">
+        <CartIcon />
         <NotificationBell />
         <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
           <SheetTrigger asChild>
@@ -71,6 +74,10 @@ const AppHeader = () => {
               </Button>
               <div className="mt-6">
                 <SearchBar onSearch={() => setIsMobileMenuOpen(false)} />
+              </div>
+              <div className="mt-4 flex items-center gap-3">
+                <CartIcon />
+                <span className="text-bone-white text-sm">Shopping Cart</span>
               </div>
               <div className="h-[1px] bg-muted-gray my-4" />
             </div>

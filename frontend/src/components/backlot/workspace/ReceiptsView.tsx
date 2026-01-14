@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -58,6 +59,7 @@ import {
   Send,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { api } from '@/lib/api';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -65,6 +67,7 @@ import {
   useReceipts,
   useReceipt,
   useRegisterReceipt,
+  useCreateManualReceipt,
   useReprocessReceiptOcr,
   useUpdateReceipt,
   useMapReceipt,
@@ -80,9 +83,11 @@ import {
   useRejectReimbursement,
   useMarkReimbursed,
   useSubmitCompanyCard,
+  useBulkSubmitReceiptsForApproval,
+  useResubmitReimbursement,
 } from '@/hooks/backlot';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { CreditCard, Building2 } from 'lucide-react';
+import { CreditCard, Building2, Tag, User, Check } from 'lucide-react';
 import {
   BacklotReceipt,
   BacklotReceiptOcrStatus,
@@ -146,12 +151,17 @@ const PAYMENT_METHOD_LABELS: Record<BacklotPaymentMethod, string> = {
 };
 
 // Reimbursement Status Badge
-const getReimbursementStatusBadge = (status: BacklotReimbursementStatus) => {
-  const styles: Record<BacklotReimbursementStatus, { style: string; label: string; icon: React.ReactNode }> = {
+const getReimbursementStatusBadge = (status: BacklotReimbursementStatus | string | null | undefined) => {
+  const styles: Record<string, { style: string; label: string; icon: React.ReactNode }> = {
     not_applicable: {
       style: 'bg-muted-gray/20 text-muted-gray border-muted-gray/30',
       label: 'No Reimbursement',
       icon: null,
+    },
+    draft: {
+      style: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+      label: 'Draft',
+      icon: <Edit className="w-3 h-3" />,
     },
     pending: {
       style: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
@@ -168,8 +178,24 @@ const getReimbursementStatusBadge = (status: BacklotReimbursementStatus) => {
       label: 'Reimbursed',
       icon: <Banknote className="w-3 h-3" />,
     },
+    changes_requested: {
+      style: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+      label: 'Changes Requested',
+      icon: <Edit className="w-3 h-3" />,
+    },
+    denied: {
+      style: 'bg-red-500/20 text-red-400 border-red-500/30',
+      label: 'Denied',
+      icon: <XCircle className="w-3 h-3" />,
+    },
+    rejected: {
+      style: 'bg-red-500/20 text-red-400 border-red-500/30',
+      label: 'Rejected',
+      icon: <XCircle className="w-3 h-3" />,
+    },
   };
-  return styles[status];
+  // Default to not_applicable for unknown statuses
+  return styles[status || 'not_applicable'] || styles['not_applicable'];
 };
 
 // Receipt Card
@@ -185,9 +211,11 @@ const ReceiptCard: React.FC<{
   onReprocess: (receipt: BacklotReceipt) => void;
   onDelete: (receipt: BacklotReceipt) => void;
   onSubmitReimbursement: (receipt: BacklotReceipt) => void;
+  onSendForApproval: (receipt: BacklotReceipt) => void;
   onApproveReimbursement: (receipt: BacklotReceipt) => void;
   onRejectReimbursement: (receipt: BacklotReceipt) => void;
   onMarkReimbursed: (receipt: BacklotReceipt) => void;
+  onEditAndResubmit: (receipt: BacklotReceipt) => void;
 }> = ({
   receipt,
   currency,
@@ -200,12 +228,14 @@ const ReceiptCard: React.FC<{
   onReprocess,
   onDelete,
   onSubmitReimbursement,
+  onSendForApproval,
   onApproveReimbursement,
   onRejectReimbursement,
   onMarkReimbursed,
+  onEditAndResubmit,
 }) => {
-  const ocrStatus = getOcrStatusBadge(receipt.ocr_status);
-  const reimbursementStatus = getReimbursementStatusBadge(receipt.reimbursement_status);
+  const ocrStatus = getOcrStatusBadge(receipt.ocr_status || 'pending');
+  const reimbursementStatus = getReimbursementStatusBadge(receipt.reimbursement_status || 'not_applicable');
   const isImage = receipt.file_type?.startsWith('image/');
 
   return (
@@ -277,7 +307,7 @@ const ReceiptCard: React.FC<{
           <div className="flex items-center gap-1 text-muted-gray">
             <Calendar className="w-3 h-3" />
             {receipt.purchase_date
-              ? format(new Date(receipt.purchase_date), 'MMM d, yyyy')
+              ? format(parseLocalDate(receipt.purchase_date), 'MMM d, yyyy')
               : 'No date'}
           </div>
           {receipt.is_mapped ? (
@@ -348,13 +378,19 @@ const ReceiptCard: React.FC<{
                 <DropdownMenuSeparator />
 
                 {/* User can submit expense if not already submitted and not already company card */}
-                {receipt.reimbursement_status === 'not_applicable' &&
+                {(receipt.reimbursement_status === 'not_applicable' || receipt.reimbursement_status === 'draft' || !receipt.reimbursement_status) &&
                  (receipt as any).expense_type !== 'company_card' &&
                  receipt.amount && (
-                  <DropdownMenuItem onClick={() => onSubmitReimbursement(receipt)}>
-                    <Send className="w-4 h-4 mr-2" />
-                    Submit Expense
-                  </DropdownMenuItem>
+                  <>
+                    <DropdownMenuItem onClick={() => onSendForApproval(receipt)}>
+                      <Send className="w-4 h-4 mr-2" />
+                      Send for Approval
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onSubmitReimbursement(receipt)}>
+                      <Building2 className="w-4 h-4 mr-2" />
+                      Submit as Company Card
+                    </DropdownMenuItem>
+                  </>
                 )}
 
                 {/* Manager approval actions for pending receipts */}
@@ -388,6 +424,17 @@ const ReceiptCard: React.FC<{
                   </DropdownMenuItem>
                 )}
 
+                {/* User can edit and resubmit if changes were requested or denied */}
+                {(receipt.reimbursement_status === 'changes_requested' || receipt.reimbursement_status === 'denied') && (
+                  <DropdownMenuItem
+                    className="text-orange-400"
+                    onClick={() => onEditAndResubmit(receipt)}
+                  >
+                    <Edit className="w-4 h-4 mr-2" />
+                    Edit & Resubmit
+                  </DropdownMenuItem>
+                )}
+
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="text-red-400"
@@ -408,7 +455,7 @@ const ReceiptCard: React.FC<{
 // Upload Zone
 const UploadZone: React.FC<{
   projectId: string;
-  onUploadComplete: () => void;
+  onUploadComplete: (receipt?: BacklotReceipt) => void;
 }> = ({ projectId, onUploadComplete }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -420,6 +467,7 @@ const UploadZone: React.FC<{
     if (files.length === 0) return;
 
     setIsUploading(true);
+    let lastUploadedReceipt: BacklotReceipt | undefined;
     try {
       const token = api.getToken();
       if (!token) throw new Error('Not authenticated');
@@ -450,17 +498,20 @@ const UploadZone: React.FC<{
 
         const uploadResult = await uploadResponse.json();
 
-        // Register the receipt and trigger OCR
-        await registerReceipt.mutateAsync({
+        // Register the receipt (skip OCR - use manual entry)
+        const receipt = await registerReceipt.mutateAsync({
           projectId,
           fileUrl: uploadResult.file_url,
           originalFilename: file.name,
           fileType: file.type,
           fileSizeBytes: file.size,
+          runOcr: false, // Skip OCR, use manual entry
         });
+        lastUploadedReceipt = receipt;
       }
 
-      onUploadComplete();
+      // Pass the last uploaded receipt so we can open edit dialog
+      onUploadComplete(lastUploadedReceipt);
     } catch (err) {
       console.error('Upload failed:', err);
     } finally {
@@ -553,6 +604,8 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   const rejectReimbursement = useRejectReimbursement(projectId);
   const markReimbursed = useMarkReimbursed(projectId);
   const submitCompanyCard = useSubmitCompanyCard(projectId);
+  const bulkSubmitForApproval = useBulkSubmitReceiptsForApproval(projectId);
+  const resubmitReimbursement = useResubmitReimbursement(projectId);
 
   // For now, treat canEdit as isManager for approval actions
   // In a real app, this would check the user's role
@@ -560,16 +613,29 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
 
   // Modal states
   const [showUpload, setShowUpload] = useState(false);
+  const [showManualEntry, setShowManualEntry] = useState(false);
   const [viewingReceipt, setViewingReceipt] = useState<BacklotReceipt | null>(null);
   const [editingReceipt, setEditingReceipt] = useState<BacklotReceipt | null>(null);
   const [mappingReceipt, setMappingReceipt] = useState<BacklotReceipt | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pendingResubmit, setPendingResubmit] = useState(false);
 
   // Expense type dialog state
   const [expenseTypeReceipt, setExpenseTypeReceipt] = useState<BacklotReceipt | null>(null);
   const [expenseType, setExpenseType] = useState<'personal' | 'company_card'>('personal');
   const [selectedBudgetCategoryId, setSelectedBudgetCategoryId] = useState<string>('');
   const [selectedBudgetLineItemId, setSelectedBudgetLineItemId] = useState<string>('');
+
+  // Manual entry hook and form
+  const createManualReceipt = useCreateManualReceipt();
+  const [manualForm, setManualForm] = useState({
+    vendor_name: '',
+    amount: '',
+    purchase_date: new Date().toISOString().split('T')[0],
+    description: '',
+    payment_method: '' as string,
+    tax_amount: '',
+  });
 
   // Edit form
   const [editForm, setEditForm] = useState<ReceiptInput>({});
@@ -589,6 +655,16 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
     }),
     { total: 0, mapped: 0, unmapped: 0, verified: 0 }
   ) || { total: 0, mapped: 0, unmapped: 0, verified: 0 };
+
+  // Calculate receipts ready to submit for approval
+  const receiptsReadyForApproval = receipts?.filter(
+    (r) =>
+      (r.reimbursement_status === 'not_applicable' || !r.reimbursement_status) &&
+      (r as any).expense_type !== 'company_card' &&
+      r.amount && r.amount > 0
+  ) || [];
+  const readyForApprovalCount = receiptsReadyForApproval.length;
+  const readyForApprovalTotal = receiptsReadyForApproval.reduce((sum, r) => sum + (r.amount || 0), 0);
 
   const handleEditReceipt = (receipt: BacklotReceipt) => {
     setEditingReceipt(receipt);
@@ -612,7 +688,12 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
         projectId,
         input: editForm,
       });
+
+      // Backend automatically resets rejected receipts to draft status
+      // User can then manually submit for approval again
+
       setEditingReceipt(null);
+      setPendingResubmit(false);
     } catch (err) {
       console.error('Failed to update receipt:', err);
     } finally {
@@ -739,6 +820,24 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  const handleBulkSendForApproval = async () => {
+    if (receiptsReadyForApproval.length === 0) return;
+
+    const receiptIds = receiptsReadyForApproval.map((r) => r.id);
+    try {
+      await bulkSubmitForApproval.mutateAsync({ receiptIds });
+      refetch();
+    } catch (err) {
+      console.error('Failed to bulk submit for approval:', err);
+    }
+  };
+
+  // Edit and resubmit handler for receipts with changes_requested or denied status
+  const handleEditAndResubmit = (receipt: BacklotReceipt) => {
+    setPendingResubmit(true);
+    handleEditReceipt(receipt);
+  };
+
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -777,6 +876,13 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
               Export CSV
             </Button>
             <Button
+              variant="outline"
+              onClick={() => setShowManualEntry(true)}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Manual Entry
+            </Button>
+            <Button
               onClick={() => setShowUpload(true)}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             >
@@ -808,6 +914,42 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
           <div className="text-2xl font-bold text-yellow-400">{stats.unmapped}</div>
         </div>
       </div>
+
+      {/* Bulk Send for Approval Card */}
+      {canEdit && readyForApprovalCount > 0 && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-gray">Ready to Submit for Approval</p>
+                <p className="text-2xl font-bold text-amber-400">
+                  {readyForApprovalCount} receipt{readyForApprovalCount !== 1 ? 's' : ''}
+                </p>
+                <p className="text-sm text-muted-gray">
+                  {formatCurrency(readyForApprovalTotal, currency)} total
+                </p>
+              </div>
+              <Button
+                onClick={handleBulkSendForApproval}
+                disabled={bulkSubmitForApproval.isPending}
+                className="bg-amber-500 text-charcoal-black hover:bg-amber-400"
+              >
+                {bulkSubmitForApproval.isPending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 mr-2" />
+                    Send All for Approval
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Filters */}
       <div className="flex items-center gap-4">
@@ -860,14 +1002,17 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
           }
         >
           <SelectTrigger className="w-[170px]">
-            <SelectValue placeholder="Reimbursement" />
+            <SelectValue placeholder="Approval Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Reimbursement</SelectItem>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="not_applicable">Not Submitted</SelectItem>
+            <SelectItem value="draft">Draft</SelectItem>
             <SelectItem value="pending">Pending Approval</SelectItem>
+            <SelectItem value="changes_requested">Changes Requested</SelectItem>
             <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="rejected">Rejected</SelectItem>
             <SelectItem value="reimbursed">Reimbursed</SelectItem>
-            <SelectItem value="not_applicable">No Reimbursement</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -889,9 +1034,11 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
               onReprocess={handleReprocess}
               onDelete={handleDelete}
               onSubmitReimbursement={handleOpenExpenseTypeDialog}
+              onSendForApproval={handleSubmitReimbursement}
               onApproveReimbursement={handleApproveReimbursement}
               onRejectReimbursement={handleRejectReimbursement}
               onMarkReimbursed={handleMarkReimbursed}
+              onEditAndResubmit={handleEditAndResubmit}
             />
           ))}
         </div>
@@ -920,14 +1067,27 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
           <DialogHeader>
             <DialogTitle>Upload Receipts</DialogTitle>
             <DialogDescription>
-              Upload receipt images or PDFs. We'll automatically extract vendor, amount, and date.
+              Upload receipt images or PDFs. You'll be able to enter the details manually after upload.
             </DialogDescription>
           </DialogHeader>
           <UploadZone
             projectId={projectId}
-            onUploadComplete={() => {
+            onUploadComplete={(receipt) => {
               setShowUpload(false);
               refetch();
+              // Auto-open edit dialog for the newly uploaded receipt
+              if (receipt) {
+                setEditingReceipt(receipt);
+                setEditForm({
+                  vendor_name: receipt.vendor_name || '',
+                  description: receipt.description || '',
+                  purchase_date: receipt.purchase_date || new Date().toISOString().split('T')[0],
+                  amount: receipt.amount ?? undefined,
+                  tax_amount: receipt.tax_amount ?? undefined,
+                  payment_method: receipt.payment_method || undefined,
+                  notes: receipt.notes || '',
+                });
+              }
             }}
           />
         </DialogContent>
@@ -935,52 +1095,167 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
 
       {/* View Receipt Dialog */}
       <Dialog open={!!viewingReceipt} onOpenChange={() => setViewingReceipt(null)}>
-        <DialogContent className="sm:max-w-2xl">
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Receipt Details</DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle className="flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-blue-400" />
+                {viewingReceipt?.vendor_name || 'Receipt Details'}
+              </DialogTitle>
+              <div className="flex items-center gap-2">
+                {viewingReceipt?.is_verified && (
+                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30 border">
+                    <Check className="w-3 h-3 mr-1" />
+                    Verified
+                  </Badge>
+                )}
+                {viewingReceipt?.reimbursement_status &&
+                 viewingReceipt.reimbursement_status !== 'not_applicable' && (
+                  <Badge className={`border ${
+                    viewingReceipt.reimbursement_status === 'pending' ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' :
+                    viewingReceipt.reimbursement_status === 'approved' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
+                    viewingReceipt.reimbursement_status === 'reimbursed' ? 'bg-blue-500/20 text-blue-400 border-blue-500/30' :
+                    'bg-red-500/20 text-red-400 border-red-500/30'
+                  }`}>
+                    {viewingReceipt.reimbursement_status}
+                  </Badge>
+                )}
+              </div>
+            </div>
           </DialogHeader>
           {viewingReceipt && (
             <div className="space-y-4">
-              {/* Image Preview */}
-              <div className="relative bg-charcoal-black rounded-lg overflow-hidden max-h-[400px]">
-                {viewingReceipt.file_type?.startsWith('image/') ? (
-                  <img
-                    src={viewingReceipt.file_url}
-                    alt="Receipt"
-                    className="w-full h-auto max-h-[400px] object-contain"
-                  />
-                ) : (
-                  <div className="h-32 flex items-center justify-center">
-                    <FileText className="w-16 h-16 text-muted-gray/50" />
+              {/* File Preview - Clickable to open full */}
+              {viewingReceipt.file_url && (
+                <div className="bg-charcoal-black/50 rounded-lg border border-muted-gray/10 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-muted-gray/10 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-muted-gray" />
+                      <span className="text-sm font-medium text-bone-white">
+                        {viewingReceipt.file_type?.includes('pdf') ? 'Receipt PDF' : 'Receipt Image'}
+                      </span>
+                    </div>
+                    <a
+                      href={viewingReceipt.file_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      Open in new tab
+                    </a>
                   </div>
-                )}
-              </div>
-
-              {/* Details */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-muted-gray">Vendor</Label>
-                  <p className="text-bone-white">{viewingReceipt.vendor_name || 'Unknown'}</p>
+                  <div className="p-4 flex justify-center bg-charcoal-black">
+                    {viewingReceipt.file_type?.includes('pdf') ? (
+                      <iframe
+                        src={viewingReceipt.file_url}
+                        title="Receipt PDF"
+                        className="w-full h-[400px] rounded border border-muted-gray/20"
+                      />
+                    ) : viewingReceipt.file_type?.startsWith('image/') ? (
+                      <a href={viewingReceipt.file_url} target="_blank" rel="noopener noreferrer">
+                        <img
+                          src={viewingReceipt.file_url}
+                          alt="Receipt"
+                          className="max-h-64 object-contain rounded cursor-pointer hover:opacity-90 transition-opacity"
+                        />
+                      </a>
+                    ) : (
+                      <div className="text-center py-8">
+                        <FileText className="w-12 h-12 text-muted-gray mx-auto mb-2" />
+                        <p className="text-sm text-muted-gray">File preview not available</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <Label className="text-muted-gray">Amount</Label>
-                  <p className="text-bone-white">
+              )}
+
+              {/* Key Details - 2 column grid */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-charcoal-black/50 rounded-lg p-3 border border-muted-gray/10">
+                  <Label className="text-xs text-muted-gray flex items-center gap-1">
+                    <DollarSign className="w-3 h-3" />
+                    Amount
+                  </Label>
+                  <p className="text-lg font-semibold text-bone-white">
                     {viewingReceipt.amount !== null
                       ? formatCurrency(viewingReceipt.amount, currency)
                       : 'N/A'}
                   </p>
+                  {viewingReceipt.tax_amount && viewingReceipt.tax_amount > 0 && (
+                    <p className="text-xs text-muted-gray">
+                      (includes ${viewingReceipt.tax_amount.toFixed(2)} tax)
+                    </p>
+                  )}
                 </div>
-                <div>
-                  <Label className="text-muted-gray">Date</Label>
+
+                <div className="bg-charcoal-black/50 rounded-lg p-3 border border-muted-gray/10">
+                  <Label className="text-xs text-muted-gray flex items-center gap-1">
+                    <Calendar className="w-3 h-3" />
+                    Purchase Date
+                  </Label>
                   <p className="text-bone-white">
                     {viewingReceipt.purchase_date
-                      ? format(new Date(viewingReceipt.purchase_date), 'MMMM d, yyyy')
+                      ? format(parseLocalDate(viewingReceipt.purchase_date), 'MMMM d, yyyy')
                       : 'Unknown'}
                   </p>
                 </div>
+              </div>
+
+              {/* Additional Details - 2 column grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <Label className="text-muted-gray">OCR Confidence</Label>
-                  <p className="text-bone-white">
+                  <Label className="text-xs text-muted-gray flex items-center gap-1">
+                    <Building2 className="w-3 h-3" />
+                    Vendor
+                  </Label>
+                  <p className="text-sm text-bone-white">{viewingReceipt.vendor_name || 'Unknown'}</p>
+                </div>
+
+                {viewingReceipt.payment_method && (
+                  <div>
+                    <Label className="text-xs text-muted-gray flex items-center gap-1">
+                      <CreditCard className="w-3 h-3" />
+                      Payment Method
+                    </Label>
+                    <p className="text-sm text-bone-white capitalize">
+                      {viewingReceipt.payment_method.replace(/_/g, ' ')}
+                    </p>
+                  </div>
+                )}
+
+                {viewingReceipt.line_item?.name && (
+                  <div>
+                    <Label className="text-xs text-muted-gray flex items-center gap-1">
+                      <Tag className="w-3 h-3" />
+                      Budget Category
+                    </Label>
+                    <p className="text-sm text-bone-white">{viewingReceipt.line_item.name}</p>
+                  </div>
+                )}
+
+                {viewingReceipt.daily_budget?.name && (
+                  <div>
+                    <Label className="text-xs text-muted-gray flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      Daily Budget
+                    </Label>
+                    <p className="text-sm text-bone-white">{viewingReceipt.daily_budget.name}</p>
+                  </div>
+                )}
+
+                {viewingReceipt.reimbursement_to && (
+                  <div>
+                    <Label className="text-xs text-muted-gray flex items-center gap-1">
+                      <User className="w-3 h-3" />
+                      Reimburse To
+                    </Label>
+                    <p className="text-sm text-bone-white">{viewingReceipt.reimbursement_to}</p>
+                  </div>
+                )}
+
+                <div>
+                  <Label className="text-xs text-muted-gray">OCR Confidence</Label>
+                  <p className="text-sm text-bone-white">
                     {viewingReceipt.ocr_confidence
                       ? `${(viewingReceipt.ocr_confidence * 100).toFixed(0)}%`
                       : 'N/A'}
@@ -988,20 +1263,38 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                 </div>
               </div>
 
+              {/* Description */}
+              {viewingReceipt.description && (
+                <div className="bg-charcoal-black/50 rounded-lg p-3 border border-muted-gray/10">
+                  <Label className="text-xs text-muted-gray mb-1">Description</Label>
+                  <p className="text-sm text-bone-white whitespace-pre-wrap">
+                    {viewingReceipt.description}
+                  </p>
+                </div>
+              )}
+
+              {/* Notes */}
+              {viewingReceipt.notes && (
+                <div className="bg-charcoal-black/50 rounded-lg p-3 border border-muted-gray/10">
+                  <Label className="text-xs text-muted-gray mb-1">Notes</Label>
+                  <p className="text-sm text-bone-white whitespace-pre-wrap">
+                    {viewingReceipt.notes}
+                  </p>
+                </div>
+              )}
+
               {/* Extracted Text */}
               {viewingReceipt.extracted_text && (
-                <div>
-                  <Label className="text-muted-gray">Extracted Text</Label>
-                  <div className="mt-1 p-3 bg-charcoal-black rounded text-sm text-muted-gray max-h-32 overflow-y-auto">
-                    <pre className="whitespace-pre-wrap font-mono text-xs">
-                      {viewingReceipt.extracted_text}
-                    </pre>
-                  </div>
+                <div className="bg-charcoal-black/50 rounded-lg p-3 border border-muted-gray/10">
+                  <Label className="text-xs text-muted-gray">Extracted Text (OCR)</Label>
+                  <pre className="mt-1 text-xs text-muted-gray whitespace-pre-wrap font-mono bg-charcoal-black p-2 rounded max-h-32 overflow-y-auto">
+                    {viewingReceipt.extracted_text}
+                  </pre>
                 </div>
               )}
 
               {/* Actions */}
-              <div className="flex justify-between pt-4">
+              <div className="flex justify-between pt-4 border-t border-muted-gray/10">
                 <Button
                   variant="outline"
                   onClick={() => window.open(viewingReceipt.file_url, '_blank')}
@@ -1018,12 +1311,159 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
         </DialogContent>
       </Dialog>
 
-      {/* Edit Receipt Dialog */}
-      <Dialog open={!!editingReceipt} onOpenChange={() => setEditingReceipt(null)}>
-        <DialogContent className="sm:max-w-md">
+      {/* Manual Entry Dialog */}
+      <Dialog open={showManualEntry} onOpenChange={setShowManualEntry}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Edit Receipt</DialogTitle>
+            <DialogTitle>Manual Receipt Entry</DialogTitle>
+            <DialogDescription>
+              Enter receipt details manually without uploading a file.
+            </DialogDescription>
           </DialogHeader>
+          <div className="space-y-4 mt-4">
+            <div className="space-y-2">
+              <Label htmlFor="manual-vendor">Vendor Name *</Label>
+              <Input
+                id="manual-vendor"
+                value={manualForm.vendor_name}
+                onChange={(e) => setManualForm({ ...manualForm, vendor_name: e.target.value })}
+                placeholder="e.g., Office Depot"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="manual-amount">Amount *</Label>
+                <Input
+                  id="manual-amount"
+                  type="number"
+                  step="0.01"
+                  value={manualForm.amount}
+                  onChange={(e) => setManualForm({ ...manualForm, amount: e.target.value })}
+                  placeholder="0.00"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="manual-tax">Tax Amount</Label>
+                <Input
+                  id="manual-tax"
+                  type="number"
+                  step="0.01"
+                  value={manualForm.tax_amount}
+                  onChange={(e) => setManualForm({ ...manualForm, tax_amount: e.target.value })}
+                  placeholder="0.00"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="manual-date">Purchase Date *</Label>
+              <Input
+                id="manual-date"
+                type="date"
+                value={manualForm.purchase_date}
+                onChange={(e) => setManualForm({ ...manualForm, purchase_date: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="manual-payment">Payment Method</Label>
+              <Select
+                value={manualForm.payment_method}
+                onValueChange={(v) => setManualForm({ ...manualForm, payment_method: v })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select method" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(PAYMENT_METHOD_LABELS).map(([val, label]) => (
+                    <SelectItem key={val} value={val}>
+                      {label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="manual-description">Description / Notes</Label>
+              <Textarea
+                id="manual-description"
+                value={manualForm.description}
+                onChange={(e) => setManualForm({ ...manualForm, description: e.target.value })}
+                placeholder="What was purchased? Add any notes here..."
+                rows={3}
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-4">
+              <Button variant="ghost" onClick={() => setShowManualEntry(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!manualForm.vendor_name || !manualForm.amount || !manualForm.purchase_date) {
+                    return;
+                  }
+                  setIsSubmitting(true);
+                  try {
+                    await createManualReceipt.mutateAsync({
+                      projectId,
+                      vendorName: manualForm.vendor_name,
+                      amount: parseFloat(manualForm.amount),
+                      purchaseDate: manualForm.purchase_date,
+                      description: manualForm.description || undefined,
+                      paymentMethod: manualForm.payment_method || undefined,
+                      taxAmount: manualForm.tax_amount ? parseFloat(manualForm.tax_amount) : undefined,
+                    });
+                    setShowManualEntry(false);
+                    setManualForm({
+                      vendor_name: '',
+                      amount: '',
+                      purchase_date: new Date().toISOString().split('T')[0],
+                      description: '',
+                      payment_method: '',
+                      tax_amount: '',
+                    });
+                    refetch();
+                  } catch (err) {
+                    console.error('Failed to create receipt:', err);
+                  } finally {
+                    setIsSubmitting(false);
+                  }
+                }}
+                disabled={isSubmitting || !manualForm.vendor_name || !manualForm.amount || !manualForm.purchase_date}
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Receipt'
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Receipt Dialog */}
+      <Dialog open={!!editingReceipt} onOpenChange={() => { setEditingReceipt(null); setPendingResubmit(false); }}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{pendingResubmit ? 'Edit & Resubmit Receipt' : 'Edit Receipt'}</DialogTitle>
+          </DialogHeader>
+
+          {/* Show rejection reason if editing for resubmit */}
+          {pendingResubmit && editingReceipt?.rejection_reason && (
+            <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 mt-2">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-orange-400 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-orange-400">Changes Requested</p>
+                  <p className="text-sm text-muted-gray mt-1">{editingReceipt.rejection_reason}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-4 mt-4">
             <div className="space-y-2">
               <Label htmlFor="vendor">Vendor Name</Label>
@@ -1089,25 +1529,17 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="description">Description</Label>
+              <Label htmlFor="description">Description / Notes</Label>
               <Textarea
                 id="description"
                 value={editForm.description || ''}
                 onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                rows={2}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="notes">Notes</Label>
-              <Textarea
-                id="notes"
-                value={editForm.notes || ''}
-                onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                rows={2}
+                placeholder="What was purchased? Add any notes here..."
+                rows={3}
               />
             </div>
             <div className="flex justify-end gap-3 pt-4">
-              <Button variant="ghost" onClick={() => setEditingReceipt(null)}>
+              <Button variant="ghost" onClick={() => { setEditingReceipt(null); setPendingResubmit(false); }}>
                 Cancel
               </Button>
               <Button
@@ -1118,10 +1550,10 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Saving...
+                    {pendingResubmit ? 'Resubmitting...' : 'Saving...'}
                   </>
                 ) : (
-                  'Save Changes'
+                  pendingResubmit ? 'Save & Resubmit' : 'Save Changes'
                 )}
               </Button>
             </div>
@@ -1185,7 +1617,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
                   <SelectItem value="none">None</SelectItem>
                   {dailyBudgets?.map((db) => (
                     <SelectItem key={db.id} value={db.id}>
-                      Day {db.production_day_number} - {format(new Date(db.date), 'MMM d')}
+                      Day {db.production_day_number} - {format(parseLocalDate(db.date), 'MMM d')}
                     </SelectItem>
                   ))}
                 </SelectContent>

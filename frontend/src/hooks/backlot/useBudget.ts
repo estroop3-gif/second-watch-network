@@ -1088,6 +1088,9 @@ export function useReceipts(projectId: string | null, filters?: ReceiptFilters) 
       if (filters?.search) {
         params.append('search', filters.search);
       }
+      if (filters?.reimbursement_status) {
+        params.append('reimbursement_status', filters.reimbursement_status);
+      }
 
       const url = `${API_BASE}/backlot/projects/${projectId}/receipts${params.toString() ? '?' + params.toString() : ''}`;
 
@@ -1108,17 +1111,17 @@ export function useReceipts(projectId: string | null, filters?: ReceiptFilters) 
 }
 
 /**
- * Get a single receipt
+ * Get a single receipt (project-specific)
  */
-export function useReceipt(receiptId: string | null) {
+export function useReceipt(projectId: string | null, receiptId: string | null) {
   return useQuery({
-    queryKey: ['backlot-receipt', receiptId],
+    queryKey: ['backlot-receipt', projectId, receiptId],
     queryFn: async (): Promise<BacklotReceipt | null> => {
-      if (!receiptId) return null;
+      if (!projectId || !receiptId) return null;
 
       const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/receipts/${receiptId}`, {
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/receipts/${receiptId}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -1134,12 +1137,12 @@ export function useReceipt(receiptId: string | null) {
 
       return response.json();
     },
-    enabled: !!receiptId,
+    enabled: !!projectId && !!receiptId,
   });
 }
 
 /**
- * Register a receipt (after file upload) and trigger OCR
+ * Register a receipt (after file upload) and optionally trigger OCR
  */
 export function useRegisterReceipt() {
   const queryClient = useQueryClient();
@@ -1151,12 +1154,18 @@ export function useRegisterReceipt() {
       originalFilename,
       fileType,
       fileSizeBytes,
+      runOcr = false, // Default to false - manual entry by default
+      dailyBudgetId,
+      sceneId,
     }: {
       projectId: string;
       fileUrl: string;
       originalFilename?: string;
       fileType?: string;
       fileSizeBytes?: number;
+      runOcr?: boolean;
+      dailyBudgetId?: string;
+      sceneId?: string;
     }): Promise<BacklotReceipt> => {
       const token = getAuthToken();
 
@@ -1171,12 +1180,75 @@ export function useRegisterReceipt() {
           original_filename: originalFilename,
           file_type: fileType,
           file_size_bytes: fileSizeBytes,
+          run_ocr: runOcr,
+          daily_budget_id: dailyBudgetId,
+          scene_id: sceneId,
         }),
       });
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Failed to register receipt' }));
         throw new Error(error.detail || 'Failed to register receipt');
+      }
+
+      // Backend returns { receipt: Receipt, ocr_result: ... }
+      const data = await response.json();
+      return data.receipt;
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', variables.projectId] });
+    },
+  });
+}
+
+/**
+ * Create a receipt manually without a file upload
+ */
+export function useCreateManualReceipt() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      vendorName,
+      amount,
+      purchaseDate,
+      description,
+      paymentMethod,
+      taxAmount,
+      budgetLineItemId,
+    }: {
+      projectId: string;
+      vendorName: string;
+      amount: number;
+      purchaseDate: string;
+      description?: string;
+      paymentMethod?: string;
+      taxAmount?: number;
+      budgetLineItemId?: string;
+    }): Promise<BacklotReceipt> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/receipts/manual`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          vendor_name: vendorName,
+          amount,
+          purchase_date: purchaseDate,
+          description,
+          payment_method: paymentMethod,
+          tax_amount: taxAmount,
+          budget_line_item_id: budgetLineItemId,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create receipt' }));
+        throw new Error(error.detail || 'Failed to create receipt');
       }
 
       return response.json();
@@ -2205,6 +2277,42 @@ export function useMarkReimbursed(projectId: string) {
 }
 
 /**
+ * Bulk submit multiple receipts for reimbursement approval
+ */
+export function useBulkSubmitReceiptsForApproval(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ receiptIds }: { receiptIds: string[] }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/receipts/bulk-submit-reimbursement`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ receipt_ids: receiptIds }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to submit receipts for approval' }));
+        throw new Error(error.detail || 'Failed to submit receipts for approval');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-receipts', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-expense-summary', projectId] });
+    },
+  });
+}
+
+/**
  * Submit a receipt as a company card expense (goes to budget, not invoice)
  */
 export function useSubmitCompanyCard(projectId: string) {
@@ -2255,6 +2363,93 @@ export function useSubmitCompanyCard(projectId: string) {
   });
 }
 
+// Budget Actual Types with source details
+export interface BudgetActualSourceDetails {
+  // Common fields
+  id: string;
+  created_at?: string;
+
+  // Mileage specific
+  miles?: number;
+  rate_per_mile?: number;
+  origin?: string;
+  destination?: string;
+  vehicle_description?: string;
+
+  // Kit Rental specific
+  kit_name?: string;
+  kit_description?: string;
+  daily_rate?: number;
+  weekly_rate?: number;
+  rental_type?: string;  // 'daily', 'weekly', 'flat'
+  rental_start_date?: string;
+  rental_end_date?: string;
+  start_date?: string;
+  end_date?: string;
+  rental_days?: number;
+  total_amount?: number;
+
+  // Per Diem specific
+  per_diem_type?: string;
+  days?: number;
+  daily_amount?: number;
+
+  // Receipt specific
+  vendor_name?: string;
+  purchase_date?: string;
+  payment_method?: string;
+  description?: string;
+  tax_amount?: number;
+  file_url?: string;
+
+  // Purchase Order specific
+  po_number?: string;
+  vendor?: string;
+  order_date?: string;
+  delivery_date?: string;
+
+  // Invoice Line Item specific
+  invoice_number?: string;
+  line_item_description?: string;
+  quantity?: number;
+  unit_price?: number;
+  service_date?: string;
+  invoice_id?: string;
+
+  // Crew member info (when available)
+  crew_member_name?: string;
+  crew_member_id?: string;
+}
+
+export interface BudgetActual {
+  id: string;
+  budget_id: string;
+  budget_category_id: string | null;
+  budget_line_item_id: string | null;
+  source_type: 'receipt' | 'mileage' | 'kit_rental' | 'per_diem' | 'purchase_order' | 'invoice_line_item' | 'manual';
+  source_id: string | null;
+  amount: number;
+  description: string | null;
+  recorded_at: string;
+  recorded_by: string | null;
+  notes: string | null;
+  // Submitter info (who submitted the expense)
+  submitter_user_id?: string | null;
+  submitter_name?: string | null;
+  submitter_full_name?: string | null;
+  submitter_avatar_url?: string | null;
+  // Joined data
+  category_name?: string;
+  line_item_description?: string;
+  source_details?: BudgetActualSourceDetails;
+}
+
+export interface BudgetActualsResponse {
+  actuals: BudgetActual[];
+  total_amount: number;
+  by_source_type: Record<string, number>;
+}
+
 /**
  * Get budget actuals for a project
  */
@@ -2265,12 +2460,13 @@ export function useBudgetActuals(
     budgetLineItemId?: string;
     startDate?: string;
     endDate?: string;
+    includeSourceDetails?: boolean;
   }
 ) {
   return useQuery({
     queryKey: ['backlot-budget-actuals', projectId, options],
-    queryFn: async () => {
-      if (!projectId) return { actuals: [] };
+    queryFn: async (): Promise<BudgetActualsResponse> => {
+      if (!projectId) return { actuals: [], total_amount: 0, by_source_type: {} };
 
       const token = getAuthToken();
       const params = new URLSearchParams();
@@ -2278,6 +2474,7 @@ export function useBudgetActuals(
       if (options?.budgetLineItemId) params.append('budget_line_item_id', options.budgetLineItemId);
       if (options?.startDate) params.append('start_date', options.startDate);
       if (options?.endDate) params.append('end_date', options.endDate);
+      if (options?.includeSourceDetails) params.append('include_source_details', 'true');
 
       const url = `${API_BASE}/backlot/projects/${projectId}/budget-actuals${params.toString() ? `?${params}` : ''}`;
 
@@ -2323,6 +2520,57 @@ export function useBudgetActualsSummary(projectId: string | null) {
       return response.json();
     },
     enabled: !!projectId,
+  });
+}
+
+/**
+ * Sync budget actuals from all approved expenses and invoices
+ * Admin endpoint to populate actuals from historical approved data
+ */
+export function useSyncBudgetActuals() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+    }: {
+      projectId: string;
+    }): Promise<{
+      synced_mileage: number;
+      synced_kit_rentals: number;
+      synced_per_diem: number;
+      synced_receipts: number;
+      synced_purchase_orders: number;
+      synced_invoice_line_items: number;
+      skipped_duplicates: number;
+      total_synced: number;
+    }> => {
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget/sync-actuals`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync budget actuals' }));
+        throw new Error(error.detail || 'Failed to sync budget actuals');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      // Invalidate all budget-related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals-summary', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-comparison', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-top-sheet', variables.projectId] });
+    },
   });
 }
 
@@ -2438,5 +2686,416 @@ export function useDailyInvoices(
       return response.json();
     },
     enabled: !!dailyBudgetId,
+  });
+}
+
+// =============================================================================
+// BUDGET ACTUAL DETAIL - Linking to Source Items
+// =============================================================================
+
+/**
+ * Gear details for kit rentals linked to Gear House
+ */
+export interface GearAssetDetails {
+  id: string;
+  name: string;
+  description?: string;
+  category_name?: string;
+  manufacturer?: string;
+  model?: string;
+  serial_number?: string;
+  internal_id?: string;
+  condition?: string;
+  photos?: string[];
+  daily_rate?: number;
+  weekly_rate?: number;
+  monthly_rate?: number;
+  organization_id?: string;
+  organization_name?: string;
+}
+
+export interface GearKitDetails {
+  id: string;
+  name: string;
+  description?: string;
+  items?: Array<{
+    asset_id: string;
+    asset_name: string;
+    quantity: number;
+  }>;
+  daily_rate?: number;
+  weekly_rate?: number;
+  monthly_rate?: number;
+  organization_id?: string;
+  organization_name?: string;
+}
+
+export interface KitRentalGearDetailsResponse {
+  rental: {
+    id: string;
+    kit_name: string;
+    kit_description?: string;
+    rental_type: string;
+    daily_rate?: number;
+    weekly_rate?: number;
+    total_amount: number;
+    rental_start_date?: string;
+    rental_end_date?: string;
+    rental_days?: number;
+    gear_source_type?: 'asset' | 'kit' | null;
+    gear_asset_id?: string;
+    gear_kit_instance_id?: string;
+  };
+  gear_details?: {
+    type: 'asset' | 'kit';
+    asset?: GearAssetDetails;
+    kit?: GearKitDetails;
+    organization_name?: string;
+    category_name?: string;
+  };
+  deep_link?: string;
+}
+
+export interface BudgetActualDetailResponse {
+  actual: BudgetActual;
+  source_details: BudgetActualSourceDetails;
+  deep_link?: string;
+  gear_details?: KitRentalGearDetailsResponse['gear_details'];
+}
+
+export interface ExpenseAuditLogEntry {
+  id: string;
+  project_id: string;
+  user_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  previous_values: Record<string, unknown>;
+  new_values: Record<string, unknown>;
+  ip_address?: string;
+  user_agent?: string;
+  created_at: string;
+  user?: {
+    id: string;
+    username: string;
+    full_name?: string;
+    avatar_url?: string;
+  };
+}
+
+export interface ActualReceiptAttachment {
+  id: string;
+  budget_actual_id: string;
+  receipt_id: string;
+  display_order: number;
+  created_at: string;
+  receipt?: {
+    id: string;
+    vendor_name?: string;
+    amount?: number;
+    purchase_date?: string;
+    file_url?: string;
+    description?: string;
+  };
+}
+
+/**
+ * Get a single budget actual with full source details
+ */
+export function useBudgetActualDetail(projectId: string | null, actualId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-budget-actual-detail', projectId, actualId],
+    queryFn: async (): Promise<BudgetActualDetailResponse | null> => {
+      if (!projectId || !actualId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch budget actual detail');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId && !!actualId,
+  });
+}
+
+/**
+ * Update a budget actual (notes, reimbursed status)
+ */
+export function useUpdateBudgetActual(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      actualId,
+      notes,
+      syncNotesToSource,
+      isReimbursed,
+    }: {
+      actualId: string;
+      notes?: string;
+      syncNotesToSource?: boolean;
+      isReimbursed?: boolean;
+    }) => {
+      const token = getAuthToken();
+
+      const body: Record<string, unknown> = {};
+      if (notes !== undefined) body.notes = notes;
+      if (syncNotesToSource !== undefined) body.sync_notes_to_source = syncNotesToSource;
+      if (isReimbursed !== undefined) body.is_reimbursed = isReimbursed;
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(body),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update budget actual' }));
+        throw new Error(error.detail || 'Failed to update budget actual');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actual-detail', projectId, variables.actualId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actuals-summary', projectId] });
+    },
+  });
+}
+
+/**
+ * Get audit log for a budget actual
+ */
+export function useBudgetActualAuditLog(projectId: string | null, actualId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-budget-actual-audit-log', projectId, actualId],
+    queryFn: async (): Promise<ExpenseAuditLogEntry[]> => {
+      if (!projectId || !actualId) return [];
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}/audit-log`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch audit log');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId && !!actualId,
+  });
+}
+
+/**
+ * Get full Gear House asset/kit details for a kit rental
+ */
+export function useKitRentalGearDetails(projectId: string | null, rentalId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-kit-rental-gear-details', projectId, rentalId],
+    queryFn: async (): Promise<KitRentalGearDetailsResponse | null> => {
+      if (!projectId || !rentalId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/kit-rentals/${rentalId}/gear-details`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (response.status === 404) {
+        return null;
+      }
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch gear details');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId && !!rentalId,
+  });
+}
+
+/**
+ * Get receipts attached to a budget actual
+ */
+export function useActualReceipts(projectId: string | null, actualId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-actual-receipts', projectId, actualId],
+    queryFn: async (): Promise<ActualReceiptAttachment[]> => {
+      if (!projectId || !actualId) return [];
+
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}/receipts`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch actual receipts');
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId && !!actualId,
+  });
+}
+
+/**
+ * Attach a receipt to a budget actual
+ */
+export function useAttachReceipt(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      actualId,
+      receiptId,
+    }: {
+      actualId: string;
+      receiptId: string;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}/receipts/${receiptId}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to attach receipt' }));
+        throw new Error(error.detail || 'Failed to attach receipt');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-actual-receipts', projectId, variables.actualId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actual-detail', projectId, variables.actualId] });
+    },
+  });
+}
+
+/**
+ * Detach a receipt from a budget actual
+ */
+export function useDetachReceipt(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      actualId,
+      receiptId,
+    }: {
+      actualId: string;
+      receiptId: string;
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}/receipts/${receiptId}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to detach receipt' }));
+        throw new Error(error.detail || 'Failed to detach receipt');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-actual-receipts', projectId, variables.actualId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-actual-detail', projectId, variables.actualId] });
+    },
+  });
+}
+
+/**
+ * Reorder receipts attached to a budget actual
+ */
+export function useReorderReceipts(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      actualId,
+      receiptIds,
+    }: {
+      actualId: string;
+      receiptIds: string[];
+    }) => {
+      const token = getAuthToken();
+
+      const response = await fetch(
+        `${API_BASE}/backlot/projects/${projectId}/budget-actuals/${actualId}/receipts/reorder`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ receipt_ids: receiptIds }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder receipts' }));
+        throw new Error(error.detail || 'Failed to reorder receipts');
+      }
+
+      return response.json();
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-actual-receipts', projectId, variables.actualId] });
+    },
   });
 }

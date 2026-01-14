@@ -16,6 +16,7 @@ import {
   Truck,
   ChevronRight,
   ChevronLeft,
+  Info,
 } from 'lucide-react';
 import { format, differenceInDays, addDays } from 'date-fns';
 
@@ -33,6 +34,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
+import { useToast } from '@/components/ui/use-toast';
 
 import { useCreateRentalRequest, useDeliveryOptions, useShippingRates } from '@/hooks/gear/useGearMarketplace';
 import { DeliveryMethodSelector } from '@/components/gear/shipping/DeliveryMethodSelector';
@@ -47,6 +49,10 @@ interface RequestQuoteDialogProps {
   backlotProjectId?: string;
   onRemoveItem: (listingId: string) => void;
   onSubmitted: () => void;
+  initialDateRange?: {
+    available_from?: string;
+    available_to?: string;
+  };
 }
 
 // Steps in the quote request flow
@@ -60,17 +66,23 @@ export function RequestQuoteDialog({
   backlotProjectId,
   onRemoveItem,
   onSubmitted,
+  initialDateRange,
 }: RequestQuoteDialogProps) {
   // Step state
   const [currentStep, setCurrentStep] = useState<Step>('items');
 
   // Form state
-  const [title, setTitle] = useState('');
   const [startDate, setStartDate] = useState(() => {
+    if (initialDateRange?.available_from) {
+      return initialDateRange.available_from;
+    }
     const tomorrow = addDays(new Date(), 1);
     return format(tomorrow, 'yyyy-MM-dd');
   });
   const [endDate, setEndDate] = useState(() => {
+    if (initialDateRange?.available_to) {
+      return initialDateRange.available_to;
+    }
     const nextWeek = addDays(new Date(), 8);
     return format(nextWeek, 'yyyy-MM-dd');
   });
@@ -94,6 +106,7 @@ export function RequestQuoteDialog({
   const [selectedShippingRate, setSelectedShippingRate] = useState<ShippingRate | null>(null);
 
   const { mutate: createRequest, isPending } = useCreateRentalRequest();
+  const { toast } = useToast();
 
   // Get the primary rental house org ID (first one if multiple)
   const primaryRentalHouseId = useMemo(() => {
@@ -208,7 +221,6 @@ export function RequestQuoteDialog({
 
   // Validate form per step
   const canProceedToDelivery =
-    title.trim() &&
     startDate &&
     endDate &&
     rentalDays > 0 &&
@@ -269,6 +281,9 @@ export function RequestQuoteDialog({
       deliveryData.preferred_service = selectedShippingRate.service;
     }
 
+    // Auto-generate title from item count
+    const generatedTitle = `${items.length} item${items.length !== 1 ? 's' : ''} requested`;
+
     // For now, we'll create a single request with all items
     createRequest(
       {
@@ -276,7 +291,7 @@ export function RequestQuoteDialog({
         rental_house_org_id: rentalHouseIds[0], // Primary rental house
         backlot_project_id: backlotProjectId,
         auto_create_budget_line: autoCreateBudgetLine,
-        title,
+        title: generatedTitle,
         rental_start_date: startDate,
         rental_end_date: endDate,
         notes,
@@ -288,8 +303,38 @@ export function RequestQuoteDialog({
         })),
       },
       {
-        onSuccess: () => {
+        onSuccess: (response: any) => {
+          if (response.warning) {
+            // Show warning toast with details
+            toast({
+              title: 'Request Submitted with Changes',
+              description: response.warning.message,
+              variant: 'default',
+              duration: 5000,
+            });
+          } else {
+            toast({
+              title: 'Quote Request Submitted',
+              description: 'The rental house will respond with pricing options.',
+              variant: 'default',
+            });
+          }
           onSubmitted();
+        },
+        onError: (error: any) => {
+          if (error.response?.data?.unavailable_items) {
+            toast({
+              title: 'No Items Available',
+              description: error.response.data.message,
+              variant: 'destructive',
+            });
+          } else {
+            toast({
+              title: 'Submission Failed',
+              description: error.message || 'Please try again',
+              variant: 'destructive',
+            });
+          }
         },
       }
     );
@@ -427,16 +472,6 @@ export function RequestQuoteDialog({
 
               {/* Request Details */}
               <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="title">Request Title *</Label>
-                  <Input
-                    id="title"
-                    placeholder="e.g., Camera Package for Commercial Shoot"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                  />
-                </div>
-
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="startDate">Rental Start Date *</Label>
@@ -459,6 +494,16 @@ export function RequestQuoteDialog({
                     />
                   </div>
                 </div>
+
+                {/* Visual indicator when dates are pre-filled */}
+                {(initialDateRange?.available_from || initialDateRange?.available_to) && (
+                  <Alert className="border-blue-500/30 bg-blue-500/10">
+                    <Info className="h-4 w-4 text-blue-400" />
+                    <AlertDescription className="text-blue-200 text-sm">
+                      Rental dates pre-filled from your search filters
+                    </AlertDescription>
+                  </Alert>
+                )}
 
                 {rentalDays > 0 && (
                   <div className="flex items-center justify-between rounded-lg bg-white/5 px-4 py-3">
@@ -686,10 +731,6 @@ export function RequestQuoteDialog({
                 <div className="p-4 rounded-lg bg-white/5">
                   <h5 className="font-medium text-bone-white mb-3">Request Summary</h5>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-gray">Title</span>
-                      <span className="text-bone-white">{title}</span>
-                    </div>
                     <div className="flex justify-between">
                       <span className="text-muted-gray">Dates</span>
                       <span className="text-bone-white">

@@ -15,7 +15,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { CheckCircle2, MessageSquare, Ban, X, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -79,6 +78,7 @@ interface ApprovalDetailDialogProps {
   itemType: ApprovalItemType;
   itemId: string;
   projectId: string;
+  itemTitle?: string; // Specific title like vendor name or invoice number
   onActionComplete?: () => void;
 }
 
@@ -98,6 +98,7 @@ export default function ApprovalDetailDialog({
   itemType,
   itemId,
   projectId,
+  itemTitle,
   onActionComplete,
 }: ApprovalDetailDialogProps) {
   // Action dialog states
@@ -358,15 +359,15 @@ export default function ApprovalDetailDialog({
         <DialogContent className="bg-charcoal-black border-muted-gray/20 sm:max-w-2xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4 pb-3 flex-shrink-0 border-b border-muted-gray/10">
             <DialogTitle className="text-bone-white text-base">
-              {TYPE_TITLES[itemType]}
+              {itemTitle || TYPE_TITLES[itemType]}
             </DialogTitle>
           </DialogHeader>
 
-          <ScrollArea className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="px-4 py-4">
               {renderDetailContent()}
             </div>
-          </ScrollArea>
+          </div>
 
           <Separator className="bg-muted-gray/20" />
 

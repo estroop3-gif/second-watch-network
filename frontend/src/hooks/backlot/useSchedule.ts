@@ -2474,8 +2474,8 @@ export function useTodayShootDay(projectId: string | null) {
   today.setHours(0, 0, 0, 0);
 
   const todayDay = days?.find((day) => {
-    const dayDate = new Date(day.date);
-    dayDate.setHours(0, 0, 0, 0);
+    // Parse date as local time to avoid UTC shift issues
+    const dayDate = new Date(`${day.date}T00:00:00`);
     return dayDate.getTime() === today.getTime();
   }) || null;
 
@@ -2498,7 +2498,7 @@ export function useSyncStatus(dayId: string | null) {
     queryKey: ['sync-status', dayId],
     queryFn: async () => {
       const token = getAuthToken();
-      const response = await fetch(`${API_BASE}/api/backlot/production-days/${dayId}/sync-status`, {
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}/sync-status`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

@@ -72,15 +72,20 @@ import {
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useEpisode,
   useUpdateEpisode,
   useCreateSubject,
   useUpdateSubject,
   useDeleteSubject,
+  useLinkContact,
+  useContacts,
   useCreateLocation,
   useUpdateLocation,
   useDeleteLocation,
+  useLinkProjectLocation,
+  useProjectLocations,
   useCreateListItem,
   useUpdateListItem,
   useDeleteListItem,
@@ -92,9 +97,13 @@ import {
   useUpdateDeliverable,
   useDeleteDeliverable,
   useApplyDeliverableTemplate,
+  useLinkProjectDeliverable,
   useEpisodeDeliverableTemplates,
+  useProjectDeliverables,
   useCreateAssetLink,
   useDeleteAssetLink,
+  useLinkAsset,
+  useAssets,
   useProjectStoryboards,
   useLinkStoryboard,
   useUnlinkStoryboard,
@@ -110,13 +119,16 @@ import {
   SUBJECT_TYPES,
   LIST_ITEM_KINDS,
   DELIVERABLE_STATUSES_CONFIG,
+  APPROVAL_TYPES,
   getPipelineStageInfo,
   getEditStatusInfo,
   getDeliveryStatusInfo,
   getDeliverableStatusInfo,
+  getApprovalTypeInfo,
   EpisodeSubjectType,
   EpisodeListItemKind,
   DeliverableStatus,
+  ApprovalType,
   EpisodeSubject,
   EpisodeLocation,
   EpisodeListItem,
@@ -127,6 +139,9 @@ import {
   EpisodeApproval,
   EpisodeStoryboard,
 } from '@/hooks/backlot';
+import LocationPickerModal from './LocationPickerModal';
+import { BacklotLocation, BacklotLocationInput, LocationWithClearance } from '@/types/backlot';
+import { api } from '@/lib/api';
 
 interface EpisodeDetailViewProps {
   projectId: string;
@@ -135,44 +150,87 @@ interface EpisodeDetailViewProps {
   onBack: () => void;
 }
 
-// Generic editable card component
+// Section names for edit mode tracking
+type SectionName = 'status' | 'story' | 'structure' | 'subjects' | 'locations' |
+  'milestones' | 'deliverables' | 'runtime' | 'assetLinks' | 'storyboards' |
+  'shootDays' | 'approvals';
+
+// Generic editable card component with per-section edit mode
 function EditableCard({
   title,
   description,
   icon: Icon,
   children,
   canEdit,
+  isEditing,
+  onEdit,
+  onCancel,
   onSave,
   isSaving,
   isDirty,
+  badge,
 }: {
   title: string;
   description?: string;
   icon?: React.ElementType;
   children: React.ReactNode;
   canEdit: boolean;
+  isEditing: boolean;
+  onEdit: () => void;
+  onCancel: () => void;
   onSave?: () => void;
   isSaving?: boolean;
   isDirty?: boolean;
+  badge?: React.ReactNode;
 }) {
   return (
-    <Card className="bg-white/5 border-white/10">
+    <Card className={cn(
+      "bg-white/5 border-white/10 transition-all",
+      isEditing && "ring-1 ring-accent-yellow/30"
+    )}>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             {Icon && <Icon className="w-5 h-5 text-muted-gray" />}
             <CardTitle className="text-lg">{title}</CardTitle>
+            {badge}
           </div>
-          {canEdit && onSave && (
-            <Button
-              size="sm"
-              onClick={onSave}
-              disabled={isSaving || !isDirty}
-              className="gap-2"
-            >
-              <Save className="w-4 h-4" />
-              Save
-            </Button>
+          {canEdit && (
+            <div className="flex items-center gap-2">
+              {isEditing ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={onCancel}
+                    disabled={isSaving}
+                  >
+                    Cancel
+                  </Button>
+                  {onSave && (
+                    <Button
+                      size="sm"
+                      onClick={onSave}
+                      disabled={isSaving || !isDirty}
+                      className="gap-2"
+                    >
+                      <Save className="w-4 h-4" />
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={onEdit}
+                  className="gap-2"
+                >
+                  <Pencil className="w-4 h-4" />
+                  Edit
+                </Button>
+              )}
+            </div>
           )}
         </div>
         {description && <CardDescription>{description}</CardDescription>}
@@ -196,9 +254,13 @@ export function EpisodeDetailView({
   const createSubject = useCreateSubject(projectId, episodeId);
   const updateSubject = useUpdateSubject(projectId, episodeId);
   const deleteSubject = useDeleteSubject(projectId, episodeId);
+  const linkContact = useLinkContact(projectId, episodeId);
+  const { contacts: projectContacts } = useContacts({ projectId });
   const createLocation = useCreateLocation(projectId, episodeId);
   const updateLocation = useUpdateLocation(projectId, episodeId);
   const deleteLocation = useDeleteLocation(projectId, episodeId);
+  const linkProjectLocation = useLinkProjectLocation(projectId, episodeId);
+  const { locations: projectLocations } = useProjectLocations(projectId);
   const createListItem = useCreateListItem(projectId, episodeId);
   const updateListItem = useUpdateListItem(projectId, episodeId);
   const deleteListItem = useDeleteListItem(projectId, episodeId);
@@ -210,8 +272,12 @@ export function EpisodeDetailView({
   const updateDeliverable = useUpdateDeliverable(projectId, episodeId);
   const deleteDeliverable = useDeleteDeliverable(projectId, episodeId);
   const applyTemplate = useApplyDeliverableTemplate(projectId, episodeId);
+  const linkProjectDeliverable = useLinkProjectDeliverable(projectId, episodeId);
+  const { data: projectDeliverables } = useProjectDeliverables(projectId);
   const createAssetLink = useCreateAssetLink(projectId, episodeId);
   const deleteAssetLink = useDeleteAssetLink(projectId, episodeId);
+  const linkAsset = useLinkAsset(projectId, episodeId);
+  const { data: projectAssets } = useAssets(projectId);
   const linkStoryboard = useLinkStoryboard(projectId, episodeId);
   const unlinkStoryboard = useUnlinkStoryboard(projectId, episodeId);
   const tagShootDay = useTagShootDay(projectId, episodeId);
@@ -219,6 +285,18 @@ export function EpisodeDetailView({
   const requestApproval = useRequestApproval(projectId, episodeId);
   const decideApproval = useDecideApproval(projectId, episodeId);
   const unlockEpisode = useUnlockEpisode(projectId, episodeId);
+
+  // Per-section edit mode state - only one section can be edited at a time
+  const [editingSection, setEditingSection] = useState<SectionName | null>(null);
+
+  // Helper to manage edit mode
+  const startEditing = useCallback((section: SectionName) => {
+    setEditingSection(section);
+  }, []);
+
+  const cancelEditing = useCallback(() => {
+    setEditingSection(null);
+  }, []);
 
   // Supporting queries
   const { data: templates } = useEpisodeDeliverableTemplates(projectId);
@@ -246,11 +324,14 @@ export function EpisodeDetailView({
 
   // Dialog states
   const [showSubjectDialog, setShowSubjectDialog] = useState(false);
-  const [showLocationDialog, setShowLocationDialog] = useState(false);
+  const [showLinkContactDialog, setShowLinkContactDialog] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [showListItemDialog, setShowListItemDialog] = useState(false);
   const [showMilestoneDialog, setShowMilestoneDialog] = useState(false);
   const [showDeliverableDialog, setShowDeliverableDialog] = useState(false);
+  const [showLinkProjectDeliverableDialog, setShowLinkProjectDeliverableDialog] = useState(false);
   const [showAssetLinkDialog, setShowAssetLinkDialog] = useState(false);
+  const [showLinkAssetDialog, setShowLinkAssetDialog] = useState(false);
   const [showLinkStoryboardDialog, setShowLinkStoryboardDialog] = useState(false);
   const [showTagShootDayDialog, setShowTagShootDayDialog] = useState(false);
   const [showApprovalDialog, setShowApprovalDialog] = useState(false);
@@ -262,15 +343,17 @@ export function EpisodeDetailView({
     id: '',
     subject_type: 'CAST' as EpisodeSubjectType,
     name: '',
-    role: '',
-    contact_info: '',
+    role: '',  // Role in THIS episode
+    // Contact fields
+    company: '',
+    email: '',
+    phone: '',
+    role_interest: '',  // General role/interest for contact
+    status: 'new',
+    source: '',
     notes: '',
-  });
-  const [locationForm, setLocationForm] = useState({
-    id: '',
-    name: '',
-    address: '',
-    notes: '',
+    // For tracking if editing has linked contact
+    contact_id: null as string | null,
   });
   const [listItemForm, setListItemForm] = useState({
     id: '',
@@ -293,7 +376,7 @@ export function EpisodeDetailView({
     notes: '',
   });
   const [assetLinkForm, setAssetLinkForm] = useState({ label: '', url: '' });
-  const [approvalForm, setApprovalForm] = useState({ approval_type: 'EDIT_LOCK' as 'EDIT_LOCK' | 'DELIVERY_APPROVAL', notes: '' });
+  const [approvalForm, setApprovalForm] = useState({ approval_type: 'ROUGH_CUT' as ApprovalType, notes: '' });
   const [decisionForm, setDecisionForm] = useState({ decision: 'APPROVE' as 'APPROVE' | 'REJECT', notes: '' });
 
   // Initialize forms when episode loads
@@ -343,6 +426,7 @@ export function EpisodeDetailView({
     try {
       await updateEpisode.mutateAsync({ episodeId, data: statusForm });
       toast.success('Status updated');
+      setEditingSection(null);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update status');
     }
@@ -352,6 +436,7 @@ export function EpisodeDetailView({
     try {
       await updateEpisode.mutateAsync({ episodeId, data: storyForm });
       toast.success('Story content updated');
+      setEditingSection(null);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update');
     }
@@ -367,6 +452,7 @@ export function EpisodeDetailView({
         },
       });
       toast.success('Runtime updated');
+      setEditingSection(null);
     } catch (err: any) {
       toast.error(err.message || 'Failed to update');
     }
@@ -375,58 +461,101 @@ export function EpisodeDetailView({
   // Subject handlers
   const handleSaveSubject = useCallback(async () => {
     try {
+      const subjectData = {
+        subject_type: subjectForm.subject_type,
+        name: subjectForm.name,
+        role: subjectForm.role || undefined,
+        // Contact fields
+        company: subjectForm.company || undefined,
+        email: subjectForm.email || undefined,
+        phone: subjectForm.phone || undefined,
+        role_interest: subjectForm.role_interest || undefined,
+        status: subjectForm.status || 'new',
+        source: subjectForm.source || undefined,
+        notes: subjectForm.notes || undefined,
+      };
+
       if (subjectForm.id) {
         await updateSubject.mutateAsync({
           subjectId: subjectForm.id,
-          data: {
-            subject_type: subjectForm.subject_type,
-            name: subjectForm.name,
-            role: subjectForm.role || undefined,
-            contact_info: subjectForm.contact_info || undefined,
-            notes: subjectForm.notes || undefined,
-          },
+          data: subjectData,
         });
       } else {
-        await createSubject.mutateAsync({
-          subject_type: subjectForm.subject_type,
-          name: subjectForm.name,
-          role: subjectForm.role || undefined,
-          contact_info: subjectForm.contact_info || undefined,
-          notes: subjectForm.notes || undefined,
-        });
+        await createSubject.mutateAsync(subjectData);
       }
       setShowSubjectDialog(false);
-      toast.success(subjectForm.id ? 'Subject updated' : 'Subject added');
+      toast.success(subjectForm.id ? 'Subject updated' : 'Subject & contact created');
     } catch (err: any) {
       toast.error(err.message || 'Failed to save subject');
     }
   }, [createSubject, updateSubject, subjectForm]);
 
-  // Location handlers
-  const handleSaveLocation = useCallback(async () => {
+  // Location handlers for LocationPickerModal
+  const handleSelectLocationForEpisode = useCallback(async (
+    location: BacklotLocation | LocationWithClearance,
+    projectLocationId?: string
+  ) => {
     try {
-      if (locationForm.id) {
-        await updateLocation.mutateAsync({
-          locationId: locationForm.id,
-          data: {
-            name: locationForm.name,
-            address: locationForm.address || undefined,
-            notes: locationForm.notes || undefined,
-          },
-        });
-      } else {
-        await createLocation.mutateAsync({
-          name: locationForm.name,
-          address: locationForm.address || undefined,
-          notes: locationForm.notes || undefined,
-        });
-      }
-      setShowLocationDialog(false);
-      toast.success(locationForm.id ? 'Location updated' : 'Location added');
+      // Create episode_location linking to the project location
+      await createLocation.mutateAsync({
+        name: location.name,
+        address: location.address || undefined,
+        notes: (location as any).project_notes || undefined,
+        project_location_id: projectLocationId || location.id,
+      });
+      toast.success('Location added to episode');
+      setShowLocationPicker(false);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to save location');
+      toast.error(err.message || 'Failed to add location');
     }
-  }, [createLocation, updateLocation, locationForm]);
+  }, [createLocation]);
+
+  const handleCreateLocationForEpisode = useCallback(async (data: BacklotLocationInput): Promise<BacklotLocation> => {
+    // Create location in global library AND attach to project
+    const newLocation = await api.post(`/api/v1/backlot/projects/${projectId}/locations`, {
+      ...data,
+      attach_to_project: true,
+    });
+    return newLocation as BacklotLocation;
+  }, [projectId]);
+
+  const handleAttachGlobalLocation = useCallback(async (locationId: string): Promise<{ attachment_id: string }> => {
+    // Attach global location to project
+    const result = await api.post(`/api/v1/backlot/projects/${projectId}/locations/attach`, {
+      location_id: locationId,
+    });
+    return { attachment_id: result.id };
+  }, [projectId]);
+
+  const handleLinkAsset = useCallback(async (assetId: string) => {
+    try {
+      await linkAsset.mutateAsync(assetId);
+      setShowLinkAssetDialog(false);
+      toast.success('Asset linked');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to link asset');
+    }
+  }, [linkAsset]);
+
+  const handleLinkProjectDeliverable = useCallback(async (projectDeliverableId: string) => {
+    try {
+      await linkProjectDeliverable.mutateAsync(projectDeliverableId);
+      setShowLinkProjectDeliverableDialog(false);
+      toast.success('Deliverable linked');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to link deliverable');
+    }
+  }, [linkProjectDeliverable]);
+
+  const handleLinkContact = useCallback(async (contactId: string) => {
+    try {
+      await linkContact.mutateAsync(contactId);
+      setShowLinkContactDialog(false);
+      toast.success('Contact linked as subject');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to link contact');
+    }
+  }, [linkContact]);
 
   // List item handlers
   const handleSaveListItem = useCallback(async () => {
@@ -585,7 +714,7 @@ export function EpisodeDetailView({
         notes: approvalForm.notes || undefined,
       });
       setShowApprovalDialog(false);
-      setApprovalForm({ approval_type: 'EDIT_LOCK', notes: '' });
+      setApprovalForm({ approval_type: 'ROUGH_CUT', notes: '' });
       toast.success('Approval requested');
     } catch (err: any) {
       toast.error(err.message || 'Failed to request approval');
@@ -662,25 +791,26 @@ export function EpisodeDetailView({
 
   // Open edit dialogs with existing data
   const openEditSubject = (subject: EpisodeSubject) => {
+    // Try to parse email/phone from contact_info for backwards compatibility
+    const contactInfo = subject.contact_info || '';
+    const emailMatch = contactInfo.match(/[\w.-]+@[\w.-]+\.\w+/);
+    const phoneMatch = contactInfo.match(/[\d\s()+-]{7,}/);
+
     setSubjectForm({
       id: subject.id,
       subject_type: subject.subject_type,
       name: subject.name,
       role: subject.role || '',
-      contact_info: subject.contact_info || '',
+      company: '',  // Will be populated from contact if linked
+      email: emailMatch ? emailMatch[0] : '',
+      phone: phoneMatch ? phoneMatch[0].trim() : '',
+      role_interest: '',  // Will be populated from contact if linked
+      status: 'new',
+      source: '',
       notes: subject.notes || '',
+      contact_id: subject.contact_id || null,
     });
     setShowSubjectDialog(true);
-  };
-
-  const openEditLocation = (location: EpisodeLocation) => {
-    setLocationForm({
-      id: location.id,
-      name: location.name,
-      address: location.address || '',
-      notes: location.notes || '',
-    });
-    setShowLocationDialog(true);
   };
 
   const openEditListItem = (item: EpisodeListItem) => {
@@ -834,6 +964,9 @@ export function EpisodeDetailView({
         title="Status Tracking"
         description="Track production pipeline, edit status, and delivery status"
         canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'status'}
+        onEdit={() => startEditing('status')}
+        onCancel={cancelEditing}
         onSave={handleSaveStatus}
         isSaving={updateEpisode.isPending}
         isDirty={isStatusDirty}
@@ -841,60 +974,75 @@ export function EpisodeDetailView({
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-2">
             <Label>Pipeline Stage</Label>
-            <Select
-              value={statusForm.pipeline_stage}
-              onValueChange={(v) => setStatusForm((f) => ({ ...f, pipeline_stage: v }))}
-              disabled={!effectiveCanEdit}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PIPELINE_STAGES.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {editingSection === 'status' ? (
+              <Select
+                value={statusForm.pipeline_stage}
+                onValueChange={(v) => setStatusForm((f) => ({ ...f, pipeline_stage: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PIPELINE_STAGES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-bone-white py-2">
+                {PIPELINE_STAGES.find(s => s.value === statusForm.pipeline_stage)?.label || statusForm.pipeline_stage}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Edit Status</Label>
-            <Select
-              value={statusForm.edit_status}
-              onValueChange={(v) => setStatusForm((f) => ({ ...f, edit_status: v }))}
-              disabled={!effectiveCanEdit}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {EDIT_STATUSES.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {editingSection === 'status' ? (
+              <Select
+                value={statusForm.edit_status}
+                onValueChange={(v) => setStatusForm((f) => ({ ...f, edit_status: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {EDIT_STATUSES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-bone-white py-2">
+                {EDIT_STATUSES.find(s => s.value === statusForm.edit_status)?.label || statusForm.edit_status}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Delivery Status</Label>
-            <Select
-              value={statusForm.delivery_status}
-              onValueChange={(v) => setStatusForm((f) => ({ ...f, delivery_status: v }))}
-              disabled={!effectiveCanEdit}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {DELIVERY_STATUSES.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {editingSection === 'status' ? (
+              <Select
+                value={statusForm.delivery_status}
+                onValueChange={(v) => setStatusForm((f) => ({ ...f, delivery_status: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {DELIVERY_STATUSES.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className="text-bone-white py-2">
+                {DELIVERY_STATUSES.find(s => s.value === statusForm.delivery_status)?.label || statusForm.delivery_status}
+              </p>
+            )}
           </div>
         </div>
       </EditableCard>
@@ -905,6 +1053,9 @@ export function EpisodeDetailView({
         description="Logline, synopsis, outline, and beat sheet"
         icon={FileText}
         canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'story'}
+        onEdit={() => startEditing('story')}
+        onCancel={cancelEditing}
         onSave={handleSaveStory}
         isSaving={updateEpisode.isPending}
         isDirty={isStoryDirty}
@@ -912,442 +1063,508 @@ export function EpisodeDetailView({
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>Title</Label>
-            <Input
-              value={storyForm.title}
-              onChange={(e) => setStoryForm((f) => ({ ...f, title: e.target.value }))}
-              disabled={!effectiveCanEdit}
-            />
+            {editingSection === 'story' ? (
+              <Input
+                value={storyForm.title}
+                onChange={(e) => setStoryForm((f) => ({ ...f, title: e.target.value }))}
+              />
+            ) : (
+              <p className="text-bone-white py-2">{storyForm.title || <span className="text-muted-gray italic">Not set</span>}</p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Logline</Label>
-            <Textarea
-              value={storyForm.logline}
-              onChange={(e) => setStoryForm((f) => ({ ...f, logline: e.target.value }))}
-              disabled={!effectiveCanEdit}
-              rows={2}
-              placeholder="One-sentence summary..."
-            />
+            {editingSection === 'story' ? (
+              <Textarea
+                value={storyForm.logline}
+                onChange={(e) => setStoryForm((f) => ({ ...f, logline: e.target.value }))}
+                rows={2}
+                placeholder="One-sentence summary..."
+              />
+            ) : (
+              <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.logline || <span className="text-muted-gray italic">Not set</span>}</p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Synopsis</Label>
-            <Textarea
-              value={storyForm.synopsis}
-              onChange={(e) => setStoryForm((f) => ({ ...f, synopsis: e.target.value }))}
-              disabled={!effectiveCanEdit}
-              rows={4}
-              placeholder="Full story synopsis..."
-            />
+            {editingSection === 'story' ? (
+              <Textarea
+                value={storyForm.synopsis}
+                onChange={(e) => setStoryForm((f) => ({ ...f, synopsis: e.target.value }))}
+                rows={4}
+                placeholder="Full story synopsis..."
+              />
+            ) : (
+              <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.synopsis || <span className="text-muted-gray italic">Not set</span>}</p>
+            )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Outline</Label>
-              <Textarea
-                value={storyForm.outline}
-                onChange={(e) => setStoryForm((f) => ({ ...f, outline: e.target.value }))}
-                disabled={!effectiveCanEdit}
-                rows={6}
-                placeholder="Structural outline..."
-              />
+              {editingSection === 'story' ? (
+                <Textarea
+                  value={storyForm.outline}
+                  onChange={(e) => setStoryForm((f) => ({ ...f, outline: e.target.value }))}
+                  rows={6}
+                  placeholder="Structural outline..."
+                />
+              ) : (
+                <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.outline || <span className="text-muted-gray italic">Not set</span>}</p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Beat Sheet</Label>
-              <Textarea
-                value={storyForm.beat_sheet}
-                onChange={(e) => setStoryForm((f) => ({ ...f, beat_sheet: e.target.value }))}
-                disabled={!effectiveCanEdit}
-                rows={6}
-                placeholder="Story beats..."
-              />
+              {editingSection === 'story' ? (
+                <Textarea
+                  value={storyForm.beat_sheet}
+                  onChange={(e) => setStoryForm((f) => ({ ...f, beat_sheet: e.target.value }))}
+                  rows={6}
+                  placeholder="Story beats..."
+                />
+              ) : (
+                <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.beat_sheet || <span className="text-muted-gray italic">Not set</span>}</p>
+              )}
             </div>
           </div>
           <div className="space-y-2">
             <Label>Notes</Label>
-            <Textarea
-              value={storyForm.notes}
-              onChange={(e) => setStoryForm((f) => ({ ...f, notes: e.target.value }))}
-              disabled={!effectiveCanEdit}
-              rows={3}
-              placeholder="Additional notes..."
-            />
+            {editingSection === 'story' ? (
+              <Textarea
+                value={storyForm.notes}
+                onChange={(e) => setStoryForm((f) => ({ ...f, notes: e.target.value }))}
+                rows={3}
+                placeholder="Additional notes..."
+              />
+            ) : (
+              <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.notes || <span className="text-muted-gray italic">Not set</span>}</p>
+            )}
           </div>
         </div>
       </EditableCard>
 
       {/* List Items (Interviews, Scenes, Segments) */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="text-lg">Structure</CardTitle>
-              <CardDescription>Interviews, scenes, and segments</CardDescription>
-            </div>
-            {effectiveCanEdit && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setListItemForm({ id: '', kind: 'SCENE', title: '', description: '', status: '' });
-                  setShowListItemDialog(true);
-                }}
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Add Item
-              </Button>
-            )}
+      <EditableCard
+        title="Structure"
+        description="Interviews, scenes, and segments"
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'structure'}
+        onEdit={() => startEditing('structure')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'structure' && (
+          <div className="flex justify-end mb-4">
+            <Button
+              size="sm"
+              onClick={() => {
+                setListItemForm({ id: '', kind: 'SCENE', title: '', description: '', status: '' });
+                setShowListItemDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add Item
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {LIST_ITEM_KINDS.map((kind) => {
-            const items = listItemsByKind[kind.value] || [];
-            return (
-              <div key={kind.value} className="mb-4 last:mb-0">
-                <h4 className="text-sm font-medium text-muted-gray mb-2">{kind.label}s ({items.length})</h4>
-                {items.length > 0 ? (
-                  <div className="space-y-1">
-                    {items.map((item, idx) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center gap-2 p-2 rounded bg-white/5 hover:bg-white/10 transition-colors"
-                      >
-                        <span className="text-xs text-muted-gray w-6 text-center">{idx + 1}</span>
-                        <span className="flex-1 text-sm text-bone-white">{item.title}</span>
-                        {item.status && (
-                          <Badge variant="outline" className="text-xs">
-                            {item.status}
-                          </Badge>
-                        )}
-                        {effectiveCanEdit && (
-                          <div className="flex items-center gap-1">
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6"
-                              onClick={() => handleReorder(item.id, 'up')}
-                              disabled={idx === 0}
-                            >
-                              <ChevronUp className="w-3 h-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6"
-                              onClick={() => handleReorder(item.id, 'down')}
-                              disabled={idx === items.length - 1}
-                            >
-                              <ChevronDown className="w-3 h-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6"
-                              onClick={() => openEditListItem(item)}
-                            >
-                              <Pencil className="w-3 h-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-6 w-6 text-red-400"
-                              onClick={() => setDeleteConfirm({ type: 'listItem', id: item.id })}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-gray italic">No {kind.label.toLowerCase()}s</p>
-                )}
-              </div>
-            );
-          })}
-        </CardContent>
-      </Card>
+        )}
+        {LIST_ITEM_KINDS.map((kind) => {
+          const items = listItemsByKind[kind.value] || [];
+          return (
+            <div key={kind.value} className="mb-4 last:mb-0">
+              <h4 className="text-sm font-medium text-muted-gray mb-2">{kind.label}s ({items.length})</h4>
+              {items.length > 0 ? (
+                <div className="space-y-1">
+                  {items.map((item, idx) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center gap-2 p-2 rounded bg-white/5 hover:bg-white/10 transition-colors"
+                    >
+                      <span className="text-xs text-muted-gray w-6 text-center">{idx + 1}</span>
+                      <span className="flex-1 text-sm text-bone-white">{item.title}</span>
+                      {item.status && (
+                        <Badge variant="outline" className="text-xs">
+                          {item.status}
+                        </Badge>
+                      )}
+                      {editingSection === 'structure' && (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={() => handleReorder(item.id, 'up')}
+                            disabled={idx === 0}
+                          >
+                            <ChevronUp className="w-3 h-3" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={() => handleReorder(item.id, 'down')}
+                            disabled={idx === items.length - 1}
+                          >
+                            <ChevronDown className="w-3 h-3" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={() => openEditListItem(item)}
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-red-400"
+                            onClick={() => setDeleteConfirm({ type: 'listItem', id: item.id })}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-gray italic">No {kind.label.toLowerCase()}s</p>
+              )}
+            </div>
+          );
+        })}
+      </EditableCard>
 
       {/* Subjects Card */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Users className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Subjects</CardTitle>
-            </div>
-            {effectiveCanEdit && (
+      <EditableCard
+        title="Subjects"
+        icon={Users}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'subjects'}
+        onEdit={() => startEditing('subjects')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'subjects' && (
+          <div className="flex justify-end gap-2 mb-4">
+            {projectContacts && projectContacts.length > 0 && (
               <Button
                 size="sm"
-                onClick={() => {
-                  setSubjectForm({ id: '', subject_type: 'CAST', name: '', role: '', contact_info: '', notes: '' });
-                  setShowSubjectDialog(true);
-                }}
+                variant="outline"
+                onClick={() => setShowLinkContactDialog(true)}
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Add Subject
+                <Link2 className="w-4 h-4 mr-2" />
+                Link from Contacts
               </Button>
             )}
+            <Button
+              size="sm"
+              onClick={() => {
+                setSubjectForm({
+                  id: '',
+                  subject_type: 'CAST',
+                  name: '',
+                  role: '',
+                  company: '',
+                  email: '',
+                  phone: '',
+                  role_interest: '',
+                  status: 'new',
+                  source: '',
+                  notes: '',
+                  contact_id: null,
+                });
+                setShowSubjectDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add New
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {episode.subjects.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-white/10">
-                  <TableHead className="text-muted-gray">Type</TableHead>
-                  <TableHead className="text-muted-gray">Name</TableHead>
-                  <TableHead className="text-muted-gray">Role</TableHead>
-                  <TableHead className="text-muted-gray w-20"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {episode.subjects.map((subject) => (
-                  <TableRow key={subject.id} className="border-white/10">
+        )}
+        {episode.subjects.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow className="border-white/10">
+                <TableHead className="text-muted-gray">Type</TableHead>
+                <TableHead className="text-muted-gray">Name</TableHead>
+                <TableHead className="text-muted-gray">Role</TableHead>
+                {editingSection === 'subjects' && <TableHead className="text-muted-gray w-20"></TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {episode.subjects.map((subject) => (
+                <TableRow key={subject.id} className="border-white/10">
+                  <TableCell>
+                    <Badge variant="outline" className="text-xs">
+                      {SUBJECT_TYPES.find((t) => t.value === subject.subject_type)?.label || subject.subject_type}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      {subject.contact_id && (
+                        <Link2 className="w-3 h-3 text-accent-yellow flex-shrink-0" />
+                      )}
+                      <span className="text-bone-white">{subject.name}</span>
+                      {subject.contact_id && subject.contact_name && (
+                        <span className="text-xs text-muted-gray">(Linked)</span>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-muted-gray">{subject.role || '-'}</TableCell>
+                  {editingSection === 'subjects' && (
                     <TableCell>
-                      <Badge variant="outline" className="text-xs">
-                        {SUBJECT_TYPES.find((t) => t.value === subject.subject_type)?.label || subject.subject_type}
+                      <div className="flex gap-1">
+                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditSubject(subject)}>
+                          <Pencil className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-7 w-7 text-red-400"
+                          onClick={() => setDeleteConfirm({ type: 'subject', id: subject.id })}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No subjects added</p>
+        )}
+      </EditableCard>
+
+      {/* Locations Card */}
+      <EditableCard
+        title="Locations"
+        icon={MapPin}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'locations'}
+        onEdit={() => startEditing('locations')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'locations' && (
+          <div className="flex justify-end mb-4">
+            <Button
+              size="sm"
+              onClick={() => setShowLocationPicker(true)}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add Location
+            </Button>
+          </div>
+        )}
+        {episode.locations.length > 0 ? (
+          <div className="space-y-2">
+            {episode.locations.map((location) => (
+              <div key={location.id} className="flex items-start justify-between p-3 bg-white/5 rounded-lg">
+                <div className="flex items-start gap-2">
+                  {location.project_location_id && (
+                    <Link2 className="w-4 h-4 text-accent-yellow mt-0.5 flex-shrink-0" />
+                  )}
+                  <div>
+                    <p className="font-medium text-bone-white">{location.name}</p>
+                    {location.address && <p className="text-sm text-muted-gray">{location.address}</p>}
+                    {location.project_location_id && (
+                      <p className="text-xs text-accent-yellow">Linked from Locations tab</p>
+                    )}
+                  </div>
+                </div>
+                {editingSection === 'locations' && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-red-400"
+                    onClick={() => setDeleteConfirm({ type: 'location', id: location.id })}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No locations added</p>
+        )}
+      </EditableCard>
+
+      {/* Key Dates (Milestones) */}
+      <EditableCard
+        title="Key Dates"
+        icon={Calendar}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'milestones'}
+        onEdit={() => startEditing('milestones')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'milestones' && (
+          <div className="flex justify-end mb-4">
+            <Button
+              size="sm"
+              onClick={() => {
+                setMilestoneForm({ id: '', milestone_type: '', date: '', notes: '' });
+                setShowMilestoneDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add Date
+            </Button>
+          </div>
+        )}
+        {episode.milestones.length > 0 ? (
+          <div className="space-y-2">
+            {episode.milestones.map((milestone) => (
+              <div key={milestone.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                <div className="flex items-center gap-4">
+                  <div className="w-24">
+                    <p className="text-sm font-medium text-bone-white">
+                      {format(parseLocalDate(milestone.date), 'MMM d, yyyy')}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="font-medium text-bone-white">{milestone.milestone_type}</p>
+                    {milestone.notes && <p className="text-sm text-muted-gray">{milestone.notes}</p>}
+                  </div>
+                </div>
+                {editingSection === 'milestones' && (
+                  <div className="flex gap-1">
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditMilestone(milestone)}>
+                      <Pencil className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-red-400"
+                      onClick={() => setDeleteConfirm({ type: 'milestone', id: milestone.id })}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No key dates added</p>
+        )}
+      </EditableCard>
+
+      {/* Deliverables */}
+      <EditableCard
+        title="Deliverables"
+        icon={Package}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'deliverables'}
+        onEdit={() => startEditing('deliverables')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'deliverables' && (
+          <div className="flex justify-end gap-2 mb-4">
+            {templates && templates.length > 0 && (
+              <Select onValueChange={(v) => applyTemplate.mutate(v)}>
+                <SelectTrigger className="w-40 h-8 text-sm">
+                  <SelectValue placeholder="Apply template..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {templates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {projectDeliverables && projectDeliverables.length > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setShowLinkProjectDeliverableDialog(true)}
+              >
+                <Link2 className="w-4 h-4 mr-2" />
+                Link from Assets
+              </Button>
+            )}
+            <Button
+              size="sm"
+              onClick={() => {
+                setDeliverableForm({ id: '', deliverable_type: '', status: 'NOT_STARTED', due_date: '', notes: '' });
+                setShowDeliverableDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add
+            </Button>
+          </div>
+        )}
+        {episode.deliverables.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow className="border-white/10">
+                <TableHead className="text-muted-gray">Deliverable</TableHead>
+                <TableHead className="text-muted-gray">Status</TableHead>
+                <TableHead className="text-muted-gray">Due Date</TableHead>
+                {editingSection === 'deliverables' && <TableHead className="text-muted-gray w-20"></TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {episode.deliverables.map((del) => {
+                const statusInfo = getDeliverableStatusInfo(del.status);
+                return (
+                  <TableRow key={del.id} className="border-white/10">
+                    <TableCell className="text-bone-white">
+                      {del.project_deliverable_id ? (
+                        <div className="flex items-center gap-2">
+                          <Link2 className="w-3 h-3 text-muted-gray" />
+                          <span>{del.project_deliverable_name || del.deliverable_type}</span>
+                        </div>
+                      ) : (
+                        del.deliverable_type
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={cn('text-xs text-white', statusInfo?.color || 'bg-gray-500')}>
+                        {statusInfo?.label || del.status}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-bone-white">{subject.name}</TableCell>
-                    <TableCell className="text-muted-gray">{subject.role || '-'}</TableCell>
-                    <TableCell>
-                      {effectiveCanEdit && (
+                    <TableCell className="text-muted-gray">
+                      {del.due_date ? format(parseLocalDate(del.due_date), 'MMM d') : '-'}
+                    </TableCell>
+                    {editingSection === 'deliverables' && (
+                      <TableCell>
                         <div className="flex gap-1">
-                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditSubject(subject)}>
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditDeliverable(del)}>
                             <Pencil className="w-3 h-3" />
                           </Button>
                           <Button
                             size="icon"
                             variant="ghost"
                             className="h-7 w-7 text-red-400"
-                            onClick={() => setDeleteConfirm({ type: 'subject', id: subject.id })}
+                            onClick={() => setDeleteConfirm({ type: 'deliverable', id: del.id })}
                           >
                             <Trash2 className="w-3 h-3" />
                           </Button>
                         </div>
-                      )}
-                    </TableCell>
+                      </TableCell>
+                    )}
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No subjects added</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Locations Card */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MapPin className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Locations</CardTitle>
-            </div>
-            {effectiveCanEdit && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setLocationForm({ id: '', name: '', address: '', notes: '' });
-                  setShowLocationDialog(true);
-                }}
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Add Location
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {episode.locations.length > 0 ? (
-            <div className="space-y-2">
-              {episode.locations.map((location) => (
-                <div key={location.id} className="flex items-start justify-between p-3 bg-white/5 rounded-lg">
-                  <div>
-                    <p className="font-medium text-bone-white">{location.name}</p>
-                    {location.address && <p className="text-sm text-muted-gray">{location.address}</p>}
-                  </div>
-                  {effectiveCanEdit && (
-                    <div className="flex gap-1">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditLocation(location)}>
-                        <Pencil className="w-3 h-3" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-red-400"
-                        onClick={() => setDeleteConfirm({ type: 'location', id: location.id })}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No locations added</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Key Dates (Milestones) */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Key Dates</CardTitle>
-            </div>
-            {effectiveCanEdit && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setMilestoneForm({ id: '', milestone_type: '', date: '', notes: '' });
-                  setShowMilestoneDialog(true);
-                }}
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Add Date
-              </Button>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {episode.milestones.length > 0 ? (
-            <div className="space-y-2">
-              {episode.milestones.map((milestone) => (
-                <div key={milestone.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                  <div className="flex items-center gap-4">
-                    <div className="w-24">
-                      <p className="text-sm font-medium text-bone-white">
-                        {format(new Date(milestone.date), 'MMM d, yyyy')}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="font-medium text-bone-white">{milestone.milestone_type}</p>
-                      {milestone.notes && <p className="text-sm text-muted-gray">{milestone.notes}</p>}
-                    </div>
-                  </div>
-                  {effectiveCanEdit && (
-                    <div className="flex gap-1">
-                      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditMilestone(milestone)}>
-                        <Pencil className="w-3 h-3" />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-red-400"
-                        onClick={() => setDeleteConfirm({ type: 'milestone', id: milestone.id })}
-                      >
-                        <Trash2 className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No key dates added</p>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Deliverables */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Package className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Deliverables</CardTitle>
-            </div>
-            {effectiveCanEdit && (
-              <div className="flex gap-2">
-                {templates && templates.length > 0 && (
-                  <Select onValueChange={(v) => applyTemplate.mutate(v)}>
-                    <SelectTrigger className="w-40 h-8 text-sm">
-                      <SelectValue placeholder="Apply template..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {templates.map((t) => (
-                        <SelectItem key={t.id} value={t.id}>
-                          {t.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
-                <Button
-                  size="sm"
-                  onClick={() => {
-                    setDeliverableForm({ id: '', deliverable_type: '', status: 'NOT_STARTED', due_date: '', notes: '' });
-                    setShowDeliverableDialog(true);
-                  }}
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add
-                </Button>
-              </div>
-            )}
-          </div>
-        </CardHeader>
-        <CardContent>
-          {episode.deliverables.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow className="border-white/10">
-                  <TableHead className="text-muted-gray">Deliverable</TableHead>
-                  <TableHead className="text-muted-gray">Status</TableHead>
-                  <TableHead className="text-muted-gray">Due Date</TableHead>
-                  <TableHead className="text-muted-gray w-20"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {episode.deliverables.map((del) => {
-                  const statusInfo = getDeliverableStatusInfo(del.status);
-                  return (
-                    <TableRow key={del.id} className="border-white/10">
-                      <TableCell className="text-bone-white">{del.deliverable_type}</TableCell>
-                      <TableCell>
-                        <Badge className={cn('text-xs text-white', statusInfo?.color || 'bg-gray-500')}>
-                          {statusInfo?.label || del.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-gray">
-                        {del.due_date ? format(new Date(del.due_date), 'MMM d') : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {effectiveCanEdit && (
-                          <div className="flex gap-1">
-                            <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEditDeliverable(del)}>
-                              <Pencil className="w-3 h-3" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7 text-red-400"
-                              onClick={() => setDeleteConfirm({ type: 'deliverable', id: del.id })}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No deliverables</p>
-          )}
-        </CardContent>
-      </Card>
+                );
+              })}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No deliverables</p>
+        )}
+      </EditableCard>
 
       {/* Runtime */}
       <EditableCard
         title="Runtime"
         description="Planned and actual episode duration"
         canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'runtime'}
+        onEdit={() => startEditing('runtime')}
+        onCancel={cancelEditing}
         onSave={handleSaveTeam}
         isSaving={updateEpisode.isPending}
         isDirty={isTeamDirty}
@@ -1355,54 +1572,81 @@ export function EpisodeDetailView({
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label>Planned Runtime (minutes)</Label>
-            <Input
-              type="number"
-              value={teamForm.planned_runtime_minutes}
-              onChange={(e) => setTeamForm((f) => ({ ...f, planned_runtime_minutes: e.target.value }))}
-              disabled={!effectiveCanEdit}
-              placeholder="e.g., 45"
-            />
+            {editingSection === 'runtime' ? (
+              <Input
+                type="number"
+                value={teamForm.planned_runtime_minutes}
+                onChange={(e) => setTeamForm((f) => ({ ...f, planned_runtime_minutes: e.target.value }))}
+                placeholder="e.g., 45"
+              />
+            ) : (
+              <p className="text-bone-white py-2">
+                {teamForm.planned_runtime_minutes ? `${teamForm.planned_runtime_minutes} min` : <span className="text-muted-gray italic">Not set</span>}
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Actual Runtime (minutes)</Label>
-            <Input
-              type="number"
-              value={teamForm.actual_runtime_minutes}
-              onChange={(e) => setTeamForm((f) => ({ ...f, actual_runtime_minutes: e.target.value }))}
-              disabled={!effectiveCanEdit}
-              placeholder="e.g., 47"
-            />
+            {editingSection === 'runtime' ? (
+              <Input
+                type="number"
+                value={teamForm.actual_runtime_minutes}
+                onChange={(e) => setTeamForm((f) => ({ ...f, actual_runtime_minutes: e.target.value }))}
+                placeholder="e.g., 47"
+              />
+            ) : (
+              <p className="text-bone-white py-2">
+                {teamForm.actual_runtime_minutes ? `${teamForm.actual_runtime_minutes} min` : <span className="text-muted-gray italic">Not set</span>}
+              </p>
+            )}
           </div>
         </div>
       </EditableCard>
 
       {/* Asset Links */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ExternalLink className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Asset Links</CardTitle>
-            </div>
-            {effectiveCanEdit && (
+      <EditableCard
+        title="Asset Links"
+        icon={ExternalLink}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'assetLinks'}
+        onEdit={() => startEditing('assetLinks')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'assetLinks' && (
+          <div className="flex justify-end gap-2 mb-4">
+            {projectAssets && projectAssets.length > 0 && (
               <Button
                 size="sm"
-                onClick={() => {
-                  setAssetLinkForm({ label: '', url: '' });
-                  setShowAssetLinkDialog(true);
-                }}
+                variant="outline"
+                onClick={() => setShowLinkAssetDialog(true)}
               >
-                <Plus className="w-4 h-4 mr-2" />
-                Add Link
+                <Link2 className="w-4 h-4 mr-2" />
+                Link Asset
               </Button>
             )}
+            <Button
+              size="sm"
+              onClick={() => {
+                setAssetLinkForm({ label: '', url: '' });
+                setShowAssetLinkDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Add URL
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {episode.asset_links.length > 0 ? (
-            <div className="space-y-2">
-              {episode.asset_links.map((link) => (
-                <div key={link.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+        )}
+        {episode.asset_links.length > 0 ? (
+          <div className="space-y-2">
+            {episode.asset_links.map((link) => (
+              <div key={link.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                {link.asset_id ? (
+                  <div className="flex items-center gap-2 text-accent-yellow">
+                    <Link2 className="w-4 h-4" />
+                    <span>{link.label}</span>
+                    <span className="text-xs text-muted-gray">(from Assets tab)</span>
+                  </div>
+                ) : link.url ? (
                   <a
                     href={link.url}
                     target="_blank"
@@ -1412,213 +1656,218 @@ export function EpisodeDetailView({
                     <ExternalLink className="w-4 h-4" />
                     {link.label}
                   </a>
-                  {effectiveCanEdit && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-red-400"
-                      onClick={() => setDeleteConfirm({ type: 'assetLink', id: link.id })}
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No links added</p>
-          )}
-        </CardContent>
-      </Card>
+                ) : (
+                  <span className="text-bone-white">{link.label}</span>
+                )}
+                {editingSection === 'assetLinks' && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-red-400"
+                    onClick={() => setDeleteConfirm({ type: 'assetLink', id: link.id })}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No links added</p>
+        )}
+      </EditableCard>
 
       {/* Storyboards */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Images className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Linked Storyboards</CardTitle>
-            </div>
-            {effectiveCanEdit && availableStoryboards && availableStoryboards.length > 0 && (
-              <Button size="sm" onClick={() => setShowLinkStoryboardDialog(true)}>
-                <Link2 className="w-4 h-4 mr-2" />
-                Link Storyboard
-              </Button>
-            )}
+      <EditableCard
+        title="Linked Storyboards"
+        icon={Images}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'storyboards'}
+        onEdit={() => startEditing('storyboards')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'storyboards' && availableStoryboards && availableStoryboards.length > 0 && (
+          <div className="flex justify-end mb-4">
+            <Button size="sm" onClick={() => setShowLinkStoryboardDialog(true)}>
+              <Link2 className="w-4 h-4 mr-2" />
+              Link Storyboard
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {episode.storyboards.length > 0 ? (
-            <div className="space-y-2">
-              {episode.storyboards.map((sb) => (
-                <div key={sb.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                  <div className="flex items-center gap-3">
-                    <Images className="w-4 h-4 text-muted-gray" />
-                    <span className="text-bone-white">{sb.title}</span>
-                    <Badge variant="outline" className="text-xs">
-                      {sb.status}
-                    </Badge>
-                  </div>
-                  {effectiveCanEdit && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-red-400"
-                      onClick={() => handleUnlinkStoryboard(sb.id)}
-                    >
-                      <Unlink2 className="w-3 h-3" />
-                    </Button>
-                  )}
+        )}
+        {episode.storyboards.length > 0 ? (
+          <div className="space-y-2">
+            {episode.storyboards.map((sb) => (
+              <div key={sb.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <Images className="w-4 h-4 text-muted-gray" />
+                  <span className="text-bone-white">{sb.title}</span>
+                  <Badge variant="outline" className="text-xs">
+                    {sb.status}
+                  </Badge>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No storyboards linked</p>
-          )}
-        </CardContent>
-      </Card>
+                {editingSection === 'storyboards' && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-red-400"
+                    onClick={() => handleUnlinkStoryboard(sb.id)}
+                  >
+                    <Unlink2 className="w-3 h-3" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No storyboards linked</p>
+        )}
+      </EditableCard>
 
       {/* Shoot Days */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Tagged Shoot Days</CardTitle>
-            </div>
-            {effectiveCanEdit && availableDays.length > 0 && (
-              <Button size="sm" onClick={() => setShowTagShootDayDialog(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Tag Day
-              </Button>
-            )}
+      <EditableCard
+        title="Tagged Shoot Days"
+        icon={Calendar}
+        canEdit={effectiveCanEdit}
+        isEditing={editingSection === 'shootDays'}
+        onEdit={() => startEditing('shootDays')}
+        onCancel={cancelEditing}
+      >
+        {editingSection === 'shootDays' && availableDays.length > 0 && (
+          <div className="flex justify-end mb-4">
+            <Button size="sm" onClick={() => setShowTagShootDayDialog(true)}>
+              <Plus className="w-4 h-4 mr-2" />
+              Tag Day
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {episode.shoot_days.length > 0 ? (
-            <div className="space-y-2">
-              {episode.shoot_days.map((day) => (
-                <div key={day.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm font-mono text-muted-gray">
-                      {format(new Date(day.date), 'MMM d, yyyy')}
-                    </span>
-                    <span className="text-bone-white">{day.day_title || day.day_type}</span>
-                    <Badge variant="outline" className="text-xs">
-                      {day.day_type}
-                    </Badge>
-                  </div>
-                  {effectiveCanEdit && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7 text-red-400"
-                      onClick={() => handleUntagShootDay(day.id)}
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </Button>
-                  )}
+        )}
+        {episode.shoot_days.length > 0 ? (
+          <div className="space-y-2">
+            {episode.shoot_days.map((day) => (
+              <div key={day.id} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-mono text-muted-gray">
+                    {format(parseLocalDate(day.date), 'MMM d, yyyy')}
+                  </span>
+                  <span className="text-bone-white">{day.day_title || day.day_type}</span>
+                  <Badge variant="outline" className="text-xs">
+                    {day.day_type}
+                  </Badge>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No shoot days tagged</p>
-          )}
-        </CardContent>
-      </Card>
+                {editingSection === 'shootDays' && (
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-7 w-7 text-red-400"
+                    onClick={() => handleUntagShootDay(day.id)}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No shoot days tagged</p>
+        )}
+      </EditableCard>
 
       {/* Approvals */}
-      <Card className="bg-white/5 border-white/10">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ClipboardCheck className="w-5 h-5 text-muted-gray" />
-              <CardTitle className="text-lg">Approvals</CardTitle>
-              {pendingApprovals.length > 0 && (
-                <Badge className="bg-yellow-500/20 text-yellow-400">{pendingApprovals.length} pending</Badge>
-              )}
-            </div>
-            {canEdit && (
-              <Button
-                size="sm"
-                onClick={() => {
-                  setApprovalForm({ approval_type: 'EDIT_LOCK', notes: '' });
-                  setShowApprovalDialog(true);
-                }}
-              >
-                <Plus className="w-4 h-4 mr-2" />
-                Request Approval
-              </Button>
-            )}
+      <EditableCard
+        title="Approvals"
+        icon={ClipboardCheck}
+        canEdit={canEdit}
+        isEditing={editingSection === 'approvals'}
+        onEdit={() => startEditing('approvals')}
+        onCancel={cancelEditing}
+        badge={pendingApprovals.length > 0 ? (
+          <Badge className="bg-yellow-500/20 text-yellow-400">{pendingApprovals.length} pending</Badge>
+        ) : undefined}
+      >
+        {editingSection === 'approvals' && (
+          <div className="flex justify-end mb-4">
+            <Button
+              size="sm"
+              onClick={() => {
+                setApprovalForm({ approval_type: 'ROUGH_CUT', notes: '' });
+                setShowApprovalDialog(true);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Request Approval
+            </Button>
           </div>
-        </CardHeader>
-        <CardContent>
-          {episode.approvals.length > 0 ? (
-            <div className="space-y-2">
-              {episode.approvals.map((approval) => (
-                <div
-                  key={approval.id}
-                  className={cn(
-                    'flex items-center justify-between p-3 rounded-lg',
-                    approval.status === 'PENDING' ? 'bg-yellow-500/10 border border-yellow-500/30' : 'bg-white/5'
-                  )}
-                >
-                  <div className="flex items-center gap-3">
-                    {approval.status === 'PENDING' && <Clock className="w-4 h-4 text-yellow-400" />}
-                    {approval.status === 'APPROVED' && <CheckCircle className="w-4 h-4 text-green-400" />}
-                    {approval.status === 'REJECTED' && <XCircle className="w-4 h-4 text-red-400" />}
-                    <div>
-                      <p className="font-medium text-bone-white">
-                        {approval.approval_type === 'EDIT_LOCK' ? 'Edit Lock' : 'Delivery Approval'}
-                      </p>
-                      <p className="text-xs text-muted-gray">
-                        Requested by {approval.requested_by_name} on{' '}
-                        {format(new Date(approval.requested_at), 'MMM d, yyyy')}
-                      </p>
-                    </div>
+        )}
+        {episode.approvals.length > 0 ? (
+          <div className="space-y-2">
+            {episode.approvals.map((approval) => (
+              <div
+                key={approval.id}
+                className={cn(
+                  'flex items-center justify-between p-3 rounded-lg',
+                  approval.status === 'PENDING' ? 'bg-yellow-500/10 border border-yellow-500/30' : 'bg-white/5'
+                )}
+              >
+                <div className="flex items-center gap-3">
+                  {approval.status === 'PENDING' && <Clock className="w-4 h-4 text-yellow-400" />}
+                  {approval.status === 'APPROVED' && <CheckCircle className="w-4 h-4 text-green-400" />}
+                  {approval.status === 'REJECTED' && <XCircle className="w-4 h-4 text-red-400" />}
+                  <div>
+                    <p className="font-medium text-bone-white">
+                      {getApprovalTypeInfo(approval.approval_type)?.label || approval.approval_type}
+                    </p>
+                    <p className="text-xs text-muted-gray">
+                      Requested by {approval.requested_by_name} on{' '}
+                      {format(new Date(approval.requested_at), 'MMM d, yyyy')}
+                    </p>
                   </div>
-                  {approval.status === 'PENDING' && canEdit && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => {
-                        setDecisionForm({ decision: 'APPROVE', notes: '' });
-                        setShowDecisionDialog(approval);
-                      }}
-                    >
-                      Review
-                    </Button>
-                  )}
-                  {approval.status !== 'PENDING' && (
-                    <Badge
-                      variant="outline"
-                      className={cn(
-                        'text-xs',
-                        approval.status === 'APPROVED' && 'border-green-500/50 text-green-400',
-                        approval.status === 'REJECTED' && 'border-red-500/50 text-red-400'
-                      )}
-                    >
-                      {approval.status}
-                    </Badge>
-                  )}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-muted-gray text-center py-4">No approval requests</p>
-          )}
-        </CardContent>
-      </Card>
+                {approval.status === 'PENDING' && editingSection === 'approvals' && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setDecisionForm({ decision: 'APPROVE', notes: '' });
+                      setShowDecisionDialog(approval);
+                    }}
+                  >
+                    Review
+                  </Button>
+                )}
+                {approval.status !== 'PENDING' && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      'text-xs',
+                      approval.status === 'APPROVED' && 'border-green-500/50 text-green-400',
+                      approval.status === 'REJECTED' && 'border-red-500/50 text-red-400'
+                    )}
+                  >
+                    {approval.status}
+                  </Badge>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-gray text-center py-4">No approval requests</p>
+        )}
+      </EditableCard>
 
-      {/* Subject Dialog */}
+      {/* Subject/Contact Dialog */}
       <Dialog open={showSubjectDialog} onOpenChange={setShowSubjectDialog}>
-        <DialogContent>
+        <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>{subjectForm.id ? 'Edit Subject' : 'Add Subject'}</DialogTitle>
+            <DialogTitle>{subjectForm.id ? 'Edit Subject' : 'Add Subject as Contact'}</DialogTitle>
+            {!subjectForm.id && (
+              <DialogDescription>
+                This will create a contact in the Contacts tab linked to this episode.
+              </DialogDescription>
+            )}
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="space-y-4 py-4 max-h-[60vh] overflow-y-auto">
+            {/* Subject Type */}
             <div className="space-y-2">
-              <Label>Type *</Label>
+              <Label>Subject Type *</Label>
               <Select
                 value={subjectForm.subject_type}
                 onValueChange={(v) => setSubjectForm((f) => ({ ...f, subject_type: v as EpisodeSubjectType }))}
@@ -1634,37 +1883,114 @@ export function EpisodeDetailView({
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-gray">
+                Maps to contact type: {
+                  subjectForm.subject_type === 'CAST' ? 'Talent' :
+                  subjectForm.subject_type === 'CREW' ? 'Crew' :
+                  subjectForm.subject_type === 'CONTRIBUTOR' ? 'Collaborator' : 'Other'
+                }
+              </p>
             </div>
+
+            {/* Name (required) */}
             <div className="space-y-2">
               <Label>Name *</Label>
               <Input
                 value={subjectForm.name}
                 onChange={(e) => setSubjectForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="Person's name"
+                placeholder="Full name"
               />
             </div>
+
+            {/* Company */}
             <div className="space-y-2">
-              <Label>Role</Label>
+              <Label>Company</Label>
+              <Input
+                value={subjectForm.company}
+                onChange={(e) => setSubjectForm((f) => ({ ...f, company: e.target.value }))}
+                placeholder="Company or organization"
+              />
+            </div>
+
+            {/* Email & Phone (side by side) */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={subjectForm.email}
+                  onChange={(e) => setSubjectForm((f) => ({ ...f, email: e.target.value }))}
+                  placeholder="email@example.com"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  value={subjectForm.phone}
+                  onChange={(e) => setSubjectForm((f) => ({ ...f, phone: e.target.value }))}
+                  placeholder="(555) 123-4567"
+                />
+              </div>
+            </div>
+
+            {/* Role in Episode (subject-specific) */}
+            <div className="space-y-2">
+              <Label>Role in Episode</Label>
               <Input
                 value={subjectForm.role}
                 onChange={(e) => setSubjectForm((f) => ({ ...f, role: e.target.value }))}
-                placeholder="Their role in the episode"
+                placeholder="Their role in this specific episode"
               />
             </div>
+
+            {/* Role/Interest (contact general) */}
             <div className="space-y-2">
-              <Label>Contact Info</Label>
+              <Label>General Role/Interest</Label>
               <Input
-                value={subjectForm.contact_info}
-                onChange={(e) => setSubjectForm((f) => ({ ...f, contact_info: e.target.value }))}
-                placeholder="Email or phone"
+                value={subjectForm.role_interest}
+                onChange={(e) => setSubjectForm((f) => ({ ...f, role_interest: e.target.value }))}
+                placeholder="Overall role or area of interest"
               />
             </div>
+
+            {/* Status */}
+            <div className="space-y-2">
+              <Label>Contact Status</Label>
+              <Select
+                value={subjectForm.status}
+                onValueChange={(v) => setSubjectForm((f) => ({ ...f, status: v }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="new">New</SelectItem>
+                  <SelectItem value="contacted">Contacted</SelectItem>
+                  <SelectItem value="in_discussion">In Discussion</SelectItem>
+                  <SelectItem value="confirmed">Confirmed</SelectItem>
+                  <SelectItem value="declined">Declined</SelectItem>
+                  <SelectItem value="archived">Archived</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Source */}
+            <div className="space-y-2">
+              <Label>Source</Label>
+              <Input
+                value={subjectForm.source}
+                onChange={(e) => setSubjectForm((f) => ({ ...f, source: e.target.value }))}
+                placeholder="How did you meet? (referral, website, etc.)"
+              />
+            </div>
+
+            {/* Notes */}
             <div className="space-y-2">
               <Label>Notes</Label>
               <Textarea
                 value={subjectForm.notes}
                 onChange={(e) => setSubjectForm((f) => ({ ...f, notes: e.target.value }))}
-                rows={2}
+                rows={3}
               />
             </div>
           </div>
@@ -1676,53 +2002,63 @@ export function EpisodeDetailView({
               onClick={handleSaveSubject}
               disabled={!subjectForm.name || createSubject.isPending || updateSubject.isPending}
             >
-              {subjectForm.id ? 'Update' : 'Add'}
+              {subjectForm.id ? 'Update' : 'Add Subject & Contact'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Location Dialog */}
-      <Dialog open={showLocationDialog} onOpenChange={setShowLocationDialog}>
+      {/* Location Picker Modal */}
+      <LocationPickerModal
+        isOpen={showLocationPicker}
+        onClose={() => setShowLocationPicker(false)}
+        projectId={projectId}
+        onSelect={handleSelectLocationForEpisode}
+        onCreateNew={handleCreateLocationForEpisode}
+        onAttachGlobal={handleAttachGlobalLocation}
+      />
+
+      {/* Link Contact Dialog */}
+      <Dialog open={showLinkContactDialog} onOpenChange={setShowLinkContactDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{locationForm.id ? 'Edit Location' : 'Add Location'}</DialogTitle>
+            <DialogTitle>Link Contact as Subject</DialogTitle>
+            <DialogDescription>Select a contact from the project's Contacts tab</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Name *</Label>
-              <Input
-                value={locationForm.name}
-                onChange={(e) => setLocationForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="Location name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Address</Label>
-              <Input
-                value={locationForm.address}
-                onChange={(e) => setLocationForm((f) => ({ ...f, address: e.target.value }))}
-                placeholder="Full address"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Notes</Label>
-              <Textarea
-                value={locationForm.notes}
-                onChange={(e) => setLocationForm((f) => ({ ...f, notes: e.target.value }))}
-                rows={2}
-              />
-            </div>
+          <div className="py-4 max-h-80 overflow-y-auto">
+            {projectContacts && projectContacts.length > 0 ? (
+              <div className="space-y-2">
+                {projectContacts
+                  .filter((contact) => !episode.subjects.some((s) => s.contact_id === contact.id))
+                  .map((contact) => (
+                    <button
+                      key={contact.id}
+                      className="w-full flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 text-left transition-colors"
+                      onClick={() => handleLinkContact(contact.id)}
+                    >
+                      <Users className="w-4 h-4 text-muted-gray mt-0.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-bone-white truncate">{contact.name}</p>
+                        {contact.role_interest && (
+                          <p className="text-sm text-muted-gray truncate">{contact.role_interest}</p>
+                        )}
+                        {contact.company && (
+                          <p className="text-xs text-muted-gray truncate">{contact.company}</p>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                {projectContacts.filter((contact) => !episode.subjects.some((s) => s.contact_id === contact.id)).length === 0 && (
+                  <p className="text-sm text-muted-gray text-center py-4">All contacts are already linked</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-gray text-center py-4">No contacts available</p>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowLocationDialog(false)}>
+            <Button variant="outline" onClick={() => setShowLinkContactDialog(false)}>
               Cancel
-            </Button>
-            <Button
-              onClick={handleSaveLocation}
-              disabled={!locationForm.name || createLocation.isPending || updateLocation.isPending}
-            >
-              {locationForm.id ? 'Update' : 'Add'}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1946,6 +2282,92 @@ export function EpisodeDetailView({
         </DialogContent>
       </Dialog>
 
+      {/* Link Asset Dialog */}
+      <Dialog open={showLinkAssetDialog} onOpenChange={setShowLinkAssetDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Link Asset</DialogTitle>
+            <DialogDescription>Select an asset from the project's Assets tab</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 max-h-80 overflow-y-auto">
+            {projectAssets && projectAssets.length > 0 ? (
+              <div className="space-y-2">
+                {projectAssets
+                  .filter((asset) => !episode.asset_links.some((al) => al.asset_id === asset.id))
+                  .map((asset) => (
+                    <button
+                      key={asset.id}
+                      className="w-full flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 text-left transition-colors"
+                      onClick={() => handleLinkAsset(asset.id)}
+                    >
+                      <Package className="w-4 h-4 text-muted-gray mt-0.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-bone-white truncate">{asset.name}</p>
+                        {asset.asset_type && (
+                          <p className="text-sm text-muted-gray truncate">{asset.asset_type}</p>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                {projectAssets.filter((asset) => !episode.asset_links.some((al) => al.asset_id === asset.id)).length === 0 && (
+                  <p className="text-sm text-muted-gray text-center py-4">All project assets are already linked</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-gray text-center py-4">No project assets available</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLinkAssetDialog(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Link Project Deliverable Dialog */}
+      <Dialog open={showLinkProjectDeliverableDialog} onOpenChange={setShowLinkProjectDeliverableDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Link Deliverable from Assets</DialogTitle>
+            <DialogDescription>Select a deliverable from the project's Assets tab</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 max-h-80 overflow-y-auto">
+            {projectDeliverables && projectDeliverables.length > 0 ? (
+              <div className="space-y-2">
+                {projectDeliverables
+                  .filter((pd) => !episode.deliverables.some((d) => d.project_deliverable_id === pd.id))
+                  .map((pd) => (
+                    <button
+                      key={pd.id}
+                      className="w-full flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 text-left transition-colors"
+                      onClick={() => handleLinkProjectDeliverable(pd.id)}
+                    >
+                      <Package className="w-4 h-4 text-muted-gray mt-0.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-bone-white truncate">{pd.name}</p>
+                        {pd.deliverable_type && (
+                          <p className="text-sm text-muted-gray truncate">{pd.deliverable_type}</p>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                {projectDeliverables.filter((pd) => !episode.deliverables.some((d) => d.project_deliverable_id === pd.id)).length === 0 && (
+                  <p className="text-sm text-muted-gray text-center py-4">All project deliverables are already linked</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-gray text-center py-4">No project deliverables available</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLinkProjectDeliverableDialog(false)}>
+              Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Link Storyboard Dialog */}
       <Dialog open={showLinkStoryboardDialog} onOpenChange={setShowLinkStoryboardDialog}>
         <DialogContent>
@@ -1993,7 +2415,7 @@ export function EpisodeDetailView({
                 className="w-full flex items-center justify-between p-3 bg-white/5 hover:bg-white/10 rounded-lg transition-colors"
               >
                 <span className="text-bone-white font-mono text-sm">
-                  {format(new Date(day.date), 'MMM d, yyyy')}
+                  {format(parseLocalDate(day.date), 'MMM d, yyyy')}
                 </span>
                 <div className="flex items-center gap-2">
                   {day.title && <span className="text-muted-gray text-sm">{day.title}</span>}
@@ -2027,16 +2449,24 @@ export function EpisodeDetailView({
               <Label>Approval Type *</Label>
               <Select
                 value={approvalForm.approval_type}
-                onValueChange={(v) => setApprovalForm((f) => ({ ...f, approval_type: v as 'EDIT_LOCK' | 'DELIVERY_APPROVAL' }))}
+                onValueChange={(v) => setApprovalForm((f) => ({ ...f, approval_type: v as ApprovalType }))}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="EDIT_LOCK">Edit Lock</SelectItem>
-                  <SelectItem value="DELIVERY_APPROVAL">Delivery Approval</SelectItem>
+                  {APPROVAL_TYPES.map((type) => (
+                    <SelectItem key={type.value} value={type.value}>
+                      {type.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              {approvalForm.approval_type && (
+                <p className="text-xs text-muted-gray">
+                  {getApprovalTypeInfo(approvalForm.approval_type)?.description}
+                </p>
+              )}
             </div>
             <div className="space-y-2">
               <Label>Notes</Label>
@@ -2065,9 +2495,8 @@ export function EpisodeDetailView({
           <DialogHeader>
             <DialogTitle>Review Approval Request</DialogTitle>
             <DialogDescription>
-              {showDecisionDialog?.approval_type === 'EDIT_LOCK'
-                ? 'Approving will lock the episode for editing.'
-                : 'Approving confirms this episode is ready for delivery.'}
+              {showDecisionDialog && getApprovalTypeInfo(showDecisionDialog.approval_type)?.description}
+              {showDecisionDialog?.approval_type === 'EDIT_LOCK' && ' Approving will lock the episode for editing.'}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">

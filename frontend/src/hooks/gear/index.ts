@@ -9,3 +9,5 @@ export * from './useGearMarketplace';
 export * from './usePersonalGear';
 export * from './useGearWorkOrders';
 export * from './useGearIncidentDetail';
+export * from './useGearCart';
+export * from './useWorkOrderRequests';

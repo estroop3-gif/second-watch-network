@@ -440,12 +440,12 @@ const LocationPickerModal: React.FC<LocationPickerModalProps> = ({
                 />
               </div>
               <div className="flex gap-3">
-                <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+                <Select value={selectedRegion || 'all'} onValueChange={(v) => setSelectedRegion(v === 'all' ? '' : v)}>
                   <SelectTrigger className="w-[150px]">
                     <SelectValue placeholder="All Regions" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Regions</SelectItem>
+                    <SelectItem value="all">All Regions</SelectItem>
                     {regionsData?.map((region) => (
                       <SelectItem key={region} value={region}>
                         {region}
@@ -453,12 +453,12 @@ const LocationPickerModal: React.FC<LocationPickerModalProps> = ({
                     ))}
                   </SelectContent>
                 </Select>
-                <Select value={selectedType} onValueChange={setSelectedType}>
+                <Select value={selectedType || 'all'} onValueChange={(v) => setSelectedType(v === 'all' ? '' : v)}>
                   <SelectTrigger className="w-[150px]">
                     <SelectValue placeholder="All Types" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Types</SelectItem>
+                    <SelectItem value="all">All Types</SelectItem>
                     {typesData?.map((type) => (
                       <SelectItem key={type} value={type}>
                         {type}

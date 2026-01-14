@@ -1,5 +1,6 @@
 /**
  * Transactions View - 6-Tab Structure
+ * Updated: 2026-01-13 14:17
  *
  * Tabs:
  * - Outgoing: Our gear currently rented/checked out to others
@@ -10,6 +11,7 @@
  * - Work Orders: Pre-checkout staging
  */
 import React, { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   ArrowUpRight,
   ArrowDownLeft,
@@ -38,6 +40,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Separator } from '@/components/ui/separator';
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
   Table,
   TableBody,
   TableCell,
@@ -62,9 +70,11 @@ import { cn } from '@/lib/utils';
 import { format, formatDistanceToNow } from 'date-fns';
 import { CheckoutDialog, TransactionDetailDialog } from '@/components/gear/checkout';
 import { CheckinDialog } from '@/components/gear/checkin';
-import { ExtensionResponseDialog, ExtensionCard } from '@/components/gear/marketplace';
+import { ExtensionResponseDialog, ExtensionCard, IncomingQuoteRequestDialog } from '@/components/gear/marketplace';
 import { WorkOrdersTabContent, WorkOrderDialog } from '@/components/gear/work-orders';
+import { WorkOrderRequestsSection } from './WorkOrderRequestsSection';
 import { useWorkOrderCounts } from '@/hooks/gear/useGearWorkOrders';
+import { useIncomingRequestCounts } from '@/hooks/gear/useWorkOrderRequests';
 import type { GearRentalExtension } from '@/types/gear';
 
 // Tab configuration
@@ -135,6 +145,7 @@ interface TransactionsViewProps {
 }
 
 export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TransactionTab>('outgoing');
   const [isQuickCheckoutOpen, setIsQuickCheckoutOpen] = useState(false);
   const [isWorkOrderDialogOpen, setIsWorkOrderDialogOpen] = useState(false);
@@ -144,15 +155,20 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
 
   const tabData = useTransactionsTab(orgId, activeTab);
   const { counts: workOrderCounts } = useWorkOrderCounts(orgId);
+  const { counts: workOrderRequestCounts } = useIncomingRequestCounts(orgId);
 
   // Calculate badge counts
   const outgoingCount = tabData.outgoing.total;
   const incomingCount = tabData.incoming.total;
   const requestsCount = tabData.requests.totals.incoming_quotes +
                         tabData.requests.totals.outgoing_quotes +
-                        tabData.requests.totals.extensions;
+                        tabData.requests.totals.extensions +
+                        (workOrderRequestCounts.pending || 0);
   const overdueCount = tabData.overdue.transactions.length;
-  const workOrdersActiveCount = (workOrderCounts.draft || 0) + (workOrderCounts.in_progress || 0) + (workOrderCounts.ready || 0);
+  const workOrdersTotalCount = (workOrderCounts.draft || 0) +
+                                (workOrderCounts.in_progress || 0) +
+                                (workOrderCounts.ready || 0) +
+                                (workOrderCounts.checked_out || 0);
 
   return (
     <div className="space-y-6">
@@ -187,9 +203,9 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
                     {overdueCount}
                   </Badge>
                 )}
-                {tab.id === 'work_orders' && workOrdersActiveCount > 0 && (
+                {tab.id === 'work_orders' && workOrdersTotalCount > 0 && (
                   <Badge className="ml-1 bg-orange-500/20 text-orange-400 text-xs">
-                    {workOrdersActiveCount}
+                    {workOrdersTotalCount}
                   </Badge>
                 )}
               </TabsTrigger>
@@ -231,6 +247,7 @@ export function TransactionsView({ orgId, orgType }: TransactionsViewProps) {
         {/* Requests Tab */}
         <TabsContent value="requests" className="mt-6">
           <RequestsTabContent
+            orgId={orgId}
             incomingQuotes={tabData.requests.incomingQuotes}
             outgoingQuotes={tabData.requests.outgoingQuotes}
             extensions={tabData.requests.extensions}
@@ -560,12 +577,14 @@ interface ExtensionData {
 }
 
 function RequestsTabContent({
+  orgId,
   incomingQuotes,
   outgoingQuotes,
   extensions,
   isLoading,
   onExtensionAction,
 }: {
+  orgId: string;
   incomingQuotes: Array<{
     request_type: 'incoming_quote';
     id: string;
@@ -599,24 +618,36 @@ function RequestsTabContent({
   isLoading: boolean;
   onExtensionAction?: (extension: ExtensionData) => void;
 }) {
+  const [selectedIncomingRequestId, setSelectedIncomingRequestId] = useState<string | null>(null);
+  const [selectedOutgoingRequestId, setSelectedOutgoingRequestId] = useState<string | null>(null);
+
+  // Find the selected request data
+  const selectedIncomingRequest = incomingQuotes.find(q => q.id === selectedIncomingRequestId);
+  const selectedOutgoingRequest = outgoingQuotes.find(q => q.id === selectedOutgoingRequestId);
+
   if (isLoading) {
     return <TableSkeleton />;
   }
 
   const hasNoRequests = incomingQuotes.length === 0 && outgoingQuotes.length === 0 && extensions.length === 0;
 
-  if (hasNoRequests) {
-    return (
-      <EmptyState
-        icon={<MessageSquare className="w-12 h-12" />}
-        title="No pending requests"
-        description="Quote requests, approvals, and extensions will appear here"
-      />
-    );
-  }
+  // Note: Even if there are no quote/extension requests, there might be work order requests
+  // So we show the WorkOrderRequestsSection first and only show empty state if truly empty
 
   return (
     <div className="space-y-6">
+      {/* Work Order Requests (from cart submissions) */}
+      <WorkOrderRequestsSection orgId={orgId} />
+
+      {/* Show empty state only if no quote requests AND no work order requests section showed content */}
+      {hasNoRequests && (
+        <EmptyState
+          icon={<MessageSquare className="w-12 h-12" />}
+          title="No other pending requests"
+          description="Quote requests, approvals, and extensions will appear here"
+        />
+      )}
+
       {/* Incoming Quote Requests */}
       {incomingQuotes.length > 0 && (
         <Card className="bg-charcoal-black/50 border-muted-gray/30">
@@ -634,6 +665,7 @@ function RequestsTabContent({
                 <div
                   key={req.id}
                   className="flex items-center justify-between p-3 rounded-lg bg-charcoal-black/30 hover:bg-charcoal-black/50 cursor-pointer transition-colors"
+                  onClick={() => setSelectedIncomingRequestId(req.id)}
                 >
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-lg bg-purple-500/20 flex items-center justify-center">
@@ -642,7 +674,7 @@ function RequestsTabContent({
                     <div>
                       <p className="font-medium text-bone-white">{req.title}</p>
                       <p className="text-sm text-muted-gray">
-                        From {req.counterparty_name} • {req.item_count} items
+                        From {req.requester_name || req.counterparty_name} • {req.item_count} items
                       </p>
                       <p className="text-xs text-muted-gray">
                         {format(new Date(req.rental_start_date), 'MMM d')} - {format(new Date(req.rental_end_date), 'MMM d, yyyy')}
@@ -662,6 +694,17 @@ function RequestsTabContent({
         </Card>
       )}
 
+      {/* Incoming Request Detail Dialog */}
+      <IncomingQuoteRequestDialog
+        requestId={selectedIncomingRequestId}
+        orgId={orgId}
+        open={!!selectedIncomingRequestId}
+        onClose={() => setSelectedIncomingRequestId(null)}
+        onActionComplete={() => {
+          setSelectedIncomingRequestId(null);
+        }}
+      />
+
       {/* Outgoing Quote Requests */}
       {outgoingQuotes.length > 0 && (
         <Card className="bg-charcoal-black/50 border-muted-gray/30">
@@ -679,6 +722,7 @@ function RequestsTabContent({
                 <div
                   key={req.id}
                   className="flex items-center justify-between p-3 rounded-lg bg-charcoal-black/30 hover:bg-charcoal-black/50 cursor-pointer transition-colors"
+                  onClick={() => setSelectedOutgoingRequestId(req.id)}
                 >
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
@@ -707,6 +751,56 @@ function RequestsTabContent({
             })}
           </CardContent>
         </Card>
+      )}
+
+      {/* Outgoing Request Detail Dialog */}
+      {selectedOutgoingRequest && (
+        <Dialog open={!!selectedOutgoingRequestId} onOpenChange={(open) => !open && setSelectedOutgoingRequestId(null)}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>{selectedOutgoingRequest.title}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="p-3 rounded-lg bg-muted/50">
+                <p className="text-xs text-muted-foreground">To</p>
+                <p className="font-medium">{selectedOutgoingRequest.counterparty_name}</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">Start Date</p>
+                  <p className="font-medium">{format(new Date(selectedOutgoingRequest.rental_start_date), 'PPP')}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/50">
+                  <p className="text-xs text-muted-foreground">End Date</p>
+                  <p className="font-medium">{format(new Date(selectedOutgoingRequest.rental_end_date), 'PPP')}</p>
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-muted/50">
+                <p className="text-xs text-muted-foreground">Items Requested</p>
+                <p className="font-medium">{selectedOutgoingRequest.item_count} item{selectedOutgoingRequest.item_count !== 1 ? 's' : ''}</p>
+              </div>
+              {selectedOutgoingRequest.quoted_total && (
+                <div className="flex justify-between items-center p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                  <span className="text-sm font-medium">Quoted Total</span>
+                  <span className="text-lg font-semibold text-green-400">
+                    ${selectedOutgoingRequest.quoted_total.toLocaleString()}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-between items-center p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                <span className="text-sm font-medium">Status</span>
+                <Badge className={cn('border', REQUEST_STATUS_CONFIG[selectedOutgoingRequest.status].color)}>
+                  {REQUEST_STATUS_CONFIG[selectedOutgoingRequest.status].label}
+                </Badge>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <Button variant="outline" onClick={() => setSelectedOutgoingRequestId(null)}>
+                Close
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* Extensions */}

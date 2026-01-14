@@ -4,6 +4,7 @@ import AppHeader from "@/components/AppHeader";
 import Footer from "@/components/landing/Footer";
 import { AlphaTrackingProvider } from "@/context/AlphaTrackingContext";
 import AlphaTesterBanner from "@/components/alpha/AlphaTesterBanner";
+import { CartDrawer } from "@/components/gear/cart";
 
 const AuthenticatedLayout = () => {
   const { user, loading } = useAuth();
@@ -25,6 +26,7 @@ const AuthenticatedLayout = () => {
         </main>
         <Footer />
         <AlphaTesterBanner />
+        <CartDrawer />
       </div>
     </AlphaTrackingProvider>
   );

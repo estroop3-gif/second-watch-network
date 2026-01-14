@@ -94,6 +94,7 @@ import {
 } from '@/types/backlot';
 import { api } from '@/lib/api';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 interface ClearancesViewProps {
@@ -151,7 +152,7 @@ const ClearanceCard: React.FC<{
 
   const isExpiringSoon = useMemo(() => {
     if (!item.expiration_date || item.status !== 'signed') return false;
-    const expDate = new Date(item.expiration_date);
+    const expDate = parseLocalDate(item.expiration_date);
     const thirtyDaysFromNow = new Date();
     thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
     return expDate <= thirtyDaysFromNow;
@@ -213,13 +214,13 @@ const ClearanceCard: React.FC<{
             {item.signed_date && (
               <span className="flex items-center gap-1">
                 <CheckCircle className="w-3 h-3 text-green-400" />
-                Signed {format(new Date(item.signed_date), 'MMM d, yyyy')}
+                Signed {format(parseLocalDate(item.signed_date), 'MMM d, yyyy')}
               </span>
             )}
             {item.expiration_date && (
               <span className={cn('flex items-center gap-1', isExpiringSoon && 'text-orange-400')}>
                 <Calendar className="w-3 h-3" />
-                Expires {format(new Date(item.expiration_date), 'MMM d, yyyy')}
+                Expires {format(parseLocalDate(item.expiration_date), 'MMM d, yyyy')}
               </span>
             )}
             {item.contact_email && (

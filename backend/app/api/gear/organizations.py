@@ -22,6 +22,13 @@ class OrganizationCreate(BaseModel):
     org_type: Optional[str] = "production_company"  # production_company, rental_house, hybrid, studio, agency, other
     description: Optional[str] = None
     website: Optional[str] = None
+    # Required location fields
+    address_line1: str
+    city: str
+    state: str
+    postal_code: str
+    country: str = "US"
+    hide_exact_address: bool = False
 
 
 class OrganizationUpdate(BaseModel):
@@ -76,6 +83,42 @@ def require_org_access(org_id: str, user_id: str, roles: List[str] = None) -> No
         raise HTTPException(status_code=403, detail="Access denied to this organization")
 
 
+def geocode_address(
+    address_line1: str,
+    city: str,
+    state: str,
+    postal_code: str,
+    country: str = "US"
+) -> tuple[float, float]:
+    """
+    Geocode an address to lat/lng coordinates using AWS Location Service.
+    Returns (latitude, longitude) tuple.
+    """
+    from app.services.geocoding import geocode_address as aws_geocode
+
+    # Build the full address string
+    address_parts = [address_line1, city, state, postal_code, country]
+    full_address = ", ".join(filter(None, address_parts))
+
+    try:
+        result = aws_geocode(full_address)
+        if result:
+            return result['lat'], result['lon']
+
+        # If full address fails, try just city, state
+        fallback_address = f"{city}, {state}, {country}"
+        result = aws_geocode(fallback_address)
+        if result:
+            return result['lat'], result['lon']
+
+    except Exception as e:
+        # Log error but don't fail - coordinates are nice to have
+        print(f"AWS Geocoding error: {e}")
+
+    # Return None values if geocoding fails (will be null in DB)
+    return None, None
+
+
 # ============================================================================
 # ORGANIZATION ENDPOINTS
 # ============================================================================
@@ -93,15 +136,36 @@ async def create_organization(
     data: OrganizationCreate,
     user=Depends(get_current_user)
 ):
-    """Create a new organization."""
+    """Create a new organization with required location."""
     profile_id = get_profile_id(user)
+
+    # Geocode the address to get coordinates
+    latitude, longitude = geocode_address(
+        address_line1=data.address_line1,
+        city=data.city,
+        state=data.state,
+        postal_code=data.postal_code,
+        country=data.country
+    )
+
+    # Generate public location display (City, State)
+    public_location_display = f"{data.city}, {data.state}"
 
     org = gear_service.create_organization(
         name=data.name,
         created_by=profile_id,
         org_type=data.org_type,
         description=data.description,
-        website=data.website
+        website=data.website,
+        address_line1=data.address_line1,
+        city=data.city,
+        state=data.state,
+        postal_code=data.postal_code,
+        country=data.country,
+        latitude=latitude,
+        longitude=longitude,
+        hide_exact_address=data.hide_exact_address,
+        public_location_display=public_location_display
     )
 
     if not org:

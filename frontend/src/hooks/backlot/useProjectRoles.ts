@@ -608,7 +608,8 @@ export function useCanViewAsRole(projectId: string | null) {
 }
 
 // Helper to check approval permissions for the current user
-export function useCanApprove(projectId: string | null) {
+// Now also accepts optional isOwner/isAdmin flags from useProjectPermission
+export function useCanApprove(projectId: string | null, options?: { isOwner?: boolean; isAdmin?: boolean }) {
   const { data: myRoles, isLoading } = useMyProjectRoles(projectId);
 
   // Get user's primary backlot role (or first role if no primary)
@@ -620,18 +621,21 @@ export function useCanApprove(projectId: string | null) {
   const isFirstAD = backlotRole === 'first_ad';
   const isDepartmentHead = backlotRole === 'department_head';
 
+  // Project owners and admins have full approval permissions
+  const isOwnerOrAdmin = options?.isOwner || options?.isAdmin || false;
+
   return {
     isLoading,
     backlotRole,
-    // Full approvers can approve all expenses
-    canApproveExpenses: isApprover || isDepartmentHead,
-    // Full approvers can approve all invoices
-    canApproveInvoices: isApprover,
-    // Full approvers + 1st AD can approve timecards (1st AD for crew, dept head for dept)
-    canApproveTimecards: isApprover || isFirstAD || isDepartmentHead,
-    // Full approvers + dept head can approve POs (dept head for dept only)
-    canApprovePOs: isApprover || isDepartmentHead,
-    // Can see the unified approvals dashboard (full approvers only)
-    canViewApprovalsDashboard: isApprover,
+    // Full approvers, owners, and admins can approve all expenses
+    canApproveExpenses: isApprover || isDepartmentHead || isOwnerOrAdmin,
+    // Full approvers, owners, and admins can approve all invoices
+    canApproveInvoices: isApprover || isOwnerOrAdmin,
+    // Full approvers + 1st AD + owners/admins can approve timecards
+    canApproveTimecards: isApprover || isFirstAD || isDepartmentHead || isOwnerOrAdmin,
+    // Full approvers + dept head + owners/admins can approve POs
+    canApprovePOs: isApprover || isDepartmentHead || isOwnerOrAdmin,
+    // Owners, admins, and full approvers can see the unified approvals dashboard
+    canViewApprovalsDashboard: isApprover || isOwnerOrAdmin,
   };
 }

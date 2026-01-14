@@ -61,6 +61,7 @@ import {
   Calendar as CalendarIcon,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useDailyBudgets,
   useDailyBudget,
@@ -140,7 +141,7 @@ const DailyBudgetCard: React.FC<{
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-gray mb-2">
             <Calendar className="w-4 h-4" />
-            {format(new Date(summary.date), 'EEEE, MMMM d, yyyy')}
+            {format(parseLocalDate(summary.date), 'EEEE, MMMM d, yyyy')}
           </div>
           {summary.production_day_title && (
             <p className="text-bone-white font-medium">{summary.production_day_title}</p>
@@ -916,13 +917,13 @@ const InvoicesSection: React.FC<{
                           {invoice.invoice_date && (
                             <span className="flex items-center gap-1">
                               <CalendarIcon className="w-3 h-3" />
-                              {format(new Date(invoice.invoice_date), 'MMM d, yyyy')}
+                              {format(parseLocalDate(invoice.invoice_date), 'MMM d, yyyy')}
                             </span>
                           )}
                           {invoice.due_date && (
                             <>
                               <span>•</span>
-                              <span>Due {format(new Date(invoice.due_date), 'MMM d')}</span>
+                              <span>Due {format(parseLocalDate(invoice.due_date), 'MMM d')}</span>
                             </>
                           )}
                         </div>
@@ -964,7 +965,7 @@ const InvoicesSection: React.FC<{
                             )}
                             {item.service_date && (
                               <span className="text-xs text-muted-gray">
-                                • {format(new Date(item.service_date), 'MMM d')}
+                                • {format(parseLocalDate(item.service_date), 'MMM d')}
                               </span>
                             )}
                           </div>
@@ -1227,7 +1228,7 @@ const DailyBudgetDetail: React.FC<{
             )}
           </div>
           <p className="text-sm text-muted-gray">
-            {format(new Date(dailyBudget.date), 'EEEE, MMMM d, yyyy')}
+            {format(parseLocalDate(dailyBudget.date), 'EEEE, MMMM d, yyyy')}
           </p>
         </div>
       </div>
@@ -1615,7 +1616,7 @@ const DailyBudgetView: React.FC<DailyBudgetViewProps> = ({ projectId, canEdit })
     // Map production days to display items, merging with existing summaries
     return days
       .filter(day => day.date) // Only show days with dates
-      .sort((a, b) => new Date(a.date!).getTime() - new Date(b.date!).getTime())
+      .sort((a, b) => parseLocalDate(a.date!).getTime() - parseLocalDate(b.date!).getTime())
       .map(day => {
         const key = `${day.day_number}-${day.date}`;
         const existingSummary = summaryMap.get(key);

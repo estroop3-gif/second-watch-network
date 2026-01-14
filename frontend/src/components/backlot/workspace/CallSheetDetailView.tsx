@@ -61,11 +61,16 @@ import {
   RefreshCw,
   Link2,
   FileSpreadsheet,
+  Images,
+  Plus,
+  Trash2,
+  Image as ImageIcon,
 } from 'lucide-react';
-import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf, useDownloadCallSheetExcel, useCallSheetSceneLinks, useCallSheetComments } from '@/hooks/backlot';
+import { useCallSheetPeople, useCallSheetSendHistory, useCallSheetLocations, useDownloadCallSheetPdf, useDownloadCallSheetExcel, useCallSheetSceneLinks, useCallSheetComments, useScriptSidesForCallSheet, useGenerateScriptSides, useCheckOutdatedSides, getSidesDisplayName, getSidesStatusColor, useCallSheetStoryboards, useCallSheetStoryboardLink, useStoryboards } from '@/hooks/backlot';
 import { useToast } from '@/hooks/use-toast';
 import { BacklotCallSheet, BacklotCallSheetPerson, CallSheetSendHistory, BacklotCallSheetTemplate } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import CallSheetSyncModal from './CallSheetSyncModal';
 import CallSheetSceneLinkModal from './CallSheetSceneLinkModal';
@@ -124,12 +129,21 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
   const { locations } = useCallSheetLocations(callSheet.id);
   const { data: linkedScenes } = useCallSheetSceneLinks(callSheet.id);
   const { unresolvedCount: unresolvedCommentsCount } = useCallSheetComments(callSheet.id);
+  const { data: scriptSides, isLoading: sidesLoading } = useScriptSidesForCallSheet(projectId, callSheet.id);
+  const { data: outdatedSides } = useCheckOutdatedSides(projectId);
+  const generateSides = useGenerateScriptSides(projectId);
   const downloadPdf = useDownloadCallSheetPdf();
   const downloadExcel = useDownloadCallSheetExcel();
+  // Storyboard integration
+  const { data: linkedStoryboards, isLoading: storyboardsLoading } = useCallSheetStoryboards(callSheet.id);
+  const { data: allStoryboards } = useStoryboards(projectId);
+  const storyboardLink = useCallSheetStoryboardLink();
   const [activeTab, setActiveTab] = useState('details');
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [showSceneLinkModal, setShowSceneLinkModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showStoryboardLinkModal, setShowStoryboardLinkModal] = useState(false);
+  const [generatingSides, setGeneratingSides] = useState(false);
 
   // Group people by department
   const peopleByDepartment = people.reduce((acc, person) => {
@@ -178,6 +192,45 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
       });
     }
   };
+
+  // Generate script sides from linked scenes
+  const handleGenerateSides = async () => {
+    if (!linkedScenes || linkedScenes.length === 0) {
+      toast({
+        title: 'No Scenes',
+        description: 'Link scenes to this call sheet first before generating script sides.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setGeneratingSides(true);
+    try {
+      const sceneIds = linkedScenes.map(link => link.scene_id);
+      await generateSides.mutateAsync({
+        call_sheet_id: callSheet.id,
+        scene_ids: sceneIds,
+        title: `${callSheet.title} Sides`,
+      });
+      toast({
+        title: 'Sides Generated',
+        description: 'Script sides have been generated from linked scenes.',
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Generation Failed',
+        description: error.message || 'Failed to generate script sides.',
+        variant: 'destructive',
+      });
+    } finally {
+      setGeneratingSides(false);
+    }
+  };
+
+  // Check if any sides are outdated
+  const isAnyOutdated = scriptSides?.some(side =>
+    outdatedSides?.some(o => o.export_id === side.id)
+  ) ?? false;
 
   // Collect department notes that have content
   const departmentNotes = [
@@ -241,7 +294,7 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
             <div className="text-lg text-gray-700">{callSheet.production_title}</div>
           )}
           <div className="text-lg text-gray-600">
-            {format(new Date(callSheet.date), 'EEEE, MMMM d, yyyy')}
+            {format(parseLocalDate(callSheet.date), 'EEEE, MMMM d, yyyy')}
             {callSheet.shoot_day_number && callSheet.total_shoot_days && (
               <span className="ml-4">Day {callSheet.shoot_day_number} of {callSheet.total_shoot_days}</span>
             )}
@@ -257,6 +310,12 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
             </TabsTrigger>
             <TabsTrigger value="scenes">
               Scenes {linkedScenes && linkedScenes.length > 0 && `(${linkedScenes.length})`}
+            </TabsTrigger>
+            <TabsTrigger value="storyboards">
+              Storyboards {linkedStoryboards && linkedStoryboards.length > 0 && `(${linkedStoryboards.length})`}
+            </TabsTrigger>
+            <TabsTrigger value="script-sides">
+              Script Sides {scriptSides && scriptSides.length > 0 && `(${scriptSides.length})`}
             </TabsTrigger>
             <TabsTrigger value="history">
               History {sendHistory.length > 0 && `(${sendHistory.length})`}
@@ -282,7 +341,7 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
                     <div>
                       <div className="text-muted-gray text-xs">Date</div>
                       <div className="text-bone-white font-medium">
-                        {format(new Date(callSheet.date), 'EEEE, MMMM d, yyyy')}
+                        {format(parseLocalDate(callSheet.date), 'EEEE, MMMM d, yyyy')}
                       </div>
                     </div>
                   </div>
@@ -925,6 +984,260 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
               )}
             </TabsContent>
 
+            {/* Storyboards Tab */}
+            <TabsContent value="storyboards" className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-bone-white flex items-center gap-2">
+                  <Images className="w-4 h-4 text-accent-yellow" />
+                  Linked Storyboards
+                </h4>
+                {canEdit && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowStoryboardLinkModal(true)}
+                    className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Link Storyboard
+                  </Button>
+                )}
+              </div>
+
+              {storyboardsLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 2 }).map((_, i) => (
+                    <Skeleton key={i} className="h-24 w-full" />
+                  ))}
+                </div>
+              ) : linkedStoryboards && linkedStoryboards.length > 0 ? (
+                <div className="space-y-3">
+                  {linkedStoryboards.map((sb) => (
+                    <div
+                      key={sb.id}
+                      className="bg-muted-gray/10 rounded-lg p-4 hover:bg-muted-gray/20 transition-colors"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h5 className="font-medium text-bone-white">{sb.title}</h5>
+                            <Badge variant="outline" className="text-xs border-muted-gray/30">
+                              {sb.aspect_ratio}
+                            </Badge>
+                            {sb.status === 'LOCKED' && (
+                              <Badge variant="outline" className="text-xs border-yellow-500/30 text-yellow-400">
+                                Locked
+                              </Badge>
+                            )}
+                          </div>
+                          {sb.description && (
+                            <p className="text-sm text-muted-gray line-clamp-1">{sb.description}</p>
+                          )}
+                          <div className="flex items-center gap-4 mt-2 text-xs text-muted-gray">
+                            <span>{sb.section_count || 0} sections</span>
+                            <span>{sb.panel_count || 0} panels</span>
+                          </div>
+                        </div>
+                        {canEdit && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              storyboardLink.unlink({
+                                callSheetId: callSheet.id,
+                                storyboardId: sb.id,
+                              });
+                              toast({
+                                title: 'Storyboard unlinked',
+                                description: `"${sb.title}" has been removed from this call sheet.`,
+                              });
+                            }}
+                            className="text-muted-gray hover:text-red-400"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
+                      {/* Panel thumbnails preview */}
+                      {sb.sections && sb.sections.length > 0 && (
+                        <div className="flex gap-2 mt-3 overflow-x-auto pb-2">
+                          {sb.sections.flatMap(sec => sec.panels || []).slice(0, 6).map((panel, idx) => (
+                            <div
+                              key={panel.id || idx}
+                              className="w-16 h-10 flex-shrink-0 bg-white/10 rounded overflow-hidden"
+                            >
+                              {panel.reference_image_url ? (
+                                <img
+                                  src={panel.reference_image_url}
+                                  alt={panel.title || `Panel ${idx + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center">
+                                  <ImageIcon className="w-4 h-4 text-muted-gray" />
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          {(sb.panel_count || 0) > 6 && (
+                            <div className="w-16 h-10 flex-shrink-0 bg-white/5 rounded flex items-center justify-center text-xs text-muted-gray">
+                              +{(sb.panel_count || 0) - 6}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Images className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-bone-white mb-2">No storyboards linked</h3>
+                  <p className="text-muted-gray mb-4">
+                    Link storyboards to this call sheet for visual shot planning reference.
+                  </p>
+                  {canEdit && (
+                    <Button
+                      onClick={() => setShowStoryboardLinkModal(true)}
+                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                    >
+                      <Plus className="w-4 h-4 mr-2" />
+                      Link Storyboard
+                    </Button>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* Script Sides Tab */}
+            <TabsContent value="script-sides" className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-medium text-bone-white flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-accent-yellow" />
+                  Script Sides
+                  {isAnyOutdated && (
+                    <Badge variant="outline" className="ml-2 border-amber-500/30 text-amber-400 text-xs">
+                      <AlertTriangle className="w-3 h-3 mr-1" />
+                      Needs Update
+                    </Badge>
+                  )}
+                </h4>
+                {canEdit && linkedScenes && linkedScenes.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleGenerateSides}
+                    disabled={generatingSides}
+                    className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                  >
+                    {generatingSides ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-4 h-4 mr-2" />
+                        Generate Sides
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
+
+              {sidesLoading ? (
+                <div className="space-y-2">
+                  {Array.from({ length: 2 }).map((_, i) => (
+                    <Skeleton key={i} className="h-16 w-full" />
+                  ))}
+                </div>
+              ) : scriptSides && scriptSides.length > 0 ? (
+                <div className="space-y-2">
+                  {scriptSides.map((side) => {
+                    const isOutdated = outdatedSides?.some(o => o.export_id === side.id);
+                    return (
+                      <div
+                        key={side.id}
+                        className={cn(
+                          'flex items-center gap-4 p-3 rounded-lg bg-muted-gray/10',
+                          isOutdated && 'border border-amber-500/30'
+                        )}
+                      >
+                        <div className="w-10 h-10 rounded bg-accent-yellow/20 flex items-center justify-center">
+                          <FileText className="w-5 h-5 text-accent-yellow" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-bone-white truncate">
+                              {getSidesDisplayName(side)}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className={cn('text-xs', getSidesStatusColor(side.status))}
+                            >
+                              {side.status}
+                            </Badge>
+                            {isOutdated && (
+                              <AlertTriangle className="w-4 h-4 text-amber-500" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-muted-gray mt-1">
+                            <span>{side.page_count || 0} pages</span>
+                            {side.created_at && (
+                              <span>
+                                {formatDistanceToNow(new Date(side.created_at), { addSuffix: true })}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {side.signed_url && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            asChild
+                            className="text-muted-gray hover:text-bone-white"
+                          >
+                            <a href={side.signed_url} target="_blank" rel="noopener noreferrer">
+                              <Download className="w-4 h-4" />
+                            </a>
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <FileText className="w-12 h-12 text-muted-gray/30 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-bone-white mb-2">No script sides</h3>
+                  <p className="text-muted-gray mb-4">
+                    {linkedScenes && linkedScenes.length > 0
+                      ? 'Generate script sides from the linked scenes.'
+                      : 'Link scenes to this call sheet first, then generate script sides.'}
+                  </p>
+                  {canEdit && linkedScenes && linkedScenes.length > 0 && (
+                    <Button
+                      onClick={handleGenerateSides}
+                      disabled={generatingSides}
+                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                    >
+                      {generatingSides ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <FileText className="w-4 h-4 mr-2" />
+                          Generate Sides
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+
             {/* Send History Tab */}
             <TabsContent value="history" className="space-y-4">
               {historyLoading ? (
@@ -1207,6 +1520,74 @@ const CallSheetDetailView: React.FC<CallSheetDetailViewProps> = ({
           open={showShareModal}
           onOpenChange={setShowShareModal}
         />
+
+        {/* Storyboard Link Modal */}
+        <Dialog open={showStoryboardLinkModal} onOpenChange={setShowStoryboardLinkModal}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Images className="w-5 h-5 text-accent-yellow" />
+                Link Storyboard
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-4 max-h-[400px] overflow-y-auto">
+              {allStoryboards && allStoryboards.length > 0 ? (
+                allStoryboards
+                  .filter((sb) => !linkedStoryboards?.some((linked) => linked.id === sb.id))
+                  .map((sb) => (
+                    <div
+                      key={sb.id}
+                      className="flex items-center justify-between p-3 bg-muted-gray/10 rounded-lg hover:bg-muted-gray/20 transition-colors"
+                    >
+                      <div>
+                        <div className="font-medium text-bone-white">{sb.title}</div>
+                        <div className="text-xs text-muted-gray">
+                          {sb.aspect_ratio} • {sb.section_count || 0} sections • {sb.panel_count || 0} panels
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          storyboardLink.link({
+                            callSheetId: callSheet.id,
+                            storyboardId: sb.id,
+                          });
+                          toast({
+                            title: 'Storyboard linked',
+                            description: `"${sb.title}" has been linked to this call sheet.`,
+                          });
+                        }}
+                        disabled={storyboardLink.isLinking}
+                        className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Link
+                      </Button>
+                    </div>
+                  ))
+              ) : (
+                <div className="text-center py-8">
+                  <Images className="w-10 h-10 text-muted-gray/30 mx-auto mb-3" />
+                  <p className="text-muted-gray">No storyboards available to link.</p>
+                  <p className="text-xs text-muted-gray mt-1">Create storyboards in the Storyboards tab first.</p>
+                </div>
+              )}
+              {allStoryboards &&
+                allStoryboards.length > 0 &&
+                allStoryboards.filter((sb) => !linkedStoryboards?.some((linked) => linked.id === sb.id)).length === 0 && (
+                  <div className="text-center py-8">
+                    <Images className="w-10 h-10 text-muted-gray/30 mx-auto mb-3" />
+                    <p className="text-muted-gray">All storyboards are already linked.</p>
+                  </div>
+                )}
+            </div>
+            <div className="flex justify-end">
+              <Button variant="outline" onClick={() => setShowStoryboardLinkModal(false)}>
+                Close
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );

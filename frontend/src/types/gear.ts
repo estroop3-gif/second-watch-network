@@ -932,6 +932,13 @@ export interface CreateOrganizationInput {
   org_type?: OrganizationType;
   description?: string;
   website?: string;
+  // Required location fields
+  address_line1: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country?: string;
+  hide_exact_address?: boolean;
 }
 
 export interface CreateAssetInput {
@@ -1575,13 +1582,16 @@ export interface GearMarketplaceListing {
 }
 
 export interface GearMarketplaceSearchFilters {
-  search?: string;
+  q?: string; // Search query
+  search?: string; // Alias for q
   category_id?: string;
+  organization_id?: string; // Filter to only listings from this organization
   location?: string;
   min_price?: number;
   max_price?: number;
   available_from?: string;
   available_to?: string;
+  timezone?: string; // User's timezone (e.g., "America/Los_Angeles")
   lister_type?: ListerType;
   listing_type?: ListingType;
   verified_only?: boolean;
@@ -1591,6 +1601,9 @@ export interface GearMarketplaceSearchFilters {
   // Grouping and prioritization
   group_by_org?: boolean;
   priority_org_ids?: string; // Comma-separated org IDs to prioritize (e.g., cart items)
+  // Pagination
+  limit?: number;
+  offset?: number;
 }
 
 export interface MarketplaceOrganizationGroup {
@@ -1944,6 +1957,12 @@ export interface CreateListingInput {
   blackout_dates?: Array<{ start: string; end: string }>;
   rental_notes?: string;
   pickup_instructions?: string;
+  // Delivery options
+  offers_delivery?: boolean;
+  delivery_radius_miles?: number;
+  delivery_fee?: number;
+  offers_shipping?: boolean;
+  shipping_fee?: number;
 }
 
 export interface RequestExtensionInput {
@@ -2551,4 +2570,353 @@ export interface QuickAddAssetResponse {
   asset_id: string;
   listing_id: string | null;
   org_id: string;
+}
+
+// ============================================================================
+// MARKETPLACE LOCATION-BASED SEARCH TYPES
+// ============================================================================
+
+export type LocationSource = 'browser' | 'profile' | 'manual';
+export type ViewMode = 'map' | 'grid' | 'list';
+export type ResultMode = 'gear_houses' | 'gear_items';
+export type RadiusMiles = 25 | 50 | 100 | 250;
+
+export interface MarketplaceSearchPreferences {
+  id?: string;
+  project_id: string;
+  profile_id?: string;
+  search_latitude?: number;
+  search_longitude?: number;
+  search_location_name?: string;
+  location_source: LocationSource;
+  search_radius_miles: RadiusMiles;
+  view_mode: ViewMode;
+  result_mode: ResultMode;
+  delivery_to_me_only: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MarketplacePreferencesUpdate {
+  search_latitude?: number;
+  search_longitude?: number;
+  search_location_name?: string;
+  location_source?: LocationSource;
+  search_radius_miles?: RadiusMiles;
+  view_mode?: ViewMode;
+  result_mode?: ResultMode;
+  delivery_to_me_only?: boolean;
+}
+
+export interface GearHouseFavorite {
+  id: string;
+  profile_id: string;
+  organization_id: string;
+  project_id?: string;
+  notes?: string;
+  created_at: string;
+  // Enriched org info
+  organization_name?: string;
+  marketplace_name?: string;
+  marketplace_logo_url?: string;
+  location_display?: string;
+  location_latitude?: number;
+  location_longitude?: number;
+  lister_type?: ListerType;
+  is_verified?: boolean;
+  offers_delivery?: boolean;
+  delivery_radius_miles?: number;
+  listing_count?: number;
+}
+
+export interface GearHouseTopCategory {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface GearHouseFeaturedItem {
+  id: string;
+  asset_id: string;
+  name: string;
+  daily_rate?: number;
+  photo_url?: string;
+}
+
+export interface MarketplaceOrganizationEnriched {
+  id: string;
+  name: string;
+  marketplace_name?: string;
+  marketplace_description?: string;
+  marketplace_logo_url?: string;
+  location_display?: string;
+  location_latitude?: number;
+  location_longitude?: number;
+  lister_type?: ListerType;
+  is_verified?: boolean;
+  offers_delivery?: boolean;
+  delivery_radius_miles?: number;
+  delivery_base_fee?: number;
+  delivery_per_mile_fee?: number;
+  contact_email?: string;
+  contact_phone?: string;
+  // Enriched fields from nearby search
+  distance_miles?: number;
+  can_deliver_to_user?: boolean;
+  estimated_delivery_fee?: number;
+  top_categories?: GearHouseTopCategory[];
+  featured_items?: GearHouseFeaturedItem[];
+  is_favorited?: boolean;
+  listing_count?: number;
+}
+
+export interface MarketplaceNearbySearchParams {
+  lat: number;
+  lng: number;
+  radius_miles?: RadiusMiles;
+  result_mode?: ResultMode;
+  delivery_to_me_only?: boolean;
+  q?: string;
+  category_id?: string;
+  lister_type?: ListerType;
+  verified_only?: boolean;
+  available_from?: string;  // Date filter: start date (YYYY-MM-DD)
+  available_to?: string;    // Date filter: end date (YYYY-MM-DD)
+  timezone?: string;        // User's timezone (e.g., "America/Los_Angeles")
+  limit?: number;
+  offset?: number;
+}
+
+export interface MarketplaceGearHousesResponse {
+  gear_houses: MarketplaceOrganizationEnriched[];
+  total: number;
+  user_location: { lat: number; lng: number };
+  radius_miles: number;
+}
+
+export interface MarketplaceListingWithDistance extends GearMarketplaceListing {
+  distance_miles?: number;
+  can_deliver_to_user?: boolean;
+  location_display?: string;
+}
+
+export interface MarketplaceListingsNearbyResponse {
+  listings: MarketplaceListingWithDistance[];
+  total: number;
+  user_location: { lat: number; lng: number };
+  radius_miles: number;
+}
+
+export interface UserLocation {
+  latitude: number;
+  longitude: number;
+  name?: string;
+  source: LocationSource;
+}
+
+export interface GeocodeResponse {
+  success: boolean;
+  latitude: number;
+  longitude: number;
+  public_location_display: string;
+  geocoded_address: string;
+}
+
+// ============================================================================
+// COMMUNITY MARKETPLACE PREFERENCES (PROFILE-LEVEL)
+// ============================================================================
+
+export interface CommunitySearchPreferences {
+  id?: string;
+  profile_id?: string;
+  search_latitude?: number;
+  search_longitude?: number;
+  search_location_name?: string;
+  location_source: LocationSource;
+  search_radius_miles: RadiusMiles;
+  view_mode: ViewMode;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CommunityPreferencesUpdate {
+  search_latitude?: number;
+  search_longitude?: number;
+  search_location_name?: string;
+  location_source?: LocationSource;
+  search_radius_miles?: RadiusMiles;
+  view_mode?: ViewMode;
+}
+
+// ============================================================================
+// CART TYPES
+// ============================================================================
+
+export interface GearCartItem {
+  id: string;
+  profile_id: string;
+  listing_id: string;
+  organization_id: string;
+  backlot_project_id?: string;
+  project_title?: string;
+  quantity: number;
+  created_at: string;
+  updated_at: string;
+  // Listing details (joined)
+  listing: {
+    id: string;
+    daily_rate: number;
+    weekly_rate?: number;
+    listing_type: ListingType;
+    is_listed: boolean;
+    asset: {
+      id: string;
+      name: string;
+      manufacturer?: string;
+      model?: string;
+      condition?: string;
+      photos: string[];
+    };
+  };
+}
+
+export interface GearCartGrouped {
+  organization: MarketplaceOrganizationEnriched;
+  items: GearCartItem[];
+  total_daily_rate: number;
+}
+
+export interface GearCartResponse {
+  groups: GearCartGrouped[];
+  total_items: number;
+}
+
+export interface CartItemAddInput {
+  listing_id: string;
+  backlot_project_id?: string;
+  quantity?: number;
+}
+
+export interface CartItemUpdateInput {
+  quantity: number;
+}
+
+export interface CartSubmitRequestInput {
+  gear_house_org_id: string;
+  backlot_project_id?: string;
+  title?: string;
+  rental_start_date: string;
+  rental_end_date: string;
+  notes?: string;
+  item_ids: string[];
+}
+
+export interface CartSubmitInput {
+  requests: CartSubmitRequestInput[];
+}
+
+export interface CartSubmitResponse {
+  message: string;
+  requests: Array<{
+    id: string;
+    reference_number: string;
+    gear_house_name: string;
+    item_count: number;
+  }>;
+  items_removed: number;
+}
+
+export interface CartCheckResponse {
+  in_cart: boolean;
+  cart_item_id?: string;
+  quantity: number;
+}
+
+// ============================================================================
+// WORK ORDER REQUEST TYPES
+// ============================================================================
+
+export type WorkOrderRequestStatus = 'pending' | 'approved' | 'rejected';
+
+export interface GearWorkOrderRequest {
+  id: string;
+  reference_number: string;
+  // Parties
+  requesting_profile_id: string;
+  requesting_org_id?: string;
+  gear_house_org_id: string;
+  backlot_project_id?: string;
+  // Request details
+  title?: string;
+  notes?: string;
+  rental_start_date?: string;
+  rental_end_date?: string;
+  // Status
+  status: WorkOrderRequestStatus;
+  // Review info
+  reviewed_by?: string;
+  reviewed_at?: string;
+  rejection_reason?: string;
+  // Created work order (on approval)
+  created_work_order_id?: string;
+  // Timestamps
+  created_at: string;
+  updated_at: string;
+  // Joined fields
+  requester_name?: string;
+  requester_avatar?: string;
+  requester_org_name?: string;
+  gear_house_name?: string;
+  gear_house_marketplace_name?: string;
+  gear_house_logo?: string;
+  reviewer_name?: string;
+  project_title?: string;
+  work_order_reference?: string;
+  item_count?: number;
+  total_daily_rate?: number;
+  items?: GearWorkOrderRequestItem[];
+}
+
+export interface GearWorkOrderRequestItem {
+  id: string;
+  request_id: string;
+  listing_id: string;
+  asset_id?: string;
+  quantity: number;
+  daily_rate?: number;
+  created_at: string;
+  // Joined fields
+  listing_type?: ListingType;
+  listing_notes?: string;
+  asset_name?: string;
+  manufacturer?: string;
+  model?: string;
+  asset_status?: AssetStatus;
+  asset_notes?: string;
+  asset_photos?: string[];
+  category_name?: string;
+}
+
+export interface WorkOrderRequestsResponse {
+  requests: GearWorkOrderRequest[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface WorkOrderRequestCounts {
+  pending: number;
+  approved: number;
+  rejected: number;
+  total: number;
+}
+
+export interface RejectRequestInput {
+  reason?: string;  // Optional for quick reject
+}
+
+export interface ApproveRequestResponse {
+  message: string;
+  work_order_id: string;
+  work_order_reference: string;
 }

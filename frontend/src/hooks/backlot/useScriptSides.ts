@@ -330,7 +330,7 @@ export function useAddSceneToPacket(projectId: string, packetId: string) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (scriptSceneId: string) => {
+    mutationFn: async (sceneId: string) => {
       const token = localStorage.getItem('access_token');
       const response = await fetch(`/api/v1/backlot/projects/${projectId}/sides/${packetId}/scenes`, {
         method: 'POST',
@@ -338,7 +338,7 @@ export function useAddSceneToPacket(projectId: string, packetId: string) {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ script_scene_id: scriptSceneId }),
+        body: JSON.stringify({ scene_id: sceneId }),  // Use scene_id for backlot scenes
       });
       if (!response.ok) throw new Error('Failed to add scene to packet');
       return response.json();

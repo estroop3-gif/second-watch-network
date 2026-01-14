@@ -566,7 +566,7 @@ def auto_add_receipt_to_invoice(
 
     add_line_item_to_invoice(
         invoice_id=matched_invoice["id"],
-        description=f"Reimbursement - {receipt.get('description') or 'Receipt'}",
+        description=f"Reimbursement - {receipt.get('vendor_name') or receipt.get('description') or 'Receipt'}",
         rate_type="flat",
         rate_amount=amount,
         quantity=1,

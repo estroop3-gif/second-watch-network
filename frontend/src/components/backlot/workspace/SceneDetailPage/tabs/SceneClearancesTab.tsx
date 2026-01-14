@@ -23,6 +23,7 @@ import {
   Paperclip,
   User,
 } from 'lucide-react';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface SceneClearancesTabProps {
   hub: SceneHubData;
@@ -247,7 +248,7 @@ function ClearanceRow({
   const typeLabel = getClearanceTypeLabel(item.type);
   const statusColor = getClearanceStatusColor(item.status);
   const isExpiringSoon = item.expiration_date &&
-    new Date(item.expiration_date) < new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    parseLocalDate(item.expiration_date) < new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
   const getTypeIcon = () => {
     switch (item.type) {
@@ -301,7 +302,7 @@ function ClearanceRow({
               isExpiringSoon ? 'text-orange-400' : 'text-muted-gray'
             }`}>
               <Calendar className="w-3 h-3" />
-              {new Date(item.expiration_date).toLocaleDateString()}
+              {parseLocalDate(item.expiration_date).toLocaleDateString()}
               {isExpiringSoon && (
                 <AlertTriangle className="w-3 h-3 text-orange-400" />
               )}

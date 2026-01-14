@@ -52,6 +52,7 @@ import {
 import { useCallSheets, useProductionDays, useCreateCallSheetFromDay } from '@/hooks/backlot';
 import { BacklotCallSheet, BacklotProductionDay } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import CallSheetSendModal from './CallSheetSendModal';
 import CallSheetDetailView from './CallSheetDetailView';
 import CallSheetCreateEditModal from './CallSheetCreateEditModal';
@@ -110,7 +111,7 @@ const CallSheetCard: React.FC<{
           <div className="flex flex-wrap gap-4 text-sm text-muted-gray">
             <div className="flex items-center gap-1">
               <Calendar className="w-4 h-4" />
-              {format(new Date(sheet.date), 'EEEE, MMM d, yyyy')}
+              {format(parseLocalDate(sheet.date), 'EEEE, MMM d, yyyy')}
             </div>
             {sheet.general_call_time && (
               <div className="flex items-center gap-1">
@@ -265,7 +266,7 @@ const ProductionDayRow: React.FC<{
     }
   };
 
-  const isPast = new Date(day.date) < new Date(new Date().toDateString());
+  const isPast = parseLocalDate(day.date) < new Date(new Date().toDateString());
 
   return (
     <div className="flex items-center gap-4 p-3 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg hover:border-muted-gray/40 transition-colors">
@@ -284,7 +285,7 @@ const ProductionDayRow: React.FC<{
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-medium text-bone-white">
-            {format(new Date(day.date), 'EEEE, MMM d, yyyy')}
+            {format(parseLocalDate(day.date), 'EEEE, MMM d, yyyy')}
           </span>
           {day.is_completed && (
             <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
@@ -432,7 +433,7 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
 
   const handleClone = (sheet: BacklotCallSheet) => {
     // Set default date to day after the source call sheet
-    const sourceDate = new Date(sheet.date);
+    const sourceDate = parseLocalDate(sheet.date);
     sourceDate.setDate(sourceDate.getDate() + 1);
     setCloneDate(sourceDate.toISOString().split('T')[0]);
     // Reset options to default
@@ -489,7 +490,7 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
 
   // Sort days by date
   const sortedDays = React.useMemo(() => {
-    return [...(days || [])].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    return [...(days || [])].sort((a, b) => parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime());
   }, [days]);
 
   // Count days with and without call sheets

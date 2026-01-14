@@ -44,13 +44,14 @@ import {
   DollarSign,
   List,
 } from 'lucide-react';
-import { useProjects } from '@/hooks/backlot';
+import { useProjects, useExpenseSettings, useUpdateExpenseSettings } from '@/hooks/backlot';
 import {
   BacklotProject,
   BacklotVisibility,
   BacklotProjectStatus,
   ProjectInput,
 } from '@/types/backlot';
+import type { ExpenseSettings as ExpenseSettingsType, UpdateExpenseSettingsData } from '@/hooks/backlot/useExpenses';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import DonationProgress from '@/components/backlot/DonationProgress';
@@ -117,6 +118,10 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
   const navigate = useNavigate();
   const { updateProject, deleteProject } = useProjects();
 
+  // Expense settings hooks
+  const { data: expenseSettings } = useExpenseSettings(project.id);
+  const updateExpenseSettings = useUpdateExpenseSettings(project.id);
+
   const [formData, setFormData] = useState<ProjectInput>({
     title: project.title,
     logline: project.logline || '',
@@ -152,6 +157,32 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
     donor_count: number;
     donation_count: number;
   } | null>(null);
+
+  // Expense settings state
+  const [expenseSettingsForm, setExpenseSettingsForm] = useState({
+    mileage_rate: 0.67,
+    per_diem_breakfast: 15.00,
+    per_diem_lunch: 20.00,
+    per_diem_dinner: 30.00,
+    per_diem_full_day: 65.00,
+    require_mileage_locations: false,
+  });
+  const [isSavingExpenses, setIsSavingExpenses] = useState(false);
+  const [expensesSaved, setExpensesSaved] = useState(false);
+
+  // Sync expense settings when loaded
+  useEffect(() => {
+    if (expenseSettings) {
+      setExpenseSettingsForm({
+        mileage_rate: expenseSettings.mileage_rate,
+        per_diem_breakfast: expenseSettings.per_diem_breakfast,
+        per_diem_lunch: expenseSettings.per_diem_lunch,
+        per_diem_dinner: expenseSettings.per_diem_dinner,
+        per_diem_full_day: expenseSettings.per_diem_full_day,
+        require_mileage_locations: expenseSettings.require_mileage_locations ?? false,
+      });
+    }
+  }, [expenseSettings]);
 
   const publicUrl = `${window.location.origin}/projects/${project.slug}`;
 
@@ -254,6 +285,26 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
     if (parts.length > 2) return;
     if (parts[1]?.length > 2) return;
     setDonationGoalInput(cleaned);
+  };
+
+  const handleSaveExpenses = async () => {
+    setIsSavingExpenses(true);
+    try {
+      await updateExpenseSettings.mutateAsync({
+        mileage_rate: expenseSettingsForm.mileage_rate,
+        per_diem_breakfast: expenseSettingsForm.per_diem_breakfast,
+        per_diem_lunch: expenseSettingsForm.per_diem_lunch,
+        per_diem_dinner: expenseSettingsForm.per_diem_dinner,
+        per_diem_full_day: expenseSettingsForm.per_diem_full_day,
+        require_mileage_locations: expenseSettingsForm.require_mileage_locations,
+      });
+      setExpensesSaved(true);
+      setTimeout(() => setExpensesSaved(false), 2000);
+    } catch (err) {
+      console.error('Failed to save expense settings:', err);
+    } finally {
+      setIsSavingExpenses(false);
+    }
   };
 
   const hasChanges =
@@ -472,6 +523,165 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
             </div>
           </div>
         )}
+      </section>
+
+      {/* Expense Rates Section */}
+      <section className="space-y-4 border-t border-muted-gray/30 pt-8 mt-8">
+        <div>
+          <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+            <DollarSign className="w-5 h-5 text-accent-yellow" />
+            Expense Rates
+          </h3>
+          <p className="text-sm text-muted-gray">
+            Configure reimbursement rates for this project
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {/* Mileage Rate */}
+          <div className="space-y-2">
+            <Label htmlFor="mileage_rate">Mileage Rate (per mile)</Label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+              <Input
+                id="mileage_rate"
+                type="number"
+                step="0.01"
+                min="0"
+                value={expenseSettingsForm.mileage_rate}
+                onChange={(e) => setExpenseSettingsForm(prev => ({
+                  ...prev,
+                  mileage_rate: parseFloat(e.target.value) || 0
+                }))}
+                className="pl-7"
+              />
+            </div>
+            <p className="text-xs text-muted-gray">
+              IRS standard rate is $0.67/mile (2024). This rate applies to all new mileage entries.
+            </p>
+          </div>
+
+          {/* Per Diem Rates */}
+          <div className="space-y-3">
+            <Label className="text-bone-white">Per Diem Rates</Label>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="per_diem_breakfast" className="text-sm text-muted-gray">Breakfast</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="per_diem_breakfast"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={expenseSettingsForm.per_diem_breakfast}
+                    onChange={(e) => setExpenseSettingsForm(prev => ({
+                      ...prev,
+                      per_diem_breakfast: parseFloat(e.target.value) || 0
+                    }))}
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="per_diem_lunch" className="text-sm text-muted-gray">Lunch</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="per_diem_lunch"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={expenseSettingsForm.per_diem_lunch}
+                    onChange={(e) => setExpenseSettingsForm(prev => ({
+                      ...prev,
+                      per_diem_lunch: parseFloat(e.target.value) || 0
+                    }))}
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="per_diem_dinner" className="text-sm text-muted-gray">Dinner</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="per_diem_dinner"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={expenseSettingsForm.per_diem_dinner}
+                    onChange={(e) => setExpenseSettingsForm(prev => ({
+                      ...prev,
+                      per_diem_dinner: parseFloat(e.target.value) || 0
+                    }))}
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="per_diem_full_day" className="text-sm text-muted-gray">Full Day</Label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    id="per_diem_full_day"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={expenseSettingsForm.per_diem_full_day}
+                    onChange={(e) => setExpenseSettingsForm(prev => ({
+                      ...prev,
+                      per_diem_full_day: parseFloat(e.target.value) || 0
+                    }))}
+                    className="pl-7"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Mileage Location Requirement */}
+          <div className="flex items-center justify-between py-3 px-4 bg-muted-gray/10 rounded-lg">
+            <div>
+              <Label className="text-bone-white font-medium">Require Mileage Addresses</Label>
+              <p className="text-sm text-muted-gray">
+                Require start and end addresses for mileage entries
+              </p>
+            </div>
+            <Switch
+              checked={expenseSettingsForm.require_mileage_locations ?? false}
+              onCheckedChange={(checked) =>
+                setExpenseSettingsForm(prev => ({ ...prev, require_mileage_locations: checked }))
+              }
+            />
+          </div>
+
+          {/* Save Expense Settings Button */}
+          <div className="flex items-center gap-3 pt-2">
+            <Button
+              onClick={handleSaveExpenses}
+              disabled={isSavingExpenses}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {isSavingExpenses ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : expensesSaved ? (
+                <>
+                  <Check className="w-4 h-4 mr-2" />
+                  Saved!
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4 mr-2" />
+                  Save Expense Rates
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </section>
 
       {/* Donation Settings - Only for public/unlisted projects */}

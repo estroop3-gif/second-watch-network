@@ -13,6 +13,7 @@ import {
   FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { useProductionDays } from '@/hooks/backlot';
 import {
   Select,
@@ -63,7 +64,7 @@ const CameraAndContinuityView: React.FC<CameraAndContinuityViewProps> = ({
       } else {
         // Find the most recent past day or first upcoming day
         const sortedDays = [...productionDays].sort((a, b) =>
-          new Date(a.date).getTime() - new Date(b.date).getTime()
+          parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime()
         );
         const pastDays = sortedDays.filter(d => d.date < today);
         if (pastDays.length > 0) {
@@ -104,7 +105,7 @@ const CameraAndContinuityView: React.FC<CameraAndContinuityViewProps> = ({
                   <div className="flex items-center gap-2">
                     <span className="font-medium">Day {day.day_number}</span>
                     <span className="text-muted-gray text-xs">
-                      {new Date(day.date).toLocaleDateString('en-US', {
+                      {parseLocalDate(day.date).toLocaleDateString('en-US', {
                         month: 'short',
                         day: 'numeric',
                       })}

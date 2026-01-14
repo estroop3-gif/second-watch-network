@@ -45,6 +45,22 @@ import type {
   CounterOfferInput,
   AcceptOfferInput,
   SaleStatus,
+  // Location-based search types
+  MarketplaceSearchPreferences,
+  MarketplacePreferencesUpdate,
+  GearHouseFavorite,
+  MarketplaceOrganizationEnriched,
+  MarketplaceNearbySearchParams,
+  MarketplaceGearHousesResponse,
+  MarketplaceListingsNearbyResponse,
+  UserLocation,
+  LocationSource,
+  RadiusMiles,
+  ViewMode,
+  ResultMode,
+  // Community search preferences
+  CommunitySearchPreferences,
+  CommunityPreferencesUpdate,
 } from '@/types/gear';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -68,15 +84,33 @@ async function fetchWithAuth(url: string, token: string, options?: RequestInit) 
 
   if (!response.ok) {
     const errorText = await response.text();
-    let errorDetail = `HTTP ${response.status}: ${response.statusText}`;
+    let errorData: any = null;
+    let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+
     try {
-      const errorJson = JSON.parse(errorText);
-      errorDetail = errorJson.detail || errorJson.message || errorDetail;
+      errorData = JSON.parse(errorText);
+
+      // Handle different error formats
+      if (typeof errorData.detail === 'string') {
+        errorMessage = errorData.detail;
+      } else if (typeof errorData.detail === 'object' && errorData.detail !== null) {
+        // Detail is an object (e.g., validation errors with unavailable_items)
+        errorMessage = errorData.detail.message || JSON.stringify(errorData.detail);
+      } else if (errorData.message) {
+        errorMessage = errorData.message;
+      }
     } catch {
-      if (errorText) errorDetail += ` - ${errorText}`;
+      if (errorText) errorMessage += ` - ${errorText}`;
     }
-    console.error(`[Marketplace API] Error: ${errorDetail}`);
-    throw new Error(errorDetail);
+
+    console.error(`[Marketplace API] Error: ${errorMessage}`);
+    console.error(`[Marketplace API] Full error data:`, errorData);
+
+    // Throw the parsed error data so the caller can access structured info
+    const error: any = new Error(errorMessage);
+    error.detail = errorData?.detail;
+    error.status = response.status;
+    throw error;
   }
 
   const data = await response.json();
@@ -512,6 +546,127 @@ export function useRentalRequest(requestId: string | null) {
     error: query.error,
     refetch: query.refetch,
   };
+}
+
+export function useApproveRentalRequest(orgId: string) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (requestId: string) => {
+      // First, fetch the full request with items
+      const requestData = await fetchWithAuth(`/api/v1/gear/quotes/request/${requestId}`, token!);
+      const request = requestData.request as GearRentalRequest;
+
+      if (!request.items || request.items.length === 0) {
+        throw new Error('Request has no items');
+      }
+
+      // Create or find a contact for the requesting user
+      // This is REQUIRED - we cannot create a work order without a custodian
+      let custodianContactId: string;
+      let custodianUserId: string;
+
+      // First, try to find existing contact by user_id
+      const contactsData = await fetchWithAuth(
+        `/api/v1/gear/organizations/${orgId}/contacts?user_id=${request.requested_by_user_id}`,
+        token!
+      );
+
+      if (contactsData.contacts && contactsData.contacts.length > 0) {
+        custodianContactId = contactsData.contacts[0].id;
+        custodianUserId = contactsData.contacts[0].user_id;
+      } else {
+        // Create a new contact for the requester
+        // Use the requester's user_id as custodian even if contact creation fails
+        custodianUserId = request.requested_by_user_id;
+
+        try {
+          const newContactData = {
+            name: request.requested_by_name || 'External Customer',
+            email: request.requested_by_email || undefined,
+            user_id: request.requested_by_user_id,
+            organization_name: request.requesting_org_name || undefined,
+          };
+
+          const createContactResponse = await fetchWithAuth(
+            `/api/v1/gear/organizations/${orgId}/contacts`,
+            token!,
+            {
+              method: 'POST',
+              body: JSON.stringify(newContactData),
+            }
+          );
+
+          custodianContactId = createContactResponse.contact.id;
+        } catch (error) {
+          console.warn('Could not create contact for requester, but will use user_id:', error);
+          // We still have custodianUserId, so we can proceed without custodianContactId
+        }
+      }
+
+      // Create work order from request
+      const workOrderData = {
+        title: request.title || `Rental for ${request.requesting_org_name || 'Customer'}`,
+        notes: `Rental for ${request.requesting_org_name || 'External Customer'}\n${request.notes || request.description || ''}`.trim(),
+        custodian_contact_id: custodianContactId,
+        custodian_user_id: custodianUserId,  // Required for checkout
+        backlot_project_id: request.backlot_project_id || undefined,
+        pickup_date: request.rental_start_date,
+        expected_return_date: request.rental_end_date,
+        rental_request_id: requestId,  // Link to rental request for status update
+        items: request.items.map(item => ({
+          asset_id: item.asset_id || undefined,
+          quantity: item.quantity,
+          notes: item.notes || undefined,
+        })),
+      };
+
+      const response = await fetchWithAuth(`/api/v1/gear/work-orders/${orgId}`, token!, {
+        method: 'POST',
+        body: JSON.stringify(workOrderData),
+      });
+
+      return response.work_order;
+    },
+    onSuccess: () => {
+      // Invalidate all variations of these query keys
+      queryClient.invalidateQueries({ queryKey: ['incoming-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['transaction-requests'] });
+      queryClient.invalidateQueries({ queryKey: ['work-orders'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+    },
+  });
+}
+
+export function useRejectRentalRequest() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ requestId, reason }: { requestId: string; reason?: string }) => {
+      console.log('[useRejectRentalRequest] Rejecting request:', requestId, 'queryClient exists:', !!queryClient);
+      return fetchWithAuth(`/api/v1/gear/quotes/request/${requestId}/reject`, token!, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+    },
+    onSuccess: () => {
+      console.log('[useRejectRentalRequest] Success, invalidating queries. queryClient exists:', !!queryClient);
+      try {
+        queryClient.invalidateQueries({ queryKey: ['incoming-requests'] });
+        queryClient.invalidateQueries({ queryKey: ['transaction-requests'] });
+        queryClient.invalidateQueries({ queryKey: ['rental-request'] });
+      } catch (error) {
+        console.error('[useRejectRentalRequest] Error invalidating queries:', error);
+      }
+    },
+    onError: (error) => {
+      console.error('[useRejectRentalRequest] Mutation error:', error);
+    },
+  });
 }
 
 // ============================================================================
@@ -1535,5 +1690,506 @@ export function useSalePayment(saleId: string | null) {
   return {
     createPaymentIntent,
     confirmPayment,
+  };
+}
+
+
+// ============================================================================
+// LOCATION-BASED MARKETPLACE SEARCH HOOKS
+// ============================================================================
+
+/**
+ * Hook for marketplace search preferences per project
+ */
+export function useMarketplacePreferences(projectId: string | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  // Fetch preferences
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['marketplace-preferences', projectId],
+    queryFn: () =>
+      fetchWithAuth(`/api/v1/gear/marketplace/preferences/${projectId}`, token!),
+    enabled: !!token && !!projectId,
+  });
+
+  // Update preferences
+  const updatePreferences = useMutation({
+    mutationFn: (updates: MarketplacePreferencesUpdate) =>
+      fetchWithAuth(`/api/v1/gear/marketplace/preferences/${projectId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['marketplace-preferences', projectId] });
+    },
+  });
+
+  return {
+    preferences: data?.preferences as MarketplaceSearchPreferences | undefined,
+    isLoading,
+    error,
+    updatePreferences,
+  };
+}
+
+/**
+ * Hook for gear house favorites
+ */
+export function useGearHouseFavorites(projectId?: string) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  // Fetch favorites
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['gear-house-favorites', projectId],
+    queryFn: () => {
+      const params = projectId ? `?project_id=${projectId}` : '';
+      return fetchWithAuth(`/api/v1/gear/marketplace/favorites${params}`, token!);
+    },
+    enabled: !!token,
+  });
+
+  // Add favorite
+  const addFavorite = useMutation({
+    mutationFn: ({ orgId, notes }: { orgId: string; notes?: string }) => {
+      const params = new URLSearchParams();
+      if (projectId) params.append('project_id', projectId);
+      if (notes) params.append('notes', notes);
+      const queryString = params.toString() ? `?${params.toString()}` : '';
+      return fetchWithAuth(`/api/v1/gear/marketplace/favorites/${orgId}${queryString}`, token!, {
+        method: 'POST',
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-house-favorites'] });
+      queryClient.invalidateQueries({ queryKey: ['marketplace-nearby'] });
+    },
+  });
+
+  // Remove favorite
+  const removeFavorite = useMutation({
+    mutationFn: (orgId: string) =>
+      fetchWithAuth(`/api/v1/gear/marketplace/favorites/${orgId}`, token!, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gear-house-favorites'] });
+      queryClient.invalidateQueries({ queryKey: ['marketplace-nearby'] });
+    },
+  });
+
+  return {
+    favorites: (data?.favorites || []) as GearHouseFavorite[],
+    isLoading,
+    error,
+    refetch,
+    addFavorite,
+    removeFavorite,
+  };
+}
+
+/**
+ * Hook for proximity-based marketplace search
+ */
+export function useMarketplaceNearbySearch(params: MarketplaceNearbySearchParams | null) {
+  const { session } = useAuth();
+  const token = session?.access_token;
+
+  const queryString = params ? buildQueryString({
+    lat: params.lat,
+    lng: params.lng,
+    radius_miles: params.radius_miles || 50,
+    result_mode: params.result_mode || 'gear_houses',
+    delivery_to_me_only: params.delivery_to_me_only,
+    q: params.q,
+    category_id: params.category_id,
+    lister_type: params.lister_type,
+    verified_only: params.verified_only,
+    available_from: params.available_from,  // Date filter
+    available_to: params.available_to,      // Date filter
+    timezone: params.timezone,              // User's timezone
+    limit: params.limit || 50,
+    offset: params.offset || 0,
+  }) : '';
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['marketplace-nearby', params],
+    queryFn: () =>
+      fetchWithAuth(`/api/v1/gear/marketplace/search/nearby${queryString}`, token!),
+    enabled: !!token && !!params && !!params.lat && !!params.lng,
+  });
+
+  // Determine response type based on result_mode
+  const isGearHousesMode = !params?.result_mode || params.result_mode === 'gear_houses';
+
+  return {
+    gearHouses: isGearHousesMode ? (data?.gear_houses || []) as MarketplaceOrganizationEnriched[] : [],
+    listings: !isGearHousesMode ? (data?.listings || []) : [],
+    total: data?.total || 0,
+    userLocation: data?.user_location,
+    radiusMiles: data?.radius_miles,
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+/**
+ * Hook for user location with browser geolocation and profile fallback
+ */
+export function useMarketplaceLocation(projectId: string | null) {
+  const { profile, session } = useAuth();
+  const token = session?.access_token;
+  const { preferences, updatePreferences } = useMarketplacePreferences(projectId);
+
+  // Current location state
+  const currentLocation: UserLocation | null = preferences?.search_latitude && preferences?.search_longitude
+    ? {
+        latitude: preferences.search_latitude,
+        longitude: preferences.search_longitude,
+        name: preferences.search_location_name || undefined,
+        source: preferences.location_source || 'profile',
+      }
+    : null;
+
+  // Get profile location as fallback (from auth context)
+  const profileLocation: UserLocation | null = profile?.location_latitude && profile?.location_longitude
+    ? {
+        latitude: profile.location_latitude,
+        longitude: profile.location_longitude,
+        name: profile.location_city && profile.location_state_code
+          ? `${profile.location_city}, ${profile.location_state_code}`
+          : undefined,
+        source: 'profile' as LocationSource,
+      }
+    : null;
+
+  // Request browser geolocation
+  const requestBrowserLocation = async (): Promise<UserLocation> => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation not supported'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const location: UserLocation = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            source: 'browser',
+          };
+
+          // Try to get a friendly name via reverse geocoding using AWS
+          try {
+            const response = await fetchWithAuth('/api/v1/gear/marketplace/reverse-geocode', token!, {
+              method: 'POST',
+              body: JSON.stringify({
+                latitude: location.latitude,
+                longitude: location.longitude,
+              }),
+            });
+            if (response.city && response.state) {
+              location.name = `${response.city}, ${response.state}`;
+            } else if (response.display_name) {
+              location.name = response.display_name.split(',').slice(0, 2).join(',');
+            }
+          } catch (e) {
+            console.warn('Reverse geocoding failed:', e);
+          }
+
+          // Save to preferences
+          if (projectId) {
+            updatePreferences.mutate({
+              search_latitude: location.latitude,
+              search_longitude: location.longitude,
+              search_location_name: location.name,
+              location_source: 'browser',
+            });
+          }
+
+          resolve(location);
+        },
+        (error) => {
+          reject(error);
+        },
+        { enableHighAccuracy: false, timeout: 10000 }
+      );
+    });
+  };
+
+  // Set manual location
+  const setManualLocation = (location: { latitude: number; longitude: number; name?: string }) => {
+    if (!projectId) return;
+
+    updatePreferences.mutate({
+      search_latitude: location.latitude,
+      search_longitude: location.longitude,
+      search_location_name: location.name,
+      location_source: 'manual',
+    });
+  };
+
+  // Initialize location from profile if not set
+  const initializeLocation = async () => {
+    // If we already have a location, don't override
+    if (currentLocation) return currentLocation;
+
+    // Try browser geolocation first
+    try {
+      const browserLocation = await requestBrowserLocation();
+      return browserLocation;
+    } catch (e) {
+      console.log('Browser geolocation unavailable, using profile location');
+    }
+
+    // Fall back to profile location
+    if (profileLocation && projectId) {
+      updatePreferences.mutate({
+        search_latitude: profileLocation.latitude,
+        search_longitude: profileLocation.longitude,
+        search_location_name: profileLocation.name,
+        location_source: 'profile',
+      });
+      return profileLocation;
+    }
+
+    return null;
+  };
+
+  return {
+    currentLocation,
+    profileLocation,
+    requestBrowserLocation,
+    setManualLocation,
+    initializeLocation,
+    isUpdating: updatePreferences.isPending,
+  };
+}
+
+/**
+ * Hook for geocoding an organization's location
+ */
+export function useGeocodeOrganization() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const geocode = useMutation({
+    mutationFn: (orgId: string) =>
+      fetchWithAuth(`/api/v1/gear/marketplace/organizations/${orgId}/geocode`, token!, {
+        method: 'POST',
+      }),
+    onSuccess: (_, orgId) => {
+      queryClient.invalidateQueries({ queryKey: ['marketplace-settings', orgId] });
+      queryClient.invalidateQueries({ queryKey: ['marketplace-nearby'] });
+    },
+  });
+
+  return { geocode };
+}
+
+/**
+ * Hook for updating organization location privacy
+ */
+export function useUpdateLocationPrivacy() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  const updatePrivacy = useMutation({
+    mutationFn: ({ orgId, hideExactAddress, publicDisplay }: {
+      orgId: string;
+      hideExactAddress: boolean;
+      publicDisplay?: string;
+    }) => {
+      const params = new URLSearchParams();
+      params.append('hide_exact_address', String(hideExactAddress));
+      if (publicDisplay) params.append('public_location_display', publicDisplay);
+      return fetchWithAuth(`/api/v1/gear/marketplace/organizations/${orgId}/location-privacy?${params.toString()}`, token!, {
+        method: 'PUT',
+      });
+    },
+    onSuccess: (_, { orgId }) => {
+      queryClient.invalidateQueries({ queryKey: ['marketplace-settings', orgId] });
+    },
+  });
+
+  return { updatePrivacy };
+}
+
+// ============================================================================
+// COMMUNITY MARKETPLACE PREFERENCES (PROFILE-LEVEL)
+// ============================================================================
+
+/**
+ * Hook for community marketplace search preferences (profile-level, no project_id)
+ * Used for Community For Sale and Rentals tabs
+ */
+export function useCommunityPreferences() {
+  const { session } = useAuth();
+  const token = session?.access_token;
+  const queryClient = useQueryClient();
+
+  // Fetch preferences
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['community-preferences'],
+    queryFn: () =>
+      fetchWithAuth('/api/v1/gear/marketplace/community/preferences', token!),
+    enabled: !!token,
+  });
+
+  // Update preferences
+  const updatePreferences = useMutation({
+    mutationFn: (updates: CommunityPreferencesUpdate) =>
+      fetchWithAuth('/api/v1/gear/marketplace/community/preferences', token!, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['community-preferences'] });
+    },
+  });
+
+  return {
+    preferences: data?.preferences as CommunitySearchPreferences | undefined,
+    isLoading,
+    error,
+    updatePreferences,
+  };
+}
+
+/**
+ * Hook for user location in Community marketplace tabs
+ * Similar to useMarketplaceLocation but uses community preferences (profile-level)
+ */
+export function useCommunityMarketplaceLocation() {
+  const { profile, session } = useAuth();
+  const token = session?.access_token;
+  const { preferences, updatePreferences } = useCommunityPreferences();
+
+  // Current location state from preferences
+  const currentLocation: UserLocation | null = preferences?.search_latitude && preferences?.search_longitude
+    ? {
+        latitude: preferences.search_latitude,
+        longitude: preferences.search_longitude,
+        name: preferences.search_location_name || undefined,
+        source: preferences.location_source || 'profile',
+      }
+    : null;
+
+  // Get profile location as fallback
+  const profileLocation: UserLocation | null = profile?.location_latitude && profile?.location_longitude
+    ? {
+        latitude: profile.location_latitude,
+        longitude: profile.location_longitude,
+        name: profile.location_city && profile.location_state_code
+          ? `${profile.location_city}, ${profile.location_state_code}`
+          : undefined,
+        source: 'profile' as LocationSource,
+      }
+    : null;
+
+  // Request browser geolocation
+  const requestBrowserLocation = async (): Promise<UserLocation> => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Geolocation not supported'));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          const location: UserLocation = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+            source: 'browser',
+          };
+
+          // Try to get a friendly name via reverse geocoding using AWS
+          try {
+            const response = await fetchWithAuth('/api/v1/gear/marketplace/reverse-geocode', token!, {
+              method: 'POST',
+              body: JSON.stringify({
+                latitude: location.latitude,
+                longitude: location.longitude,
+              }),
+            });
+            if (response.city && response.state) {
+              location.name = `${response.city}, ${response.state}`;
+            } else if (response.display_name) {
+              location.name = response.display_name.split(',').slice(0, 2).join(',');
+            }
+          } catch (e) {
+            console.warn('Reverse geocoding failed:', e);
+          }
+
+          // Save to community preferences
+          updatePreferences.mutate({
+            search_latitude: location.latitude,
+            search_longitude: location.longitude,
+            search_location_name: location.name,
+            location_source: 'browser',
+          });
+
+          resolve(location);
+        },
+        (error) => {
+          reject(error);
+        },
+        { enableHighAccuracy: false, timeout: 10000 }
+      );
+    });
+  };
+
+  // Set manual location
+  const setManualLocation = (location: { latitude: number; longitude: number; name?: string }) => {
+    updatePreferences.mutate({
+      search_latitude: location.latitude,
+      search_longitude: location.longitude,
+      search_location_name: location.name,
+      location_source: 'manual',
+    });
+  };
+
+  // Initialize location from profile if not set
+  const initializeLocation = async () => {
+    // If we already have a location, don't override
+    if (currentLocation) return currentLocation;
+
+    // Try browser geolocation first
+    try {
+      const browserLocation = await requestBrowserLocation();
+      return browserLocation;
+    } catch (e) {
+      console.log('Browser geolocation unavailable, using profile location');
+    }
+
+    // Fall back to profile location
+    if (profileLocation) {
+      updatePreferences.mutate({
+        search_latitude: profileLocation.latitude,
+        search_longitude: profileLocation.longitude,
+        search_location_name: profileLocation.name,
+        location_source: 'profile',
+      });
+      return profileLocation;
+    }
+
+    return null;
+  };
+
+  return {
+    currentLocation,
+    profileLocation,
+    preferences,
+    requestBrowserLocation,
+    setManualLocation,
+    initializeLocation,
+    isUpdating: updatePreferences.isPending,
+    updatePreferences,
   };
 }

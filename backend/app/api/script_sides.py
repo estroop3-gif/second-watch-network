@@ -48,7 +48,8 @@ class SidesPacketUpdate(BaseModel):
 
 
 class PacketSceneCreate(BaseModel):
-    script_scene_id: str
+    script_scene_id: Optional[str] = None
+    scene_id: Optional[str] = None  # backlot_scenes ID (from Scenes tab)
 
 
 class PacketSceneUpdate(BaseModel):
@@ -573,18 +574,51 @@ async def get_sides_packet(
     ).eq("id", packet_data["production_day_id"]).execute()
     day_info = day.data[0] if day.data else None
 
-    # Get packet scenes with script scene details
+    # Get packet scenes with scene details (supports both backlot_scenes and script_scenes)
     packet_scenes = client.table("backlot_sides_packet_scenes").select(
-        "id, script_scene_id, sort_order, scene_notes"
+        "id, script_scene_id, scene_id, sort_order, scene_notes"
     ).eq("sides_packet_id", packet_id).order("sort_order").execute()
 
     scenes_with_details = []
     for ps in (packet_scenes.data or []):
-        script_scene = client.table("backlot_script_scenes").select("*").eq("id", ps["script_scene_id"]).execute()
-        if script_scene.data:
+        scene_data = None
+
+        # Try backlot_scenes first (from Scenes tab)
+        if ps.get("scene_id"):
+            backlot_scene = client.table("backlot_scenes").select(
+                "id, scene_number, int_ext, set_name, location, time_of_day, page_start, page_end, description"
+            ).eq("id", ps["scene_id"]).execute()
+            if backlot_scene.data:
+                bs = backlot_scene.data[0]
+                # Build slugline from components
+                parts = []
+                if bs.get("int_ext"):
+                    parts.append(bs["int_ext"].upper())
+                if bs.get("set_name") or bs.get("location"):
+                    parts.append(bs.get("set_name") or bs.get("location"))
+                if bs.get("time_of_day"):
+                    parts.append(f"- {bs['time_of_day'].upper()}")
+                slugline = " ".join(parts) if parts else None
+
+                scene_data = {
+                    "id": bs["id"],
+                    "scene_number": bs.get("scene_number"),
+                    "slugline": slugline,
+                    "location": bs.get("location") or bs.get("set_name"),
+                    "time_of_day": bs.get("time_of_day"),
+                    "characters": [],  # backlot_scenes don't have inline characters
+                }
+
+        # Fall back to script_scenes
+        elif ps.get("script_scene_id"):
+            script_scene = client.table("backlot_script_scenes").select("*").eq("id", ps["script_scene_id"]).execute()
+            if script_scene.data:
+                scene_data = script_scene.data[0]
+
+        if scene_data:
             scenes_with_details.append({
                 **ps,
-                "script_scene": script_scene.data[0]
+                "script_scene": scene_data  # Keep as "script_scene" for frontend compatibility
             })
 
     # Derive cast working from DOOD (subjects with 'W' assignment for this day)
@@ -687,7 +721,7 @@ async def add_scene_to_packet(
     request: PacketSceneCreate,
     authorization: str = Header(None)
 ):
-    """Add a scene to the packet."""
+    """Add a scene to the packet. Supports both backlot scenes (scene_id) and script scenes (script_scene_id)."""
     user = await get_current_user_from_token(authorization)
     await verify_project_access(project_id, user["id"])
 
@@ -698,24 +732,43 @@ async def add_scene_to_packet(
     if not packet.data:
         raise HTTPException(status_code=404, detail="Sides packet not found")
 
-    # Verify scene exists
-    scene = client.table("backlot_script_scenes").select("id").eq("id", request.script_scene_id).eq("project_id", project_id).execute()
-    if not scene.data:
-        raise HTTPException(status_code=404, detail="Script scene not found")
-
-    # Check if scene already in packet
-    existing = client.table("backlot_sides_packet_scenes").select("id").eq("sides_packet_id", packet_id).eq("script_scene_id", request.script_scene_id).execute()
-    if existing.data:
-        raise HTTPException(status_code=400, detail="Scene already in packet")
-
-    # Get next sort order
-    sort_order = get_next_sort_order("backlot_sides_packet_scenes", "sides_packet_id", packet_id)
+    # Must provide either scene_id or script_scene_id
+    if not request.scene_id and not request.script_scene_id:
+        raise HTTPException(status_code=400, detail="Must provide either scene_id or script_scene_id")
 
     scene_data = {
         "sides_packet_id": packet_id,
-        "script_scene_id": request.script_scene_id,
-        "sort_order": sort_order,
     }
+
+    # Handle backlot scenes (from Scenes tab)
+    if request.scene_id:
+        scene = client.table("backlot_scenes").select("id").eq("id", request.scene_id).eq("project_id", project_id).execute()
+        if not scene.data:
+            raise HTTPException(status_code=404, detail="Scene not found")
+
+        # Check if scene already in packet
+        existing = client.table("backlot_sides_packet_scenes").select("id").eq("sides_packet_id", packet_id).eq("scene_id", request.scene_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="Scene already in packet")
+
+        scene_data["scene_id"] = request.scene_id
+
+    # Handle script scenes (from parsed Fountain script)
+    elif request.script_scene_id:
+        scene = client.table("backlot_script_scenes").select("id").eq("id", request.script_scene_id).eq("project_id", project_id).execute()
+        if not scene.data:
+            raise HTTPException(status_code=404, detail="Script scene not found")
+
+        # Check if scene already in packet
+        existing = client.table("backlot_sides_packet_scenes").select("id").eq("sides_packet_id", packet_id).eq("script_scene_id", request.script_scene_id).execute()
+        if existing.data:
+            raise HTTPException(status_code=400, detail="Scene already in packet")
+
+        scene_data["script_scene_id"] = request.script_scene_id
+
+    # Get next sort order
+    sort_order = get_next_sort_order("backlot_sides_packet_scenes", "sides_packet_id", packet_id)
+    scene_data["sort_order"] = sort_order
 
     result = client.table("backlot_sides_packet_scenes").insert(scene_data).execute()
     if not result.data:

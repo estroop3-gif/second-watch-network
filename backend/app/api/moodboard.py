@@ -44,6 +44,10 @@ class SectionReorder(BaseModel):
     direction: str = Field(..., pattern='^(UP|DOWN)$')
 
 
+MOODBOARD_CATEGORIES = ['Lighting', 'Wardrobe', 'Location', 'Props', 'Color', 'Character', 'Mood', 'Other']
+ASPECT_RATIOS = ['landscape', 'portrait', 'square']
+
+
 class ItemCreate(BaseModel):
     section_id: Optional[str] = None
     image_url: str = Field(..., min_length=1)
@@ -51,6 +55,10 @@ class ItemCreate(BaseModel):
     title: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    rating: Optional[int] = Field(None, ge=0, le=5)
+    color_palette: Optional[List[str]] = None
+    aspect_ratio: Optional[str] = None
 
     @field_validator('image_url')
     @classmethod
@@ -75,6 +83,32 @@ class ItemCreate(BaseModel):
             return cleaned
         return v
 
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, v):
+        if v and v not in MOODBOARD_CATEGORIES:
+            raise ValueError(f'category must be one of: {", ".join(MOODBOARD_CATEGORIES)}')
+        return v
+
+    @field_validator('aspect_ratio')
+    @classmethod
+    def validate_aspect_ratio(cls, v):
+        if v and v not in ASPECT_RATIOS:
+            raise ValueError(f'aspect_ratio must be one of: {", ".join(ASPECT_RATIOS)}')
+        return v
+
+    @field_validator('color_palette')
+    @classmethod
+    def validate_color_palette(cls, v):
+        if v:
+            # Validate hex color format
+            import re
+            hex_pattern = re.compile(r'^#[0-9A-Fa-f]{6}$')
+            for color in v:
+                if not hex_pattern.match(color):
+                    raise ValueError(f'Invalid hex color: {color}')
+        return v
+
 
 class ItemUpdate(BaseModel):
     section_id: Optional[str] = None
@@ -83,6 +117,10 @@ class ItemUpdate(BaseModel):
     title: Optional[str] = None
     notes: Optional[str] = None
     tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    rating: Optional[int] = Field(None, ge=0, le=5)
+    color_palette: Optional[List[str]] = None
+    aspect_ratio: Optional[str] = None
 
     @field_validator('image_url')
     @classmethod
@@ -106,10 +144,41 @@ class ItemUpdate(BaseModel):
             return cleaned
         return v
 
+    @field_validator('category')
+    @classmethod
+    def validate_category(cls, v):
+        if v and v not in MOODBOARD_CATEGORIES:
+            raise ValueError(f'category must be one of: {", ".join(MOODBOARD_CATEGORIES)}')
+        return v
+
+    @field_validator('aspect_ratio')
+    @classmethod
+    def validate_aspect_ratio(cls, v):
+        if v and v not in ASPECT_RATIOS:
+            raise ValueError(f'aspect_ratio must be one of: {", ".join(ASPECT_RATIOS)}')
+        return v
+
+    @field_validator('color_palette')
+    @classmethod
+    def validate_color_palette(cls, v):
+        if v:
+            import re
+            hex_pattern = re.compile(r'^#[0-9A-Fa-f]{6}$')
+            for color in v:
+                if not hex_pattern.match(color):
+                    raise ValueError(f'Invalid hex color: {color}')
+        return v
+
 
 class ItemReorder(BaseModel):
     item_id: str
     direction: str = Field(..., pattern='^(UP|DOWN)$')
+
+
+class ItemImageUpload(BaseModel):
+    file_name: str
+    content_type: str
+    file_size: int
 
 
 # =====================================================
@@ -551,6 +620,10 @@ async def create_item(
         "title": request.title,
         "notes": request.notes,
         "tags": request.tags or [],
+        "category": request.category,
+        "rating": request.rating,
+        "color_palette": request.color_palette or [],
+        "aspect_ratio": request.aspect_ratio,
         "created_by_user_id": user["id"],
     }
 
@@ -604,6 +677,14 @@ async def update_item(
         update_data["notes"] = request.notes
     if request.tags is not None:
         update_data["tags"] = request.tags
+    if request.category is not None:
+        update_data["category"] = request.category
+    if request.rating is not None:
+        update_data["rating"] = request.rating
+    if request.color_palette is not None:
+        update_data["color_palette"] = request.color_palette
+    if request.aspect_ratio is not None:
+        update_data["aspect_ratio"] = request.aspect_ratio
 
     if section_changing:
         # Handle special case where request.section_id might be empty string for unsorted
@@ -702,6 +783,51 @@ async def reorder_item(
     client.table("moodboard_items").update({"sort_order": adjacent_order}).eq("id", request.item_id).execute()
 
     return {"success": True}
+
+
+# =====================================================
+# Item Image Upload Endpoint
+# =====================================================
+
+@router.post("/projects/{project_id}/moodboards/{moodboard_id}/items/upload-url")
+async def get_item_upload_url(
+    project_id: str,
+    moodboard_id: str,
+    request: ItemImageUpload,
+    authorization: str = Header(None)
+):
+    """Get a presigned URL for uploading a moodboard item image to S3."""
+    import boto3
+    import uuid as uuid_module
+
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await verify_moodboard_access(moodboard_id, project_id)
+
+    # Generate S3 key
+    file_ext = request.file_name.rsplit('.', 1)[-1].lower() if '.' in request.file_name else 'jpg'
+    s3_key = f"moodboards/{project_id}/{moodboard_id}/items/{uuid_module.uuid4()}.{file_ext}"
+
+    # Generate presigned upload URL
+    s3_client = boto3.client("s3", region_name="us-east-1")
+    presigned_url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": "swn-backlot-files-517220555400",
+            "Key": s3_key,
+            "ContentType": request.content_type,
+        },
+        ExpiresIn=3600
+    )
+
+    file_url = f"https://swn-backlot-files-517220555400.s3.amazonaws.com/{s3_key}"
+
+    return {
+        "success": True,
+        "upload_url": presigned_url,
+        "file_url": file_url,
+        "s3_key": s3_key
+    }
 
 
 # =====================================================

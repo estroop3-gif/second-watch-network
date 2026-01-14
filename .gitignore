@@ -58,3 +58,12 @@ Thumbs.db
 *.tmp
 coverage/
 .nyc_output/
+
+# Playwright and testing
+.playwright-session/
+test-results/
+test-output/
+playwright-report/
+playwright-report-production/
+screenshots/
+nohup.out

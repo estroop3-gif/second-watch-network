@@ -20,9 +20,17 @@ PIPELINE_STAGES = ['DEVELOPMENT', 'PRE_PRO', 'PRODUCTION', 'POST', 'DELIVERED', 
 EDIT_STATUSES = ['NOT_STARTED', 'INGEST', 'ASSEMBLY', 'ROUGH_CUT', 'FINE_CUT', 'PICTURE_LOCK', 'SOUND', 'COLOR', 'MASTERING']
 DELIVERY_STATUSES = ['NOT_STARTED', 'QC', 'CAPTIONS', 'ARTWORK', 'EXPORTS', 'DELIVERED', 'RELEASED']
 SUBJECT_TYPES = ['CAST', 'CREW', 'CONTRIBUTOR', 'OTHER']
+
+# Map subject types to contact types for auto-creation
+SUBJECT_TO_CONTACT_TYPE = {
+    'CAST': 'talent',
+    'CREW': 'crew',
+    'CONTRIBUTOR': 'collaborator',
+    'OTHER': 'other',
+}
 LIST_ITEM_KINDS = ['INTERVIEW', 'SCENE', 'SEGMENT']
 DELIVERABLE_STATUSES = ['NOT_STARTED', 'IN_PROGRESS', 'READY_FOR_REVIEW', 'APPROVED', 'DELIVERED']
-APPROVAL_TYPES = ['EDIT_LOCK', 'DELIVERY_APPROVAL']
+APPROVAL_TYPES = ['EDIT_LOCK', 'DELIVERY_APPROVAL', 'ROUGH_CUT', 'FINE_CUT', 'PICTURE_LOCK', 'COLOR', 'SOUND']
 APPROVAL_STATUSES = ['PENDING', 'APPROVED', 'REJECTED']
 
 
@@ -73,8 +81,14 @@ class EpisodeUpdate(BaseModel):
 class SubjectCreate(BaseModel):
     subject_type: str
     name: str = Field(..., min_length=1)
-    role: Optional[str] = None
-    contact_info: Optional[str] = None
+    role: Optional[str] = None  # Role in THIS episode
+    # Contact fields - for creating linked contact
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role_interest: Optional[str] = None  # General role/interest for contact
+    status: Optional[str] = "new"  # Contact status
+    source: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -82,7 +96,13 @@ class SubjectUpdate(BaseModel):
     subject_type: Optional[str] = None
     name: Optional[str] = None
     role: Optional[str] = None
-    contact_info: Optional[str] = None
+    # Contact fields for updating linked contact
+    company: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    role_interest: Optional[str] = None
+    status: Optional[str] = None
+    source: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -486,6 +506,28 @@ async def create_episode(
     return result.data[0] if result.data else {"success": True}
 
 
+# NOTE: This route MUST be defined BEFORE /episodes/{episode_id} to avoid matching "all-milestones" as an episode_id
+@router.get("/projects/{project_id}/episodes/all-milestones")
+async def get_all_milestones_route(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """Get all milestones across all episodes in a project."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["user_id"])
+
+    milestones = execute_query(
+        """SELECT em.*, e.episode_code, e.title as episode_title
+           FROM episode_milestones em
+           JOIN episodes e ON e.id = em.episode_id
+           WHERE e.project_id = :project_id
+           ORDER BY em.date, e.episode_number""",
+        {"project_id": project_id}
+    )
+
+    return {"milestones": [dict(m) for m in milestones]}
+
+
 @router.get("/projects/{project_id}/episodes/{episode_id}")
 async def get_episode(
     project_id: str,
@@ -493,89 +535,151 @@ async def get_episode(
     authorization: str = Header(None)
 ):
     """Get episode detail with all related data."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     user = await get_current_user_from_token(authorization)
     await verify_project_access(project_id, user["user_id"])
 
-    episode = execute_single(
-        """SELECT e.*, s.season_number, s.title as season_title
-           FROM episodes e
-           LEFT JOIN seasons s ON s.id = e.season_id
-           WHERE e.id = :episode_id AND e.project_id = :project_id""",
-        {"episode_id": episode_id, "project_id": project_id}
-    )
+    try:
+        episode = execute_single(
+            """SELECT e.*, s.season_number, s.title as season_title
+               FROM episodes e
+               LEFT JOIN seasons s ON s.id = e.season_id
+               WHERE e.id = :episode_id AND e.project_id = :project_id""",
+            {"episode_id": episode_id, "project_id": project_id}
+        )
 
-    if not episode:
-        raise HTTPException(status_code=404, detail="Episode not found")
+        if not episode:
+            raise HTTPException(status_code=404, detail="Episode not found")
 
-    # Get related data
-    subjects = execute_query(
-        "SELECT * FROM episode_subjects WHERE episode_id = :episode_id ORDER BY name",
-        {"episode_id": episode_id}
-    )
+        # Get related data with individual error handling
+        subjects = []
+        try:
+            subjects = execute_query(
+                """SELECT es.*, bc.name as contact_name
+                   FROM episode_subjects es
+                   LEFT JOIN backlot_project_contacts bc ON bc.id = es.contact_id
+                   WHERE es.episode_id = :episode_id
+                   ORDER BY es.name""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch subjects for episode {episode_id}: {e}")
 
-    locations = execute_query(
-        "SELECT * FROM episode_locations WHERE episode_id = :episode_id ORDER BY name",
-        {"episode_id": episode_id}
-    )
+        locations = []
+        try:
+            locations = execute_query(
+                """SELECT el.*, bl.name as project_location_name
+                   FROM episode_locations el
+                   LEFT JOIN backlot_project_locations pl ON pl.id = el.project_location_id
+                   LEFT JOIN backlot_locations bl ON bl.id = pl.location_id
+                   WHERE el.episode_id = :episode_id
+                   ORDER BY el.name""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch locations for episode {episode_id}: {e}")
 
-    list_items = execute_query(
-        "SELECT * FROM episode_list_items WHERE episode_id = :episode_id ORDER BY kind, sort_order",
-        {"episode_id": episode_id}
-    )
+        list_items = []
+        try:
+            list_items = execute_query(
+                "SELECT * FROM episode_list_items WHERE episode_id = :episode_id ORDER BY kind, sort_order",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch list_items for episode {episode_id}: {e}")
 
-    milestones = execute_query(
-        "SELECT * FROM episode_milestones WHERE episode_id = :episode_id ORDER BY date",
-        {"episode_id": episode_id}
-    )
+        milestones = []
+        try:
+            milestones = execute_query(
+                "SELECT * FROM episode_milestones WHERE episode_id = :episode_id ORDER BY date",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch milestones for episode {episode_id}: {e}")
 
-    deliverables = execute_query(
-        "SELECT * FROM episode_deliverables WHERE episode_id = :episode_id ORDER BY deliverable_type",
-        {"episode_id": episode_id}
-    )
+        deliverables = []
+        try:
+            deliverables = execute_query(
+                """SELECT ed.*, bpd.name as project_deliverable_name
+                   FROM episode_deliverables ed
+                   LEFT JOIN backlot_project_deliverables bpd ON bpd.id = ed.project_deliverable_id
+                   WHERE ed.episode_id = :episode_id
+                   ORDER BY ed.deliverable_type""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch deliverables for episode {episode_id}: {e}")
 
-    asset_links = execute_query(
-        "SELECT * FROM episode_asset_links WHERE episode_id = :episode_id ORDER BY label",
-        {"episode_id": episode_id}
-    )
+        asset_links = []
+        try:
+            asset_links = execute_query(
+                """SELECT eal.*, ba.name as asset_name
+                   FROM episode_asset_links eal
+                   LEFT JOIN backlot_assets ba ON ba.id = eal.asset_id
+                   WHERE eal.episode_id = :episode_id
+                   ORDER BY eal.label""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch asset_links for episode {episode_id}: {e}")
 
-    shoot_days = execute_query(
-        """SELECT esd.*, pd.date, pd.day_type, pd.title as day_title
-           FROM episode_shoot_days esd
-           JOIN backlot_production_days pd ON pd.id = esd.production_day_id
-           WHERE esd.episode_id = :episode_id
-           ORDER BY pd.date""",
-        {"episode_id": episode_id}
-    )
+        shoot_days = []
+        try:
+            shoot_days = execute_query(
+                """SELECT esd.*, pd.date, pd.day_type, pd.title as day_title
+                   FROM episode_shoot_days esd
+                   JOIN backlot_production_days pd ON pd.id = esd.production_day_id
+                   WHERE esd.episode_id = :episode_id
+                   ORDER BY pd.date""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch shoot_days for episode {episode_id}: {e}")
 
-    approvals = execute_query(
-        """SELECT ea.*,
-                  req.display_name as requested_by_name,
-                  dec.display_name as decided_by_name
-           FROM episode_approvals ea
-           LEFT JOIN profiles req ON req.id = ea.requested_by_user_id
-           LEFT JOIN profiles dec ON dec.id = ea.decided_by_user_id
-           WHERE ea.episode_id = :episode_id
-           ORDER BY ea.requested_at DESC""",
-        {"episode_id": episode_id}
-    )
+        approvals = []
+        try:
+            approvals = execute_query(
+                """SELECT ea.*,
+                          req.display_name as requested_by_name,
+                          dec.display_name as decided_by_name
+                   FROM episode_approvals ea
+                   LEFT JOIN profiles req ON req.id = ea.requested_by_user_id
+                   LEFT JOIN profiles dec ON dec.id = ea.decided_by_user_id
+                   WHERE ea.episode_id = :episode_id
+                   ORDER BY ea.requested_at DESC""",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch approvals for episode {episode_id}: {e}")
 
-    storyboards = execute_query(
-        "SELECT id, title, status, aspect_ratio FROM storyboards WHERE episode_id = :episode_id ORDER BY title",
-        {"episode_id": episode_id}
-    )
+        storyboards = []
+        try:
+            storyboards = execute_query(
+                "SELECT id, title, status, aspect_ratio FROM storyboards WHERE episode_id = :episode_id ORDER BY title",
+                {"episode_id": episode_id}
+            )
+        except Exception as e:
+            logger.warning(f"Failed to fetch storyboards for episode {episode_id}: {e}")
 
-    return {
-        **dict(episode),
-        "subjects": [dict(s) for s in subjects],
-        "locations": [dict(l) for l in locations],
-        "list_items": [dict(i) for i in list_items],
-        "milestones": [dict(m) for m in milestones],
-        "deliverables": [dict(d) for d in deliverables],
-        "asset_links": [dict(a) for a in asset_links],
-        "shoot_days": [dict(sd) for sd in shoot_days],
-        "approvals": [dict(ap) for ap in approvals],
-        "storyboards": [dict(sb) for sb in storyboards]
-    }
+        return {
+            **dict(episode),
+            "subjects": [dict(s) for s in subjects],
+            "locations": [dict(l) for l in locations],
+            "list_items": [dict(i) for i in list_items],
+            "milestones": [dict(m) for m in milestones],
+            "deliverables": [dict(d) for d in deliverables],
+            "asset_links": [dict(a) for a in asset_links],
+            "shoot_days": [dict(sd) for sd in shoot_days],
+            "approvals": [dict(ap) for ap in approvals],
+            "storyboards": [dict(sb) for sb in storyboards]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching episode {episode_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch episode: {str(e)}")
 
 
 @router.put("/projects/{project_id}/episodes/{episode_id}")
@@ -640,7 +744,7 @@ async def create_subject(
     data: SubjectCreate,
     authorization: str = Header(None)
 ):
-    """Add a subject to an episode."""
+    """Add a subject to an episode. Creates a contact and links it."""
     user = await get_current_user_from_token(authorization)
     await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
 
@@ -648,13 +752,42 @@ async def create_subject(
         raise HTTPException(status_code=400, detail=f"Invalid subject_type. Must be one of: {SUBJECT_TYPES}")
 
     client = get_client()
+
+    # 1. Create contact first (auto-mapped type)
+    contact_type = SUBJECT_TO_CONTACT_TYPE.get(data.subject_type, 'other')
+    contact_result = client.table("backlot_project_contacts").insert({
+        "project_id": project_id,
+        "contact_type": contact_type,
+        "status": data.status or "new",
+        "name": data.name,
+        "company": data.company,
+        "email": data.email,
+        "phone": data.phone,
+        "role_interest": data.role_interest,
+        "notes": data.notes,
+        "source": data.source,
+        "created_by": user["user_id"]
+    }).execute()
+
+    contact_id = contact_result.data[0]["id"] if contact_result.data else None
+
+    # 2. Create subject linked to contact
+    # Build contact_info from email/phone for backward compatibility
+    contact_info_parts = []
+    if data.email:
+        contact_info_parts.append(data.email)
+    if data.phone:
+        contact_info_parts.append(data.phone)
+    contact_info = " ".join(contact_info_parts) if contact_info_parts else None
+
     result = client.table("episode_subjects").insert({
         "episode_id": episode_id,
         "subject_type": data.subject_type,
         "name": data.name,
         "role": data.role,
-        "contact_info": data.contact_info,
-        "notes": data.notes
+        "contact_info": contact_info,
+        "notes": data.notes,
+        "contact_id": contact_id  # Link to the contact!
     }).execute()
 
     return result.data[0] if result.data else {"success": True}
@@ -668,18 +801,80 @@ async def update_subject(
     data: SubjectUpdate,
     authorization: str = Header(None)
 ):
-    """Update a subject."""
+    """Update a subject and its linked contact."""
     user = await get_current_user_from_token(authorization)
     await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
 
     if data.subject_type and data.subject_type not in SUBJECT_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid subject_type. Must be one of: {SUBJECT_TYPES}")
 
-    update_data = {k: v for k, v in data.dict().items() if v is not None}
-    update_data["updated_at"] = datetime.utcnow().isoformat()
-
     client = get_client()
-    result = client.table("episode_subjects").update(update_data).eq("id", subject_id).eq("episode_id", episode_id).execute()
+
+    # Get existing subject to check for contact_id
+    existing = client.table("episode_subjects").select("*").eq("id", subject_id).single().execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Subject not found")
+
+    contact_id = existing.data.get("contact_id")
+
+    # Separate subject fields from contact fields
+    subject_fields = ["subject_type", "name", "role", "notes"]
+    contact_fields = ["company", "email", "phone", "role_interest", "status", "source", "notes"]
+
+    # Build subject update data
+    subject_update = {}
+    for field in subject_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            subject_update[field] = val
+
+    # Build contact_info from email/phone for backward compatibility
+    if data.email is not None or data.phone is not None:
+        contact_info_parts = []
+        if data.email:
+            contact_info_parts.append(data.email)
+        if data.phone:
+            contact_info_parts.append(data.phone)
+        subject_update["contact_info"] = " ".join(contact_info_parts) if contact_info_parts else None
+
+    subject_update["updated_at"] = datetime.utcnow().isoformat()
+
+    # Build contact update data
+    contact_update = {}
+    for field in contact_fields:
+        val = getattr(data, field, None)
+        if val is not None:
+            contact_update[field] = val
+    if data.name is not None:
+        contact_update["name"] = data.name
+
+    # Handle contact: update existing or create new
+    if contact_id:
+        # Update existing contact
+        if contact_update:
+            contact_update["updated_at"] = datetime.utcnow().isoformat()
+            client.table("backlot_project_contacts").update(contact_update).eq("id", contact_id).execute()
+    else:
+        # Create new contact and link it
+        contact_type = SUBJECT_TO_CONTACT_TYPE.get(data.subject_type or existing.data.get("subject_type"), 'other')
+        new_contact = client.table("backlot_project_contacts").insert({
+            "project_id": project_id,
+            "contact_type": contact_type,
+            "status": data.status or "new",
+            "name": data.name or existing.data.get("name"),
+            "company": data.company,
+            "email": data.email,
+            "phone": data.phone,
+            "role_interest": data.role_interest,
+            "notes": data.notes,
+            "source": data.source,
+            "created_by": user["user_id"]
+        }).execute()
+        if new_contact.data:
+            subject_update["contact_id"] = new_contact.data[0]["id"]
+
+    # Update subject
+    result = client.table("episode_subjects").update(subject_update).eq("id", subject_id).eq("episode_id", episode_id).execute()
 
     return result.data[0] if result.data else {"success": True}
 
@@ -699,6 +894,57 @@ async def delete_subject(
     client.table("episode_subjects").delete().eq("id", subject_id).eq("episode_id", episode_id).execute()
 
     return {"success": True}
+
+
+class LinkContactRequest(BaseModel):
+    contact_id: str
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/subjects/link-contact")
+async def link_contact(
+    project_id: str,
+    episode_id: str,
+    data: LinkContactRequest,
+    authorization: str = Header(None)
+):
+    """Link a project contact to an episode as a subject."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Get the contact details
+    contact = client.table("backlot_project_contacts").select("*").eq("id", data.contact_id).eq("project_id", project_id).single().execute()
+
+    if not contact.data:
+        raise HTTPException(status_code=404, detail="Contact not found")
+
+    c = contact.data
+
+    # Determine subject type from contact type
+    contact_type = c.get("contact_type", "other")
+    subject_type_map = {
+        "cast": "CAST",
+        "crew": "CREW",
+        "talent": "CAST",
+        "vendor": "OTHER",
+        "location": "OTHER",
+        "other": "OTHER"
+    }
+    subject_type = subject_type_map.get(contact_type.lower(), "OTHER")
+
+    # Create episode subject linked to contact
+    result = client.table("episode_subjects").insert({
+        "episode_id": episode_id,
+        "subject_type": subject_type,
+        "name": c.get("name", ""),
+        "role": c.get("role_interest", ""),
+        "contact_info": c.get("email") or c.get("phone") or "",
+        "notes": c.get("notes", ""),
+        "contact_id": data.contact_id
+    }).execute()
+
+    return result.data[0] if result.data else {"success": True}
 
 
 # =====================================================
@@ -763,6 +1009,43 @@ async def delete_location(
     client.table("episode_locations").delete().eq("id", location_id).eq("episode_id", episode_id).execute()
 
     return {"success": True}
+
+
+class LinkProjectLocationRequest(BaseModel):
+    project_location_id: str
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/locations/link")
+async def link_project_location(
+    project_id: str,
+    episode_id: str,
+    data: LinkProjectLocationRequest,
+    authorization: str = Header(None)
+):
+    """Link a project location to an episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Get the project location details
+    project_location = client.table("backlot_project_locations").select("*").eq("id", data.project_location_id).eq("project_id", project_id).single().execute()
+
+    if not project_location.data:
+        raise HTTPException(status_code=404, detail="Project location not found")
+
+    loc = project_location.data
+
+    # Create episode location linked to project location
+    result = client.table("episode_locations").insert({
+        "episode_id": episode_id,
+        "name": loc.get("name", ""),
+        "address": loc.get("address", ""),
+        "notes": loc.get("notes", ""),
+        "project_location_id": data.project_location_id
+    }).execute()
+
+    return result.data[0] if result.data else {"success": True}
 
 
 # =====================================================
@@ -959,6 +1242,67 @@ async def delete_milestone(
     return {"success": True}
 
 
+# NOTE: get_all_milestones moved above /episodes/{episode_id} to fix route matching
+
+
+class ImportMilestonesRequest(BaseModel):
+    milestone_ids: List[str]
+
+
+@router.post("/projects/{project_id}/production-days/from-milestones")
+async def create_production_days_from_milestones(
+    project_id: str,
+    data: ImportMilestonesRequest,
+    authorization: str = Header(None)
+):
+    """Create production days from selected episode milestones."""
+    user = await get_current_user_from_token(authorization)
+    project = await verify_project_access(project_id, user["user_id"])
+
+    if not data.milestone_ids:
+        raise HTTPException(status_code=400, detail="No milestones provided")
+
+    client = get_client()
+    created = []
+
+    for milestone_id in data.milestone_ids:
+        # Get milestone details with episode info
+        milestone = execute_single(
+            """SELECT em.*, e.episode_code, e.title as episode_title
+               FROM episode_milestones em
+               JOIN episodes e ON e.id = em.episode_id
+               WHERE em.id = :milestone_id AND e.project_id = :project_id""",
+            {"milestone_id": milestone_id, "project_id": project_id}
+        )
+
+        if not milestone:
+            continue
+
+        # Check if a production day already exists for this milestone
+        existing = execute_single(
+            "SELECT id FROM backlot_production_days WHERE source_milestone_id = :milestone_id",
+            {"milestone_id": milestone_id}
+        )
+
+        if existing:
+            continue  # Skip if already imported
+
+        # Create production day
+        result = client.table("backlot_production_days").insert({
+            "project_id": project_id,
+            "date": milestone["date"],
+            "day_type": "SHOOT",
+            "title": f"{milestone['milestone_type']} - {milestone.get('episode_code', 'Episode')}",
+            "notes": milestone.get("notes", ""),
+            "source_milestone_id": milestone_id
+        }).execute()
+
+        if result.data:
+            created.append(result.data[0])
+
+    return {"success": True, "created": len(created)}
+
+
 # =====================================================
 # Deliverables CRUD
 # =====================================================
@@ -1124,6 +1468,44 @@ async def apply_deliverable_template(
     return {"success": True, "created": len(created)}
 
 
+class LinkProjectDeliverableRequest(BaseModel):
+    project_deliverable_id: str
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/deliverables/link")
+async def link_project_deliverable(
+    project_id: str,
+    episode_id: str,
+    data: LinkProjectDeliverableRequest,
+    authorization: str = Header(None)
+):
+    """Link a project deliverable to an episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Get the project deliverable details
+    project_deliverable = client.table("backlot_project_deliverables").select("*").eq("id", data.project_deliverable_id).eq("project_id", project_id).single().execute()
+
+    if not project_deliverable.data:
+        raise HTTPException(status_code=404, detail="Project deliverable not found")
+
+    pd = project_deliverable.data
+
+    # Create episode deliverable linked to project deliverable
+    result = client.table("episode_deliverables").insert({
+        "episode_id": episode_id,
+        "deliverable_type": pd.get("deliverable_type", pd.get("name", "Linked Deliverable")),
+        "status": pd.get("status", "NOT_STARTED"),
+        "due_date": pd.get("due_date"),
+        "notes": pd.get("notes", ""),
+        "project_deliverable_id": data.project_deliverable_id
+    }).execute()
+
+    return result.data[0] if result.data else {"success": True}
+
+
 # =====================================================
 # Asset Links CRUD
 # =====================================================
@@ -1164,6 +1546,41 @@ async def delete_asset_link(
     client.table("episode_asset_links").delete().eq("id", link_id).eq("episode_id", episode_id).execute()
 
     return {"success": True}
+
+
+class LinkAssetRequest(BaseModel):
+    asset_id: str
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/asset-links/link-asset")
+async def link_asset(
+    project_id: str,
+    episode_id: str,
+    data: LinkAssetRequest,
+    authorization: str = Header(None)
+):
+    """Link an asset from the Assets tab to an episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Get the asset details
+    asset = client.table("backlot_assets").select("*").eq("id", data.asset_id).eq("project_id", project_id).single().execute()
+
+    if not asset.data:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    asset_data = asset.data
+
+    # Create episode asset link with asset_id reference
+    result = client.table("episode_asset_links").insert({
+        "episode_id": episode_id,
+        "label": asset_data.get("title", asset_data.get("name", "Linked Asset")),
+        "asset_id": data.asset_id
+    }).execute()
+
+    return result.data[0] if result.data else {"success": True}
 
 
 # =====================================================

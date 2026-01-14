@@ -30,6 +30,11 @@ class StoryboardCreate(BaseModel):
     title: str = Field(..., min_length=1)
     description: Optional[str] = None
     aspect_ratio: Optional[str] = '16:9'
+    # Entity connections
+    episode_id: Optional[str] = None
+    scene_id: Optional[str] = None
+    shot_list_id: Optional[str] = None
+    moodboard_id: Optional[str] = None
 
 
 class StoryboardUpdate(BaseModel):
@@ -37,14 +42,35 @@ class StoryboardUpdate(BaseModel):
     description: Optional[str] = None
     aspect_ratio: Optional[str] = None
     status: Optional[str] = None
+    # Entity connections
+    episode_id: Optional[str] = None
+    scene_id: Optional[str] = None
+    shot_list_id: Optional[str] = None
+    moodboard_id: Optional[str] = None
 
 
 class SectionCreate(BaseModel):
     title: str = Field(..., min_length=1)
+    # Entity connections
+    scene_id: Optional[str] = None
+    shot_list_id: Optional[str] = None
 
 
 class SectionUpdate(BaseModel):
     title: Optional[str] = None
+    # Entity connections
+    scene_id: Optional[str] = None
+    shot_list_id: Optional[str] = None
+
+
+class PanelImageUpload(BaseModel):
+    file_name: str
+    content_type: str
+    file_size: int
+
+
+class CallSheetStoryboardLink(BaseModel):
+    storyboard_id: str
 
 
 class SectionReorder(BaseModel):
@@ -168,16 +194,31 @@ async def list_storyboards(
 
     client = get_client()
     result = client.table("storyboards").select(
-        "id, title, description, aspect_ratio, status, created_at, updated_at"
+        "id, title, description, aspect_ratio, status, created_at, updated_at, episode_id, scene_id, shot_list_id, moodboard_id"
     ).eq("project_id", project_id).order("created_at", desc=True).execute()
 
-    # Get section and panel counts for each storyboard
+    # Get section and panel counts for each storyboard, plus entity info
     storyboards = []
     for sb in (result.data or []):
         sections = client.table("storyboard_sections").select("id", count="exact").eq("storyboard_id", sb["id"]).execute()
         panels = client.table("storyboard_panels").select("id", count="exact").eq("storyboard_id", sb["id"]).execute()
         sb["section_count"] = sections.count or 0
         sb["panel_count"] = panels.count or 0
+
+        # Fetch linked entity info for display
+        if sb.get("episode_id"):
+            ep = client.table("episodes").select("id, title, episode_code").eq("id", sb["episode_id"]).execute()
+            sb["episode"] = ep.data[0] if ep.data else None
+        if sb.get("scene_id"):
+            scene = client.table("backlot_scenes").select("id, scene_number, set_name").eq("id", sb["scene_id"]).execute()
+            sb["scene"] = scene.data[0] if scene.data else None
+        if sb.get("shot_list_id"):
+            sl = client.table("backlot_shot_lists").select("id, title").eq("id", sb["shot_list_id"]).execute()
+            sb["shot_list"] = sl.data[0] if sl.data else None
+        if sb.get("moodboard_id"):
+            mb = client.table("moodboards").select("id, title").eq("id", sb["moodboard_id"]).execute()
+            sb["moodboard"] = mb.data[0] if mb.data else None
+
         storyboards.append(sb)
 
     return {"storyboards": storyboards}
@@ -203,6 +244,16 @@ async def create_storyboard(
         "status": "DRAFT",
         "created_by_user_id": user["id"]
     }
+
+    # Add entity connections if provided
+    if request.episode_id:
+        storyboard_data["episode_id"] = request.episode_id
+    if request.scene_id:
+        storyboard_data["scene_id"] = request.scene_id
+    if request.shot_list_id:
+        storyboard_data["shot_list_id"] = request.shot_list_id
+    if request.moodboard_id:
+        storyboard_data["moodboard_id"] = request.moodboard_id
 
     result = client.table("storyboards").insert(storyboard_data).execute()
 
@@ -292,6 +343,16 @@ async def update_storyboard(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {VALID_STATUSES}")
         update_data["status"] = request.status
 
+    # Entity connections (allow setting to None to unlink)
+    if request.episode_id is not None:
+        update_data["episode_id"] = request.episode_id if request.episode_id else None
+    if request.scene_id is not None:
+        update_data["scene_id"] = request.scene_id if request.scene_id else None
+    if request.shot_list_id is not None:
+        update_data["shot_list_id"] = request.shot_list_id if request.shot_list_id else None
+    if request.moodboard_id is not None:
+        update_data["moodboard_id"] = request.moodboard_id if request.moodboard_id else None
+
     if update_data:
         update_data["updated_at"] = datetime.utcnow().isoformat()
         result = client.table("storyboards").update(update_data).eq("id", storyboard_id).execute()
@@ -353,6 +414,12 @@ async def create_section(
         "sort_order": next_order
     }
 
+    # Add entity connections if provided
+    if request.scene_id:
+        section_data["scene_id"] = request.scene_id
+    if request.shot_list_id:
+        section_data["shot_list_id"] = request.shot_list_id
+
     result = client.table("storyboard_sections").insert(section_data).execute()
 
     if not result.data:
@@ -383,6 +450,12 @@ async def update_section(
     update_data = {}
     if request.title is not None:
         update_data["title"] = request.title
+
+    # Entity connections (allow setting to None to unlink)
+    if request.scene_id is not None:
+        update_data["scene_id"] = request.scene_id if request.scene_id else None
+    if request.shot_list_id is not None:
+        update_data["shot_list_id"] = request.shot_list_id if request.shot_list_id else None
 
     if update_data:
         update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -793,3 +866,235 @@ async def get_storyboard_print_data(
         "sections": sections_with_panels,
         "exported_at": datetime.utcnow().isoformat()
     }
+
+
+# =====================================================
+# Panel Image Upload Endpoints
+# =====================================================
+
+@router.post("/projects/{project_id}/storyboards/{storyboard_id}/panels/{panel_id}/upload-url")
+async def get_panel_upload_url(
+    project_id: str,
+    storyboard_id: str,
+    panel_id: str,
+    request: PanelImageUpload,
+    authorization: str = Header(None)
+):
+    """Get a presigned URL for uploading a panel reference image to S3."""
+    import boto3
+    import uuid as uuid_module
+
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+    await check_storyboard_locked(storyboard_id, user["id"], project_id)
+
+    client = get_client()
+
+    # Verify panel exists
+    panel = client.table("storyboard_panels").select("id").eq("id", panel_id).eq("storyboard_id", storyboard_id).execute()
+    if not panel.data:
+        raise HTTPException(status_code=404, detail="Panel not found")
+
+    # Generate S3 key
+    file_ext = request.file_name.rsplit('.', 1)[-1].lower() if '.' in request.file_name else 'jpg'
+    s3_key = f"storyboards/{project_id}/{storyboard_id}/panels/{panel_id}/{uuid_module.uuid4()}.{file_ext}"
+
+    # Generate presigned upload URL
+    s3_client = boto3.client("s3", region_name="us-east-1")
+    presigned_url = s3_client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": "swn-backlot-files-517220555400",
+            "Key": s3_key,
+            "ContentType": request.content_type,
+        },
+        ExpiresIn=3600
+    )
+
+    file_url = f"https://swn-backlot-files-517220555400.s3.amazonaws.com/{s3_key}"
+
+    return {
+        "success": True,
+        "upload_url": presigned_url,
+        "file_url": file_url,
+        "s3_key": s3_key
+    }
+
+
+# =====================================================
+# Call Sheet Storyboard Link Endpoints
+# =====================================================
+
+@router.get("/call-sheets/{call_sheet_id}/storyboards")
+async def get_call_sheet_storyboards(
+    call_sheet_id: str,
+    authorization: str = Header(None)
+):
+    """Get all storyboards linked to a call sheet."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Verify access via call sheet
+    call_sheet = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    if not call_sheet.data:
+        raise HTTPException(status_code=404, detail="Call sheet not found")
+
+    await verify_project_access(call_sheet.data[0]["project_id"], user["id"])
+
+    # Get linked storyboards
+    links = client.table("storyboard_call_sheet_links").select(
+        "storyboard_id, sort_order"
+    ).eq("call_sheet_id", call_sheet_id).order("sort_order").execute()
+
+    if not links.data:
+        return {"storyboards": []}
+
+    storyboard_ids = [l["storyboard_id"] for l in links.data]
+
+    # Fetch storyboard details with counts
+    storyboards = []
+    for sb_id in storyboard_ids:
+        sb = client.table("storyboards").select("*").eq("id", sb_id).execute()
+        if sb.data:
+            sb_data = sb.data[0]
+            # Get counts
+            sections = client.table("storyboard_sections").select("id", count="exact").eq("storyboard_id", sb_id).execute()
+            panels = client.table("storyboard_panels").select("id", count="exact").eq("storyboard_id", sb_id).execute()
+            sb_data["section_count"] = sections.count or 0
+            sb_data["panel_count"] = panels.count or 0
+            storyboards.append(sb_data)
+
+    return {"storyboards": storyboards}
+
+
+@router.post("/call-sheets/{call_sheet_id}/storyboards/{storyboard_id}/link")
+async def link_storyboard_to_call_sheet(
+    call_sheet_id: str,
+    storyboard_id: str,
+    authorization: str = Header(None)
+):
+    """Link a storyboard to a call sheet."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Verify access via call sheet
+    call_sheet = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    if not call_sheet.data:
+        raise HTTPException(status_code=404, detail="Call sheet not found")
+
+    project_id = call_sheet.data[0]["project_id"]
+    await verify_project_access(project_id, user["id"])
+
+    # Verify storyboard exists and belongs to same project
+    storyboard = client.table("storyboards").select("id, project_id").eq("id", storyboard_id).execute()
+    if not storyboard.data:
+        raise HTTPException(status_code=404, detail="Storyboard not found")
+    if storyboard.data[0]["project_id"] != project_id:
+        raise HTTPException(status_code=400, detail="Storyboard must belong to the same project")
+
+    # Check if already linked
+    existing = client.table("storyboard_call_sheet_links").select("id").eq("storyboard_id", storyboard_id).eq("call_sheet_id", call_sheet_id).execute()
+    if existing.data:
+        return {"success": True, "message": "Already linked"}
+
+    # Get max sort_order
+    max_order = client.table("storyboard_call_sheet_links").select("sort_order").eq("call_sheet_id", call_sheet_id).order("sort_order", desc=True).limit(1).execute()
+    next_order = 0
+    if max_order.data:
+        next_order = max_order.data[0]["sort_order"] + 1
+
+    # Create link
+    result = client.table("storyboard_call_sheet_links").insert({
+        "storyboard_id": storyboard_id,
+        "call_sheet_id": call_sheet_id,
+        "sort_order": next_order
+    }).execute()
+
+    return {"success": True, "link": result.data[0] if result.data else None}
+
+
+@router.delete("/call-sheets/{call_sheet_id}/storyboards/{storyboard_id}/link")
+async def unlink_storyboard_from_call_sheet(
+    call_sheet_id: str,
+    storyboard_id: str,
+    authorization: str = Header(None)
+):
+    """Unlink a storyboard from a call sheet."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Verify access via call sheet
+    call_sheet = client.table("backlot_call_sheets").select("project_id").eq("id", call_sheet_id).execute()
+    if not call_sheet.data:
+        raise HTTPException(status_code=404, detail="Call sheet not found")
+
+    await verify_project_access(call_sheet.data[0]["project_id"], user["id"])
+
+    # Delete link
+    client.table("storyboard_call_sheet_links").delete().eq("storyboard_id", storyboard_id).eq("call_sheet_id", call_sheet_id).execute()
+
+    return {"success": True}
+
+
+# =====================================================
+# Query by Entity Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/storyboards/by-scene/{scene_id}")
+async def get_storyboards_by_scene(
+    project_id: str,
+    scene_id: str,
+    authorization: str = Header(None)
+):
+    """Get all storyboards linked to a specific scene."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get storyboards linked to this scene
+    result = client.table("storyboards").select(
+        "id, title, description, aspect_ratio, status, created_at"
+    ).eq("project_id", project_id).eq("scene_id", scene_id).execute()
+
+    return {"storyboards": result.data or []}
+
+
+@router.get("/projects/{project_id}/storyboards/by-episode/{episode_id}")
+async def get_storyboards_by_episode(
+    project_id: str,
+    episode_id: str,
+    authorization: str = Header(None)
+):
+    """Get all storyboards linked to a specific episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get storyboards linked to this episode
+    result = client.table("storyboards").select(
+        "id, title, description, aspect_ratio, status, created_at"
+    ).eq("project_id", project_id).eq("episode_id", episode_id).execute()
+
+    return {"storyboards": result.data or []}
+
+
+@router.get("/projects/{project_id}/storyboards/by-shot-list/{shot_list_id}")
+async def get_storyboards_by_shot_list(
+    project_id: str,
+    shot_list_id: str,
+    authorization: str = Header(None)
+):
+    """Get all storyboards linked to a specific shot list."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get storyboards linked to this shot list
+    result = client.table("storyboards").select(
+        "id, title, description, aspect_ratio, status, created_at"
+    ).eq("project_id", project_id).eq("shot_list_id", shot_list_id).execute()
+
+    return {"storyboards": result.data or []}

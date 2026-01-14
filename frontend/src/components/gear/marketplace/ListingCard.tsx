@@ -2,7 +2,7 @@
  * ListingCard.tsx
  * Card component for displaying marketplace listings
  */
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Package,
   BadgeCheck,
@@ -14,34 +14,52 @@ import {
   Eye,
   Tag,
   MapPin,
+  ShoppingCart,
+  MessageSquare,
+  Loader2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
+import { useGearCartContextOptional } from '@/context/GearCartContext';
+import { useToast } from '@/hooks/use-toast';
 
 import type { GearMarketplaceListing } from '@/types/gear';
 
 interface ListingCardProps {
   listing: GearMarketplaceListing;
   viewMode: 'grid' | 'list';
-  isSelected: boolean;
+  isSelected?: boolean;
   onView: () => void;
-  onAddToQuote: () => void;
-  onRemoveFromQuote: () => void;
+  onAddToQuote?: () => void;
+  onRemoveFromQuote?: () => void;
+  onContactSeller?: () => void;
+  onMessage?: () => void;
+  // Optional: If in backlot context, pass project ID for cart tagging
+  backlotProjectId?: string;
+  // Use cart system instead of onAddToQuote
+  useCart?: boolean;
 }
 
 export function ListingCard({
   listing,
   viewMode,
-  isSelected,
+  isSelected: externalIsSelected,
   onView,
   onAddToQuote,
   onRemoveFromQuote,
+  onContactSeller,
+  onMessage,
+  backlotProjectId,
+  useCart = false,
 }: ListingCardProps) {
   const asset = listing.asset;
   const organization = listing.organization;
+  const cartContext = useGearCartContextOptional();
+  const { toast } = useToast();
+  const [isAddingToCart, setIsAddingToCart] = useState(false);
 
   // Format price display
   const formatPrice = (price: number) => {
@@ -60,6 +78,140 @@ export function ListingCard({
   const isSaleOnly = listing.listing_type === 'sale';
   const isBothType = listing.listing_type === 'both';
   const hasSalePrice = listing.sale_price && listing.sale_price > 0;
+
+  // Check if item is in cart (if using cart system)
+  const inCart = useCart && cartContext ? cartContext.isInCart(listing.id) : false;
+  const isSelected = externalIsSelected ?? inCart;
+
+  // Handle add to cart
+  const handleAddToCart = async () => {
+    if (!cartContext) {
+      // Fallback to legacy behavior
+      onAddToQuote?.();
+      return;
+    }
+
+    setIsAddingToCart(true);
+    try {
+      await cartContext.addToCart({
+        listing_id: listing.id,
+        backlot_project_id: backlotProjectId,
+        quantity: 1,
+      });
+      toast({
+        title: 'Added to Cart',
+        description: `${asset?.name || 'Item'} added to your cart.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to Add',
+        description: error instanceof Error ? error.message : 'Failed to add item to cart',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsAddingToCart(false);
+    }
+  };
+
+  // Handle remove from cart
+  const handleRemoveFromCart = async () => {
+    if (!cartContext) {
+      // Fallback to legacy behavior
+      onRemoveFromQuote?.();
+      return;
+    }
+
+    const cartItem = cartContext.getCartItem(listing.id);
+    if (!cartItem) return;
+
+    try {
+      await cartContext.removeFromCart(cartItem.id);
+      toast({
+        title: 'Removed from Cart',
+        description: `${asset?.name || 'Item'} removed from your cart.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Failed to Remove',
+        description: error instanceof Error ? error.message : 'Failed to remove item from cart',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handle contact seller for sale items
+  const handleContactSeller = () => {
+    if (onContactSeller) {
+      onContactSeller();
+    } else if (onMessage) {
+      onMessage();
+    } else {
+      // Default behavior - could open a modal or navigate
+      toast({
+        title: 'Contact Seller',
+        description: 'Message feature coming soon. Contact the seller directly.',
+      });
+    }
+  };
+
+  // Determine which action button to show
+  const renderActionButton = (size: 'sm' | 'default' = 'sm', showIcon = true) => {
+    // Sale-only items: Contact Seller button
+    if (isSaleOnly) {
+      return (
+        <Button
+          variant="default"
+          size={size}
+          onClick={(e) => {
+            e.stopPropagation();
+            handleContactSeller();
+          }}
+          className="gap-1.5"
+        >
+          {showIcon && <MessageSquare className="h-4 w-4" />}
+          Contact Seller
+        </Button>
+      );
+    }
+
+    // Rental items: Add to Cart / In Cart
+    if (isSelected || inCart) {
+      return (
+        <Button
+          variant="outline"
+          size={size}
+          onClick={(e) => {
+            e.stopPropagation();
+            useCart ? handleRemoveFromCart() : onRemoveFromQuote?.();
+          }}
+          className="gap-1.5 border-accent-yellow text-accent-yellow"
+        >
+          {showIcon && <Check className="h-4 w-4" />}
+          {useCart ? 'In Cart' : 'Added'}
+        </Button>
+      );
+    }
+
+    return (
+      <Button
+        variant="default"
+        size={size}
+        onClick={(e) => {
+          e.stopPropagation();
+          useCart ? handleAddToCart() : onAddToQuote?.();
+        }}
+        className="gap-1.5"
+        disabled={isAddingToCart}
+      >
+        {isAddingToCart ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : showIcon ? (
+          useCart ? <ShoppingCart className="h-4 w-4" /> : <Plus className="h-4 w-4" />
+        ) : null}
+        Add{useCart ? ' to Cart' : ''}
+      </Button>
+    );
+  };
 
   if (viewMode === 'list') {
     return (
@@ -155,22 +307,19 @@ export function ListingCard({
             <Button variant="ghost" size="sm" onClick={onView}>
               <Eye className="h-4 w-4" />
             </Button>
-            {isSelected ? (
+            {onMessage && !isSaleOnly && (
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                onClick={onRemoveFromQuote}
-                className="gap-1.5 border-accent-yellow text-accent-yellow"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMessage();
+                }}
               >
-                <Check className="h-4 w-4" />
-                Added
-              </Button>
-            ) : (
-              <Button variant="default" size="sm" onClick={onAddToQuote} className="gap-1.5">
-                <Plus className="h-4 w-4" />
-                Add
+                <MessageSquare className="h-4 w-4" />
               </Button>
             )}
+            {renderActionButton('sm', true)}
           </div>
         </CardContent>
       </Card>
@@ -229,10 +378,18 @@ export function ListingCard({
           <Button variant="secondary" size="sm" onClick={onView}>
             View Details
           </Button>
-          {!isSelected && (
-            <Button size="sm" onClick={onAddToQuote}>
-              <Plus className="mr-1 h-4 w-4" />
-              Add
+          {!isSelected && !inCart && renderActionButton('sm', true)}
+          {onMessage && !isSaleOnly && (
+            <Button
+              variant="secondary"
+              size="icon"
+              className="h-8 w-8"
+              onClick={(e) => {
+                e.stopPropagation();
+                onMessage();
+              }}
+            >
+              <MessageSquare className="h-4 w-4" />
             </Button>
           )}
         </div>

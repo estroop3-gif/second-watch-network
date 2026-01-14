@@ -91,7 +91,7 @@ def verify_quote_access(quote_id: str, profile_id: str, side: str = "renter") ->
 
     # Get user's organizations
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]
@@ -365,7 +365,7 @@ async def refund_deposit(
 
     # Verify rental house access
     user_orgs = execute_query(
-        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND is_active = TRUE",
+        "SELECT organization_id FROM organization_members WHERE user_id = :user_id AND status = 'active'",
         {"user_id": profile_id}
     )
     user_org_ids = [o["organization_id"] for o in user_orgs]

@@ -26,6 +26,8 @@ from .sales import router as sales_router
 from .personal import router as personal_router
 from .work_orders import router as work_orders_router
 from .purchase_requests import router as purchase_requests_router
+from .cart import router as cart_router
+from .work_order_requests import router as work_order_requests_router
 
 router = APIRouter(tags=["Gear House"])
 
@@ -50,3 +52,5 @@ router.include_router(sales_router)
 router.include_router(personal_router)
 router.include_router(work_orders_router)
 router.include_router(purchase_requests_router)
+router.include_router(cart_router)
+router.include_router(work_order_requests_router)

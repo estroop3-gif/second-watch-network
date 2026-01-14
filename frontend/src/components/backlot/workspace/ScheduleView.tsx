@@ -49,7 +49,9 @@ import {
   ListChecks,
   Target,
   Users,
+  Download,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { AutoSchedulerWizard } from './schedule/AutoSchedulerWizard';
 import { SyncStatusBadge } from './SyncStatusBadge';
 import { BidirectionalSyncModal } from './BidirectionalSyncModal';
@@ -67,10 +69,16 @@ import {
   useUnassignedScenes,
   useLinkedCallSheet,
   useCreateCallSheetFromDay,
+  useAllMilestones,
+  useImportMilestones,
+  useScriptSidesForDay,
+  useGenerateScriptSides,
+  useCheckOutdatedSides,
 } from '@/hooks/backlot';
 import { BacklotProductionDay, ProductionDayInput, ProductionDayScene } from '@/types/backlot';
 import { format, isBefore, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface ScheduleViewProps {
   projectId: string;
@@ -254,7 +262,7 @@ const DayDetailModal: React.FC<{
 
   if (!day) return null;
 
-  const dayDate = new Date(day.date);
+  const dayDate = parseLocalDate(day.date);
   const totalPages = scenes.reduce((sum, s) => sum + (s.scene?.page_length || 0), 0);
 
   return (
@@ -431,12 +439,16 @@ const DayCard: React.FC<{
   const [isExpanded, setIsExpanded] = useState(false);
   const [showScenePanel, setShowScenePanel] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [generatingSides, setGeneratingSides] = useState(false);
   const { scenes, isLoading: loadingScenes } = useProductionDayScenes(day.id);
   const { data: linkedData } = useLinkedCallSheet(day.id);
   const createCallSheet = useCreateCallSheetFromDay(day.id);
+  const { data: scriptSides } = useScriptSidesForDay(projectId, day.id);
+  const { data: outdatedSides } = useCheckOutdatedSides(projectId);
+  const generateSides = useGenerateScriptSides(projectId);
 
   const today = new Date();
-  const dayDate = new Date(day.date);
+  const dayDate = parseLocalDate(day.date);
   const isPast = isBefore(dayDate, today) && !day.is_completed;
   const isToday = format(dayDate, 'yyyy-MM-dd') === format(today, 'yyyy-MM-dd');
 
@@ -452,6 +464,34 @@ const DayCard: React.FC<{
       console.error('Failed to create call sheet:', err);
     }
   };
+
+  // Generate script sides from assigned scenes
+  const handleGenerateSides = async () => {
+    if (scenes.length === 0) {
+      toast.error('No scenes assigned to this day');
+      return;
+    }
+    setGeneratingSides(true);
+    try {
+      const sceneIds = scenes.map(s => s.scene_id).filter(Boolean);
+      await generateSides.mutateAsync({
+        production_day_id: day.id,
+        scene_ids: sceneIds,
+        title: `Day ${day.day_number} Sides`,
+      });
+      toast.success('Script sides generated');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to generate script sides');
+    } finally {
+      setGeneratingSides(false);
+    }
+  };
+
+  // Check if any sides are outdated
+  const hasSides = scriptSides && scriptSides.length > 0;
+  const hasOutdatedSides = hasSides && scriptSides.some(side =>
+    outdatedSides?.some(o => o.export_id === side.id)
+  );
 
   return (
     <div
@@ -511,6 +551,22 @@ const DayCard: React.FC<{
                   </Badge>
                 )}
 
+                {/* Script Sides Badge */}
+                {hasSides && (
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      'text-xs',
+                      hasOutdatedSides
+                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                        : 'bg-violet-500/10 text-violet-400 border-violet-500/30'
+                    )}
+                  >
+                    <FileText className="w-3 h-3 mr-1" />
+                    Sides {hasOutdatedSides && '(Update)'}
+                  </Badge>
+                )}
+
                 {/* Sync Status Badge */}
                 <SyncStatusBadge
                   dayId={day.id}
@@ -543,7 +599,7 @@ const DayCard: React.FC<{
               <div className="flex flex-wrap gap-4 text-sm text-muted-gray">
                 <div className="flex items-center gap-1">
                   <Calendar className="w-4 h-4" />
-                  {format(new Date(day.date), 'EEEE, MMMM d, yyyy')}
+                  {format(parseLocalDate(day.date), 'EEEE, MMMM d, yyyy')}
                 </div>
                 {day.general_call_time && (
                   <div className="flex items-center gap-1">
@@ -625,6 +681,21 @@ const DayCard: React.FC<{
                         {createCallSheet.isPending ? 'Creating...' : 'Create Call Sheet'}
                       </DropdownMenuItem>
                     )}
+                    <DropdownMenuSeparator />
+                    {/* Script Sides */}
+                    <DropdownMenuItem
+                      onClick={handleGenerateSides}
+                      disabled={generatingSides || scenes.length === 0}
+                    >
+                      <FileText className="w-4 h-4 mr-2" />
+                      {generatingSides
+                        ? 'Generating...'
+                        : hasSides
+                        ? hasOutdatedSides
+                          ? 'Regenerate Sides'
+                          : 'View Script Sides'
+                        : 'Generate Script Sides'}
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => onEdit(day)}>
                       <Edit className="w-4 h-4 mr-2" />
@@ -772,7 +843,7 @@ const CalendarView: React.FC<{
   const daysByDate = useMemo(() => {
     const map = new Map<string, BacklotProductionDay[]>();
     days.forEach((day) => {
-      const key = format(new Date(day.date), 'yyyy-MM-dd');
+      const key = format(parseLocalDate(day.date), 'yyyy-MM-dd');
       const existing = map.get(key) || [];
       existing.push(day);
       map.set(key, existing);
@@ -895,6 +966,12 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
   const [viewingDay, setViewingDay] = useState<BacklotProductionDay | null>(null);
   const [showTipsPanel, setShowTipsPanel] = useState(false);
 
+  // Milestone import state
+  const [showImportMilestonesDialog, setShowImportMilestonesDialog] = useState(false);
+  const [selectedMilestoneIds, setSelectedMilestoneIds] = useState<string[]>([]);
+  const { data: allMilestones } = useAllMilestones(projectId);
+  const importMilestones = useImportMilestones(projectId);
+
   // Scene selection state for Add/Edit Day form
   const [selectedSceneIds, setSelectedSceneIds] = useState<string[]>([]);
   const [sceneSearchQuery, setSceneSearchQuery] = useState('');
@@ -999,6 +1076,33 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
       }
     }
     setShowForm(true);
+  };
+
+  // Handle importing milestones as production days
+  const handleImportMilestones = async () => {
+    if (selectedMilestoneIds.length === 0) {
+      toast.error('Please select at least one milestone to import');
+      return;
+    }
+
+    try {
+      const result = await importMilestones.mutateAsync(selectedMilestoneIds);
+      toast.success(`Imported ${result.created} milestones as production days`);
+      setShowImportMilestonesDialog(false);
+      setSelectedMilestoneIds([]);
+      refetch();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to import milestones');
+    }
+  };
+
+  // Toggle milestone selection
+  const toggleMilestoneSelection = (milestoneId: string) => {
+    setSelectedMilestoneIds(prev =>
+      prev.includes(milestoneId)
+        ? prev.filter(id => id !== milestoneId)
+        : [...prev, milestoneId]
+    );
   };
 
   // Helper to sync scenes to a day after creation/update
@@ -1150,6 +1254,19 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
 
           {canEdit && (
             <>
+              {allMilestones && allMilestones.length > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedMilestoneIds([]);
+                    setShowImportMilestonesDialog(true);
+                  }}
+                  className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Import Milestones
+                </Button>
+              )}
               <Button
                 variant="outline"
                 onClick={() => setShowAutoScheduler(true)}
@@ -1571,6 +1688,99 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
           refetch();
         }}
       />
+
+      {/* Import Milestones Dialog */}
+      <Dialog open={showImportMilestonesDialog} onOpenChange={setShowImportMilestonesDialog}>
+        <DialogContent className="sm:max-w-lg bg-charcoal-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <Download className="w-5 h-5 text-blue-400" />
+              Import Milestones from Episodes
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4 max-h-80 overflow-y-auto">
+            {allMilestones && allMilestones.length > 0 ? (
+              <div className="space-y-2">
+                {allMilestones.map((milestone) => {
+                  const isSelected = selectedMilestoneIds.includes(milestone.id);
+                  // Check if already imported (exists as production day with this source_milestone_id)
+                  const isAlreadyImported = days.some((d: any) => d.source_milestone_id === milestone.id);
+
+                  return (
+                    <button
+                      key={milestone.id}
+                      type="button"
+                      disabled={isAlreadyImported}
+                      className={cn(
+                        'w-full flex items-start gap-3 p-3 rounded-lg text-left transition-colors',
+                        isAlreadyImported
+                          ? 'bg-white/5 opacity-50 cursor-not-allowed'
+                          : isSelected
+                          ? 'bg-blue-500/20 border border-blue-500/50'
+                          : 'bg-white/5 hover:bg-white/10'
+                      )}
+                      onClick={() => !isAlreadyImported && toggleMilestoneSelection(milestone.id)}
+                    >
+                      <div className={cn(
+                        'w-5 h-5 rounded border flex items-center justify-center flex-shrink-0 mt-0.5',
+                        isSelected ? 'bg-blue-500 border-blue-500' : 'border-muted-gray'
+                      )}>
+                        {isSelected && <Check className="w-3 h-3 text-white" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-bone-white">
+                            {milestone.milestone_type}
+                          </p>
+                          <Badge variant="outline" className="text-xs">
+                            {milestone.episode_code}
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-gray">
+                          {format(parseLocalDate(milestone.date), 'MMM d, yyyy')}
+                          {milestone.notes && ` • ${milestone.notes}`}
+                        </p>
+                        {isAlreadyImported && (
+                          <p className="text-xs text-green-400 mt-1">Already imported</p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-gray text-center py-4">
+                No milestones found in episodes. Add key dates to episodes first.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowImportMilestonesDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleImportMilestones}
+              disabled={selectedMilestoneIds.length === 0 || importMilestones.isPending}
+              className="bg-blue-500 hover:bg-blue-600"
+            >
+              {importMilestones.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Importing...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4 mr-2" />
+                  Import {selectedMilestoneIds.length > 0 && `(${selectedMilestoneIds.length})`}
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Day Detail Modal */}
       <DayDetailModal

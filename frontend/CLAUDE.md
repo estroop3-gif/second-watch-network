@@ -122,6 +122,24 @@ Equipment rental/checkout management system with barcode/QR scanning:
 
 **Creating new hooks**: When adding hooks to `backlot/` or other domains, export them from the domain's `index.ts` file. Use aliases if hook names conflict (e.g., `useCreateSection as useCreateMoodboardSection`).
 
+### Expense System (`src/hooks/backlot/useExpenses.ts`)
+Centralized expense management with consistent patterns across all expense types:
+
+**Expense Types**: Mileage, Kit Rentals, Per Diem, Purchase Orders, Receipts
+
+**Status Flow**: `draft` → `pending` → `approved`/`rejected`/`denied` → `reimbursed`
+- Editing a rejected/denied expense resets it to `draft`
+- User must manually "Send for Approval" to move back to `pending`
+
+**Hook Naming Convention** (each expense type follows this pattern):
+- `use{Type}Entries` - List entries with filters
+- `useCreate{Type}` / `useUpdate{Type}` / `useDelete{Type}` - CRUD
+- `useSubmit{Type}ForApproval` - Draft → Pending
+- `useApprove{Type}` / `useReject{Type}` / `useDeny{Type}` - Manager actions
+- `useResubmit{Type}` - Rejected → Pending (legacy, prefer edit + submit flow)
+- `useMark{Type}Reimbursed` - Approved → Reimbursed
+- `useBulk*` variants for batch operations
+
 ### Page Organization (`src/pages/`)
 - Root level: General pages (Dashboard, Account, Messages)
 - `admin/` - Admin panel pages
@@ -207,3 +225,11 @@ Some workspace components (backlot views) are 2k-4k lines. When editing these, r
 
 ### Backend API Integration
 The backend uses Cognito IDs for authentication but Profile UUIDs in database tables. The backend handles this mapping - frontend just passes the JWT token via the API client.
+
+### Date Handling
+Use `parseLocalDate` from `@/lib/dateUtils` for dates from the backend to avoid timezone shift issues:
+```typescript
+import { parseLocalDate } from '@/lib/dateUtils';
+// Prevents "2024-01-15" from becoming Jan 14 in US timezones
+const date = parseLocalDate(entry.date);
+```

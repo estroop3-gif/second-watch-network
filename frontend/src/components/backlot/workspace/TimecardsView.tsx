@@ -891,7 +891,7 @@ export default function TimecardsView({ projectId, canReview }: TimecardsViewPro
 
   const handleApprove = async (timecardId: string) => {
     try {
-      await approveTimecard.mutateAsync(timecardId);
+      await approveTimecard.mutateAsync({ timecardId });
     } catch (error) {
       console.error('Failed to approve timecard:', error);
     }

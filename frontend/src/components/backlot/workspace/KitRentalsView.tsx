@@ -3,6 +3,7 @@
  * Crew can declare kit rentals, managers can approve/reject/complete
  */
 import React, { useState } from 'react';
+import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -43,21 +44,29 @@ import {
   useCreateKitRental,
   useUpdateKitRental,
   useDeleteKitRental,
+  useSubmitKitRentalForApproval,
+  useBulkSubmitKitRentalsForApproval,
   useApproveKitRental,
   useRejectKitRental,
   useCompleteKitRental,
   useMarkKitRentalReimbursed,
   useBudget,
+  useKitRentalGearOptions,
   KitRental,
   CreateKitRentalData,
+  KitRentalGearSourceType,
+  GearAssetOption,
+  GearKitOption,
+  GearOrganizationOption,
   RENTAL_TYPE_OPTIONS,
   EXPENSE_STATUS_CONFIG,
   formatCurrency,
 } from '@/hooks/backlot';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Checkbox } from '@/components/ui/checkbox';
+import { ExternalLink, Building2, User, Boxes } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import BudgetCategorySelect from '../shared/BudgetCategorySelect';
-import BudgetLineItemSelect from '../shared/BudgetLineItemSelect';
-import SceneSelect from '../shared/SceneSelect';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface KitRentalsViewProps {
   projectId: string;
@@ -67,6 +76,7 @@ interface KitRentalsViewProps {
 function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
   // For expense approval, canEdit implies approval permissions for now
   const canApprove = canEdit;
+  const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingEntry, setEditingEntry] = useState<KitRental | null>(null);
@@ -80,6 +90,8 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
   const createRental = useCreateKitRental(projectId);
   const updateRental = useUpdateKitRental(projectId);
   const deleteRental = useDeleteKitRental(projectId);
+  const submitForApproval = useSubmitKitRentalForApproval(projectId);
+  const bulkSubmitForApproval = useBulkSubmitKitRentalsForApproval(projectId);
   const approveRental = useApproveKitRental(projectId);
   const rejectRental = useRejectKitRental(projectId);
   const completeRental = useCompleteKitRental(projectId);
@@ -93,9 +105,51 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
     .filter(r => r.status === 'active')
     .reduce((sum, r) => sum + (r.total_amount || r.daily_rate * (r.days_used || 0) || 0), 0);
 
+  // Calculate drafts ready for submission
+  const rentalsReadyForApproval = rentals.filter(r => r.status === 'draft');
+  const totalDraft = rentalsReadyForApproval.reduce((sum, r) => sum + (r.total_amount || 0), 0);
+
+  const handleSubmitForApproval = async (id: string) => {
+    console.log('[KitRental] Submitting for approval:', id);
+    try {
+      await submitForApproval.mutateAsync(id);
+      toast({
+        title: 'Submitted for Approval',
+        description: 'Kit rental has been sent for approval.',
+      });
+    } catch (error) {
+      console.error('Failed to submit for approval:', error);
+      toast({
+        title: 'Failed to Submit',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleBulkSendForApproval = async () => {
+    if (rentalsReadyForApproval.length === 0) return;
+    const rentalIds = rentalsReadyForApproval.map(r => r.id);
+    console.log('[KitRental] Bulk submitting for approval:', rentalIds);
+    try {
+      await bulkSubmitForApproval.mutateAsync(rentalIds);
+      toast({
+        title: 'Submitted for Approval',
+        description: `${rentalIds.length} kit rental(s) sent for approval.`,
+      });
+    } catch (error) {
+      console.error('Failed to bulk submit for approval:', error);
+      toast({
+        title: 'Failed to Submit',
+        description: error instanceof Error ? error.message : 'Unknown error',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const handleApprove = async (id: string) => {
     try {
-      await approveRental.mutateAsync(id);
+      await approveRental.mutateAsync({ rentalId: id });
     } catch (error) {
       console.error('Failed to approve:', error);
     }
@@ -162,6 +216,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
               <SelectItem value="active">Active</SelectItem>
               <SelectItem value="completed">Completed</SelectItem>
@@ -213,6 +268,34 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
         </Card>
       </div>
 
+      {/* Ready for Approval Card */}
+      {rentalsReadyForApproval.length > 0 && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  {rentalsReadyForApproval.length} kit rental{rentalsReadyForApproval.length !== 1 ? 's' : ''} ready for approval
+                </p>
+                <p className="text-lg font-semibold text-amber-400">{formatCurrency(totalDraft)}</p>
+              </div>
+              <Button
+                onClick={handleBulkSendForApproval}
+                disabled={bulkSubmitForApproval.isPending}
+                className="bg-amber-500 hover:bg-amber-600 text-black"
+              >
+                {bulkSubmitForApproval.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 mr-2" />
+                )}
+                Send All for Approval
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Rentals List */}
       <div className="space-y-3">
         {rentals.length === 0 ? (
@@ -236,6 +319,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
               key={rental.id}
               rental={rental}
               canApprove={canApprove}
+              onSubmitForApproval={() => handleSubmitForApproval(rental.id)}
               onApprove={() => handleApprove(rental.id)}
               onReject={() => setShowRejectModal(rental.id)}
               onComplete={() => handleComplete(rental.id)}
@@ -294,6 +378,7 @@ function KitRentalsView({ projectId, canEdit }: KitRentalsViewProps) {
 interface KitRentalCardProps {
   rental: KitRental;
   canApprove: boolean;
+  onSubmitForApproval?: () => void;
   onApprove: () => void;
   onReject: () => void;
   onComplete: () => void;
@@ -302,9 +387,24 @@ interface KitRentalCardProps {
   onMarkReimbursed: () => void;
 }
 
+// Get gear source badge config
+function getGearSourceBadge(sourceType: string | null | undefined) {
+  switch (sourceType) {
+    case 'asset':
+      return { label: 'Gear House', className: 'text-purple-400 border-purple-400/30' };
+    case 'kit':
+      return { label: 'GH Kit', className: 'text-purple-400 border-purple-400/30' };
+    case 'lite':
+      return { label: 'Personal Gear', className: 'text-blue-400 border-blue-400/30' };
+    default:
+      return null;
+  }
+}
+
 function KitRentalCard({
   rental,
   canApprove,
+  onSubmitForApproval,
   onApprove,
   onReject,
   onComplete,
@@ -314,6 +414,7 @@ function KitRentalCard({
 }: KitRentalCardProps) {
   const statusConfig = EXPENSE_STATUS_CONFIG[rental.status as keyof typeof EXPENSE_STATUS_CONFIG];
   const rentalTypeLabel = RENTAL_TYPE_OPTIONS.find(r => r.value === rental.rental_type)?.label || rental.rental_type;
+  const gearSourceBadge = getGearSourceBadge(rental.gear_source_type);
 
   const dateRange = rental.end_date
     ? `${new Date(rental.start_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${new Date(rental.end_date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
@@ -324,7 +425,7 @@ function KitRentalCard({
       <CardContent className="py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 mb-2">
+            <div className="flex items-center gap-3 mb-2 flex-wrap">
               <span className="font-medium text-lg">{rental.kit_name}</span>
               <Badge className={cn('text-xs', statusConfig?.color)}>
                 {statusConfig?.label || rental.status}
@@ -332,6 +433,11 @@ function KitRentalCard({
               <Badge variant="outline" className="text-xs">
                 {rentalTypeLabel}
               </Badge>
+              {gearSourceBadge && (
+                <Badge variant="outline" className={cn('text-xs', gearSourceBadge.className)}>
+                  {gearSourceBadge.label}
+                </Badge>
+              )}
             </div>
 
             {rental.kit_description && (
@@ -371,6 +477,25 @@ function KitRentalCard({
             </div>
 
             <div className="flex items-center gap-2 justify-end mt-3">
+              {rental.status === 'draft' && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-amber-500 border-amber-500/30 hover:bg-amber-500/10"
+                    onClick={onSubmitForApproval}
+                  >
+                    <CheckCircle2 className="w-4 h-4 mr-1" />
+                    Send for Approval
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={onEdit}>
+                    <Edit3 className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" size="icon" onClick={onDelete}>
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </>
+              )}
               {rental.status === 'pending' && (
                 <>
                   <Button variant="ghost" size="icon" onClick={onEdit}>
@@ -428,6 +553,9 @@ interface KitRentalFormModalProps {
   rental?: KitRental | null;
 }
 
+// Gear source type for form selection
+type GearSourceSelection = 'independent' | 'gear_house' | 'personal_gear';
+
 function KitRentalFormModal({
   projectId,
   isOpen,
@@ -445,16 +573,64 @@ function KitRentalFormModal({
     notes: rental?.notes || '',
     budget_category_id: (rental as any)?.budget_category_id || null,
     budget_line_item_id: (rental as any)?.budget_line_item_id || null,
+    // Gear link fields
+    gear_source_type: rental?.gear_source_type || null,
+    gear_organization_id: rental?.gear_organization_id || null,
+    gear_asset_id: rental?.gear_asset_id || null,
+    gear_kit_instance_id: rental?.gear_kit_instance_id || null,
   });
+
+  // Gear source selection state
+  const [gearSourceSelection, setGearSourceSelection] = useState<GearSourceSelection>(() => {
+    if (rental?.gear_source_type === 'lite') return 'personal_gear';
+    if (rental?.gear_source_type === 'asset' || rental?.gear_source_type === 'kit') return 'gear_house';
+    return 'independent';
+  });
+  const [selectedOrgId, setSelectedOrgId] = useState<string | null>(rental?.gear_organization_id || null);
+  const [showAllAssets, setShowAllAssets] = useState(false);
+  const [selectedAssetType, setSelectedAssetType] = useState<'asset' | 'kit'>('asset');
 
   const { data: budget } = useBudget(projectId);
   const budgetId = budget?.id || null;
   const createRental = useCreateKitRental(projectId);
   const updateRental = useUpdateKitRental(projectId);
 
+  // Fetch gear options when dates are set
+  const gearOptionsFilters = {
+    org_id: gearSourceSelection === 'gear_house' ? selectedOrgId || undefined : undefined,
+    start_date: formData.start_date || undefined,
+    end_date: formData.end_date || undefined,
+    show_all: showAllAssets,
+  };
+  const { data: gearOptions, isLoading: gearOptionsLoading, error: gearOptionsError } = useKitRentalGearOptions(
+    gearSourceSelection !== 'independent' ? projectId : null,
+    gearOptionsFilters
+  );
+
+  // Debug logging - ALWAYS log to help debug
+  console.log('[KitRental] Current state:', {
+    gearSourceSelection,
+    projectId,
+    queryEnabled: gearSourceSelection !== 'independent' ? projectId : null,
+  });
+
+  React.useEffect(() => {
+    console.log('[KitRental] Gear options updated:', {
+      gearSourceSelection,
+      projectId,
+      filters: gearOptionsFilters,
+      loading: gearOptionsLoading,
+      error: gearOptionsError?.message,
+      data: gearOptions,
+      orgCount: gearOptions?.organizations?.length,
+      personalGearCount: gearOptions?.personal_gear?.length,
+    });
+  }, [gearSourceSelection, gearOptions, gearOptionsLoading, gearOptionsError]);
+
   const isEditing = !!rental;
   const isPending = createRental.isPending || updateRental.isPending;
 
+  // Reset gear selection state when modal opens/closes or rental changes
   React.useEffect(() => {
     if (rental) {
       setFormData({
@@ -469,7 +645,21 @@ function KitRentalFormModal({
         budget_category_id: (rental as any)?.budget_category_id || null,
         budget_line_item_id: (rental as any)?.budget_line_item_id || null,
         scene_id: rental.scene_id || null,
+        gear_source_type: rental.gear_source_type || null,
+        gear_organization_id: rental.gear_organization_id || null,
+        gear_asset_id: rental.gear_asset_id || null,
+        gear_kit_instance_id: rental.gear_kit_instance_id || null,
       });
+      // Set gear source selection based on existing data
+      if (rental.gear_source_type === 'lite') {
+        setGearSourceSelection('personal_gear');
+      } else if (rental.gear_source_type === 'asset' || rental.gear_source_type === 'kit') {
+        setGearSourceSelection('gear_house');
+        setSelectedOrgId(rental.gear_organization_id || null);
+        setSelectedAssetType(rental.gear_source_type === 'kit' ? 'kit' : 'asset');
+      } else {
+        setGearSourceSelection('independent');
+      }
     } else {
       setFormData({
         kit_name: '',
@@ -483,9 +673,90 @@ function KitRentalFormModal({
         budget_category_id: null,
         budget_line_item_id: null,
         scene_id: null,
+        gear_source_type: null,
+        gear_organization_id: null,
+        gear_asset_id: null,
+        gear_kit_instance_id: null,
       });
+      setGearSourceSelection('independent');
+      setSelectedOrgId(null);
+      setShowAllAssets(false);
+      setSelectedAssetType('asset');
     }
   }, [rental]);
+
+  // Handle gear source selection change
+  const handleGearSourceChange = (value: GearSourceSelection) => {
+    setGearSourceSelection(value);
+    // Clear gear link data when switching sources
+    setFormData(prev => ({
+      ...prev,
+      gear_source_type: null,
+      gear_organization_id: null,
+      gear_asset_id: null,
+      gear_kit_instance_id: null,
+    }));
+    setSelectedOrgId(null);
+  };
+
+  // Handle organization selection
+  const handleOrgChange = (orgId: string | null) => {
+    setSelectedOrgId(orgId);
+    // Clear asset selection when org changes
+    setFormData(prev => ({
+      ...prev,
+      gear_organization_id: orgId,
+      gear_asset_id: null,
+      gear_kit_instance_id: null,
+    }));
+  };
+
+  // Handle asset selection with auto-fill
+  const handleAssetSelect = (asset: GearAssetOption | null) => {
+    if (!asset) {
+      setFormData(prev => ({
+        ...prev,
+        gear_source_type: null,
+        gear_asset_id: null,
+      }));
+      return;
+    }
+
+    const sourceType: KitRentalGearSourceType = gearSourceSelection === 'personal_gear' ? 'lite' : 'asset';
+    setFormData(prev => ({
+      ...prev,
+      gear_source_type: sourceType,
+      gear_asset_id: asset.id,
+      gear_kit_instance_id: null,
+      // Auto-fill from asset
+      kit_name: asset.name || prev.kit_name,
+      kit_description: asset.description || prev.kit_description,
+      daily_rate: asset.daily_rate ?? prev.daily_rate,
+      weekly_rate: asset.weekly_rate ?? prev.weekly_rate,
+    }));
+  };
+
+  // Handle kit selection with auto-fill
+  const handleKitSelect = (kit: GearKitOption | null) => {
+    if (!kit) {
+      setFormData(prev => ({
+        ...prev,
+        gear_source_type: null,
+        gear_kit_instance_id: null,
+      }));
+      return;
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      gear_source_type: 'kit',
+      gear_kit_instance_id: kit.id,
+      gear_asset_id: null,
+      // Auto-fill from kit (kits don't have rates, keep existing)
+      kit_name: kit.name || prev.kit_name,
+      kit_description: kit.internal_id ? `Kit: ${kit.name} (${kit.internal_id})` : `Kit: ${kit.name}`,
+    }));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -508,8 +779,8 @@ function KitRentalFormModal({
   const calculateTotal = () => {
     if (!formData.start_date || !formData.end_date) return null;
     try {
-      const start = new Date(formData.start_date);
-      const end = new Date(formData.end_date);
+      const start = parseLocalDate(formData.start_date);
+      const end = parseLocalDate(formData.end_date);
       const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
 
       if (formData.rental_type === 'flat') {
@@ -535,8 +806,296 @@ function KitRentalFormModal({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Gear Source Selector */}
+          <div className="space-y-3">
+            <Label>Kit Source</Label>
+            <RadioGroup
+              value={gearSourceSelection}
+              onValueChange={(val) => handleGearSourceChange(val as GearSourceSelection)}
+              className="flex flex-col gap-2"
+            >
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="independent" id="source_independent" />
+                <Label htmlFor="source_independent" className="cursor-pointer flex items-center gap-2 font-normal">
+                  <Edit3 className="w-4 h-4 text-muted-gray" />
+                  Independent (manual entry)
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="gear_house" id="source_gear_house" />
+                <Label htmlFor="source_gear_house" className="cursor-pointer flex items-center gap-2 font-normal">
+                  <Building2 className="w-4 h-4 text-purple-400" />
+                  From Gear House
+                </Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="personal_gear" id="source_personal" />
+                <Label htmlFor="source_personal" className="cursor-pointer flex items-center gap-2 font-normal">
+                  <User className="w-4 h-4 text-blue-400" />
+                  From My Personal Gear
+                </Label>
+              </div>
+            </RadioGroup>
+          </div>
+
+          {/* Date Range - Required for gear selection */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="start_date">Start Date *</Label>
+              <Input
+                id="start_date"
+                type="date"
+                value={formData.start_date}
+                onChange={e => setFormData({ ...formData, start_date: e.target.value })}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="end_date">End Date</Label>
+              <Input
+                id="end_date"
+                type="date"
+                value={formData.end_date || ''}
+                onChange={e => setFormData({ ...formData, end_date: e.target.value })}
+              />
+            </div>
+          </div>
+
+          {/* Gear House Organization & Asset Selection */}
+          {gearSourceSelection === 'gear_house' && (
+            <div className="space-y-4 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
+              <div className="space-y-2">
+                <Label>Organization</Label>
+                <Select
+                  value={selectedOrgId || ''}
+                  onValueChange={(val) => handleOrgChange(val || null)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select organization..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {gearOptions?.organizations?.map((org) => (
+                      <SelectItem key={org.id} value={org.id}>
+                        <div className="flex items-center gap-2">
+                          <Building2 className="w-4 h-4" />
+                          {org.name}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {selectedOrgId && (
+                <>
+                  {/* Asset/Kit type selector */}
+                  <div className="space-y-2">
+                    <Label>Select From</Label>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant={selectedAssetType === 'asset' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setSelectedAssetType('asset')}
+                      >
+                        <Package className="w-4 h-4 mr-1" />
+                        Assets
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={selectedAssetType === 'kit' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setSelectedAssetType('kit')}
+                      >
+                        <Boxes className="w-4 h-4 mr-1" />
+                        Kits
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Show all toggle */}
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="show_all"
+                      checked={showAllAssets}
+                      onCheckedChange={(checked) => setShowAllAssets(checked === true)}
+                    />
+                    <Label htmlFor="show_all" className="cursor-pointer font-normal text-sm">
+                      Show all (including unavailable)
+                    </Label>
+                  </div>
+
+                  {/* Asset selector */}
+                  {selectedAssetType === 'asset' && (
+                    <div className="space-y-2">
+                      <Label>Select Asset</Label>
+                      {gearOptionsLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-gray">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Loading assets...
+                        </div>
+                      ) : (
+                        <Select
+                          value={formData.gear_asset_id || ''}
+                          onValueChange={(val) => {
+                            const asset = gearOptions?.organizations
+                              ?.find(o => o.id === selectedOrgId)
+                              ?.assets?.find(a => a.id === val);
+                            handleAssetSelect(asset || null);
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select asset..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {gearOptions?.organizations
+                              ?.find(o => o.id === selectedOrgId)
+                              ?.assets?.map((asset) => (
+                                <SelectItem
+                                  key={asset.id}
+                                  value={asset.id}
+                                  disabled={!asset.is_available_for_dates && !showAllAssets}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span>{asset.name}</span>
+                                    {asset.internal_id && (
+                                      <span className="text-xs text-muted-gray">({asset.internal_id})</span>
+                                    )}
+                                    {!asset.is_available_for_dates && (
+                                      <Badge variant="outline" className="text-xs text-orange-400 border-orange-400/30">
+                                        Unavailable
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Kit selector */}
+                  {selectedAssetType === 'kit' && (
+                    <div className="space-y-2">
+                      <Label>Select Kit</Label>
+                      {gearOptionsLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-gray">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Loading kits...
+                        </div>
+                      ) : (
+                        <Select
+                          value={formData.gear_kit_instance_id || ''}
+                          onValueChange={(val) => {
+                            const kit = gearOptions?.organizations
+                              ?.find(o => o.id === selectedOrgId)
+                              ?.kits?.find(k => k.id === val);
+                            handleKitSelect(kit || null);
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select kit..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {gearOptions?.organizations
+                              ?.find(o => o.id === selectedOrgId)
+                              ?.kits?.map((kit) => (
+                                <SelectItem
+                                  key={kit.id}
+                                  value={kit.id}
+                                  disabled={!kit.is_available_for_dates && !showAllAssets}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span>{kit.name}</span>
+                                    {kit.internal_id && (
+                                      <span className="text-xs text-muted-gray">({kit.internal_id})</span>
+                                    )}
+                                    {!kit.is_available_for_dates && (
+                                      <Badge variant="outline" className="text-xs text-orange-400 border-orange-400/30">
+                                        Unavailable
+                                      </Badge>
+                                    )}
+                                  </div>
+                                </SelectItem>
+                              ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Personal Gear Selection */}
+          {gearSourceSelection === 'personal_gear' && (
+            <div className="space-y-4 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="show_all_personal"
+                  checked={showAllAssets}
+                  onCheckedChange={(checked) => setShowAllAssets(checked === true)}
+                />
+                <Label htmlFor="show_all_personal" className="cursor-pointer font-normal text-sm">
+                  Show all (including unavailable)
+                </Label>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Select Personal Gear</Label>
+                {gearOptionsLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-gray">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading personal gear...
+                  </div>
+                ) : (
+                  <Select
+                    value={formData.gear_asset_id || ''}
+                    onValueChange={(val) => {
+                      const asset = gearOptions?.personal_gear?.find(a => a.id === val);
+                      handleAssetSelect(asset || null);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select gear..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {gearOptions?.personal_gear?.map((asset) => (
+                        <SelectItem
+                          key={asset.id}
+                          value={asset.id}
+                          disabled={!asset.is_available_for_dates && !showAllAssets}
+                        >
+                          <div className="flex items-center gap-2">
+                            <span>{asset.name}</span>
+                            {asset.category_name && (
+                              <span className="text-xs text-muted-gray">({asset.category_name})</span>
+                            )}
+                            {!asset.is_available_for_dates && (
+                              <Badge variant="outline" className="text-xs text-orange-400 border-orange-400/30">
+                                Unavailable
+                              </Badge>
+                            )}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Kit Name - Manual entry or auto-filled */}
           <div className="space-y-2">
-            <Label htmlFor="kit_name">Kit Name *</Label>
+            <Label htmlFor="kit_name">
+              Kit Name *
+              {(formData.gear_asset_id || formData.gear_kit_instance_id) && (
+                <span className="text-xs text-muted-gray ml-2">(auto-filled from gear)</span>
+              )}
+            </Label>
             <Input
               id="kit_name"
               value={formData.kit_name}
@@ -582,6 +1141,9 @@ function KitRentalFormModal({
             <div className="space-y-2">
               <Label htmlFor="daily_rate">
                 {formData.rental_type === 'flat' ? 'Flat Rate' : 'Daily Rate'} *
+                {(formData.gear_asset_id || formData.gear_kit_instance_id) && (
+                  <span className="text-xs text-muted-gray ml-1">(auto-filled)</span>
+                )}
               </Label>
               <Input
                 id="daily_rate"
@@ -608,28 +1170,6 @@ function KitRentalFormModal({
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="start_date">Start Date *</Label>
-              <Input
-                id="start_date"
-                type="date"
-                value={formData.start_date}
-                onChange={e => setFormData({ ...formData, start_date: e.target.value })}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="end_date">End Date</Label>
-              <Input
-                id="end_date"
-                type="date"
-                value={formData.end_date || ''}
-                onChange={e => setFormData({ ...formData, end_date: e.target.value })}
-              />
-            </div>
-          </div>
-
           <div className="space-y-2">
             <Label htmlFor="notes">Notes</Label>
             <Textarea
@@ -640,47 +1180,6 @@ function KitRentalFormModal({
               rows={2}
             />
           </div>
-
-          {/* Budget Linking */}
-          {budgetId && (
-            <div className="space-y-4 pt-2 border-t border-muted-gray/10">
-              <div className="text-xs font-medium text-muted-gray uppercase tracking-wider">
-                Budget Allocation
-              </div>
-              <BudgetCategorySelect
-                projectId={projectId}
-                value={formData.budget_category_id || null}
-                onChange={(categoryId) => {
-                  setFormData({
-                    ...formData,
-                    budget_category_id: categoryId,
-                    budget_line_item_id: null,
-                  });
-                }}
-                label="Budget Category"
-                placeholder="Select category (optional)"
-              />
-              <BudgetLineItemSelect
-                budgetId={budgetId}
-                categoryId={formData.budget_category_id || null}
-                value={formData.budget_line_item_id || null}
-                onChange={(lineItemId) => {
-                  setFormData({ ...formData, budget_line_item_id: lineItemId });
-                }}
-                label="Budget Line Item"
-                placeholder="Select line item (optional)"
-              />
-              <SceneSelect
-                projectId={projectId}
-                value={formData.scene_id || null}
-                onChange={(sceneId) => {
-                  setFormData({ ...formData, scene_id: sceneId });
-                }}
-                label="Related Scene"
-                placeholder="Select scene (optional)"
-              />
-            </div>
-          )}
 
           {estimatedTotal !== null && (
             <Card className="bg-charcoal-black/50 border-muted-gray/20">

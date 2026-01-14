@@ -50,6 +50,7 @@ import {
   SHOT_LIST_TYPE_LABELS,
 } from '@/types/backlot';
 import { formatDistanceToNow } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface ShotListsViewProps {
   projectId: string;
@@ -311,7 +312,7 @@ const ShotListCard: React.FC<ShotListCardProps> = ({
           {shotList.production_day && (
             <Badge variant="secondary" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/20">
               <Calendar className="w-3 h-3 mr-1" />
-              {shotList.production_day.label || new Date(shotList.production_day.date).toLocaleDateString()}
+              {shotList.production_day.label || parseLocalDate(shotList.production_day.date).toLocaleDateString()}
             </Badge>
           )}
           {shotList.scene && (
@@ -482,7 +483,7 @@ const CreateShotListModal: React.FC<CreateShotListModalProps> = ({
                 <SelectItem value={NONE_VALUE}>None</SelectItem>
                 {productionDays?.map(day => (
                   <SelectItem key={day.id} value={day.id}>
-                    {day.label || new Date(day.date).toLocaleDateString()} - Day {day.day_number || '?'}
+                    {day.label || parseLocalDate(day.date).toLocaleDateString()} - Day {day.day_number || '?'}
                   </SelectItem>
                 ))}
               </SelectContent>

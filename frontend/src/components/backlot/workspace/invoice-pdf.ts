@@ -6,6 +6,7 @@
  */
 
 import type { BacklotInvoice, BacklotInvoiceLineItem, InvoicePaymentTerms } from '@/types/backlot';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 // Payment terms display labels
 const PAYMENT_TERMS_LABELS: Record<InvoicePaymentTerms, string> = {
@@ -35,10 +36,10 @@ function formatCurrency(amount: number, currency: string = 'USD'): string {
   }).format(amount);
 }
 
-// Format date for display
+// Format date for display (uses parseLocalDate to avoid timezone shift issues)
 function formatDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '';
-  return new Date(dateStr).toLocaleDateString('en-US', {
+  return parseLocalDate(dateStr).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',

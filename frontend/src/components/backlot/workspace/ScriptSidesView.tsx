@@ -72,11 +72,12 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useActiveScript,
   useCreateScript,
   useUpdateScript,
-  useScriptScenes,
+  useScenesList,
   useProductionDaysForSides,
   useSidesPackets,
   useSidesPacket,
@@ -87,7 +88,6 @@ import {
   useRemoveSceneFromPacket,
   useReorderPacketScene,
   useSyncPacketFromSchedule,
-  ScriptScene,
   SidesPacket,
 } from '@/hooks/backlot';
 
@@ -129,7 +129,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
 
   // Queries
   const { data: scriptData, isLoading: loadingScript } = useActiveScript(projectId);
-  const { data: scenes, isLoading: loadingScenes } = useScriptScenes(projectId, sceneSearch || undefined);
+  const { data: scenes, isLoading: loadingScenes } = useScenesList(projectId, { search: sceneSearch || undefined });
   const { data: productionDays } = useProductionDaysForSides(projectId);
   const { data: packets, isLoading: loadingPackets } = useSidesPackets(projectId);
   const { data: packetDetail, isLoading: loadingPacketDetail } = useSidesPacket(
@@ -151,7 +151,8 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
   // Computed
   const hasScript = !!scriptData?.script;
   const scenesInPacket = useMemo(() => {
-    return new Set(packetDetail?.scenes?.map(s => s.script_scene_id) || []);
+    // Check both scene_id (backlot scenes) and script_scene_id (script scenes)
+    return new Set(packetDetail?.scenes?.map(s => s.scene_id || s.script_scene_id) || []);
   }, [packetDetail?.scenes]);
 
   // Handlers
@@ -251,7 +252,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
                   <FileText className="w-4 h-4 mr-2" />
                   {hasScript ? 'Edit Script' : 'Upload Script'}
                 </Button>
-                <Button onClick={() => setShowCreatePacketDialog(true)} disabled={!hasScript}>
+                <Button onClick={() => setShowCreatePacketDialog(true)}>
                   <Plus className="w-4 h-4 mr-2" />
                   New Sides Packet
                 </Button>
@@ -312,7 +313,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
               <p className="text-muted-gray text-center max-w-md mb-4">
                 Create a sides packet for a production day to generate printable script pages.
               </p>
-              {canEdit && hasScript && (
+              {canEdit && (
                 <Button onClick={() => setShowCreatePacketDialog(true)}>
                   <Plus className="w-4 h-4 mr-2" />
                   Create Sides Packet
@@ -352,7 +353,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
                         {packet.production_day?.shoot_date ? (
                           <div className="flex items-center gap-2">
                             <Calendar className="w-4 h-4 text-muted-gray" />
-                            <span>{format(new Date(packet.production_day.shoot_date), 'MMM d, yyyy')}</span>
+                            <span>{format(parseLocalDate(packet.production_day.shoot_date), 'MMM d, yyyy')}</span>
                             {packet.production_day.day_type && (
                               <Badge variant="outline" className="text-xs">{packet.production_day.day_type}</Badge>
                             )}
@@ -430,7 +431,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
                   <SelectContent>
                     {productionDays?.map((day) => (
                       <SelectItem key={day.id} value={day.id}>
-                        {format(new Date(day.shoot_date), 'MMM d, yyyy')} - {day.day_type}
+                        {format(parseLocalDate(day.shoot_date), 'MMM d, yyyy')} - {day.day_type}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -589,7 +590,7 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
               </div>
               {packetDetail.production_day && (
                 <p className="text-sm text-muted-gray">
-                  {format(new Date(packetDetail.production_day.shoot_date), 'EEEE, MMMM d, yyyy')} • {packetDetail.production_day.day_type}
+                  {format(parseLocalDate(packetDetail.production_day.shoot_date), 'EEEE, MMMM d, yyyy')} • {packetDetail.production_day.day_type}
                 </p>
               )}
             </div>
@@ -806,8 +807,8 @@ export default function ScriptSidesView({ projectId, canEdit }: ScriptSidesViewP
                               <div>
                                 <div className="flex items-center gap-2 mb-1">
                                   <span className="text-xs font-mono text-muted-gray">#{scene.scene_number}</span>
-                                  {scene.time_of_day && (
-                                    <Badge variant="outline" className="text-xs">{scene.time_of_day}</Badge>
+                                  {(scene.day_night || scene.time_of_day) && (
+                                    <Badge variant="outline" className="text-xs">{scene.day_night || scene.time_of_day}</Badge>
                                   )}
                                 </div>
                                 <p className="font-medium text-bone-white text-sm">{scene.slugline}</p>

@@ -3,7 +3,7 @@
  */
 import React from 'react';
 import { formatDate } from '@/lib/dateUtils';
-import { Receipt, User, Calendar, DollarSign, Building2, FileImage, CreditCard, Tag } from 'lucide-react';
+import { Receipt, User, Calendar, DollarSign, Building2, FileImage, CreditCard, Tag, Check } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useReceipt } from '@/hooks/backlot';
@@ -77,24 +77,59 @@ export default function ReceiptDetailContent({ projectId, receiptId }: ReceiptDe
             </p>
           </div>
         </div>
-        <Badge className={cn('border', statusConfig.className)}>
-          {statusConfig.label}
-        </Badge>
+        <div className="flex items-center gap-2">
+          {receipt.is_verified && (
+            <Badge className="bg-green-500/20 text-green-400 border-green-500/30 border">
+              <Check className="w-3 h-3 mr-1" />
+              Verified
+            </Badge>
+          )}
+          <Badge className={cn('border', statusConfig.className)}>
+            {statusConfig.label}
+          </Badge>
+        </div>
       </div>
 
-      {/* Receipt Image */}
+      {/* Receipt Image/PDF */}
       {receipt.file_url && (
         <div className="bg-charcoal-black/50 rounded-lg border border-muted-gray/10 overflow-hidden">
-          <div className="px-4 py-3 border-b border-muted-gray/10 flex items-center gap-2">
-            <FileImage className="w-4 h-4 text-muted-gray" />
-            <h4 className="text-sm font-medium text-bone-white">Receipt Image</h4>
+          <div className="px-4 py-3 border-b border-muted-gray/10 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileImage className="w-4 h-4 text-muted-gray" />
+              <h4 className="text-sm font-medium text-bone-white">
+                {receipt.file_type?.includes('pdf') ? 'Receipt PDF' : 'Receipt Image'}
+              </h4>
+            </div>
+            <a
+              href={receipt.file_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-blue-400 hover:text-blue-300"
+            >
+              Open in new tab
+            </a>
           </div>
           <div className="p-4 flex justify-center bg-charcoal-black">
-            <img
-              src={receipt.file_url}
-              alt="Receipt"
-              className="max-h-64 object-contain rounded"
-            />
+            {receipt.file_type?.includes('pdf') ? (
+              <iframe
+                src={receipt.file_url}
+                title="Receipt PDF"
+                className="w-full h-[400px] rounded border border-muted-gray/20"
+              />
+            ) : receipt.file_type?.startsWith('image/') ? (
+              <a href={receipt.file_url} target="_blank" rel="noopener noreferrer">
+                <img
+                  src={receipt.file_url}
+                  alt="Receipt"
+                  className="max-h-64 object-contain rounded cursor-pointer hover:opacity-90 transition-opacity"
+                />
+              </a>
+            ) : (
+              <div className="text-center py-8">
+                <FileImage className="w-12 h-12 text-muted-gray mx-auto mb-2" />
+                <p className="text-sm text-muted-gray">File preview not available</p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -156,6 +191,16 @@ export default function ReceiptDetailContent({ projectId, receiptId }: ReceiptDe
               Budget Category
             </p>
             <p className="text-sm text-bone-white">{receipt.line_item.name}</p>
+          </div>
+        )}
+
+        {receipt.daily_budget?.name && (
+          <div>
+            <p className="text-xs text-muted-gray flex items-center gap-1 mb-1">
+              <Calendar className="w-3 h-3" />
+              Daily Budget
+            </p>
+            <p className="text-sm text-bone-white">{receipt.daily_budget.name}</p>
           </div>
         )}
 

@@ -62,6 +62,7 @@ import {
   Award,
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 
 interface ApplicationsBoardProps {
   projectId: string;
@@ -642,7 +643,7 @@ function ApplicationDetails({
             </span>
             {dealMemo.start_date && (
               <span className="ml-2">
-                Starting {new Date(dealMemo.start_date).toLocaleDateString()}
+                Starting {parseLocalDate(dealMemo.start_date).toLocaleDateString()}
               </span>
             )}
           </div>

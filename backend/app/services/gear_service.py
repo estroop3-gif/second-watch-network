@@ -55,8 +55,18 @@ def create_organization(
     org_type: str = "production_company",
     description: str = None,
     website: str = None,
+    # Location fields (required for new orgs)
+    address_line1: str = None,
+    city: str = None,
+    state: str = None,
+    postal_code: str = None,
+    country: str = "US",
+    latitude: float = None,
+    longitude: float = None,
+    hide_exact_address: bool = False,
+    public_location_display: str = None,
 ) -> Dict[str, Any]:
-    """Create a new organization."""
+    """Create a new organization with location data."""
     import re
     import uuid
 
@@ -73,10 +83,19 @@ def create_organization(
         # Add short unique suffix
         slug = f"{base_slug}-{str(uuid.uuid4())[:8]}"
 
+    # Create organization with address and coordinates
     org = execute_insert(
         """
-        INSERT INTO organizations (name, slug, org_type, description, website_url, created_by)
-        VALUES (:name, :slug, :org_type, :description, :website_url, :created_by)
+        INSERT INTO organizations (
+            name, slug, org_type, description, website_url, created_by,
+            address_line1, city, state, postal_code, country,
+            latitude, longitude, location_geocoded_at
+        )
+        VALUES (
+            :name, :slug, :org_type, :description, :website_url, :created_by,
+            :address_line1, :city, :state, :postal_code, :country,
+            :latitude, :longitude, :location_geocoded_at
+        )
         RETURNING *
         """,
         {
@@ -86,11 +105,19 @@ def create_organization(
             "description": description,
             "website_url": website,
             "created_by": created_by,
+            "address_line1": address_line1,
+            "city": city,
+            "state": state,
+            "postal_code": postal_code,
+            "country": country or "US",
+            "latitude": latitude,
+            "longitude": longitude,
+            "location_geocoded_at": datetime.now(timezone.utc) if latitude else None,
         }
     )
 
     if org:
-        # Create default settings (use execute_update since INSERT doesn't return rows)
+        # Create default gear settings
         execute_update(
             """
             INSERT INTO gear_organization_settings (organization_id)
@@ -98,6 +125,42 @@ def create_organization(
             ON CONFLICT (organization_id) DO NOTHING
             """,
             {"org_id": org["id"]}
+        )
+
+        # Create marketplace settings with location data
+        marketplace_location = f"{address_line1}, {city}, {state} {postal_code}" if address_line1 else f"{city}, {state}"
+        execute_update(
+            """
+            INSERT INTO gear_marketplace_settings (
+                organization_id, marketplace_name, marketplace_location,
+                location_latitude, location_longitude, location_geocoded_at,
+                location_geocode_source, hide_exact_address, public_location_display
+            )
+            VALUES (
+                :org_id, :name, :marketplace_location,
+                :latitude, :longitude, :geocoded_at,
+                'nominatim', :hide_exact_address, :public_location_display
+            )
+            ON CONFLICT (organization_id) DO UPDATE SET
+                marketplace_location = :marketplace_location,
+                location_latitude = :latitude,
+                location_longitude = :longitude,
+                location_geocoded_at = :geocoded_at,
+                location_geocode_source = 'nominatim',
+                hide_exact_address = :hide_exact_address,
+                public_location_display = :public_location_display,
+                updated_at = NOW()
+            """,
+            {
+                "org_id": org["id"],
+                "name": name,
+                "marketplace_location": marketplace_location,
+                "latitude": latitude,
+                "longitude": longitude,
+                "geocoded_at": datetime.now(timezone.utc) if latitude else None,
+                "hide_exact_address": hide_exact_address,
+                "public_location_display": public_location_display or f"{city}, {state}",
+            }
         )
 
         # Add creator as owner

@@ -17,6 +17,7 @@ import {
   Link2,
   Send,
   ArrowRight,
+  Info,
 } from 'lucide-react';
 import { format, addDays, differenceInDays } from 'date-fns';
 
@@ -82,12 +83,15 @@ export function MarketplaceRentalDialog({
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
   const [verifiedOnly, setVerifiedOnly] = useState(false);
+  const [dateRange, setDateRange] = useState<{
+    available_from?: string;
+    available_to?: string;
+  }>({});
 
   // Selected items
   const [selectedItems, setSelectedItems] = useState<GearMarketplaceListing[]>([]);
 
   // Request form state
-  const [title, setTitle] = useState('');
   const [startDate, setStartDate] = useState(() => {
     const tomorrow = addDays(new Date(), 1);
     return format(tomorrow, 'yyyy-MM-dd');
@@ -105,11 +109,17 @@ export function MarketplaceRentalDialog({
   const { categories } = useGearCategories(firstOrgId || '');
   const { organization: userOrg } = useGearOrganization(null); // Get user's default org
 
+  // Get user's timezone
+  const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   // Build filters
   const filters: GearMarketplaceSearchFilters = {
     search: searchQuery || undefined,
     category_id: categoryFilter || undefined,
     verified_only: verifiedOnly || undefined,
+    available_from: dateRange.available_from,
+    available_to: dateRange.available_to,
+    timezone: userTimezone,
   };
 
   // Data fetching
@@ -155,6 +165,15 @@ export function MarketplaceRentalDialog({
 
   const handleProceedToRequest = () => {
     if (selectedItems.length === 0) return;
+
+    // Sync dates from search filters to request form
+    if (dateRange.available_from) {
+      setStartDate(dateRange.available_from);
+    }
+    if (dateRange.available_to) {
+      setEndDate(dateRange.available_to);
+    }
+
     setStep('request');
   };
 
@@ -163,10 +182,13 @@ export function MarketplaceRentalDialog({
   };
 
   const handleSubmit = () => {
-    if (!title.trim() || !startDate || !endDate || selectedItems.length === 0) return;
+    if (!startDate || !endDate || selectedItems.length === 0) return;
 
     // Get the rental house org ID (assuming all items are from the same org for now)
     const rentalHouseOrgId = selectedItems[0].organization_id;
+
+    // Auto-generate title from item count
+    const generatedTitle = `${selectedItems.length} item${selectedItems.length !== 1 ? 's' : ''} requested`;
 
     createRequest(
       {
@@ -175,7 +197,7 @@ export function MarketplaceRentalDialog({
         backlot_project_id: projectId,
         budget_line_item_id: budgetLineItemId || undefined,
         auto_create_budget_line: autoCreateBudgetLine,
-        title,
+        title: generatedTitle,
         rental_start_date: startDate,
         rental_end_date: endDate,
         notes,
@@ -189,7 +211,6 @@ export function MarketplaceRentalDialog({
         onSuccess: () => {
           // Reset state
           setSelectedItems([]);
-          setTitle('');
           setNotes('');
           setBudgetLineItemId('');
           setStep('browse');
@@ -227,6 +248,8 @@ export function MarketplaceRentalDialog({
               setCategoryFilter={setCategoryFilter}
               verifiedOnly={verifiedOnly}
               setVerifiedOnly={setVerifiedOnly}
+              dateRange={dateRange}
+              setDateRange={setDateRange}
               categories={categories}
               onSelectItem={handleSelectItem}
               formatPrice={formatPrice}
@@ -234,8 +257,6 @@ export function MarketplaceRentalDialog({
           ) : (
             <RequestStep
               selectedItems={selectedItems}
-              title={title}
-              setTitle={setTitle}
               startDate={startDate}
               setStartDate={setStartDate}
               endDate={endDate}
@@ -251,6 +272,7 @@ export function MarketplaceRentalDialog({
               estimatedTotal={estimatedTotal}
               onRemoveItem={handleRemoveItem}
               formatPrice={formatPrice}
+              dateRange={dateRange}
             />
           )}
         </div>
@@ -284,7 +306,7 @@ export function MarketplaceRentalDialog({
               </Button>
               <Button
                 onClick={handleSubmit}
-                disabled={!title.trim() || !startDate || !endDate || isSubmitting}
+                disabled={!startDate || !endDate || isSubmitting}
                 className="gap-2"
               >
                 {isSubmitting ? (
@@ -321,6 +343,8 @@ interface BrowseStepProps {
   setCategoryFilter: (value: string) => void;
   verifiedOnly: boolean;
   setVerifiedOnly: (value: boolean) => void;
+  dateRange: { available_from?: string; available_to?: string };
+  setDateRange: (value: { available_from?: string; available_to?: string }) => void;
   categories: Array<{ id: string; name: string }>;
   onSelectItem: (listing: GearMarketplaceListing) => void;
   formatPrice: (price: number) => string;
@@ -336,6 +360,8 @@ function BrowseStep({
   setCategoryFilter,
   verifiedOnly,
   setVerifiedOnly,
+  dateRange,
+  setDateRange,
   categories,
   onSelectItem,
   formatPrice,
@@ -380,6 +406,38 @@ function BrowseStep({
           <BadgeCheck className="h-4 w-4" />
           Verified
         </Button>
+      </div>
+
+      {/* Date Range Filter */}
+      <div className="flex items-center gap-2">
+        <Label className="text-sm text-muted-gray whitespace-nowrap">Available:</Label>
+        <Input
+          type="date"
+          value={dateRange.available_from || ''}
+          onChange={(e) => setDateRange({ ...dateRange, available_from: e.target.value })}
+          min={new Date().toISOString().split('T')[0]}
+          placeholder="From"
+          className="flex-1"
+        />
+        <span className="text-sm text-muted-gray">to</span>
+        <Input
+          type="date"
+          value={dateRange.available_to || ''}
+          onChange={(e) => setDateRange({ ...dateRange, available_to: e.target.value })}
+          min={dateRange.available_from || new Date().toISOString().split('T')[0]}
+          placeholder="To"
+          className="flex-1"
+        />
+        {(dateRange.available_from || dateRange.available_to) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setDateRange({})}
+            className="px-2"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       {/* Listings Grid */}
@@ -470,8 +528,6 @@ function BrowseStep({
 
 interface RequestStepProps {
   selectedItems: GearMarketplaceListing[];
-  title: string;
-  setTitle: (value: string) => void;
   startDate: string;
   setStartDate: (value: string) => void;
   endDate: string;
@@ -487,12 +543,11 @@ interface RequestStepProps {
   estimatedTotal: number;
   onRemoveItem: (listingId: string) => void;
   formatPrice: (price: number) => string;
+  dateRange: { available_from?: string; available_to?: string };
 }
 
 function RequestStep({
   selectedItems,
-  title,
-  setTitle,
   startDate,
   setStartDate,
   endDate,
@@ -508,6 +563,7 @@ function RequestStep({
   estimatedTotal,
   onRemoveItem,
   formatPrice,
+  dateRange,
 }: RequestStepProps) {
   return (
     <div className="space-y-6 p-6">
@@ -561,18 +617,18 @@ function RequestStep({
 
       <Separator className="bg-white/10" />
 
+      {/* Visual indicator for pre-filled dates */}
+      {dateRange.available_from && dateRange.available_to && (
+        <Alert className="border-blue-500/30 bg-blue-500/10">
+          <Info className="h-4 w-4 text-blue-400" />
+          <AlertDescription className="text-blue-200 text-sm">
+            Rental dates pre-filled from your availability search
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Request Form */}
       <div className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="title">Request Title *</Label>
-          <Input
-            id="title"
-            placeholder="e.g., Camera Package for Episode 3"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-        </div>
-
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label htmlFor="startDate">Rental Start *</Label>

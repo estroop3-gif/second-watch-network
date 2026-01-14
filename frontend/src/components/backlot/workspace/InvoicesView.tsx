@@ -60,6 +60,7 @@ import {
   Car,
   Utensils,
   ChevronDown,
+  ChevronUp,
   ChevronRight,
   Import,
   Unlink2,
@@ -91,6 +92,7 @@ import {
   useImportExpenses,
   usePendingImportCount,
   useUnlinkLineItem,
+  useReorderLineItem,
   formatInvoiceDate,
 } from '@/hooks/backlot';
 import {
@@ -205,6 +207,8 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
   const importExpenses = useImportExpenses(projectId, selectedInvoiceId);
   // Unlink mutation (remove auto-added item, make available for re-import)
   const unlinkLineItem = useUnlinkLineItem(projectId, selectedInvoiceId);
+  // Reorder mutation (move line item up/down)
+  const reorderLineItem = useReorderLineItem(projectId, selectedInvoiceId);
 
   // Form state for create dialog
   const [formData, setFormData] = useState<Partial<InvoiceInput>>({});
@@ -1124,6 +1128,7 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                       <Table>
                         <TableHeader>
                           <TableRow className="border-muted-gray/20 bg-muted-gray/5">
+                            {(selectedInvoice.status === 'draft' || selectedInvoice.status === 'changes_requested') && canEdit && <TableHead className="w-12"></TableHead>}
                             <TableHead className="text-muted-gray">Description</TableHead>
                             <TableHead className="text-muted-gray text-right">Qty</TableHead>
                             <TableHead className="text-muted-gray text-right">Rate</TableHead>
@@ -1132,11 +1137,39 @@ const InvoicesView: React.FC<InvoicesViewProps> = ({
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {selectedInvoice.line_items.map((item) => {
+                          {selectedInvoice.line_items.map((item, index) => {
                             const sourceConfig = item.source_type && SOURCE_TYPE_CONFIG[item.source_type];
                             const SourceIcon = sourceConfig?.icon;
+                            const isFirst = index === 0;
+                            const isLast = index === selectedInvoice.line_items!.length - 1;
                             return (
                             <TableRow key={item.id} className="border-muted-gray/10">
+                              {(selectedInvoice.status === 'draft' || selectedInvoice.status === 'changes_requested') && canEdit && (
+                                <TableCell className="w-12">
+                                  <div className="flex flex-col gap-0.5">
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-6 w-6"
+                                      onClick={() => reorderLineItem.mutate({ line_item_id: item.id, direction: 'UP' })}
+                                      disabled={isFirst || reorderLineItem.isPending}
+                                      title="Move up"
+                                    >
+                                      <ChevronUp className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      size="icon"
+                                      variant="ghost"
+                                      className="h-6 w-6"
+                                      onClick={() => reorderLineItem.mutate({ line_item_id: item.id, direction: 'DOWN' })}
+                                      disabled={isLast || reorderLineItem.isPending}
+                                      title="Move down"
+                                    >
+                                      <ChevronDown className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </TableCell>
+                              )}
                               <TableCell className="text-bone-white">
                                 <div>
                                   <p>{item.description}</p>

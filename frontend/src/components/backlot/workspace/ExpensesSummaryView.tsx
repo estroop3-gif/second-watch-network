@@ -53,6 +53,7 @@ import {
   PieChart,
 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, subMonths } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import {
   useExpenseSummary,
   useMileageEntries,
@@ -791,7 +792,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
                   amount: p.amount || 0,
                 })) || []),
               ]
-                .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                .sort((a, b) => parseLocalDate(b.date).getTime() - parseLocalDate(a.date).getTime())
                 .slice(0, 10)
                 .map((entry) => {
                   const Icon = entry.icon;
@@ -800,7 +801,7 @@ export default function ExpensesSummaryView({ projectId, canEdit }: ExpensesSumm
                   return (
                     <TableRow key={`${entry.type}-${entry.id}`}>
                       <TableCell className="font-medium">
-                        {entry.date ? format(new Date(entry.date), 'MMM d, yyyy') : '-'}
+                        {entry.date ? format(parseLocalDate(entry.date), 'MMM d, yyyy') : '-'}
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">

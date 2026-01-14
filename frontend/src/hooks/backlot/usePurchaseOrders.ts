@@ -10,7 +10,7 @@ import { api } from '@/lib/api';
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // Purchase Order status type
-export type PurchaseOrderStatus = 'pending' | 'approved' | 'rejected' | 'completed' | 'cancelled' | 'denied';
+export type PurchaseOrderStatus = 'draft' | 'pending' | 'approved' | 'rejected' | 'completed' | 'cancelled' | 'denied';
 
 // Purchase Order interface
 export interface PurchaseOrder {
@@ -62,16 +62,19 @@ export interface PurchaseOrderFilters {
 
 export interface PurchaseOrderSummary {
   total_count: number;
+  draft_count: number;
   pending_count: number;
   approved_count: number;
   rejected_count: number;
   completed_count: number;
+  draft_total: number;
   pending_total: number;
   approved_total: number;
 }
 
 // Status configuration for UI
 export const PO_STATUS_CONFIG: Record<PurchaseOrderStatus, { label: string; color: string; bgColor: string }> = {
+  draft: { label: 'Draft', color: 'text-gray-400', bgColor: 'bg-gray-500/10' },
   pending: { label: 'Pending Approval', color: 'text-amber-400', bgColor: 'bg-amber-500/10' },
   approved: { label: 'Approved', color: 'text-green-400', bgColor: 'bg-green-500/10' },
   rejected: { label: 'Rejected', color: 'text-red-400', bgColor: 'bg-red-500/10' },
@@ -521,6 +524,79 @@ export function useCancelPurchaseOrder() {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrder(data.id) });
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.myPurchaseOrders(data.project_id) });
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrderSummary(data.project_id) });
+    },
+  });
+}
+
+// Submit a draft purchase order for approval
+export function useSubmitPurchaseOrderForApproval() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (poId: string) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/purchase-orders/${poId}/submit-for-approval`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to submit for approval' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as PurchaseOrder;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrders(data.project_id) });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrder(data.id) });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.myPurchaseOrders(data.project_id) });
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrderSummary(data.project_id) });
+    },
+  });
+}
+
+// Bulk submit draft purchase orders for approval
+export function useBulkSubmitPurchaseOrdersForApproval(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (entryIds: string[]) => {
+      if (!projectId) throw new Error('Project ID required');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/purchase-orders/bulk-submit-for-approval`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ entry_ids: entryIds }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to submit for approval' }));
+        throw new Error(error.detail);
+      }
+
+      return (await response.json()) as { submitted_count: number; failed_count: number; failed_ids: string[] };
+    },
+    onSuccess: () => {
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrders(projectId) });
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.myPurchaseOrders(projectId) });
+        queryClient.invalidateQueries({ queryKey: QUERY_KEYS.purchaseOrderSummary(projectId) });
+      }
     },
   });
 }

@@ -3,6 +3,7 @@
  * Allows adding, editing, deleting, and reordering shots
  */
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -415,7 +416,7 @@ const ShotListDetailView: React.FC<ShotListDetailViewProps> = ({
         metadata.push(SHOT_LIST_TYPE_LABELS[shotList.list_type]);
       }
       if (shotList.production_day) {
-        metadata.push(`Day: ${shotList.production_day.label || new Date(shotList.production_day.date).toLocaleDateString()}`);
+        metadata.push(`Day: ${shotList.production_day.label || parseLocalDate(shotList.production_day.date).toLocaleDateString()}`);
       }
       if (shotList.scene) {
         metadata.push(`Scene ${shotList.scene.scene_number}`);
@@ -540,7 +541,7 @@ const ShotListDetailView: React.FC<ShotListDetailViewProps> = ({
               {shotList.production_day && (
                 <Badge variant="secondary" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/20">
                   <Calendar className="w-3 h-3 mr-1" />
-                  {shotList.production_day.label || new Date(shotList.production_day.date).toLocaleDateString()}
+                  {shotList.production_day.label || parseLocalDate(shotList.production_day.date).toLocaleDateString()}
                 </Badge>
               )}
               {shotList.scene && (
@@ -1315,7 +1316,7 @@ const EditShotListInfoModal: React.FC<EditShotListInfoModalProps> = ({
                 <SelectItem value={NONE_VALUE}>None</SelectItem>
                 {productionDays?.map(day => (
                   <SelectItem key={day.id} value={day.id}>
-                    {day.label || new Date(day.date).toLocaleDateString()} - Day {day.day_number || '?'}
+                    {day.label || parseLocalDate(day.date).toLocaleDateString()} - Day {day.day_number || '?'}
                   </SelectItem>
                 ))}
               </SelectContent>

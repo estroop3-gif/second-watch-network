@@ -7,6 +7,7 @@ export { ListingCard, default as ListingCardDefault } from './ListingCard';
 export { ListingDetailDialog, default as ListingDetailDialogDefault } from './ListingDetailDialog';
 export { RequestQuoteDialog, default as RequestQuoteDialogDefault } from './RequestQuoteDialog';
 export { QuoteResponseDialog, default as QuoteResponseDialogDefault } from './QuoteResponseDialog';
+export { IncomingQuoteRequestDialog, default as IncomingQuoteRequestDialogDefault } from './IncomingQuoteRequestDialog';
 export { ExtensionRequestDialog, default as ExtensionRequestDialogDefault } from './ExtensionRequestDialog';
 export { ExtensionCard, default as ExtensionCardDefault } from './ExtensionCard';
 export { ExtensionResponseDialog, default as ExtensionResponseDialogDefault } from './ExtensionResponseDialog';
@@ -18,3 +19,15 @@ export { CreateListingDialog, default as CreateListingDialogDefault } from './Cr
 export { EditListingDialog, default as EditListingDialogDefault } from './EditListingDialog';
 export { MyListingsTab, default as MyListingsTabDefault } from './MyListingsTab';
 export { AssetPickerDialog, default as AssetPickerDialogDefault } from './AssetPickerDialog';
+
+// Location-based search components
+export { default as MarketplaceLocationBar } from './MarketplaceLocationBar';
+export { default as GearHouseCard, GearHouseListItem } from './GearHouseCard';
+export {
+  MarketplaceViewToggle,
+  MarketplaceResultModeToggle,
+  DeliveryFilterToggle,
+} from './MarketplaceViewToggle';
+export { default as GearHouseDrawer } from './GearHouseDrawer';
+export { default as MarketplaceFavoritesSection } from './MarketplaceFavoritesSection';
+export { default as MarketplaceMapView } from './MarketplaceMapView';

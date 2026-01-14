@@ -81,6 +81,7 @@ import {
   TASK_VIEW_TYPE_LABELS,
 } from '@/types/backlot';
 import { format, formatDistanceToNow, isPast, isToday, isTomorrow, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 
 interface TaskListDetailViewProps {
@@ -370,7 +371,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
   onStatusChange,
   onDelete,
 }) => {
-  const isOverdue = task.due_date && isPast(new Date(task.due_date)) && task.status !== 'completed';
+  const isOverdue = task.due_date && isPast(parseLocalDate(task.due_date)) && task.status !== 'completed';
   const nextStatus = getNextStatus(task.status);
 
   const handleMoveToNext = (e: React.MouseEvent) => {
@@ -486,7 +487,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
           >
             {isOverdue && <AlertCircle className="w-3 h-3" />}
             <Clock className="w-3 h-3" />
-            {format(new Date(task.due_date), 'MMM d')}
+            {format(parseLocalDate(task.due_date), 'MMM d')}
           </div>
         )}
 
@@ -665,7 +666,7 @@ const ListRow: React.FC<{
   onStatusChange: (status: BacklotTaskStatus) => void;
   onDelete: () => void;
 }> = ({ task, canEdit, onClick, onStatusChange, onDelete }) => {
-  const isOverdue = task.due_date && isPast(new Date(task.due_date)) && task.status !== 'completed';
+  const isOverdue = task.due_date && isPast(parseLocalDate(task.due_date)) && task.status !== 'completed';
 
   const handleCheckboxChange = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -729,7 +730,7 @@ const ListRow: React.FC<{
       <div className="w-24 text-xs">
         {task.due_date ? (
           <span className={cn(isOverdue ? 'text-red-400' : 'text-muted-gray')}>
-            {format(new Date(task.due_date), 'MMM d')}
+            {format(parseLocalDate(task.due_date), 'MMM d')}
           </span>
         ) : (
           <span className="text-muted-gray/50">-</span>
@@ -880,7 +881,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ tasks, canEdit, onTaskClick
     const result: Record<string, BacklotTask[]> = {};
     tasks.forEach(task => {
       if (task.due_date) {
-        const key = format(new Date(task.due_date), 'yyyy-MM-dd');
+        const key = format(parseLocalDate(task.due_date), 'yyyy-MM-dd');
         if (!result[key]) result[key] = [];
         result[key].push(task);
       }
@@ -1287,7 +1288,7 @@ const TaskListDetailView: React.FC<TaskListDetailViewProps> = ({
           <span className="flex items-center gap-1">
             <AlertCircle className="w-4 h-4 text-red-400" />
             {filteredTasks.filter(t =>
-              t.due_date && isPast(new Date(t.due_date)) && t.status !== 'completed'
+              t.due_date && isPast(parseLocalDate(t.due_date)) && t.status !== 'completed'
             ).length} overdue
           </span>
         </div>

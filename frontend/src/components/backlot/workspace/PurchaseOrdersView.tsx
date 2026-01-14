@@ -44,15 +44,13 @@ import {
   Plus,
   Clock,
   CheckCircle2,
-  XCircle,
   DollarSign,
   Building2,
-  User,
   Calendar,
-  AlertCircle,
   Loader2,
   Trash2,
   Edit2,
+  Send,
 } from 'lucide-react';
 import { formatDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
@@ -63,19 +61,14 @@ import {
   useCreatePurchaseOrder,
   useUpdatePurchaseOrder,
   useDeletePurchaseOrder,
-  useApprovePurchaseOrder,
-  useRejectPurchaseOrder,
   useResubmitPurchaseOrder,
-  useCompletePurchaseOrder,
-  useCancelPurchaseOrder,
-  useCanApprove,
+  useSubmitPurchaseOrderForApproval,
+  useBulkSubmitPurchaseOrdersForApproval,
   useBudgetCategories,
   PO_STATUS_CONFIG,
   formatPOCurrency,
   PurchaseOrder,
-  PurchaseOrderStatus,
 } from '@/hooks/backlot';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import PurchaseOrderDetailContent from './details/PurchaseOrderDetailContent';
 
 interface PurchaseOrdersViewProps {
@@ -103,11 +96,9 @@ const DEPARTMENT_OPTIONS = [
 ];
 
 export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrdersViewProps) {
-  const [activeTab, setActiveTab] = useState<'my' | 'pending' | 'all'>('my');
+  const [activeTab, setActiveTab] = useState<'my' | 'all'>('my');
   const [showCreateDialog, setShowCreateDialog] = useState(false);
-  const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
-  const [rejectReason, setRejectReason] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [poToDelete, setPOToDelete] = useState<PurchaseOrder | null>(null);
   const [showDetailDialog, setShowDetailDialog] = useState(false);
@@ -124,7 +115,6 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
   });
 
   // Hooks
-  const { canApprovePOs } = useCanApprove(projectId);
   const { data: myPOs, isLoading: loadingMyPOs } = useMyPurchaseOrders(projectId);
   const { data: allPOs, isLoading: loadingAllPOs } = usePurchaseOrders(projectId);
   const { data: summary } = usePurchaseOrderSummary(projectId);
@@ -134,16 +124,19 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
   const createPO = useCreatePurchaseOrder(projectId);
   const updatePO = useUpdatePurchaseOrder();
   const deletePO = useDeletePurchaseOrder();
-  const approvePO = useApprovePurchaseOrder();
-  const rejectPO = useRejectPurchaseOrder();
-  const completePO = useCompletePurchaseOrder();
-  const cancelPO = useCancelPurchaseOrder();
   const resubmitPO = useResubmitPurchaseOrder();
+  const submitForApproval = useSubmitPurchaseOrderForApproval();
+  const bulkSubmitForApproval = useBulkSubmitPurchaseOrdersForApproval(projectId);
 
-  // Filter pending POs for approval
-  const pendingPOs = useMemo(() => {
-    return allPOs?.filter(po => po.status === 'pending') || [];
-  }, [allPOs]);
+  // Filter draft POs (my drafts only)
+  const draftPOs = useMemo(() => {
+    return myPOs?.filter(po => po.status === 'draft') || [];
+  }, [myPOs]);
+
+  // Calculate draft total
+  const draftTotal = useMemo(() => {
+    return draftPOs.reduce((sum, po) => sum + po.estimated_amount, 0);
+  }, [draftPOs]);
 
   // Reset form
   const resetForm = () => {
@@ -206,35 +199,23 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
     setPOToDelete(null);
   };
 
-  // Handle approve
-  const handleApprove = async (po: PurchaseOrder) => {
-    await approvePO.mutateAsync(po.id);
-  };
-
-  // Handle reject
-  const handleReject = async () => {
-    if (!selectedPO || !rejectReason) return;
-    await rejectPO.mutateAsync({ poId: selectedPO.id, reason: rejectReason });
-    setShowRejectDialog(false);
-    setSelectedPO(null);
-    setRejectReason('');
-  };
-
-  // Handle complete
-  const handleComplete = async (po: PurchaseOrder) => {
-    await completePO.mutateAsync(po.id);
-  };
-
-  // Handle cancel
-  const handleCancel = async (po: PurchaseOrder) => {
-    await cancelPO.mutateAsync(po.id);
-  };
-
   // Handle resubmit
   const handleResubmit = async (po: PurchaseOrder) => {
     await resubmitPO.mutateAsync(po.id);
     setShowDetailDialog(false);
     setDetailPO(null);
+  };
+
+  // Handle submit for approval
+  const handleSubmitForApproval = async (po: PurchaseOrder) => {
+    await submitForApproval.mutateAsync(po.id);
+  };
+
+  // Handle bulk submit for approval
+  const handleBulkSubmitForApproval = async () => {
+    if (draftPOs.length === 0) return;
+    const ids = draftPOs.map(po => po.id);
+    await bulkSubmitForApproval.mutateAsync(ids);
   };
 
   // Open detail dialog
@@ -246,8 +227,9 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
   // Render PO card
   const renderPOCard = (po: PurchaseOrder, showActions: boolean = true) => {
     const statusConfig = PO_STATUS_CONFIG[po.status];
-    const isEditable = ['pending', 'rejected', 'denied'].includes(po.status);
+    const isEditable = ['draft', 'pending', 'rejected', 'denied'].includes(po.status);
     const canResubmit = ['rejected', 'denied'].includes(po.status);
+    const isDraft = po.status === 'draft';
 
     return (
       <Card
@@ -343,66 +325,21 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
                   </Button>
                 )}
 
-                {/* Approve/Reject for approvers */}
-                {canApprovePOs && po.status === 'pending' && (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-green-500/30 text-green-400 hover:bg-green-500/10"
-                      onClick={() => handleApprove(po)}
-                      disabled={approvePO.isPending}
-                    >
-                      {approvePO.isPending ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <CheckCircle2 className="w-4 h-4 mr-1" />
-                      )}
-                      Approve
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="border-red-500/30 text-red-400 hover:bg-red-500/10"
-                      onClick={() => {
-                        setSelectedPO(po);
-                        setShowRejectDialog(true);
-                      }}
-                    >
-                      <XCircle className="w-4 h-4 mr-1" />
-                      Reject
-                    </Button>
-                  </>
-                )}
-
-                {/* Complete for approved POs */}
-                {po.status === 'approved' && (
+                {/* Submit for approval for draft POs */}
+                {isDraft && (
                   <Button
                     variant="outline"
                     size="sm"
-                    className="border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
-                    onClick={() => handleComplete(po)}
-                    disabled={completePO.isPending}
+                    className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+                    onClick={() => handleSubmitForApproval(po)}
+                    disabled={submitForApproval.isPending}
                   >
-                    {completePO.isPending ? (
+                    {submitForApproval.isPending ? (
                       <Loader2 className="w-4 h-4 animate-spin" />
                     ) : (
-                      <CheckCircle2 className="w-4 h-4 mr-1" />
+                      <Send className="w-4 h-4 mr-1" />
                     )}
-                    Mark Complete
-                  </Button>
-                )}
-
-                {/* Cancel for pending POs (own) */}
-                {po.status === 'pending' && !canApprovePOs && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-gray hover:text-red-400"
-                    onClick={() => handleCancel(po)}
-                    disabled={cancelPO.isPending}
-                  >
-                    Cancel
+                    Submit
                   </Button>
                 )}
               </div>
@@ -516,6 +453,34 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
         </div>
       )}
 
+      {/* Ready for Approval Card */}
+      {draftPOs.length > 0 && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">
+                  {draftPOs.length} purchase {draftPOs.length === 1 ? 'order' : 'orders'} ready for approval
+                </p>
+                <p className="text-lg font-semibold text-bone-white">{formatPOCurrency(draftTotal)}</p>
+              </div>
+              <Button
+                onClick={handleBulkSubmitForApproval}
+                disabled={bulkSubmitForApproval.isPending}
+                className="bg-amber-500 hover:bg-amber-600 text-black"
+              >
+                {bulkSubmitForApproval.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4 mr-2" />
+                )}
+                Send All for Approval
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
         <TabsList className="bg-muted-gray/10">
@@ -527,16 +492,6 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
               </Badge>
             )}
           </TabsTrigger>
-          {canApprovePOs && (
-            <TabsTrigger value="pending">
-              Pending Approval
-              {pendingPOs.length > 0 && (
-                <Badge variant="secondary" className="ml-2 bg-amber-500/20 text-amber-400">
-                  {pendingPOs.length}
-                </Badge>
-              )}
-            </TabsTrigger>
-          )}
           <TabsTrigger value="all">All POs</TabsTrigger>
         </TabsList>
 
@@ -565,27 +520,9 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
           )}
         </TabsContent>
 
-        {canApprovePOs && (
-          <TabsContent value="pending" className="space-y-4 mt-4">
-            {pendingPOs.length > 0 ? (
-              pendingPOs.map(po => renderPOCard(po))
-            ) : (
-              <Card className="bg-charcoal-black border-muted-gray/20">
-                <CardContent className="py-12 text-center">
-                  <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-4" />
-                  <h3 className="text-lg font-medium text-bone-white mb-2">All Caught Up!</h3>
-                  <p className="text-sm text-muted-gray">
-                    No purchase orders awaiting approval.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-        )}
-
         <TabsContent value="all" className="space-y-4 mt-4">
           {allPOs && allPOs.length > 0 ? (
-            allPOs.map(po => renderPOCard(po, canApprovePOs))
+            allPOs.map(po => renderPOCard(po))
           ) : (
             <Card className="bg-charcoal-black border-muted-gray/20">
               <CardContent className="py-12 text-center">
@@ -718,47 +655,6 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
         </DialogContent>
       </Dialog>
 
-      {/* Reject Dialog */}
-      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Reject Purchase Order</DialogTitle>
-          </DialogHeader>
-
-          <div className="space-y-4">
-            <p className="text-sm text-muted-gray">
-              Please provide a reason for rejecting this purchase order.
-            </p>
-            <div>
-              <Label>Reason *</Label>
-              <Textarea
-                value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Why is this being rejected?"
-                className="mt-1"
-                rows={3}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowRejectDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleReject}
-              disabled={!rejectReason || rejectPO.isPending}
-              className="bg-red-500 hover:bg-red-600"
-            >
-              {rejectPO.isPending ? (
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              ) : null}
-              Reject PO
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* Delete Confirmation */}
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <AlertDialogContent>
@@ -782,16 +678,16 @@ export default function PurchaseOrdersView({ projectId, canEdit }: PurchaseOrder
 
       {/* Detail Dialog */}
       <Dialog open={showDetailDialog} onOpenChange={setShowDetailDialog}>
-        <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col p-0 overflow-hidden">
+        <DialogContent className="max-w-2xl max-h-[85vh] h-[85vh] flex flex-col p-0 overflow-hidden">
           <DialogHeader className="px-4 pt-4 pb-3 flex-shrink-0 border-b border-muted-gray/10">
             <DialogTitle>Purchase Order Details</DialogTitle>
           </DialogHeader>
 
-          <ScrollArea className="flex-1 min-h-0">
+          <div className="flex-1 overflow-y-auto min-h-0">
             <div className="px-4 py-4">
               {detailPO && <PurchaseOrderDetailContent poId={detailPO.id} />}
             </div>
-          </ScrollArea>
+          </div>
 
           <DialogFooter className="px-4 py-4 flex-shrink-0 border-t border-muted-gray/10">
             <div className="flex items-center justify-between w-full">

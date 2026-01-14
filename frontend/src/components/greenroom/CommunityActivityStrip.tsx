@@ -50,6 +50,20 @@ const getActivityIcon = (type: ActivityItem['type']) => {
   }
 };
 
+const safeFormatDistance = (timestamp: Date | string | null | undefined): string => {
+  if (!timestamp) return 'recently';
+
+  try {
+    const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+    if (isNaN(date.getTime())) {
+      return 'recently';
+    }
+    return formatDistanceToNow(date, { addSuffix: true });
+  } catch {
+    return 'recently';
+  }
+};
+
 export const CommunityActivityStrip: React.FC<CommunityActivityStripProps> = ({
   currentCycle,
 }) => {
@@ -185,7 +199,7 @@ export const CommunityActivityStrip: React.FC<CommunityActivityStripProps> = ({
                 <div className="flex items-center gap-2 mt-1">
                   <Clock className="h-3 w-3 text-muted-gray" />
                   <span className="text-xs text-muted-gray">
-                    {formatDistanceToNow(activity.timestamp, { addSuffix: true })}
+                    {safeFormatDistance(activity.timestamp)}
                   </span>
                 </div>
               </div>

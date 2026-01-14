@@ -130,6 +130,17 @@ export type {
   DailyGearCostsResponse,
 } from './useGear';
 
+// Rental Gear Integration
+export {
+  useProjectRentalOrders,
+  useRentalOrderSummary,
+  useMessageGearHouse,
+  useOrgConversations,
+  useOrgConversation,
+  useSendOrgMessage,
+  useMarkConversationRead,
+} from './useBacklotRentalGear';
+
 // Updates
 export {
   useUpdates,
@@ -190,6 +201,7 @@ export {
   useReceipts,
   useReceipt,
   useRegisterReceipt,
+  useCreateManualReceipt,
   useReprocessReceiptOcr,
   useUpdateReceipt,
   useMapReceipt,
@@ -198,6 +210,7 @@ export {
   useExportReceipts,
   // Receipt Reimbursements
   useSubmitForReimbursement,
+  useBulkSubmitReceiptsForApproval,
   useApproveReimbursement,
   useRejectReimbursement,
   useDenyReimbursement,
@@ -207,12 +220,23 @@ export {
   useSubmitCompanyCard,
   useBudgetActuals,
   useBudgetActualsSummary,
+  // Sync budget actuals from historical data
+  useSyncBudgetActuals,
   // Daily Budget Labor Costs
   useDailyLaborCosts,
   // Daily Budget Scene Costs
   useDailySceneCosts,
   // Daily Budget Invoices
   useDailyInvoices,
+  // Budget Actual Detail (Source Item Linking)
+  useBudgetActualDetail,
+  useUpdateBudgetActual,
+  useBudgetActualAuditLog,
+  useKitRentalGearDetails,
+  useActualReceipts,
+  useAttachReceipt,
+  useDetachReceipt,
+  useReorderReceipts,
   // Professional Budget Templates & Top Sheet
   useBudgetTemplateTypes,
   useBudgetTemplateAccounts,
@@ -239,6 +263,17 @@ export type {
   BudgetComparisonCategoryType,
   BudgetComparisonLineItem,
   BudgetComparisonExpense,
+  // Budget Actuals types
+  BudgetActual,
+  BudgetActualSourceDetails,
+  BudgetActualsResponse,
+  // Budget Actual Detail types (Source Item Linking)
+  GearAssetDetails,
+  GearKitDetails,
+  KitRentalGearDetailsResponse,
+  BudgetActualDetailResponse,
+  ExpenseAuditLogEntry,
+  ActualReceiptAttachment,
 } from './useBudget';
 
 export type {
@@ -800,34 +835,55 @@ export {
   useDenyMileage,
   useResubmitMileage,
   useMarkMileageReimbursed,
+  useSubmitMileageForApproval,
+  useBulkSubmitMileageForApproval,
   // Kit Rentals
   useKitRentals,
   useKitRental,
   useCreateKitRental,
   useUpdateKitRental,
   useDeleteKitRental,
+  useSubmitKitRentalForApproval,
+  useBulkSubmitKitRentalsForApproval,
   useApproveKitRental,
   useRejectKitRental,
   useDenyKitRental,
   useResubmitKitRental,
   useCompleteKitRental,
   useMarkKitRentalReimbursed,
+  useKitRentalGearOptions,
+  // Kit Rental Types
+  type KitRental,
+  type KitRentalGearSourceType,
+  type GearAssetOption,
+  type GearKitOption,
+  type GearOrganizationOption,
+  type GearOptionsResponse,
+  type GearOptionsFilters,
   // Per Diem
   usePerDiemEntries,
   usePerDiemEntry,
   useClaimPerDiem,
   useBulkClaimPerDiem,
+  useUpdatePerDiem,
   useDeletePerDiem,
+  useSubmitPerDiemForApproval,
+  useBulkSubmitPerDiemForApproval,
   useApprovePerDiem,
   useRejectPerDiem,
   useDenyPerDiem,
   useResubmitPerDiem,
   useMarkPerDiemReimbursed,
+  useBulkApprovePerDiem,
+  useBulkRejectPerDiem,
   // Settings
   useExpenseSettings,
   useUpdateExpenseSettings,
   // Summary
   useExpenseSummary,
+  // Geocoding / Place Search
+  useSearchPlaces,
+  useCalculateRoute,
   // Constants
   MILEAGE_PURPOSE_OPTIONS,
   MEAL_TYPE_OPTIONS,
@@ -848,11 +904,14 @@ export type {
   PerDiemEntry,
   CreatePerDiemData,
   BulkPerDiemData,
+  UpdatePerDiemData,
   PerDiemFilters,
   ExpenseSettings,
   UpdateExpenseSettingsData,
   ExpenseSummary,
   ExpenseSummaryFilters,
+  PlaceSuggestion,
+  RouteCalculationResult,
 } from './useExpenses';
 
 // Scripty Workspace (Script Supervisor Continuity)
@@ -1064,6 +1123,7 @@ export {
   useImportExpenses,
   usePendingImportCount,
   useUnlinkLineItem,
+  useReorderLineItem,
   formatCurrency as formatInvoiceCurrency,
   formatInvoiceDate,
   calculateDueDate,
@@ -1087,6 +1147,8 @@ export {
   useResubmitPurchaseOrder,
   useCompletePurchaseOrder,
   useCancelPurchaseOrder,
+  useSubmitPurchaseOrderForApproval,
+  useBulkSubmitPurchaseOrdersForApproval,
   PO_STATUS_CONFIG,
   formatCurrency as formatPOCurrency,
 } from './usePurchaseOrders';
@@ -1205,6 +1267,16 @@ export {
   formatDuration,
   getShotSizeInfo,
   getCameraMoveInfo,
+  // Panel image upload
+  usePanelImageUpload,
+  // Call sheet storyboard links
+  useCallSheetStoryboards,
+  useCallSheetStoryboardLink,
+  // Query by entity
+  useStoryboardsByScene,
+  useStoryboardsByEpisode,
+  useStoryboardsByShotList,
+  // Constants
   SHOT_SIZES,
   CAMERA_MOVES,
   ASPECT_RATIOS,
@@ -1214,6 +1286,7 @@ export type {
   StoryboardSection,
   StoryboardPanel,
   StoryboardPrintData,
+  StoryboardViewMode,
 } from './useStoryboard';
 
 // Episodes
@@ -1343,14 +1416,18 @@ export {
   useUpdateItem as useUpdateMoodboardItem,
   useDeleteItem as useDeleteMoodboardItem,
   useReorderItems as useReorderMoodboardItems,
+  useItemImageUpload as useMoodboardItemImageUpload,
   useMoodboardPrintData,
   getMoodboardExportUrl,
+  MOODBOARD_CATEGORIES,
 } from './useMoodboard';
 export type {
   Moodboard,
   MoodboardSection,
   MoodboardItem,
   MoodboardPrintData,
+  MoodboardCategory,
+  AspectRatio,
 } from './useMoodboard';
 
 // Story Management (Beat Sheet)

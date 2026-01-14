@@ -50,6 +50,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { useScripts, useScenes, useProductionDays, ContinuityExportSceneMappings } from '@/hooks/backlot';
 import { BacklotScript, BacklotScene } from '@/types/backlot';
 import { useToast } from '@/hooks/use-toast';
@@ -253,7 +254,7 @@ const ScriptyWorkspace: React.FC<ScriptyWorkspaceProps> = ({
       } else {
         // Find most recent or first upcoming day
         const sortedDays = [...productionDays].sort((a, b) =>
-          new Date(a.date).getTime() - new Date(b.date).getTime()
+          parseLocalDate(a.date).getTime() - parseLocalDate(b.date).getTime()
         );
         const pastDays = sortedDays.filter(d => d.date < today);
         if (pastDays.length > 0) {
