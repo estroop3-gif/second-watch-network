@@ -14,6 +14,7 @@ from datetime import datetime, date
 from decimal import Decimal
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
+import logging
 
 from app.core.auth import get_current_user
 from app.core.database import execute_query, execute_single, execute_insert, execute_update
@@ -21,6 +22,7 @@ from app.core.database import execute_query, execute_single, execute_insert, exe
 from app.services import gear_service
 
 router = APIRouter(prefix="/quotes", tags=["Gear Quotes"])
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -1382,6 +1384,31 @@ async def approve_quote(
                 gear_items=created_gear_items,
                 order=order
             )
+
+        # Record budget actual for the rental order
+        if order and quote.get("backlot_project_id"):
+            from app.services.budget_actuals import record_gear_rental_order_actual
+
+            # Get full order with rental house organization name
+            order_with_org = execute_single(
+                """
+                SELECT ro.*, org.name as rental_house_name
+                FROM gear_rental_orders ro
+                LEFT JOIN organizations org ON org.id = ro.rental_house_org_id
+                WHERE ro.id = :order_id
+                """,
+                {"order_id": order["id"]}
+            )
+
+            if order_with_org:
+                budget_actual = record_gear_rental_order_actual(
+                    rental_order=order_with_org,
+                    approved_by=profile_id
+                )
+
+                if budget_actual:
+                    logger.info(f"Recorded budget actual for rental order {order['id']}")
+
         elif quote.get("auto_create_budget_line") and quote.get("backlot_project_id"):
             # Fallback: old budget integration (single line item)
             execute_insert(

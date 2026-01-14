@@ -635,6 +635,32 @@ async def update_order_status(
         {"id": order_id, "status": data.status, "notes": data.notes}
     )
 
+    # Update budget actual if order is completed and has reconciled final_amount
+    if data.status in ("completed", "cancelled") and order.get("backlot_project_id"):
+        from app.core.database import get_client
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Check if final_amount differs from initial total_amount
+        if order.get("final_amount") and order["final_amount"] != order.get("total_amount"):
+            client = get_client()
+
+            # Find existing budget actual for this order
+            actual_result = client.table("backlot_budget_actuals").select("*").eq(
+                "source_type", "gear_rental_order"
+            ).eq("source_id", order_id).execute()
+
+            if actual_result.data:
+                actual = actual_result.data[0]
+                # Update with reconciled amount
+                client.table("backlot_budget_actuals").update({
+                    "amount": order["final_amount"],
+                    "notes": f"Reconciled from ${order.get('total_amount', 0):.2f} to ${order['final_amount']:.2f}",
+                    "updated_at": execute_query("SELECT NOW() as now", {})[0]["now"]
+                }).eq("id", actual["id"]).execute()
+
+                logger.info(f"Updated budget actual for order {order_id} to reconciled final amount")
+
     return {"success": True, "status": data.status}
 
 

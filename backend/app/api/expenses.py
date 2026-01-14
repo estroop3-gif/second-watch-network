@@ -3294,7 +3294,7 @@ async def get_budget_actuals(
         # Invoice line items
         if "invoice_line_item" in source_ids_by_type:
             li_result = client.table("backlot_invoice_line_items").select(
-                "id, description, rate_type, rate, quantity, line_total, service_date_start, service_date_end, invoice:backlot_invoices!invoice_id(id, invoice_number, user:profiles!user_id(full_name))"
+                "id, description, rate_type, rate, quantity, line_total, service_date_start, service_date_end, invoice_id, invoice:backlot_invoices!invoice_id(id, invoice_number, user:profiles!user_id(full_name))"
             ).in_("id", source_ids_by_type["invoice_line_item"]).execute()
             for row in li_result.data or []:
                 source_details[f"invoice_line_item:{row['id']}"] = row
@@ -3414,6 +3414,8 @@ async def sync_budget_actuals(
         record_receipt_actual,
         record_purchase_order_actual,
         record_invoice_line_items,
+        record_gear_rental_order_actual,
+        record_gear_item_actual,
     )
 
     stats = {
@@ -3423,6 +3425,8 @@ async def sync_budget_actuals(
         "receipts": 0,
         "purchase_orders": 0,
         "invoice_line_items": 0,
+        "gear_rental_orders": 0,
+        "gear_items": 0,
         "skipped": 0,
     }
 
@@ -3491,6 +3495,42 @@ async def sync_budget_actuals(
         ).execute()
         recorded = record_invoice_line_items(inv, line_items.data or [], user["id"])
         stats["invoice_line_items"] += len(recorded)
+
+    # Sync gear rental orders (marketplace rentals)
+    from app.core.database import execute_query
+    orders = execute_query("""
+        SELECT ro.*, org.name as rental_house_name
+        FROM gear_rental_orders ro
+        LEFT JOIN organizations org ON org.id = ro.rental_house_org_id
+        WHERE ro.backlot_project_id = :project_id
+        AND ro.status IN ('confirmed', 'building', 'ready_for_pickup', 'picked_up', 'in_use', 'returned', 'closed')
+        AND (ro.total_amount > 0 OR ro.final_amount > 0)
+    """, {"project_id": project_id})
+
+    for order in orders:
+        result = record_gear_rental_order_actual(order, user["id"])
+        if result:
+            stats["gear_rental_orders"] += 1
+        else:
+            stats["skipped"] += 1
+
+    # Sync manual gear items (not owned, not linked to rental orders)
+    items = execute_query("""
+        SELECT * FROM backlot_gear_items
+        WHERE project_id = :project_id
+        AND is_owned = FALSE
+        AND gear_rental_order_item_id IS NULL
+        AND rental_cost_per_day > 0
+        AND pickup_date IS NOT NULL
+        AND return_date IS NOT NULL
+    """, {"project_id": project_id})
+
+    for item in items:
+        result = record_gear_item_actual(item, user["id"])
+        if result:
+            stats["gear_items"] += 1
+        else:
+            stats["skipped"] += 1
 
     return {
         "success": True,

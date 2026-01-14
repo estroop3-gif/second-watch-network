@@ -514,6 +514,110 @@ def record_purchase_order_actual(po: Dict[str, Any], approved_by: str) -> Option
     )
 
 
+def record_gear_rental_order_actual(
+    rental_order: Dict[str, Any],
+    approved_by: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Record budget actual for approved gear rental order (marketplace).
+    Uses order-level pricing (includes all items, tax, fees).
+    """
+    # Use final_amount if reconciled, otherwise total_amount
+    amount = float(
+        rental_order.get("final_amount") or
+        rental_order.get("total_amount") or
+        0
+    )
+
+    if amount <= 0:
+        logger.warning(f"Skipping rental order {rental_order['id']} - no amount")
+        return None
+
+    # Get rental house name from organization
+    rental_house = rental_order.get("rental_house_name") or rental_order.get("rental_house", {}).get("name") or "Unknown Vendor"
+
+    # Get project_id
+    project_id = rental_order.get("backlot_project_id")
+    if not project_id:
+        logger.warning(f"Skipping rental order {rental_order['id']} - no backlot project")
+        return None
+
+    # Get submitter info (custodian)
+    submitter_user_id = rental_order.get("custodian_user_id")
+    submitter_name = rental_order.get("custodian_user_name") or rental_order.get("custodian", {}).get("full_name")
+
+    return record_budget_actual(
+        project_id=project_id,
+        source_type="gear_rental_order",
+        source_id=rental_order["id"],
+        amount=amount,
+        description=f"Gear Rental - Order #{rental_order.get('order_number', 'N/A')}",
+        expense_date=rental_order.get("rental_start_date"),
+        vendor_name=rental_house,
+        expense_category="Equipment Rental",
+        created_by_user_id=approved_by,
+        submitter_user_id=submitter_user_id,
+        submitter_name=submitter_name,
+    )
+
+
+def record_gear_item_actual(
+    gear_item: Dict[str, Any],
+    created_by: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Record budget actual for manually added rental gear.
+    Calculates amount from daily rate × rental days.
+    """
+    # Only process rental items
+    if gear_item.get("is_owned"):
+        logger.info(f"Skipping owned gear item {gear_item['id']}")
+        return None
+
+    # Calculate rental days and total cost
+    pickup_date = gear_item.get("pickup_date")
+    return_date = gear_item.get("return_date")
+    daily_rate = float(gear_item.get("rental_cost_per_day") or 0)
+
+    if not pickup_date or not return_date or daily_rate <= 0:
+        logger.warning(f"Skipping gear item {gear_item['id']} - missing dates or rate")
+        return None
+
+    # Calculate days
+    from datetime import datetime as dt
+    try:
+        # Handle both ISO datetime strings and date-only strings
+        if "T" in pickup_date:
+            pickup = dt.fromisoformat(pickup_date.replace("Z", "+00:00")).date()
+        else:
+            pickup = dt.strptime(pickup_date, "%Y-%m-%d").date()
+
+        if "T" in return_date:
+            return_dt = dt.fromisoformat(return_date.replace("Z", "+00:00")).date()
+        else:
+            return_dt = dt.strptime(return_date, "%Y-%m-%d").date()
+
+        rental_days = (return_dt - pickup).days + 1
+        total_cost = daily_rate * rental_days
+    except (ValueError, TypeError) as e:
+        logger.error(f"Error parsing dates for gear item {gear_item['id']}: {e}")
+        return None
+
+    return record_budget_actual(
+        project_id=gear_item["project_id"],
+        source_type="gear_item",
+        source_id=gear_item["id"],
+        amount=total_cost,
+        description=f"Gear Rental - {gear_item.get('name', 'Equipment')}",
+        expense_date=pickup_date,
+        vendor_name=gear_item.get("rental_house"),
+        expense_category="Equipment Rental",
+        budget_category_id=gear_item.get("budget_category_id"),
+        budget_line_item_id=gear_item.get("budget_line_item_id"),
+        created_by_user_id=created_by,
+    )
+
+
 def record_invoice_line_items(
     invoice: Dict[str, Any],
     line_items: List[Dict[str, Any]],

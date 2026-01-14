@@ -33662,7 +33662,27 @@ async def create_gear_item(
 
         result = client.table("backlot_gear_items").insert(gear_data).execute()
 
-        return {"gear": result.data[0] if result.data else None}
+        created_item = result.data[0] if result.data else None
+
+        # Auto-record budget actual if rental gear (is_owned=false)
+        if created_item and not created_item.get("is_owned"):
+            from app.services.budget_actuals import record_gear_item_actual
+            import logging
+            logger = logging.getLogger(__name__)
+
+            try:
+                budget_actual = record_gear_item_actual(
+                    gear_item=created_item,
+                    created_by=profile_id
+                )
+
+                if budget_actual:
+                    logger.info(f"Recorded budget actual for gear item {created_item['id']}")
+            except Exception as e:
+                logger.error(f"Error recording budget actual for gear item: {e}")
+                # Don't fail the gear creation if budget recording fails
+
+        return {"gear": created_item}
 
     except HTTPException:
         raise
