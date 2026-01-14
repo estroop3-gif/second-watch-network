@@ -45,12 +45,16 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useGear, useGearCosts, useSyncGearToBudget, useBudget, useBudgetLineItems, GEAR_CATEGORIES } from '@/hooks/backlot';
+import { useGear, useGearCosts, useSyncGearToBudget, useBudget, useBudgetLineItems, GEAR_CATEGORIES, useRentalOrderSummary, useMessageGearHouse } from '@/hooks/backlot';
 import { MarketplaceRentalDialog } from './gear/MarketplaceRentalDialog';
 import { MarketplaceBrowserSection } from './gear/MarketplaceBrowserSection';
+import { RentalSummaryCard } from './gear/RentalSummaryCard';
+import { RentalGearCard } from './gear/RentalGearCard';
+import { GearDetailDrawer } from './gear/GearDetailDrawer';
 import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
-import { BacklotGearItem, GearItemInput, BacklotGearStatus } from '@/types/backlot';
+import { BacklotGearItem, GearItemInput, BacklotGearStatus, BacklotGearItemEnriched } from '@/types/backlot';
 import { format } from 'date-fns';
+import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { toast as sonnerToast } from 'sonner';
@@ -83,12 +87,28 @@ const GearCard: React.FC<{
   onEdit: (item: BacklotGearItem) => void;
   onDelete: (id: string) => void;
   onCreateTask?: (item: BacklotGearItem) => void;
-}> = ({ item, costInfo, canEdit, onEdit, onDelete, onCreateTask }) => {
+  onClick?: (id: string) => void;
+}> = ({ item, costInfo, canEdit, onEdit, onDelete, onCreateTask, onClick }) => {
   const statusConfig = STATUS_CONFIG[item.status];
   const totalCost = costInfo?.calculated_rental_cost || (item as any).purchase_cost || 0;
 
+  const handleCardClick = (e: React.MouseEvent) => {
+    // Don't trigger if clicking on dropdown menu or buttons
+    const target = e.target as HTMLElement;
+    if (target.closest('[role="menuitem"]') || target.closest('button[type="button"]')) {
+      return;
+    }
+    // Open detail drawer
+    if (onClick) {
+      onClick(item.id);
+    }
+  };
+
   return (
-    <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors">
+    <div
+      className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4 hover:border-muted-gray/40 transition-colors cursor-pointer"
+      onClick={handleCardClick}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           {/* Name & Category */}
@@ -149,8 +169,8 @@ const GearCard: React.FC<{
             {item.pickup_date && (
               <span className="flex items-center gap-1">
                 <Calendar className="w-3 h-3" />
-                {format(new Date(item.pickup_date), 'MMM d')}
-                {item.return_date && ` - ${format(new Date(item.return_date), 'MMM d')}`}
+                {format(parseLocalDate(item.pickup_date), 'MMM d')}
+                {item.return_date && ` - ${format(parseLocalDate(item.return_date), 'MMM d')}`}
               </span>
             )}
           </div>
@@ -215,6 +235,10 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   const { data: gearCosts, isLoading: costsLoading } = useGearCosts(projectId);
   const syncGearToBudget = useSyncGearToBudget();
 
+  // Rental order summary
+  const { data: rentalSummary } = useRentalOrderSummary(projectId);
+  const messageGearHouse = useMessageGearHouse();
+
   // Get budget first, then line items using the budget ID
   const { data: budget } = useBudget(projectId);
   const { data: budgetLineItems } = useBudgetLineItems(budget?.id || null);
@@ -251,6 +275,10 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   // Marketplace rental state
   const [showMarketplaceDialog, setShowMarketplaceDialog] = useState(false);
   const [showMarketplaceBrowser, setShowMarketplaceBrowser] = useState(false);
+
+  // Detail drawer state
+  const [selectedGearId, setSelectedGearId] = useState<string | null>(null);
+  const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false);
 
   // Form state with extended fields
   const [formData, setFormData] = useState<ExtendedFormData>({
@@ -394,6 +422,39 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  // Handle messaging gear house
+  const handleMessageGearHouse = async (orgId: string) => {
+    try {
+      await messageGearHouse.mutateAsync({
+        organization_id: orgId,
+        subject: 'Inquiry about rental order',
+        initial_message: 'Hello, I have a question about our rental order.',
+        context_type: 'rental_order',
+      });
+      sonnerToast.success('Message sent to gear house');
+    } catch (error) {
+      sonnerToast.error('Failed to send message');
+    }
+  };
+
+  // Handle viewing order (placeholder - could navigate to order detail)
+  const handleViewOrder = (orderId: string) => {
+    // TODO: Navigate to order detail page or open modal
+    sonnerToast.info(`View order: ${orderId}`);
+  };
+
+  // Handler to open gear detail drawer
+  const handleOpenGearDetail = (gearId: string) => {
+    setSelectedGearId(gearId);
+    setIsDetailDrawerOpen(true);
+  };
+
+  // Handler to close gear detail drawer
+  const handleCloseGearDetail = () => {
+    setIsDetailDrawerOpen(false);
+    setSelectedGearId(null);
+  };
+
   // Group gear by category for display
   const gearByCategory = gear.reduce((acc, item) => {
     const cat = item.category || 'Other';
@@ -528,6 +589,11 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
         />
       )}
 
+      {/* Rental Summary - Show if there are active rentals */}
+      {rentalSummary && rentalSummary.active_rentals_count > 0 && (
+        <RentalSummaryCard summary={rentalSummary} />
+      )}
+
       {/* Gear List */}
       {gear.length > 0 ? (
         categoryFilter === 'all' ? (
@@ -542,17 +608,34 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                   </Badge>
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {items.map((item) => (
-                    <GearCard
-                      key={item.id}
-                      item={item}
-                      costInfo={costMap.get(item.id)}
-                      canEdit={canEdit}
-                      onEdit={handleOpenForm}
-                      onDelete={handleDelete}
-                      onCreateTask={handleOpenTaskModal}
-                    />
-                  ))}
+                  {items.map((item) => {
+                    const enrichedItem = item as BacklotGearItemEnriched;
+                    // Check if this is a rental item
+                    if (enrichedItem.gear_rental_order_item_id) {
+                      return (
+                        <RentalGearCard
+                          key={item.id}
+                          item={enrichedItem}
+                          onViewOrder={handleViewOrder}
+                          onMessage={handleMessageGearHouse}
+                          onClick={handleOpenGearDetail}
+                        />
+                      );
+                    }
+                    // Regular gear item
+                    return (
+                      <GearCard
+                        key={item.id}
+                        item={item}
+                        costInfo={costMap.get(item.id)}
+                        canEdit={canEdit}
+                        onEdit={handleOpenForm}
+                        onDelete={handleDelete}
+                        onCreateTask={handleOpenTaskModal}
+                        onClick={handleOpenGearDetail}
+                      />
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -560,17 +643,34 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
         ) : (
           // Flat list for filtered view
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {gear.map((item) => (
-              <GearCard
-                key={item.id}
-                item={item}
-                costInfo={costMap.get(item.id)}
-                canEdit={canEdit}
-                onEdit={handleOpenForm}
-                onDelete={handleDelete}
-                onCreateTask={handleOpenTaskModal}
-              />
-            ))}
+            {gear.map((item) => {
+              const enrichedItem = item as BacklotGearItemEnriched;
+              // Check if this is a rental item
+              if (enrichedItem.gear_rental_order_item_id) {
+                return (
+                  <RentalGearCard
+                    key={item.id}
+                    item={enrichedItem}
+                    onViewOrder={handleViewOrder}
+                    onMessage={handleMessageGearHouse}
+                    onClick={handleOpenGearDetail}
+                  />
+                );
+              }
+              // Regular gear item
+              return (
+                <GearCard
+                  key={item.id}
+                  item={item}
+                  costInfo={costMap.get(item.id)}
+                  canEdit={canEdit}
+                  onEdit={handleOpenForm}
+                  onDelete={handleDelete}
+                  onCreateTask={handleOpenTaskModal}
+                  onClick={handleOpenGearDetail}
+                />
+              );
+            })}
           </div>
         )
       ) : (
@@ -978,6 +1078,21 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
         onClose={() => setShowMarketplaceDialog(false)}
         projectId={projectId}
         budgetLineItems={budgetLineItems || []}
+      />
+
+      {/* Gear Detail Drawer */}
+      <GearDetailDrawer
+        gearId={selectedGearId}
+        isOpen={isDetailDrawerOpen}
+        onClose={handleCloseGearDetail}
+        onEdit={(gearId) => {
+          // Close detail drawer and open edit form
+          handleCloseGearDetail();
+          const item = gear.find(g => g.id === gearId);
+          if (item) {
+            handleOpenForm(item);
+          }
+        }}
       />
     </div>
   );

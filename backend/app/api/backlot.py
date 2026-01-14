@@ -4728,16 +4728,28 @@ async def delete_budget(
     # 2. Daily budgets
     client.table("backlot_daily_budgets").delete().eq("budget_id", budget_id).execute()
 
-    # 3. Receipts
+    # 3. Budget actuals - delete by budget_id first
+    client.table("backlot_budget_actuals").delete().eq("budget_id", budget_id).execute()
+
+    # 4. Get line items and categories to also delete any actuals referencing them (in case budget_id was null)
+    line_items = client.table("backlot_budget_line_items").select("id").eq("budget_id", budget_id).execute()
+    for li in (line_items.data or []):
+        client.table("backlot_budget_actuals").delete().eq("budget_line_item_id", li["id"]).execute()
+
+    categories = client.table("backlot_budget_categories").select("id").eq("budget_id", budget_id).execute()
+    for cat in (categories.data or []):
+        client.table("backlot_budget_actuals").delete().eq("budget_category_id", cat["id"]).execute()
+
+    # 5. Receipts
     client.table("backlot_receipts").delete().eq("budget_id", budget_id).execute()
 
-    # 4. Line items
+    # 6. Line items
     client.table("backlot_budget_line_items").delete().eq("budget_id", budget_id).execute()
 
-    # 5. Categories
+    # 7. Categories
     client.table("backlot_budget_categories").delete().eq("budget_id", budget_id).execute()
 
-    # 6. Finally, the budget itself
+    # 8. Finally, the budget itself
     client.table("backlot_budgets").delete().eq("id", budget_id).execute()
 
     return {"success": True, "message": f"Budget '{budget['name']}' and all associated data has been permanently deleted"}
@@ -6704,37 +6716,55 @@ class ReceiptRegisterInput(BaseModel):
     scene_id: Optional[str] = None
 
 
+class ReceiptManualInput(BaseModel):
+    """Input for creating a receipt manually without a file"""
+    vendor_name: str
+    amount: float
+    purchase_date: str  # YYYY-MM-DD format
+    description: Optional[str] = None
+    payment_method: Optional[str] = None
+    tax_amount: Optional[float] = None
+    budget_line_item_id: Optional[str] = None
+
+
+class ReceiptUserInfo(BaseModel):
+    """User info for receipt display"""
+    display_name: Optional[str] = None
+    full_name: Optional[str] = None
+
+
 class Receipt(BaseModel):
     """Receipt response model"""
     id: str
     project_id: str
-    budget_id: Optional[str]
-    daily_budget_id: Optional[str]
-    budget_line_item_id: Optional[str]
+    budget_id: Optional[str] = None
+    daily_budget_id: Optional[str] = None
+    budget_line_item_id: Optional[str] = None
     scene_id: Optional[str] = None
-    file_url: str
-    original_filename: Optional[str]
-    file_type: Optional[str]
-    file_size_bytes: Optional[int]
-    vendor_name: Optional[str]
-    description: Optional[str]
-    purchase_date: Optional[str]
-    amount: Optional[float]
-    tax_amount: Optional[float]
-    currency: str
-    ocr_status: str
-    ocr_confidence: Optional[float]
-    raw_ocr_json: Optional[Dict[str, Any]]
-    extracted_text: Optional[str]
-    is_mapped: bool
-    is_verified: bool
-    payment_method: Optional[str]
-    reimbursement_status: str
-    reimbursement_to: Optional[str]
-    notes: Optional[str]
-    created_by_user_id: str
-    created_at: str
-    updated_at: str
+    file_url: Optional[str] = None  # Optional for manual entries
+    original_filename: Optional[str] = None
+    file_type: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    vendor_name: Optional[str] = None
+    description: Optional[str] = None
+    purchase_date: Optional[str] = None
+    amount: Optional[float] = None
+    tax_amount: Optional[float] = None
+    currency: Optional[str] = "USD"
+    ocr_status: Optional[str] = "succeeded"
+    ocr_confidence: Optional[float] = None
+    raw_ocr_json: Optional[Dict[str, Any]] = None
+    extracted_text: Optional[str] = None
+    is_mapped: Optional[bool] = False
+    is_verified: Optional[bool] = False
+    payment_method: Optional[str] = None
+    reimbursement_status: Optional[str] = "not_applicable"
+    reimbursement_to: Optional[str] = None
+    notes: Optional[str] = None
+    created_by_user_id: Optional[str] = None
+    created_by: Optional[ReceiptUserInfo] = None  # Joined user info for display
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class ReceiptOcrResponse(BaseModel):
@@ -7290,9 +7320,12 @@ async def get_project_receipts(
     budget_line_item_id: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    reimbursement_status: Optional[str] = None,
     authorization: str = Header(None)
 ):
     """Get all receipts for a project with optional filters"""
+    from app.core.storage import storage_client
+
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
@@ -7314,9 +7347,124 @@ async def get_project_receipts(
         query = query.gte("purchase_date", date_from)
     if date_to:
         query = query.lte("purchase_date", date_to)
+    if reimbursement_status:
+        query = query.eq("reimbursement_status", reimbursement_status)
 
     response = query.order("created_at", desc=True).execute()
-    return response.data or []
+    receipts = response.data or []
+
+    # Fetch user info for created_by display
+    user_ids = list(set(r.get("created_by_user_id") for r in receipts if r.get("created_by_user_id")))
+    user_map = {}
+    if user_ids:
+        try:
+            users_resp = client.table("profiles").select("id, display_name, full_name").in_("id", user_ids).execute()
+            for u in (users_resp.data or []):
+                user_map[u["id"]] = {"display_name": u.get("display_name"), "full_name": u.get("full_name")}
+        except Exception as e:
+            print(f"Error fetching user info for receipts: {e}")
+
+    # Add created_by object and generate signed URLs
+    for receipt in receipts:
+        # Add created_by object for display
+        user_id = receipt.get("created_by_user_id")
+        if user_id and user_id in user_map:
+            receipt["created_by"] = user_map[user_id]
+        else:
+            receipt["created_by"] = None
+        file_url = receipt.get("file_url")
+        if file_url:
+            # Extract the path from the URL (format: https://bucket.s3.region.amazonaws.com/path)
+            # or handle s3:// format
+            try:
+                if file_url.startswith("s3://"):
+                    # s3://bucket/path format
+                    path = file_url.split("/", 3)[-1] if "/" in file_url[5:] else ""
+                elif ".s3." in file_url and ".amazonaws.com/" in file_url:
+                    # https://bucket.s3.region.amazonaws.com/path format
+                    path = file_url.split(".amazonaws.com/", 1)[-1]
+                else:
+                    # Already a signed URL or other format, skip
+                    continue
+
+                if path:
+                    signed = storage_client.from_("backlot").create_signed_url(path, expires_in=3600)
+                    if signed.get("signedUrl"):
+                        receipt["file_url"] = signed["signedUrl"]
+            except Exception as e:
+                print(f"Error generating signed URL for receipt {receipt.get('id')}: {e}")
+
+    return receipts
+
+
+@router.get("/projects/{project_id}/receipts/{receipt_id}", response_model=Receipt)
+async def get_project_receipt(
+    project_id: str,
+    receipt_id: str,
+    authorization: str = Header(None)
+):
+    """Get a single receipt by ID within a project context"""
+    from app.core.storage import storage_client
+
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    response = client.table("backlot_receipts").select("*").eq("id", receipt_id).eq("project_id", project_id).execute()
+    if not response.data:
+        raise HTTPException(status_code=404, detail="Receipt not found")
+
+    receipt = response.data[0]
+
+    # Fetch user info for created_by display
+    created_by_user_id = receipt.get("created_by_user_id")
+    if created_by_user_id:
+        try:
+            user_resp = client.table("profiles").select("id, display_name, full_name").eq("id", created_by_user_id).single().execute()
+            if user_resp.data:
+                receipt["created_by"] = {"display_name": user_resp.data.get("display_name"), "full_name": user_resp.data.get("full_name")}
+        except Exception as e:
+            print(f"Error fetching user info for receipt {receipt_id}: {e}")
+
+    # Fetch line item info if mapped
+    if receipt.get("budget_line_item_id"):
+        try:
+            line_item_resp = client.table("backlot_budget_line_items").select("id, name, code").eq("id", receipt["budget_line_item_id"]).single().execute()
+            if line_item_resp.data:
+                receipt["line_item"] = line_item_resp.data
+        except Exception as e:
+            print(f"Error fetching line item for receipt {receipt_id}: {e}")
+
+    # Fetch daily budget info if mapped
+    if receipt.get("daily_budget_id"):
+        try:
+            daily_resp = client.table("backlot_daily_budgets").select("id, name, date").eq("id", receipt["daily_budget_id"]).single().execute()
+            if daily_resp.data:
+                receipt["daily_budget"] = daily_resp.data
+        except Exception as e:
+            print(f"Error fetching daily budget for receipt {receipt_id}: {e}")
+
+    # Generate signed URL for the receipt file
+    file_url = receipt.get("file_url")
+    if file_url:
+        try:
+            if file_url.startswith("s3://"):
+                path = file_url.split("/", 3)[-1] if "/" in file_url[5:] else ""
+            elif ".s3." in file_url and ".amazonaws.com/" in file_url:
+                path = file_url.split(".amazonaws.com/", 1)[-1]
+            else:
+                path = None
+
+            if path:
+                signed = storage_client.from_("backlot").create_signed_url(path, expires_in=3600)
+                if signed.get("signedUrl"):
+                    receipt["file_url"] = signed["signedUrl"]
+        except Exception as e:
+            print(f"Error generating signed URL for receipt {receipt_id}: {e}")
+
+    return receipt
 
 
 @router.get("/receipts/{receipt_id}", response_model=Receipt)
@@ -7325,6 +7473,8 @@ async def get_receipt(
     authorization: str = Header(None)
 ):
     """Get a receipt by ID"""
+    from app.core.storage import storage_client
+
     current_user = await get_current_user_from_token(authorization)
     user_id = current_user["id"]
 
@@ -7336,6 +7486,24 @@ async def get_receipt(
 
     receipt = response.data[0]
     await verify_budget_access(client, receipt["project_id"], user_id)
+
+    # Generate signed URL for the receipt file
+    file_url = receipt.get("file_url")
+    if file_url:
+        try:
+            if file_url.startswith("s3://"):
+                path = file_url.split("/", 3)[-1] if "/" in file_url[5:] else ""
+            elif ".s3." in file_url and ".amazonaws.com/" in file_url:
+                path = file_url.split(".amazonaws.com/", 1)[-1]
+            else:
+                path = None
+
+            if path:
+                signed = storage_client.from_("backlot").create_signed_url(path, expires_in=3600)
+                if signed.get("signedUrl"):
+                    receipt["file_url"] = signed["signedUrl"]
+        except Exception as e:
+            print(f"Error generating signed URL for receipt {receipt_id}: {e}")
 
     return receipt
 
@@ -7362,12 +7530,10 @@ async def register_receipt(
     budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
     budget_id = budget_response.data[0]["id"] if budget_response.data else None
 
-    # Create receipt record
+    # Create receipt record (only include columns that exist in the table)
     receipt_data = {
         "project_id": project_id,
         "budget_id": budget_id,
-        "daily_budget_id": data.daily_budget_id,
-        "scene_id": data.scene_id,
         "file_url": data.file_url,
         "original_filename": data.original_filename,
         "file_type": data.file_type,
@@ -7444,6 +7610,50 @@ async def register_receipt(
         receipt=Receipt(**receipt),
         ocr_result=ocr_result
     )
+
+
+@router.post("/projects/{project_id}/receipts/manual", response_model=Receipt)
+async def create_manual_receipt(
+    project_id: str,
+    data: ReceiptManualInput,
+    authorization: str = Header(None)
+):
+    """
+    Create a receipt manually without a file upload.
+
+    Use this when entering receipt data without an image/PDF.
+    """
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+    await verify_budget_access(client, project_id, user_id)
+
+    # Get budget for the project
+    budget_response = client.table("backlot_budgets").select("id").eq("project_id", project_id).execute()
+    budget_id = budget_response.data[0]["id"] if budget_response.data else None
+
+    # Create receipt record (only include columns that exist in the table)
+    receipt_data = {
+        "project_id": project_id,
+        "budget_id": budget_id,
+        "budget_line_item_id": data.budget_line_item_id,
+        "vendor_name": data.vendor_name,
+        "amount": data.amount,
+        "tax_amount": data.tax_amount,
+        "purchase_date": data.purchase_date,
+        "description": data.description,
+        "payment_method": data.payment_method,
+        "created_by_user_id": user_id,
+        "ocr_status": "succeeded",  # No OCR needed for manual entry
+        "is_verified": True,  # Manual entry is considered verified
+    }
+
+    result = client.table("backlot_receipts").insert(receipt_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create receipt record")
+
+    return Receipt(**result.data[0])
 
 
 @router.post("/receipts/{receipt_id}/reprocess-ocr", response_model=ReceiptOcrResponse)
@@ -7534,15 +7744,39 @@ async def update_receipt(
 
     client = get_client()
 
-    # Get receipt to verify access
-    existing = client.table("backlot_receipts").select("project_id").eq("id", receipt_id).execute()
+    # Get receipt to verify access and check current status
+    existing = client.table("backlot_receipts").select("project_id, reimbursement_status, rejection_reason, denied_by, denied_at, denial_reason").eq("id", receipt_id).execute()
     if not existing.data:
         raise HTTPException(status_code=404, detail="Receipt not found")
 
-    await verify_budget_access(client, existing.data[0]["project_id"], user_id)
+    receipt = existing.data[0]
+    await verify_budget_access(client, receipt["project_id"], user_id)
 
-    # Update
-    update_data = receipt_input.model_dump(exclude_unset=True)
+    # Update - only include columns that exist in the table
+    input_data = receipt_input.model_dump(exclude_unset=True)
+
+    # Columns that exist in backlot_receipts table
+    valid_columns = {
+        "vendor_name", "description", "purchase_date", "amount", "tax_amount",
+        "payment_method", "budget_line_item_id", "is_mapped", "is_verified",
+        "reimbursement_status", "reimbursement_to"
+    }
+
+    update_data = {k: v for k, v in input_data.items() if k in valid_columns}
+
+    # Convert empty strings to None for fields that don't accept empty strings
+    for key in ["purchase_date", "payment_method", "budget_line_item_id", "reimbursement_status", "reimbursement_to"]:
+        if key in update_data and update_data[key] == "":
+            update_data[key] = None
+
+    # If editing a rejected/denied receipt, reset to draft so user can resubmit
+    if receipt.get("reimbursement_status") in ["changes_requested", "denied"]:
+        update_data["reimbursement_status"] = "draft"
+        update_data["rejection_reason"] = None
+        update_data["denied_by"] = None
+        update_data["denied_at"] = None
+        update_data["denial_reason"] = None
+
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
     result = client.table("backlot_receipts").update(update_data).eq("id", receipt_id).execute()
@@ -33205,6 +33439,155 @@ async def get_project_gear(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/gear/{gear_id}/enriched")
+async def get_enriched_gear_item(
+    gear_id: str,
+    authorization: str = Header(None)
+):
+    """Get gear item with full rental order, work order, and org details."""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # 1. Get base gear item
+        gear = execute_single(
+            "SELECT * FROM backlot_gear_items WHERE id = :id",
+            {"id": gear_id}
+        )
+
+        if not gear:
+            raise HTTPException(status_code=404, detail="Gear item not found")
+
+        # Verify project access
+        await verify_project_access(client, gear["project_id"], user["id"])
+
+        # 2. Get rental order if linked (parse from notes field)
+        rental_order = None
+        import re
+
+        if gear.get("notes") and "Rental Request:" in gear["notes"]:
+            # Parse rental request ID from notes
+            match = re.search(r'Rental Request: ([a-f0-9-]+)', gear["notes"])
+            if match:
+                request_id = match.group(1)
+
+                # Get rental order from request via backlot_project_id
+                rental_order = execute_single(
+                    """
+                    SELECT ro.*,
+                           org.name as rental_house_name,
+                           org.logo_url as rental_house_logo
+                    FROM gear_rental_orders ro
+                    LEFT JOIN organizations org ON org.id = ro.rental_house_org_id
+                    WHERE ro.backlot_project_id = :project_id
+                    ORDER BY ro.created_at DESC
+                    LIMIT 1
+                    """,
+                    {"project_id": gear["project_id"]}
+                )
+
+                if rental_order:
+                    # Get all order items
+                    rental_order["items"] = execute_query(
+                        """
+                        SELECT roi.*, ga.name as asset_name
+                        FROM gear_rental_order_items roi
+                        LEFT JOIN gear_assets ga ON ga.id = roi.asset_id
+                        WHERE roi.order_id = :order_id
+                        ORDER BY roi.sort_order
+                        """,
+                        {"order_id": rental_order["id"]}
+                    )
+
+        # 3. Get work order if linked (parse from notes field)
+        work_order = None
+        if gear.get("notes") and "Work Order:" in gear["notes"]:
+            match = re.search(r'Work Order: (WO-\d+)', gear["notes"])
+            if match:
+                wo_number = match.group(1)
+                work_order = execute_single(
+                    """
+                    SELECT wo.*,
+                           assigned.display_name as assigned_to_name,
+                           custodian.display_name as custodian_user_name
+                    FROM gear_work_orders wo
+                    LEFT JOIN profiles assigned ON assigned.id = wo.assigned_to
+                    LEFT JOIN profiles custodian ON custodian.id = wo.custodian_user_id
+                    WHERE wo.reference_number = :ref_num
+                    """,
+                    {"ref_num": wo_number}
+                )
+
+                if work_order:
+                    # Get work order items
+                    work_order["items"] = execute_query(
+                        """
+                        SELECT woi.*,
+                               ga.name as asset_name,
+                               staged_by_prof.display_name as staged_by_name
+                        FROM gear_work_order_items woi
+                        LEFT JOIN gear_assets ga ON ga.id = woi.asset_id
+                        LEFT JOIN profiles staged_by_prof ON staged_by_prof.id = woi.staged_by
+                        WHERE woi.work_order_id = :wo_id
+                        ORDER BY woi.sort_order
+                        """,
+                        {"wo_id": work_order["id"]}
+                    )
+
+        # 4. Get organization details if rental house
+        organization = None
+        marketplace_settings = None
+        if gear.get("rental_house"):
+            # Find org by name
+            organization = execute_single(
+                "SELECT * FROM organizations WHERE name ILIKE :name LIMIT 1",
+                {"name": gear["rental_house"]}
+            )
+
+            if organization:
+                # Get marketplace settings for contact info
+                marketplace_settings = execute_single(
+                    "SELECT * FROM gear_marketplace_settings WHERE organization_id = :org_id",
+                    {"org_id": organization["id"]}
+                )
+
+        # 5. Get assignee profile if assigned
+        assignee = None
+        if gear.get("assigned_to"):
+            assignee = execute_single(
+                """
+                SELECT id, username, full_name, display_name, avatar_url
+                FROM profiles WHERE id = :id
+                """,
+                {"id": gear["assigned_to"]}
+            )
+
+        # 6. Get assigned production day if linked
+        assigned_day = None
+        if gear.get("assigned_production_day_id"):
+            assigned_day = execute_single(
+                "SELECT * FROM backlot_production_days WHERE id = :id",
+                {"id": gear["assigned_production_day_id"]}
+            )
+
+        return {
+            "gear": gear,
+            "rental_order": rental_order,
+            "work_order": work_order,
+            "organization": organization,
+            "marketplace_settings": marketplace_settings,
+            "assignee": assignee,
+            "assigned_day": assigned_day,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting enriched gear item: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/gear/{gear_id}")
 async def get_gear_item(
     gear_id: str,
@@ -33236,6 +33619,7 @@ async def get_gear_item(
     except Exception as e:
         print(f"Error getting gear item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.post("/projects/{project_id}/gear")
@@ -33526,6 +33910,177 @@ async def get_gear_costs(
         raise
     except Exception as e:
         print(f"Error getting gear costs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/rental-orders")
+async def get_project_rental_orders(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get all rental orders associated with a backlot project.
+    Returns rental orders with their items and current status.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get rental orders linked to this project
+        orders = execute_query(
+            """
+            SELECT ro.*,
+                   o.name as rental_house_name,
+                   o.avatar_url as rental_house_avatar
+            FROM gear_rental_orders ro
+            JOIN organizations o ON o.id = ro.rental_house_org_id
+            WHERE ro.backlot_project_id = :project_id
+            ORDER BY ro.created_at DESC
+            """,
+            {"project_id": project_id}
+        )
+
+        # Get items for each order
+        for order in orders:
+            items = execute_query(
+                """
+                SELECT roi.*,
+                       ga.name as asset_name,
+                       ga.serial_number,
+                       bg.id as backlot_gear_id
+                FROM gear_rental_order_items roi
+                LEFT JOIN gear_assets ga ON ga.id = roi.asset_id
+                LEFT JOIN backlot_gear_items bg ON bg.gear_rental_order_item_id = roi.id
+                WHERE roi.order_id = :order_id
+                ORDER BY roi.sort_order
+                """,
+                {"order_id": order["id"]}
+            )
+            order["items"] = items
+
+        return orders
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting rental orders: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/rental-summary")
+async def get_rental_summary(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get rental order summary for a backlot project.
+    Returns:
+    - active_rentals_count: Number of active rental orders
+    - total_daily_cost: Total cost per day across all active rentals
+    - total_weekly_cost: Total cost per week
+    - total_monthly_cost: Total cost per month
+    - upcoming_pickups: Rentals with upcoming pickup dates
+    - pending_returns: Rentals with upcoming/overdue return dates
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        upcoming_window = now + timedelta(days=7)
+
+        # Get all rental gear items for this project
+        gear_items = execute_query(
+            """
+            SELECT bg.*,
+                   ro.order_number,
+                   ro.status as order_status,
+                   ro.rental_start_date,
+                   ro.rental_end_date
+            FROM backlot_gear_items bg
+            JOIN gear_rental_order_items roi ON roi.id = bg.gear_rental_order_item_id
+            JOIN gear_rental_orders ro ON ro.id = roi.order_id
+            WHERE bg.project_id = :project_id
+              AND bg.gear_rental_order_item_id IS NOT NULL
+            ORDER BY bg.pickup_date
+            """,
+            {"project_id": project_id}
+        )
+
+        # Calculate summary metrics
+        active_rentals_count = 0
+        total_daily_cost = 0.0
+        total_weekly_cost = 0.0
+        total_monthly_cost = 0.0
+        upcoming_pickups = []
+        pending_returns = []
+
+        for item in gear_items:
+            order_status = item.get("order_status", "")
+
+            # Count active rentals (not cancelled or returned)
+            if order_status in ["confirmed", "building", "ready_for_pickup", "picked_up", "in_use"]:
+                active_rentals_count += 1
+
+                # Sum costs
+                if item.get("rental_cost_per_day"):
+                    total_daily_cost += float(item["rental_cost_per_day"])
+
+                if item.get("rental_weekly_rate"):
+                    total_weekly_cost += float(item["rental_weekly_rate"])
+
+                if item.get("rental_monthly_rate"):
+                    total_monthly_cost += float(item["rental_monthly_rate"])
+
+            # Check for upcoming pickups
+            if item.get("pickup_date"):
+                pickup_date = datetime.fromisoformat(str(item["pickup_date"]))
+                if now <= pickup_date <= upcoming_window:
+                    days_until = (pickup_date - now).days
+                    upcoming_pickups.append({
+                        "order_id": item.get("order_number"),
+                        "item_name": item.get("name"),
+                        "pickup_date": str(item["pickup_date"]),
+                        "days_until": days_until
+                    })
+
+            # Check for pending returns
+            if item.get("return_date") and order_status in ["picked_up", "in_use"]:
+                return_date = datetime.fromisoformat(str(item["return_date"]))
+                days_until = (return_date - now).days
+                is_overdue = days_until < 0
+
+                pending_returns.append({
+                    "order_id": item.get("order_number"),
+                    "item_name": item.get("name"),
+                    "return_date": str(item["return_date"]),
+                    "days_until": days_until,
+                    "is_overdue": is_overdue
+                })
+
+        # Sort lists
+        upcoming_pickups.sort(key=lambda x: x["days_until"])
+        pending_returns.sort(key=lambda x: x["days_until"])
+
+        return {
+            "active_rentals_count": active_rentals_count,
+            "total_daily_cost": round(total_daily_cost, 2),
+            "total_weekly_cost": round(total_weekly_cost, 2),
+            "total_monthly_cost": round(total_monthly_cost, 2),
+            "upcoming_pickups": upcoming_pickups[:5],  # Top 5 upcoming
+            "pending_returns": pending_returns
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting rental summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -38135,10 +38690,12 @@ async def get_purchase_order_summary(
 
         # Calculate stats
         total_count = 0
+        draft_count = 0
         pending_count = 0
         approved_count = 0
         rejected_count = 0
         completed_count = 0
+        draft_total = 0.0
         pending_total = 0.0
         approved_total = 0.0
 
@@ -38147,7 +38704,10 @@ async def get_purchase_order_summary(
             amount = float(po.get("estimated_amount") or 0)
             status = po.get("status")
 
-            if status == "pending":
+            if status == "draft":
+                draft_count += 1
+                draft_total += amount
+            elif status == "pending":
                 pending_count += 1
                 pending_total += amount
             elif status == "approved":
@@ -38161,10 +38721,12 @@ async def get_purchase_order_summary(
 
         return {
             "total_count": total_count,
+            "draft_count": draft_count,
             "pending_count": pending_count,
             "approved_count": approved_count,
             "rejected_count": rejected_count,
             "completed_count": completed_count,
+            "draft_total": draft_total,
             "pending_total": pending_total,
             "approved_total": approved_total,
         }
@@ -38199,7 +38761,7 @@ async def create_purchase_order(
             "department": request.department,
             "budget_category_id": request.budget_category_id,
             "notes": request.notes,
-            "status": "pending",
+            "status": "draft",
         }
 
         result = client.table("backlot_purchase_orders").insert(po_data).execute()
@@ -38293,6 +38855,13 @@ async def update_purchase_order(
             update_data["budget_category_id"] = request.budget_category_id
         if request.notes is not None:
             update_data["notes"] = request.notes
+
+        # If editing a rejected/denied PO, reset to draft so user can resubmit
+        if po["status"] in ["rejected", "denied"]:
+            update_data["status"] = "draft"
+            update_data["rejection_reason"] = None
+            update_data["rejected_by"] = None
+            update_data["rejected_at"] = None
 
         result = client.table("backlot_purchase_orders").update(
             update_data
@@ -38406,6 +38975,12 @@ async def approve_purchase_order(
         result = client.table("backlot_purchase_orders").update(
             update_data
         ).eq("id", po_id).execute()
+
+        # Record to budget actuals
+        if result.data:
+            full_po = result.data[0]
+            from app.services.budget_actuals import record_purchase_order_actual
+            record_purchase_order_actual(full_po, user_id)
 
         return result.data[0] if result.data else {"id": po_id, **update_data}
 
@@ -38689,6 +39264,132 @@ async def cancel_purchase_order(
         raise
     except Exception as e:
         print(f"Error cancelling purchase order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/purchase-orders/{po_id}/submit-for-approval")
+async def submit_purchase_order_for_approval(
+    po_id: str,
+    authorization: str = Header(None)
+):
+    """Submit a draft purchase order for approval"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get existing PO
+        existing = client.table("backlot_purchase_orders").select(
+            "project_id, requested_by, status"
+        ).eq("id", po_id).execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Purchase order not found")
+
+        po = existing.data[0]
+
+        # Verify ownership - only the requester can submit for approval
+        if po["requested_by"] != user_id:
+            raise HTTPException(status_code=403, detail="Only the owner can submit for approval")
+
+        # Check status is draft
+        if po["status"] != "draft":
+            raise HTTPException(status_code=400, detail="Only draft purchase orders can be submitted for approval")
+
+        # Update status to pending
+        update_data = {
+            "status": "pending",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        result = client.table("backlot_purchase_orders").update(
+            update_data
+        ).eq("id", po_id).execute()
+
+        return result.data[0] if result.data else {"id": po_id, **update_data}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error submitting purchase order for approval: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BulkSubmitPORequest(BaseModel):
+    entry_ids: List[str]
+
+
+@router.post("/projects/{project_id}/purchase-orders/bulk-submit-for-approval")
+async def bulk_submit_purchase_orders_for_approval(
+    project_id: str,
+    request: BulkSubmitPORequest,
+    authorization: str = Header(None)
+):
+    """Submit multiple draft purchase orders for approval"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user_id)
+
+        submitted_count = 0
+        failed_count = 0
+        failed_ids = []
+
+        for po_id in request.entry_ids:
+            try:
+                # Get PO
+                existing = client.table("backlot_purchase_orders").select(
+                    "project_id, requested_by, status"
+                ).eq("id", po_id).eq("project_id", project_id).execute()
+
+                if not existing.data:
+                    failed_count += 1
+                    failed_ids.append(po_id)
+                    continue
+
+                po = existing.data[0]
+
+                # Verify ownership
+                if po["requested_by"] != user_id:
+                    failed_count += 1
+                    failed_ids.append(po_id)
+                    continue
+
+                # Check status is draft
+                if po["status"] != "draft":
+                    failed_count += 1
+                    failed_ids.append(po_id)
+                    continue
+
+                # Update status to pending
+                update_data = {
+                    "status": "pending",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+
+                client.table("backlot_purchase_orders").update(
+                    update_data
+                ).eq("id", po_id).execute()
+
+                submitted_count += 1
+
+            except Exception as e:
+                print(f"Error submitting PO {po_id}: {e}")
+                failed_count += 1
+                failed_ids.append(po_id)
+
+        return {
+            "submitted_count": submitted_count,
+            "failed_count": failed_count,
+            "failed_ids": failed_ids
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error bulk submitting purchase orders: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
