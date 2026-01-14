@@ -34109,7 +34109,7 @@ async def sync_gear_to_budget(
     project_id: str,
     create_line_items: bool = True,
     update_actuals: bool = True,
-    category_name: str = "Equipment Rentals",
+    category_name: str = "Equipment Rental",
     authorization: str = Header(None)
 ):
     """
@@ -34135,20 +34135,35 @@ async def sync_gear_to_budget(
         budget_id = budget_result.data[0]["id"]
 
         # Get or create the Equipment category
-        cat_result = client.table("backlot_budget_categories").select("id").eq(
+        # First try exact match
+        cat_result = client.table("backlot_budget_categories").select("id, name").eq(
             "budget_id", budget_id
         ).eq("name", category_name).limit(1).execute()
 
         if cat_result.data:
             category_id = cat_result.data[0]["id"]
         else:
-            # Create category
-            new_cat = client.table("backlot_budget_categories").insert({
-                "budget_id": budget_id,
-                "name": category_name,
-                "sort_order": 100
-            }).execute()
-            category_id = new_cat.data[0]["id"]
+            # Try to find similar category (e.g., "Equipment Rental" vs "Equipment Rentals")
+            all_cats = client.table("backlot_budget_categories").select("id, name").eq(
+                "budget_id", budget_id
+            ).execute()
+
+            category_id = None
+            search_term = category_name.lower().rstrip('s')  # Remove trailing 's' for matching
+            for cat in (all_cats.data or []):
+                cat_name_normalized = cat["name"].lower().rstrip('s')
+                if cat_name_normalized == search_term or search_term in cat_name_normalized:
+                    category_id = cat["id"]
+                    break
+
+            if not category_id:
+                # Create category only if no match found
+                new_cat = client.table("backlot_budget_categories").insert({
+                    "budget_id": budget_id,
+                    "name": category_name,
+                    "sort_order": 100
+                }).execute()
+                category_id = new_cat.data[0]["id"]
 
         # Get all gear items
         gear_result = client.table("backlot_gear_items").select(
@@ -34177,7 +34192,28 @@ async def sync_gear_to_budget(
             if total_cost == 0:
                 continue
 
-            if item.get("budget_line_item_id") and update_actuals:
+            # Check if linked line item still exists AND has a valid category
+            line_item_valid = False
+            if item.get("budget_line_item_id"):
+                check_result = client.table("backlot_budget_line_items").select("id, category_id").eq(
+                    "id", item["budget_line_item_id"]
+                ).limit(1).execute()
+                # Line item is only valid if it exists AND has a category (not orphaned)
+                if check_result.data and check_result.data[0].get("category_id"):
+                    line_item_valid = True
+
+                if not line_item_valid:
+                    # Clear the stale/orphaned reference and delete orphaned line item if exists
+                    if check_result.data:
+                        # Delete orphaned line item (has no category)
+                        client.table("backlot_budget_line_items").delete().eq(
+                            "id", item["budget_line_item_id"]
+                        ).execute()
+                    client.table("backlot_gear_items").update({
+                        "budget_line_item_id": None
+                    }).eq("id", item["id"]).execute()
+
+            if line_item_valid and update_actuals:
                 # Update existing line item actual
                 try:
                     client.table("backlot_budget_line_items").update({
@@ -34187,15 +34223,14 @@ async def sync_gear_to_budget(
                     updated += 1
                 except:
                     pass
-            elif not item.get("budget_line_item_id") and create_line_items:
+            elif not line_item_valid and create_line_items:
                 # Create new line item and link
+                # Note: estimated_total is a GENERATED column, don't set it directly
                 line_item = client.table("backlot_budget_line_items").insert({
+                    "budget_id": budget_id,
                     "category_id": category_id,
                     "description": f"{item['name']} ({item.get('category', 'Gear')})",
-                    "estimated_total": total_cost,
                     "actual_total": total_cost,
-                    "quantity": 1,
-                    "unit_cost": total_cost,
                     "notes": f"Auto-synced from gear: {item['name']}"
                 }).execute()
 
