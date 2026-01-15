@@ -21,7 +21,6 @@ from src.ui.pages.offload_page import OffloadPage
 from src.ui.pages.unified_upload_page import UnifiedUploadPage
 from src.ui.pages.proxy_page import ProxyPage
 from src.ui.pages.qc_page import QCPage
-from src.ui.pages.drives_page import DrivesPage
 from src.ui.pages.reports_page import ReportsPage
 from src.ui.pages.settings_page import SettingsPage
 from src.ui.pages.cloud_storage_page import CloudStoragePage
@@ -81,12 +80,14 @@ class MainWindow(QMainWindow):
         self.cloud_storage_page = CloudStoragePage()  # Cloud storage management
         self.mhl_tools_page = MHLToolsPage()  # MHL verification
         self.metadata_tools_page = MetadataToolsPage()  # Metadata editing
-        self.drives_page = DrivesPage(self.config)
         self.reports_page = ReportsPage(self.config)
         self.settings_page = SettingsPage(self.config, self.connection_manager, on_disconnect=self.on_disconnect)
 
         # Connect offload to unified upload queue
         self.offload_page.files_ready_for_upload.connect(self._on_files_ready_for_upload)
+
+        # Connect upload page to connection manager for project loading
+        self.upload_page.set_connection_manager(self.connection_manager)
 
         self.stack.addWidget(self.setup_page)          # 0
         self.stack.addWidget(self.offload_page)        # 1
@@ -96,9 +97,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.cloud_storage_page)  # 5 - Cloud Storage
         self.stack.addWidget(self.mhl_tools_page)      # 6 - MHL Tools
         self.stack.addWidget(self.metadata_tools_page) # 7 - Metadata Tools
-        self.stack.addWidget(self.drives_page)         # 8
-        self.stack.addWidget(self.reports_page)        # 9
-        self.stack.addWidget(self.settings_page)       # 10
+        self.stack.addWidget(self.reports_page)        # 8 - Reports
+        self.stack.addWidget(self.settings_page)       # 9 - Settings
 
         # Status bar
         self.status_bar = QStatusBar()
@@ -181,7 +181,6 @@ class MainWindow(QMainWindow):
         self.btn_cloud = self._create_nav_button("🌐  Cloud Storage", self.show_cloud_storage)
         self.btn_mhl = self._create_nav_button("    MHL Tools", self.show_mhl_tools)
         self.btn_metadata = self._create_nav_button("    Metadata", self.show_metadata_tools)
-        self.btn_drives = self._create_nav_button("🔗  Drives", self.show_drives)
         self.btn_reports = self._create_nav_button("📊  Reports", self.show_reports)
         self.btn_settings = self._create_nav_button("⚙️  Settings", self.show_settings)
 
@@ -193,7 +192,6 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(self.btn_cloud)
         nav_layout.addWidget(self.btn_mhl)
         nav_layout.addWidget(self.btn_metadata)
-        nav_layout.addWidget(self.btn_drives)
         nav_layout.addWidget(self.btn_reports)
         nav_layout.addWidget(self.btn_settings)
 
@@ -257,27 +255,22 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.metadata_tools_page)
         self._update_nav_buttons(7)
 
-    def show_drives(self):
-        """Show the linked drives page."""
-        self.stack.setCurrentWidget(self.drives_page)
-        self._update_nav_buttons(8)
-
     def show_reports(self):
         """Show the reports page."""
         self.stack.setCurrentWidget(self.reports_page)
-        self._update_nav_buttons(9)
+        self._update_nav_buttons(8)
 
     def show_settings(self):
         """Show the settings page."""
         self.stack.setCurrentWidget(self.settings_page)
-        self._update_nav_buttons(10)
+        self._update_nav_buttons(9)
 
     def _update_nav_buttons(self, active_index: int):
         """Update navigation button states."""
         buttons = [
             self.btn_setup, self.btn_offload, self.btn_upload,
             self.btn_proxies, self.btn_qc, self.btn_cloud, self.btn_mhl,
-            self.btn_metadata, self.btn_drives, self.btn_reports, self.btn_settings
+            self.btn_metadata, self.btn_reports, self.btn_settings
         ]
         for i, btn in enumerate(buttons):
             btn.setProperty("active", i == active_index)

@@ -196,15 +196,94 @@ async def stream_file(path: str):
 
 
 @app.get("/thumbnail")
-async def get_thumbnail(path: str):
-    """Generate and return a thumbnail for a video file."""
+async def get_thumbnail(path: str, time: float = 1.0, width: int = 320):
+    """Generate and return a thumbnail for a video file.
+
+    Args:
+        path: Path to the video file
+        time: Time in seconds to extract frame from (default: 1.0)
+        width: Width of thumbnail in pixels (default: 320, height auto-scaled)
+    """
+    import subprocess
+    import tempfile
+    from src.services.ffmpeg_encoder import get_ffmpeg_binary
+
     file_path = Path(path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
-    # For now, return a placeholder - FFmpeg thumbnail generation will be added
-    # TODO: Use FFmpeg to extract a frame and return as JPEG
-    raise HTTPException(status_code=501, detail="Thumbnail generation not implemented yet")
+    # Check if it's a video file
+    video_extensions = {'.mp4', '.mov', '.mxf', '.avi', '.mkv', '.m4v', '.webm', '.r3d', '.braw', '.arw'}
+    if file_path.suffix.lower() not in video_extensions:
+        raise HTTPException(status_code=400, detail="Not a video file")
+
+    try:
+        ffmpeg_path = get_ffmpeg_binary()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"FFmpeg not available: {e}")
+
+    # Create temporary file for thumbnail
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        # Run FFmpeg to extract a frame
+        # -ss before -i for fast seeking
+        # -vf scale for resizing
+        # -vframes 1 to extract single frame
+        # -q:v 2 for high quality JPEG
+        cmd = [
+            str(ffmpeg_path),
+            '-ss', str(time),
+            '-i', str(file_path),
+            '-vf', f'scale={width}:-1',
+            '-vframes', '1',
+            '-q:v', '2',
+            '-y',  # Overwrite output
+            tmp_path
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            # Try again at the start of the video
+            cmd[2] = '0'  # Change -ss to 0
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                timeout=30
+            )
+
+        if not Path(tmp_path).exists() or Path(tmp_path).stat().st_size == 0:
+            raise HTTPException(status_code=500, detail="Failed to generate thumbnail")
+
+        # Read the thumbnail and return it
+        with open(tmp_path, 'rb') as f:
+            thumbnail_data = f.read()
+
+        return Response(
+            content=thumbnail_data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "max-age=3600",  # Cache for 1 hour
+            }
+        )
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=500, detail="Thumbnail generation timed out")
+    except Exception as e:
+        logger.error(f"Thumbnail generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up temp file
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except:
+            pass
 
 
 @app.post("/checksum")

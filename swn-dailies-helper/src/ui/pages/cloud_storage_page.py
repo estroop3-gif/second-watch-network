@@ -74,6 +74,129 @@ class DirectoryListWorker(QThread):
             self.error.emit(self.remote_path, str(e))
 
 
+class DownloadWorker(QThread):
+    """Background worker to download a file with progress."""
+    progress = pyqtSignal(str, int, int, float)  # filename, bytes_transferred, total_bytes, percent
+    completed = pyqtSignal(str, bool, str)  # filename, success, error
+
+    def __init__(self, remote_path: str, local_path: str):
+        super().__init__()
+        self.remote_path = remote_path
+        self.local_path = local_path
+
+    def run(self):
+        import asyncio
+        from pathlib import Path
+        from src.services.rclone_service import RcloneService
+
+        try:
+            service = RcloneService()
+            local_path = Path(self.local_path)
+            filename = local_path.name
+
+            def on_progress(p):
+                self.progress.emit(
+                    filename,
+                    p.bytes_transferred,
+                    p.total_bytes,
+                    p.percent
+                )
+
+            # Run async download in event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    service.download_file(
+                        self.remote_path,
+                        local_path,
+                        progress_callback=on_progress
+                    )
+                )
+                if result.success:
+                    self.completed.emit(filename, True, "")
+                else:
+                    self.completed.emit(filename, False, result.error_message or "Download failed")
+            finally:
+                loop.close()
+
+        except Exception as e:
+            self.completed.emit(Path(self.local_path).name, False, str(e))
+
+
+class UploadWorker(QThread):
+    """Background worker to upload a file with progress."""
+    progress = pyqtSignal(str, int, int, float)  # filename, bytes_transferred, total_bytes, percent
+    completed = pyqtSignal(str, bool, str)  # filename, success, error
+
+    def __init__(self, local_path: str, remote_path: str):
+        super().__init__()
+        self.local_path = local_path
+        self.remote_path = remote_path
+
+    def run(self):
+        import asyncio
+        from pathlib import Path
+        from src.services.rclone_service import RcloneService
+
+        try:
+            service = RcloneService()
+            local_path = Path(self.local_path)
+            filename = local_path.name
+
+            def on_progress(p):
+                self.progress.emit(
+                    filename,
+                    p.bytes_transferred,
+                    p.total_bytes,
+                    p.percent
+                )
+
+            # Run async upload in event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                result = loop.run_until_complete(
+                    service.upload_file(
+                        local_path,
+                        self.remote_path,
+                        checksum_verify=True,
+                        progress_callback=on_progress
+                    )
+                )
+                if result.success:
+                    self.completed.emit(filename, True, "")
+                else:
+                    self.completed.emit(filename, False, result.error_message or "Upload failed")
+            finally:
+                loop.close()
+
+        except Exception as e:
+            self.completed.emit(Path(self.local_path).name, False, str(e))
+
+
+class DeleteWorker(QThread):
+    """Background worker to delete a remote file."""
+    completed = pyqtSignal(str, bool, str)  # filename, success, error
+
+    def __init__(self, remote_path: str, filename: str):
+        super().__init__()
+        self.remote_path = remote_path
+        self.filename = filename
+
+    def run(self):
+        try:
+            from src.services.rclone_service import RcloneService
+            service = RcloneService()
+            success = service.delete_remote(self.remote_path)
+            if success:
+                self.completed.emit(self.filename, True, "")
+            else:
+                self.completed.emit(self.filename, False, "Delete failed")
+        except Exception as e:
+            self.completed.emit(self.filename, False, str(e))
+
+
 class CloudStoragePage(QWidget):
     """Page for managing cloud storage remotes."""
 
@@ -83,6 +206,9 @@ class CloudStoragePage(QWidget):
         self.remote_status: Dict[str, str] = {}  # name -> status
         self.test_workers: Dict[str, RemoteTestWorker] = {}
         self.list_worker: Optional[DirectoryListWorker] = None
+        self.download_worker: Optional[DownloadWorker] = None
+        self.upload_worker: Optional[UploadWorker] = None
+        self.delete_worker: Optional[DeleteWorker] = None
         self.current_remote: Optional[str] = None
         self.current_path: str = ""
 
@@ -498,6 +624,11 @@ class CloudStoragePage(QWidget):
             QMessageBox.warning(self, "Download", "Please select a file (not a folder)")
             return
 
+        # Check if already downloading
+        if self.download_worker and self.download_worker.isRunning():
+            QMessageBox.warning(self, "Download", "A download is already in progress")
+            return
+
         # Ask for save location
         name = data.get("Name", "file")
         save_path, _ = QFileDialog.getSaveFileName(
@@ -518,17 +649,40 @@ class CloudStoragePage(QWidget):
 
         self.browser_status.setText(f"Downloading {name}...")
 
-        # TODO: Implement async download with progress
-        QMessageBox.information(
-            self,
-            "Download",
-            f"Download will be implemented.\nRemote: {remote_path}\nLocal: {save_path}"
-        )
+        # Start download worker
+        self.download_worker = DownloadWorker(remote_path, save_path)
+        self.download_worker.progress.connect(self._on_download_progress)
+        self.download_worker.completed.connect(self._on_download_completed)
+        self.download_worker.start()
+
+    def _on_download_progress(self, filename: str, transferred: int, total: int, percent: float):
+        """Handle download progress updates."""
+        if total > 0:
+            self.browser_status.setText(
+                f"Downloading {filename}: {self._format_size(transferred)} / {self._format_size(total)} ({percent:.0f}%)"
+            )
+        else:
+            self.browser_status.setText(f"Downloading {filename}: {self._format_size(transferred)}")
+
+    def _on_download_completed(self, filename: str, success: bool, error: str):
+        """Handle download completion."""
+        self.download_worker = None
+        if success:
+            self.browser_status.setText(f"Downloaded: {filename}")
+            QMessageBox.information(self, "Download Complete", f"Successfully downloaded:\n{filename}")
+        else:
+            self.browser_status.setText(f"Download failed: {error}")
+            QMessageBox.warning(self, "Download Failed", f"Failed to download {filename}:\n{error}")
 
     def _on_upload(self):
         """Upload file to current path."""
         if not self.current_remote:
             QMessageBox.warning(self, "Upload", "Please select a remote first")
+            return
+
+        # Check if already uploading
+        if self.upload_worker and self.upload_worker.isRunning():
+            QMessageBox.warning(self, "Upload", "An upload is already in progress")
             return
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -549,28 +703,77 @@ class CloudStoragePage(QWidget):
 
         self.browser_status.setText(f"Uploading {name}...")
 
-        # TODO: Implement async upload with progress
-        QMessageBox.information(
-            self,
-            "Upload",
-            f"Upload will be implemented.\nLocal: {file_path}\nRemote: {remote_path}"
-        )
+        # Start upload worker
+        self.upload_worker = UploadWorker(file_path, remote_path)
+        self.upload_worker.progress.connect(self._on_upload_progress)
+        self.upload_worker.completed.connect(self._on_upload_completed)
+        self.upload_worker.start()
+
+    def _on_upload_progress(self, filename: str, transferred: int, total: int, percent: float):
+        """Handle upload progress updates."""
+        if total > 0:
+            self.browser_status.setText(
+                f"Uploading {filename}: {self._format_size(transferred)} / {self._format_size(total)} ({percent:.0f}%)"
+            )
+        else:
+            self.browser_status.setText(f"Uploading {filename}: {self._format_size(transferred)}")
+
+    def _on_upload_completed(self, filename: str, success: bool, error: str):
+        """Handle upload completion."""
+        self.upload_worker = None
+        if success:
+            self.browser_status.setText(f"Uploaded: {filename}")
+            QMessageBox.information(self, "Upload Complete", f"Successfully uploaded:\n{filename}")
+            # Refresh the current directory
+            self._browse_path(self.current_path)
+        else:
+            self.browser_status.setText(f"Upload failed: {error}")
+            QMessageBox.warning(self, "Upload Failed", f"Failed to upload {filename}:\n{error}")
 
     def _on_delete_file(self, data: dict):
         """Delete a remote file."""
         name = data.get("Name", "")
+        is_dir = data.get("IsDir", False)
+
+        # Check if already deleting
+        if self.delete_worker and self.delete_worker.isRunning():
+            QMessageBox.warning(self, "Delete", "A delete operation is already in progress")
+            return
+
+        item_type = "folder" if is_dir else "file"
         reply = QMessageBox.question(
             self,
             "Delete",
-            f"Delete {name}?",
+            f"Delete {item_type} '{name}'?\n\nThis cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # TODO: Implement delete
-        QMessageBox.information(self, "Delete", "Delete will be implemented.")
+        # Build remote path
+        if self.current_path.endswith(":"):
+            remote_path = f"{self.current_path}{name}"
+        else:
+            remote_path = f"{self.current_path}/{name}"
+
+        self.browser_status.setText(f"Deleting {name}...")
+
+        # Start delete worker
+        self.delete_worker = DeleteWorker(remote_path, name)
+        self.delete_worker.completed.connect(self._on_delete_completed)
+        self.delete_worker.start()
+
+    def _on_delete_completed(self, filename: str, success: bool, error: str):
+        """Handle delete completion."""
+        self.delete_worker = None
+        if success:
+            self.browser_status.setText(f"Deleted: {filename}")
+            # Refresh the current directory
+            self._browse_path(self.current_path)
+        else:
+            self.browser_status.setText(f"Delete failed: {error}")
+            QMessageBox.warning(self, "Delete Failed", f"Failed to delete {filename}:\n{error}")
 
     def _on_add_remote(self):
         """Show dialog to add a new remote."""

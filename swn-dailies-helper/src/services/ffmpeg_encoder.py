@@ -17,6 +17,72 @@ if TYPE_CHECKING:
     from ..models.transcode_presets import TranscodeSettings
 
 
+def get_ffmpeg_binary() -> Optional[Path]:
+    """
+    Get path to bundled FFmpeg binary.
+
+    Returns:
+        Path to FFmpeg binary, or None if not found.
+    """
+    system = platform.system()
+
+    # Determine the resources directory
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable (PyInstaller)
+        base_path = Path(sys._MEIPASS) / "ffmpeg"
+    else:
+        # Running from source
+        base_path = Path(__file__).parent.parent.parent / "resources" / "ffmpeg"
+
+    if system == "Windows":
+        binary_path = base_path / "ffmpeg.exe"
+    else:
+        binary_path = base_path / "ffmpeg"
+
+    if binary_path.exists():
+        return binary_path
+
+    # Fall back to system PATH
+    system_ffmpeg = shutil.which("ffmpeg")
+    if system_ffmpeg:
+        return Path(system_ffmpeg)
+
+    return None
+
+
+def get_ffprobe_binary() -> Optional[Path]:
+    """
+    Get path to bundled FFprobe binary.
+
+    Returns:
+        Path to FFprobe binary, or None if not found.
+    """
+    system = platform.system()
+
+    # Determine the resources directory
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable (PyInstaller)
+        base_path = Path(sys._MEIPASS) / "ffmpeg"
+    else:
+        # Running from source
+        base_path = Path(__file__).parent.parent.parent / "resources" / "ffmpeg"
+
+    if system == "Windows":
+        binary_path = base_path / "ffprobe.exe"
+    else:
+        binary_path = base_path / "ffprobe"
+
+    if binary_path.exists():
+        return binary_path
+
+    # Fall back to system PATH
+    system_ffprobe = shutil.which("ffprobe")
+    if system_ffprobe:
+        return Path(system_ffprobe)
+
+    return None
+
+
 @dataclass
 class ProxySettings:
     """Settings for proxy generation (legacy, kept for compatibility)."""

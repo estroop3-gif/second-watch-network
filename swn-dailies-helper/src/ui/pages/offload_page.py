@@ -1003,16 +1003,136 @@ class OffloadPage(QWidget):
 
     def _start_overnight_upload(self):
         """Start the overnight upload process."""
-        # Similar to original implementation
+        # Check if there's an active session with files
+        session = self.session_manager.get_active_session()
+        if not session:
+            QMessageBox.warning(
+                self,
+                "No Session",
+                "No active offload session to upload.\n\n"
+                "Offload files first to create a session."
+            )
+            return
+
+        # Check if overnight worker already running
+        if self.overnight_worker and self.overnight_worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "Already Running",
+                "An overnight upload is already in progress."
+            )
+            return
+
+        # Confirm start
+        reply = QMessageBox.question(
+            self,
+            "Start Overnight Upload",
+            "This will:\n\n"
+            "1. Test your internet speed\n"
+            "2. Generate optimized proxies\n"
+            "3. Upload all files to Backlot\n\n"
+            "This process can run overnight. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Create and configure the worker
+        self.overnight_worker = OvernightUploadWorker(
+            session_manager=self.session_manager,
+            config=self.config,
+            parent=self
+        )
+
+        # Connect signals
+        self.overnight_worker.status_message.connect(self._on_overnight_status)
+        self.overnight_worker.speed_test_started.connect(self._on_speed_test_started)
+        self.overnight_worker.speed_test_completed.connect(self._on_speed_test_completed)
+        self.overnight_worker.proxy_started.connect(self._on_proxy_started)
+        self.overnight_worker.proxy_progress.connect(self._on_proxy_progress)
+        self.overnight_worker.upload_started.connect(self._on_upload_started)
+        self.overnight_worker.upload_progress.connect(self._on_upload_progress)
+        self.overnight_worker.workflow_completed.connect(self._on_overnight_completed)
+
+        # Update UI
         self.progress_label.setText("Starting overnight upload...")
-        # TODO: Implement overnight worker start
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+
+        # Start the worker
+        self.overnight_worker.start()
+
+    def _on_overnight_status(self, message: str):
+        """Handle overnight status updates."""
+        self.progress_label.setText(message)
+
+    def _on_speed_test_started(self):
+        """Handle speed test start."""
+        self.progress_label.setText("Testing internet speed...")
+        self.progress_bar.setValue(0)
+
+    def _on_speed_test_completed(self, speed_mbps: float, resolution: str):
+        """Handle speed test completion."""
+        self.progress_label.setText(f"Speed: {speed_mbps:.1f} Mbps - Using {resolution}")
+        self.progress_bar.setValue(10)
+
+    def _on_proxy_started(self, total_files: int):
+        """Handle proxy generation start."""
+        self.progress_label.setText(f"Generating proxies: 0/{total_files}")
+        self.progress_bar.setMaximum(100)
+
+    def _on_proxy_progress(self, current: int, total: int, filename: str):
+        """Handle proxy generation progress."""
+        self.progress_label.setText(f"Generating proxies: {current}/{total} - {filename}")
+        # Proxies are 10-50% of progress
+        progress = 10 + int((current / total) * 40)
+        self.progress_bar.setValue(progress)
+
+    def _on_upload_started(self, total_proxies: int):
+        """Handle upload start."""
+        self.progress_label.setText(f"Uploading: 0/{total_proxies}")
+
+    def _on_upload_progress(self, current: int, total: int, filename: str):
+        """Handle upload progress."""
+        self.progress_label.setText(f"Uploading: {current}/{total} - {filename}")
+        # Uploads are 50-100% of progress
+        progress = 50 + int((current / total) * 50)
+        self.progress_bar.setValue(progress)
+
+    def _on_overnight_completed(self, success: bool, message: str, stats: dict):
+        """Handle overnight workflow completion."""
+        self.overnight_worker = None
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_bar.setValue(100 if success else 0)
+
+        if success:
+            self.progress_label.setText("Overnight upload complete!")
+            # Show summary
+            summary = (
+                f"Overnight Upload Complete\n\n"
+                f"Speed Test: {stats.get('speed_test_mbps', 0):.1f} Mbps\n"
+                f"Resolution: {stats.get('resolution_used', 'N/A')}\n\n"
+                f"Files: {stats.get('total_files', 0)}\n"
+                f"Proxies Generated: {stats.get('proxies_generated', 0)}\n"
+                f"Proxies Uploaded: {stats.get('proxies_uploaded', 0)}\n"
+                f"Upload Size: {stats.get('total_mb_uploaded', 0):.1f} MB\n"
+                f"Duration: {stats.get('total_duration_minutes', 0):.1f} minutes"
+            )
+            QMessageBox.information(self, "Upload Complete", summary)
+        else:
+            self.progress_label.setText(f"Upload failed: {message}")
+            QMessageBox.warning(self, "Upload Failed", message)
 
     def _cancel_offload(self):
         """Cancel the current offload operation."""
-        # Check if either worker is running
+        # Check if any worker is running
         worker_running = (
             (self.worker and self.worker.isRunning()) or
-            (self.robust_worker and self.robust_worker.isRunning())
+            (self.robust_worker and self.robust_worker.isRunning()) or
+            (self.overnight_worker and self.overnight_worker.isRunning())
         )
 
         if worker_running:
@@ -1031,6 +1151,8 @@ class OffloadPage(QWidget):
                     self.worker.cancel()
                 if self.robust_worker:
                     self.robust_worker.cancel()
+                if self.overnight_worker:
+                    self.overnight_worker.cancel()
         else:
             self._reset_ui_after_offload()
 
@@ -1040,6 +1162,7 @@ class OffloadPage(QWidget):
         self.cancel_btn.setEnabled(False)
         self.worker = None
         self.robust_worker = None
+        self.overnight_worker = None
         self.current_manifest = None
         self.current_journal = None
 

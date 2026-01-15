@@ -336,6 +336,191 @@ BUILTIN_PRESETS: Dict[str, TranscodePreset] = {
         required_for_upload=False,
         is_builtin=True,
     ),
+
+    # 4K presets
+    "h264_4k": TranscodePreset(
+        id="h264_4k",
+        name="H.264 4K",
+        description="4K UHD H.264 for high-res delivery",
+        settings=[
+            TranscodeSettings(
+                name="H.264 4K",
+                codec="h264",
+                resolution="4k",
+                bitrate="30M",
+                speed="medium",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    "prores_4k": TranscodePreset(
+        id="prores_4k",
+        name="ProRes 422 4K",
+        description="4K ProRes 422 for mastering",
+        settings=[
+            TranscodeSettings(
+                name="ProRes 422 4K",
+                codec="prores_422",
+                resolution="4k",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # H.265/HEVC presets
+    "h265_1080p": TranscodePreset(
+        id="h265_1080p",
+        name="H.265 1080p",
+        description="1080p HEVC - smaller files, better quality",
+        settings=[
+            TranscodeSettings(
+                name="H.265 1080p",
+                codec="h265",
+                resolution="1080p",
+                bitrate="4M",
+                speed="medium",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    "h265_4k": TranscodePreset(
+        id="h265_4k",
+        name="H.265 4K",
+        description="4K HEVC for efficient 4K delivery",
+        settings=[
+            TranscodeSettings(
+                name="H.265 4K",
+                codec="h265",
+                resolution="4k",
+                bitrate="15M",
+                speed="medium",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # Quick preview
+    "quick_preview": TranscodePreset(
+        id="quick_preview",
+        name="Quick Preview",
+        description="Fast low-res preview for quick checks",
+        settings=[
+            TranscodeSettings(
+                name="Preview 480p",
+                codec="h264",
+                resolution="480p",
+                bitrate="800k",
+                speed="ultrafast",
+                audio_bitrate="64k",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # DaVinci Resolve optimized
+    "resolve_proxy": TranscodePreset(
+        id="resolve_proxy",
+        name="DaVinci Resolve Proxy",
+        description="Optimized for DaVinci Resolve proxy workflow",
+        settings=[
+            TranscodeSettings(
+                name="Resolve Proxy",
+                codec="prores_proxy",
+                resolution="720p",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # Editorial proxy (common request)
+    "editorial_proxy": TranscodePreset(
+        id="editorial_proxy",
+        name="Editorial Proxy",
+        description="720p H.264 for Premiere/FCP editorial",
+        settings=[
+            TranscodeSettings(
+                name="Editorial 720p",
+                codec="h264",
+                resolution="720p",
+                bitrate="5M",
+                speed="fast",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # Multi-resolution pack
+    "multi_res_pack": TranscodePreset(
+        id="multi_res_pack",
+        name="Multi-Resolution Pack",
+        description="720p + 1080p H.264 for various uses",
+        settings=[
+            TranscodeSettings(
+                name="720p",
+                codec="h264",
+                resolution="720p",
+                bitrate="4M",
+                speed="fast",
+            ),
+            TranscodeSettings(
+                name="1080p",
+                codec="h264",
+                resolution="1080p",
+                bitrate="8M",
+                speed="fast",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # VFX plates
+    "vfx_plates": TranscodePreset(
+        id="vfx_plates",
+        name="VFX Plates",
+        description="ProRes HQ at source resolution for VFX",
+        settings=[
+            TranscodeSettings(
+                name="ProRes HQ Source",
+                codec="prores_hq",
+                resolution="source",
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
+
+    # Client review with timecode
+    "client_review_tc": TranscodePreset(
+        id="client_review_tc",
+        name="Client Review (with TC)",
+        description="1080p H.264 with burned-in timecode",
+        settings=[
+            TranscodeSettings(
+                name="Review 1080p TC",
+                codec="h264",
+                resolution="1080p",
+                bitrate="8M",
+                speed="fast",
+                burn_timecode=True,
+                burn_clip_name=True,
+                burn_position="bottom",
+                burn_font_size=28,
+                burn_background=True,
+            ),
+        ],
+        required_for_upload=False,
+        is_builtin=True,
+    ),
 }
 
 
