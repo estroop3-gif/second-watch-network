@@ -324,6 +324,9 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<{ type: 'asset' | 'deliverable'; id: string; name: string } | null>(null);
 
+  // Standalone asset video player modal
+  const [selectedStandaloneAsset, setSelectedStandaloneAsset] = useState<any>(null);
+
   // Queries
   const { data: assets, isLoading: assetsLoading } = useAssets(projectId);
   const { data: assetsSummary } = useAssetsSummary(projectId);
@@ -740,28 +743,65 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
                     <File className="w-4 h-4 text-accent-yellow" />
                     Files {selectedFolderId ? 'in folder' : '(all)'} ({standaloneAssets.length})
                   </h3>
-                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
                     {standaloneAssets.map((file) => (
-                      <Card key={file.id} className="bg-charcoal-black/50 border-muted-gray/20 hover:border-accent-yellow/30 transition-colors p-3">
-                        <div className="flex items-start gap-3">
-                          <div className="p-2 rounded bg-white/5">
-                            {file.asset_type === 'audio' ? <Music className="w-5 h-5 text-accent-yellow" /> :
-                             file.asset_type === '3d_model' ? <Box className="w-5 h-5 text-accent-yellow" /> :
-                             file.asset_type === 'image' ? <Image className="w-5 h-5 text-accent-yellow" /> :
-                             file.asset_type === 'document' ? <FileText className="w-5 h-5 text-accent-yellow" /> :
-                             <File className="w-5 h-5 text-accent-yellow" />}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-bone-white truncate">{file.name}</p>
-                            <p className="text-xs text-muted-gray">{file.file_name}</p>
-                            {file.file_size_bytes && (
-                              <p className="text-xs text-muted-gray mt-1">
-                                {(file.file_size_bytes / 1024 / 1024).toFixed(1)} MB
-                              </p>
-                            )}
-                          </div>
+                      <div
+                        key={file.id}
+                        className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 cursor-pointer hover:border-accent-yellow/50 transition-colors group"
+                        onClick={() => {
+                          if (file.asset_type === 'video' && file.cloud_url) {
+                            // Open video player modal or navigate to detail view
+                            setSelectedStandaloneAsset(file);
+                          }
+                        }}
+                      >
+                        {/* Thumbnail area - similar to Dailies ClipCard */}
+                        <div className="aspect-video bg-charcoal-black rounded mb-2 flex items-center justify-center relative overflow-hidden">
+                          {file.asset_type === 'video' ? (
+                            <>
+                              {file.thumbnail_url ? (
+                                <img
+                                  src={file.thumbnail_url}
+                                  alt={file.name}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <Video className="w-8 h-8 text-muted-gray" />
+                              )}
+                              {/* Play button overlay */}
+                              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                <div className="rounded-full bg-white/20 backdrop-blur flex items-center justify-center w-10 h-10">
+                                  <Play className="text-white fill-white ml-0.5 w-5 h-5" />
+                                </div>
+                              </div>
+                              {/* Duration badge */}
+                              {file.duration_seconds && (
+                                <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/70 rounded text-xs text-white font-mono">
+                                  {Math.floor(file.duration_seconds / 60)}:{String(Math.floor(file.duration_seconds % 60)).padStart(2, '0')}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <div className="p-2 rounded bg-white/5">
+                              {file.asset_type === 'audio' ? <Music className="w-6 h-6 text-accent-yellow" /> :
+                               file.asset_type === '3d_model' ? <Box className="w-6 h-6 text-accent-yellow" /> :
+                               file.asset_type === 'image' ? <Image className="w-6 h-6 text-accent-yellow" /> :
+                               file.asset_type === 'document' ? <FileText className="w-6 h-6 text-accent-yellow" /> :
+                               <File className="w-6 h-6 text-accent-yellow" />}
+                            </div>
+                          )}
                         </div>
-                      </Card>
+                        {/* Info section */}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-bone-white truncate">{file.name}</p>
+                          <p className="text-xs text-muted-gray truncate">{file.file_name}</p>
+                          {file.file_size_bytes && (
+                            <p className="text-xs text-muted-gray mt-1">
+                              {(file.file_size_bytes / 1024 / 1024).toFixed(1)} MB
+                            </p>
+                          )}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -1353,6 +1393,34 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Standalone Asset Video Player Modal */}
+      <Dialog open={!!selectedStandaloneAsset} onOpenChange={() => setSelectedStandaloneAsset(null)}>
+        <DialogContent className="max-w-4xl bg-charcoal-black border-muted-gray/20">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white">{selectedStandaloneAsset?.name}</DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              {selectedStandaloneAsset?.file_name}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            {selectedStandaloneAsset?.cloud_url && (
+              <video
+                src={selectedStandaloneAsset.cloud_url}
+                controls
+                autoPlay
+                className="w-full rounded-lg"
+                style={{ maxHeight: '70vh' }}
+              />
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSelectedStandaloneAsset(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
