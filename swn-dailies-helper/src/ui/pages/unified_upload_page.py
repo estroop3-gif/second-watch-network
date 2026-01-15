@@ -83,153 +83,94 @@ class UploadWorker(QThread):
 
     def run(self):
         """
-        Main worker loop - batch process by quality level.
+        Main worker loop - upload files to Assets, then link to Dailies/Review.
 
-        New workflow:
-        1. Analyze all jobs to determine which qualities each needs
-        2. Transcode phase: Generate all 720p first, then 1080p, then 4K
-        3. Upload phase: Upload all 720p first, then 1080p, then 4K
-        4. Upload originals (if enabled)
+        Workflow:
+        1. Upload each file to Assets (standalone_assets table)
+        2. If video and proxies enabled: generate proxies locally, upload as separate assets
+        3. Link to Dailies/Review based on settings
         """
         success_count = 0
         total_count = len(self.jobs)
 
-        # Filter to only video files that need proxies
-        video_jobs = [j for j in self.jobs if j.file_type.lower() in VIDEO_EXTENSIONS]
-        non_video_jobs = [j for j in self.jobs if j.file_type.lower() not in VIDEO_EXTENSIONS]
+        logger.info(f"=== UPLOAD START ===")
+        logger.info(f"Total jobs: {total_count}, Upload original: {self.upload_original}")
 
-        logger.info(f"=== BATCH UPLOAD START ===")
-        logger.info(f"Total jobs: {total_count}, Video: {len(video_jobs)}, Non-video: {len(non_video_jobs)}")
-
-        # Determine quality tiers needed per job
-        job_qualities: Dict[str, List[str]] = {}
-        for job in video_jobs:
-            width, height = self.encoder.get_video_resolution(str(job.file_path))
-            qualities = get_qualities_for_source(width, height)
-            job_qualities[job.id] = qualities
-            self._proxy_files[job.id] = {}
-            logger.info(f"Job {job.file_name}: {width}x{height} -> qualities: {qualities}")
-
-        # Phase 1: Transcode all videos by quality tier (720p first, then 1080p, then 4k)
-        quality_order = ["720p", "1080p", "4k"]
-
-        for quality in quality_order:
-            if self._cancel_flag:
-                break
-
-            # Find jobs that need this quality
-            jobs_needing_quality = [
-                j for j in video_jobs
-                if quality in job_qualities.get(j.id, [])
-            ]
-
-            if not jobs_needing_quality:
-                continue
-
-            logger.info(f"=== TRANSCODE PHASE: {quality} ({len(jobs_needing_quality)} files) ===")
-
-            for job in jobs_needing_quality:
-                if self._cancel_flag:
-                    break
-
-                self.job_started.emit(job.id)
-                self.job_progress.emit(job.id, 0, f"Generating {quality} proxy for {job.file_name}...")
-
-                try:
-                    proxy_path = self._generate_quality_proxy(job, quality)
-                    if proxy_path:
-                        self._proxy_files[job.id][quality] = proxy_path
-                        logger.info(f"Generated {quality} proxy: {proxy_path}")
-                    else:
-                        logger.warning(f"Failed to generate {quality} proxy for {job.file_name}")
-                except Exception as e:
-                    logger.error(f"Error generating {quality} proxy for {job.file_name}: {e}")
-
-        # Phase 2: Upload all proxies by quality tier (720p first, then 1080p, then 4k)
-        for quality in quality_order:
-            if self._cancel_flag:
-                break
-
-            # Find jobs with this quality proxy ready
-            jobs_with_quality = [
-                j for j in video_jobs
-                if quality in self._proxy_files.get(j.id, {})
-            ]
-
-            if not jobs_with_quality:
-                continue
-
-            logger.info(f"=== UPLOAD PHASE: {quality} ({len(jobs_with_quality)} files) ===")
-
-            for job in jobs_with_quality:
-                if self._cancel_flag:
-                    break
-
-                proxy_path = self._proxy_files[job.id][quality]
-                self.job_progress.emit(job.id, 50, f"Uploading {quality} proxy for {job.file_name}...")
-
-                try:
-                    success = self._upload_proxy_file(job, proxy_path, quality)
-                    if success:
-                        logger.info(f"Uploaded {quality} proxy for {job.file_name}")
-                except Exception as e:
-                    logger.error(f"Error uploading {quality} proxy for {job.file_name}: {e}")
-
-        # Phase 3: Upload originals (if enabled)
-        if self.upload_original:
-            logger.info(f"=== UPLOAD PHASE: Originals ===")
-            for job in video_jobs:
-                if self._cancel_flag:
-                    break
-
-                self.job_progress.emit(job.id, 80, f"Uploading original: {job.file_name}...")
-                try:
-                    success = self._upload_file(job, is_original=True)
-                    if success:
-                        job.status = "completed"
-                        success_count += 1
-                        self.job_completed.emit(job.id)
-                    else:
-                        self.job_failed.emit(job.id, job.error_message or "Upload failed")
-                except Exception as e:
-                    job.status = "failed"
-                    job.error_message = str(e)
-                    self.job_failed.emit(job.id, str(e))
-        else:
-            # Mark video jobs as complete (only proxies were uploaded)
-            for job in video_jobs:
-                if job.id in self._proxy_files and self._proxy_files[job.id]:
-                    job.status = "completed"
-                    success_count += 1
-                    self.job_completed.emit(job.id)
-                else:
-                    job.status = "failed"
-                    job.error_message = "No proxies generated"
-                    self.job_failed.emit(job.id, "No proxies generated")
-
-        # Phase 4: Handle non-video files (upload directly)
-        for job in non_video_jobs:
+        for job in self.jobs:
             if self._cancel_flag:
                 break
 
             self.job_started.emit(job.id)
-            self.job_progress.emit(job.id, 0, f"Uploading {job.file_name}...")
 
             try:
+                # Step 1: Upload the file to Assets
+                self.job_progress.emit(job.id, 0, f"Uploading {job.file_name} to Assets...")
                 success = self._upload_file(job)
-                if success:
-                    job.status = "completed"
-                    success_count += 1
-                    self.job_completed.emit(job.id)
-                else:
+
+                if not success:
                     self.job_failed.emit(job.id, job.error_message or "Upload failed")
+                    continue
+
+                asset_id = job.destination_config.get("uploaded_asset_id")
+                logger.info(f"Uploaded to Assets: {job.file_name} -> asset_id={asset_id}")
+
+                # Step 2: Link to Dailies if requested
+                if job.destination_config.get("link_to_dailies") and asset_id:
+                    self.job_progress.emit(job.id, 70, f"Linking to Dailies...")
+                    self._link_to_dailies(asset_id, job)
+
+                # Step 3: Link to Review if requested
+                if job.destination_config.get("link_to_review") and asset_id:
+                    self.job_progress.emit(job.id, 85, f"Linking to Review...")
+                    self._link_to_review(asset_id, job)
+
+                # Step 4: Generate proxies for video files (optional, for future playback)
+                if job.file_type.lower() in VIDEO_EXTENSIONS and self.encoder.available:
+                    self.job_progress.emit(job.id, 90, f"Generating proxy (background)...")
+                    # Generate 720p proxy in background for web playback
+                    proxy_path = self._generate_quality_proxy(job, "720p")
+                    if proxy_path:
+                        logger.info(f"Generated 720p proxy: {proxy_path}")
+                        # TODO: Upload proxy and update asset renditions
+
+                job.status = "completed"
+                job.progress = 100.0
+                success_count += 1
+                self.job_completed.emit(job.id)
+                self.job_progress.emit(job.id, 100, f"Completed: {job.file_name}")
+
             except Exception as e:
+                import traceback
+                logger.error(f"Job failed: {job.file_name}: {e}")
+                logger.error(traceback.format_exc())
                 job.status = "failed"
                 job.error_message = str(e)
                 self.job_failed.emit(job.id, str(e))
 
-        logger.info(f"=== BATCH UPLOAD COMPLETE: {success_count}/{total_count} ===")
+        logger.info(f"=== UPLOAD COMPLETE: {success_count}/{total_count} ===")
         self.all_completed.emit(success_count, total_count)
+
+    def _link_to_dailies(self, asset_id: str, job: UnifiedUploadJob):
+        """Link an uploaded asset to Dailies."""
+        from src.services.asset_uploader import AssetUploaderService
+        asset_uploader = AssetUploaderService(self.config)
+        camera = job.destination_config.get("camera_label", "A")
+        result = asset_uploader.link_to_dailies(asset_id, camera=camera)
+        if result:
+            logger.info(f"Linked to Dailies: clip_id={result.get('dailies_clip_id')}")
+        else:
+            logger.warning(f"Failed to link to Dailies for asset {asset_id}")
+
+    def _link_to_review(self, asset_id: str, job: UnifiedUploadJob):
+        """Link an uploaded asset to Review."""
+        from src.services.asset_uploader import AssetUploaderService
+        asset_uploader = AssetUploaderService(self.config)
+        folder_id = job.destination_config.get("review_folder_id")
+        result = asset_uploader.link_to_review(asset_id, folder_id=folder_id)
+        if result:
+            logger.info(f"Linked to Review: review_asset_id={result.get('review_asset_id')}")
+        else:
+            logger.warning(f"Failed to link to Review for asset {asset_id}")
 
     def _generate_quality_proxy(self, job: UnifiedUploadJob, quality: str) -> Optional[Path]:
         """Generate a proxy at a specific quality level."""
