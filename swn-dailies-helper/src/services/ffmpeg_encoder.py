@@ -9,12 +9,15 @@ import subprocess
 import shutil
 import platform
 import json
+import logging
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from ..models.transcode_presets import TranscodeSettings
+
+logger = logging.getLogger("swn-helper")
 
 
 def get_ffmpeg_binary() -> Optional[Path]:
@@ -240,6 +243,8 @@ class FFmpegEncoder:
         self.ffmpeg_path = ffmpeg_path or self._find_ffmpeg()
         self.ffprobe_path = self._find_ffprobe()
         self.available = self.ffmpeg_path is not None
+        self.last_error = None  # Store last error for debugging
+        logger.info(f"FFmpegEncoder initialized: available={self.available}, path={self.ffmpeg_path}")
 
     def _find_ffmpeg(self) -> Optional[str]:
         """Find FFmpeg binary."""
@@ -362,6 +367,8 @@ class FFmpegEncoder:
             # Ensure output directory exists
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
+            logger.info(f"Running FFmpeg command: {' '.join(cmd)}")
+
             # Run FFmpeg
             process = subprocess.Popen(
                 cmd,
@@ -388,19 +395,28 @@ class FFmpegEncoder:
 
             # Check result
             return_code = process.wait()
+            stderr_output = process.stderr.read()
 
             if return_code == 0 and os.path.exists(output_path):
                 if progress_callback:
                     progress_callback(1.0)
+                logger.info(f"FFmpeg completed successfully: {output_path}")
                 return True
             else:
-                # Log error
-                stderr = process.stderr.read()
-                print(f"FFmpeg error: {stderr}")
+                # Log detailed error
+                self.last_error = f"FFmpeg exit code {return_code}: {stderr_output[:500]}"
+                logger.error(f"FFmpeg failed for {input_path}: {self.last_error}")
                 return False
 
+        except FileNotFoundError as e:
+            self.last_error = f"FFmpeg binary not found: {self.ffmpeg_path}"
+            logger.error(self.last_error)
+            return False
         except Exception as e:
-            print(f"Encoding failed: {e}")
+            import traceback
+            self.last_error = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Encoding failed for {input_path}: {self.last_error}")
+            logger.error(traceback.format_exc())
             return False
 
     def _get_duration(self, input_path: str) -> float:

@@ -146,13 +146,20 @@ class UploadWorker(QThread):
 
     def _generate_proxy(self, job: UnifiedUploadJob) -> Optional[Path]:
         """Generate a local proxy using FFmpeg."""
+        import traceback
+
         if not self.encoder.available:
-            logger.warning("FFmpeg not available, skipping proxy generation")
+            error_msg = f"FFmpeg not available at {self.encoder.ffmpeg_path}"
+            logger.error(error_msg)
+            job.error_message = error_msg
             return None
 
         input_path = str(job.file_path)
         output_name = f"{job.file_path.stem}_proxy.mp4"
         output_path = self.proxy_dir / output_name
+
+        logger.info(f"Generating proxy: {input_path} -> {output_path}")
+        logger.info(f"Proxy temp dir: {self.proxy_dir}, exists: {self.proxy_dir.exists()}")
 
         # Proxy settings - 1080p H.264
         settings = ProxySettings(
@@ -178,14 +185,19 @@ class UploadWorker(QThread):
             )
 
             if success and output_path.exists():
-                logger.info(f"Proxy generated: {output_path}")
+                logger.info(f"Proxy generated successfully: {output_path} ({output_path.stat().st_size} bytes)")
                 return output_path
             else:
-                logger.warning(f"Proxy generation failed for {job.file_name}")
+                error_msg = f"Proxy generation returned success={success}, output exists={output_path.exists()}"
+                logger.error(f"Proxy generation failed for {job.file_name}: {error_msg}")
+                # Don't fail the whole job, just skip proxy
                 return None
 
         except Exception as e:
-            logger.error(f"Proxy generation error: {e}")
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Proxy generation error for {job.file_name}: {error_detail}")
+            logger.error(traceback.format_exc())
+            # Don't fail the whole job, just skip proxy
             return None
 
     def _upload_file(self, job: UnifiedUploadJob) -> bool:
@@ -235,13 +247,18 @@ class UploadWorker(QThread):
                 return True
             else:
                 job.status = "failed"
-                job.error_message = upload_job.error or "Upload failed"
+                error_msg = upload_job.error or "Upload failed (no error details)"
+                job.error_message = f"{error_msg} [project={project_id}, day={day_id}]"
+                logger.error(f"Upload failed for {job.file_name}: {job.error_message}")
                 return False
 
         except Exception as e:
-            logger.error(f"Upload error: {e}")
+            import traceback
+            error_detail = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Upload error for {job.file_name}: {error_detail}")
+            logger.error(traceback.format_exc())
             job.status = "failed"
-            job.error_message = str(e)
+            job.error_message = error_detail
             return False
 
     def _upload_proxy(self, job: UnifiedUploadJob, proxy_path: Path):
