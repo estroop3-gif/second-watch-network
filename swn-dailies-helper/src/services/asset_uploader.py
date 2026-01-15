@@ -245,6 +245,31 @@ class AssetUploaderService:
             file_size = job.file_size
             uploaded = 0
 
+            logger.info(f"=== S3 UPLOAD START ===")
+            logger.info(f"File: {job.file_path}")
+            logger.info(f"Size: {file_size} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"Content-Type: {job.content_type}")
+
+            # Parse S3 bucket from URL
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(upload_url)
+                logger.info(f"S3 Host: {parsed.netloc}")
+                logger.info(f"S3 Path: {parsed.path[:100]}...")
+            except Exception as e:
+                logger.warning(f"Could not parse upload URL: {e}")
+
+            # Verify file exists and is readable
+            if not job.file_path.exists():
+                error_msg = f"File does not exist: {job.file_path}"
+                logger.error(error_msg)
+                job.error = error_msg
+                job.status = AssetUploadStatus.FAILED
+                return False
+
+            actual_size = job.file_path.stat().st_size
+            logger.info(f"Actual file size on disk: {actual_size} bytes")
+
             def progress_reader(file_obj):
                 nonlocal uploaded
                 while True:
@@ -254,11 +279,14 @@ class AssetUploaderService:
                     uploaded += len(chunk)
                     progress = (uploaded / file_size) * 100
                     job.progress = progress
-                    self._notify_progress(job_index, progress, f"Uploading {job.file_name}")
+                    self._notify_progress(job_index, progress, f"Uploading {job.file_name}: {progress:.1f}%")
+                    if uploaded % (self.CHUNK_SIZE * 4) == 0 or uploaded == file_size:
+                        logger.info(f"Upload progress: {uploaded}/{file_size} bytes ({progress:.1f}%)")
                     yield chunk
 
+            logger.info(f"Starting HTTP PUT to S3...")
             with open(job.file_path, "rb") as f:
-                with httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+                with httpx.Client(timeout=httpx.Timeout(600.0, connect=60.0)) as client:
                     response = client.put(
                         upload_url,
                         content=progress_reader(f),
@@ -267,15 +295,39 @@ class AssetUploaderService:
                             "Content-Length": str(file_size),
                         },
                     )
+
+                    logger.info(f"S3 Response Status: {response.status_code}")
+                    logger.info(f"S3 Response Headers: {dict(response.headers)}")
+
+                    if response.status_code >= 400:
+                        error_body = response.text[:500] if response.text else "No response body"
+                        logger.error(f"S3 Error Response: {error_body}")
+                        job.error = f"S3 returned {response.status_code}: {error_body}"
+                        job.status = AssetUploadStatus.FAILED
+                        return False
+
                     response.raise_for_status()
 
+            logger.info(f"=== S3 UPLOAD SUCCESS === Uploaded {uploaded} bytes")
             job.progress = 100.0
             return True
 
-        except Exception as e:
+        except httpx.TimeoutException as e:
             job.status = AssetUploadStatus.FAILED
-            job.error = str(e)
+            job.error = f"Upload timed out: {e}"
+            logger.error(f"Upload timed out for {job.file_name}: {e}")
+            return False
+        except httpx.HTTPStatusError as e:
+            job.status = AssetUploadStatus.FAILED
+            job.error = f"HTTP error {e.response.status_code}: {e.response.text[:200]}"
+            logger.error(f"HTTP error for {job.file_name}: {e}")
+            return False
+        except Exception as e:
+            import traceback
+            job.status = AssetUploadStatus.FAILED
+            job.error = f"{type(e).__name__}: {str(e)}"
             logger.error(f"Upload failed for {job.file_name}: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def upload_assets(
