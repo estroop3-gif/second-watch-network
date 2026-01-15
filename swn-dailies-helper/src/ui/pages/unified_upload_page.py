@@ -2405,11 +2405,21 @@ class UnifiedUploadPage(QWidget):
             self.progress_label.setText(f"⚠ Completed with errors: {success_count}/{total_count} uploaded")
             self.progress_label.setStyleSheet(f"color: {COLORS['orange']}; font-size: 12px;")
             self.progress_bar.setValue(100)
+
+            # Collect error messages from failed jobs
+            failed_jobs = [j for j in self.session.jobs if j.status == "failed"]
+            error_details = "\n".join(
+                f"• {j.file_name}: {j.error_message or 'Unknown error'}"
+                for j in failed_jobs[:5]  # Show max 5 errors
+            )
+            if len(failed_jobs) > 5:
+                error_details += f"\n... and {len(failed_jobs) - 5} more"
+
             QMessageBox.warning(
                 self,
                 "Upload Complete with Errors",
                 f"Uploaded {success_count}/{total_count} files.\n\n"
-                f"{total_count - success_count} file(s) failed to upload."
+                f"Failed uploads:\n{error_details}"
             )
 
         # Hide progress bar after 3 seconds
