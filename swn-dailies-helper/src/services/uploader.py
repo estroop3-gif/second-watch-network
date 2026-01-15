@@ -297,11 +297,15 @@ class UploaderService:
             card_id=card_id,
         )
 
+        logger.info(f"Presigned URL response: {upload_info}")
+
         upload_url = upload_info.get("upload_url")
-        job.s3_key = upload_info.get("key")
+        job.s3_key = upload_info.get("key") or upload_info.get("s3_key")
 
         if not upload_url:
-            raise PresignedUrlError("No upload URL returned")
+            raise PresignedUrlError(f"No upload URL returned. Response: {upload_info}")
+
+        logger.info(f"Uploading to S3 key: {job.s3_key}")
 
         # Upload with progress tracking
         self._notify_progress(job_index, 0, f"{retry_prefix}Uploading {job.file_name}...")
@@ -324,19 +328,32 @@ class UploaderService:
         progress_thread = threading.Thread(target=upload_progress, daemon=True)
         progress_thread.start()
 
-        with httpx.Client() as client:
-            response = client.put(
-                upload_url,
-                content=file_data,
-                headers={"Content-Type": job.content_type},
-                timeout=600.0,  # 10 minutes for large files
-            )
-            uploaded = total_size
+        try:
+            with httpx.Client() as client:
+                response = client.put(
+                    upload_url,
+                    content=file_data,
+                    headers={"Content-Type": job.content_type},
+                    timeout=600.0,  # 10 minutes for large files
+                )
+                uploaded = total_size
+        except httpx.TimeoutException as e:
+            raise FileUploadError(job.file_name, f"Upload timed out: {e}")
+        except httpx.ConnectError as e:
+            raise FileUploadError(job.file_name, f"Connection error during upload: {e}")
+        except Exception as e:
+            raise FileUploadError(job.file_name, f"Upload failed: {type(e).__name__}: {e}")
 
         progress_thread.join(timeout=1)
 
         if response.status_code not in (200, 204):
-            raise FileUploadError(job.file_name, f"S3 upload failed with status {response.status_code}")
+            # Try to get error details from response
+            error_body = ""
+            try:
+                error_body = response.text[:500]
+            except Exception:
+                pass
+            raise FileUploadError(job.file_name, f"S3 upload failed with status {response.status_code}: {error_body}")
 
         if self._cancel_flag:
             job.status = UploadStatus.CANCELLED
