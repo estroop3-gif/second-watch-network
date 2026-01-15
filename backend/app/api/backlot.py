@@ -814,6 +814,92 @@ async def update_donation_settings(
     }
 
 
+@router.patch("/projects/{project_id}/settings")
+async def update_project_settings(
+    project_id: str,
+    allow_original_playback: Optional[bool] = None,
+    authorization: str = Header(None)
+):
+    """
+    Update project settings (owner-only).
+
+    Settings:
+    - allow_original_playback: Allow users to access original quality files (default: false)
+    """
+    user = await get_user_from_token(authorization)
+    cognito_user_id = user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is project owner
+    project_result = client.table("backlot_projects").select(
+        "id, owner_id, settings"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    if project_result.data["owner_id"] != profile_id:
+        raise HTTPException(status_code=403, detail="Only project owner can update project settings")
+
+    # Get current settings
+    current_settings = project_result.data.get("settings") or {}
+
+    # Build updated settings
+    updated_settings = dict(current_settings)
+    if allow_original_playback is not None:
+        updated_settings["allow_original_playback"] = allow_original_playback
+
+    # Update project
+    result = client.table("backlot_projects").update({
+        "settings": updated_settings
+    }).eq("id", project_id).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to update settings")
+
+    return {
+        "settings": result.data[0].get("settings", {}),
+    }
+
+
+@router.get("/projects/{project_id}/settings")
+async def get_project_settings(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get project settings.
+    """
+    user = await get_user_from_token(authorization)
+    cognito_user_id = user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    client = get_client()
+
+    # Get project settings
+    project_result = client.table("backlot_projects").select(
+        "id, settings"
+    ).eq("id", project_id).single().execute()
+
+    if not project_result.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    settings = project_result.data.get("settings") or {}
+
+    return {
+        "settings": settings,
+        "allow_original_playback": settings.get("allow_original_playback", False),
+    }
+
+
 # =====================================================
 # COLLAB FORM SEARCH ENDPOINTS (must come before /projects/{project_id})
 # =====================================================
@@ -30326,6 +30412,95 @@ async def get_dailies_clip_stream_url(
         raise
     except Exception as e:
         print(f"Error generating stream URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dailies/clips/{clip_id}/stream-urls")
+async def get_dailies_clip_stream_urls(
+    clip_id: str,
+    authorization: str = Header(None)
+):
+    """Get presigned URLs for all available qualities of a dailies clip.
+
+    Returns URLs for adaptive playback quality selection.
+    Original quality is only included if project settings allow it.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        clip_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, file_path, cloud_url, renditions"
+        ).eq("id", clip_id).single().execute()
+
+        if not clip_result.data:
+            raise HTTPException(status_code=404, detail="Clip not found")
+
+        clip = clip_result.data
+        await verify_project_access(client, clip["project_id"], user["id"])
+
+        # Get project settings to check if original is allowed
+        project_result = client.table("backlot_projects").select(
+            "settings"
+        ).eq("id", clip["project_id"]).single().execute()
+
+        project_settings = project_result.data.get("settings") or {} if project_result.data else {}
+        allow_original = project_settings.get("allow_original_playback", False)
+
+        import boto3
+        s3_client = boto3.client('s3', region_name='us-east-1')
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        # Get original S3 key
+        original_s3_key = clip.get("file_path") or ""
+        if not original_s3_key and clip.get("cloud_url"):
+            cloud_url = clip["cloud_url"]
+            if f"{bucket_name}.s3" in cloud_url:
+                original_s3_key = cloud_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
+            elif "s3.amazonaws.com" in cloud_url:
+                original_s3_key = cloud_url.split(f"s3.us-east-1.amazonaws.com/{bucket_name}/")[-1]
+
+        renditions = clip.get("renditions") or {}
+        qualities = {}
+
+        # Generate URLs for each available quality
+        for quality in ["720p", "1080p", "4k"]:
+            quality_key = renditions.get(quality)
+            if quality_key:
+                try:
+                    s3_client.head_object(Bucket=bucket_name, Key=quality_key)
+                    qualities[quality] = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={'Bucket': bucket_name, 'Key': quality_key},
+                        ExpiresIn=3600,
+                    )
+                except:
+                    pass
+
+        # Include original only if project allows
+        if allow_original and original_s3_key:
+            try:
+                s3_client.head_object(Bucket=bucket_name, Key=original_s3_key)
+                qualities["original"] = s3_client.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': bucket_name, 'Key': original_s3_key},
+                    ExpiresIn=3600,
+                )
+            except:
+                pass
+
+        return {
+            "clip_id": clip_id,
+            "qualities": qualities,
+            "available": list(qualities.keys()),
+            "allow_original": allow_original,
+            "expires_in": 3600,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating stream URLs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

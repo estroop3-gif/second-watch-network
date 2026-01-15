@@ -21,7 +21,7 @@ from PyQt6.QtGui import QColor
 from src.services.config import ConfigManager
 from src.services.rclone_service import RcloneService, RcloneConfig, UploadProgress
 from src.services.uploader import UploaderService, UploadJob, UploadStatus
-from src.services.ffmpeg_encoder import FFmpegEncoder, ProxySettings
+from src.services.ffmpeg_encoder import FFmpegEncoder, ProxySettings, get_qualities_for_source, QUALITY_PRESETS
 from src.services.project_api import ProjectAPIService
 from src.models.upload_models import (
     UnifiedUploadJob, UploadSession, detect_destination,
@@ -55,12 +55,14 @@ class UploadWorker(QThread):
         jobs: List[UnifiedUploadJob],
         verify_checksums: bool = True,
         parallel_uploads: int = 3,
+        upload_original: bool = False,
     ):
         super().__init__()
         self.config = config
         self.jobs = jobs
         self.verify_checksums = verify_checksums
         self.parallel_uploads = parallel_uploads
+        self.upload_original = upload_original
         self._cancel_flag = False
 
         # Services
@@ -71,40 +73,248 @@ class UploadWorker(QThread):
         self.proxy_dir = Path(tempfile.gettempdir()) / "swn-proxies"
         self.proxy_dir.mkdir(parents=True, exist_ok=True)
 
+        # Track generated proxy files per job: {job_id: {"720p": path, "1080p": path, "4k": path}}
+        self._proxy_files: Dict[str, Dict[str, Path]] = {}
+
     def cancel(self):
         """Request cancellation of the upload."""
         self._cancel_flag = True
         self.uploader.cancel()
 
     def run(self):
-        """Main worker loop - process all jobs."""
+        """
+        Main worker loop - batch process by quality level.
+
+        New workflow:
+        1. Analyze all jobs to determine which qualities each needs
+        2. Transcode phase: Generate all 720p first, then 1080p, then 4K
+        3. Upload phase: Upload all 720p first, then 1080p, then 4K
+        4. Upload originals (if enabled)
+        """
         success_count = 0
         total_count = len(self.jobs)
 
-        for job in self.jobs:
+        # Filter to only video files that need proxies
+        video_jobs = [j for j in self.jobs if j.file_type.lower() in VIDEO_EXTENSIONS]
+        non_video_jobs = [j for j in self.jobs if j.file_type.lower() not in VIDEO_EXTENSIONS]
+
+        logger.info(f"=== BATCH UPLOAD START ===")
+        logger.info(f"Total jobs: {total_count}, Video: {len(video_jobs)}, Non-video: {len(non_video_jobs)}")
+
+        # Determine quality tiers needed per job
+        job_qualities: Dict[str, List[str]] = {}
+        for job in video_jobs:
+            width, height = self.encoder.get_video_resolution(str(job.file_path))
+            qualities = get_qualities_for_source(width, height)
+            job_qualities[job.id] = qualities
+            self._proxy_files[job.id] = {}
+            logger.info(f"Job {job.file_name}: {width}x{height} -> qualities: {qualities}")
+
+        # Phase 1: Transcode all videos by quality tier (720p first, then 1080p, then 4k)
+        quality_order = ["720p", "1080p", "4k"]
+
+        for quality in quality_order:
             if self._cancel_flag:
                 break
 
-            try:
-                self.job_started.emit(job.id)
-                self._process_job(job)
+            # Find jobs that need this quality
+            jobs_needing_quality = [
+                j for j in video_jobs
+                if quality in job_qualities.get(j.id, [])
+            ]
 
-                if job.status == "completed":
+            if not jobs_needing_quality:
+                continue
+
+            logger.info(f"=== TRANSCODE PHASE: {quality} ({len(jobs_needing_quality)} files) ===")
+
+            for job in jobs_needing_quality:
+                if self._cancel_flag:
+                    break
+
+                self.job_started.emit(job.id)
+                self.job_progress.emit(job.id, 0, f"Generating {quality} proxy for {job.file_name}...")
+
+                try:
+                    proxy_path = self._generate_quality_proxy(job, quality)
+                    if proxy_path:
+                        self._proxy_files[job.id][quality] = proxy_path
+                        logger.info(f"Generated {quality} proxy: {proxy_path}")
+                    else:
+                        logger.warning(f"Failed to generate {quality} proxy for {job.file_name}")
+                except Exception as e:
+                    logger.error(f"Error generating {quality} proxy for {job.file_name}: {e}")
+
+        # Phase 2: Upload all proxies by quality tier (720p first, then 1080p, then 4k)
+        for quality in quality_order:
+            if self._cancel_flag:
+                break
+
+            # Find jobs with this quality proxy ready
+            jobs_with_quality = [
+                j for j in video_jobs
+                if quality in self._proxy_files.get(j.id, {})
+            ]
+
+            if not jobs_with_quality:
+                continue
+
+            logger.info(f"=== UPLOAD PHASE: {quality} ({len(jobs_with_quality)} files) ===")
+
+            for job in jobs_with_quality:
+                if self._cancel_flag:
+                    break
+
+                proxy_path = self._proxy_files[job.id][quality]
+                self.job_progress.emit(job.id, 50, f"Uploading {quality} proxy for {job.file_name}...")
+
+                try:
+                    success = self._upload_proxy_file(job, proxy_path, quality)
+                    if success:
+                        logger.info(f"Uploaded {quality} proxy for {job.file_name}")
+                except Exception as e:
+                    logger.error(f"Error uploading {quality} proxy for {job.file_name}: {e}")
+
+        # Phase 3: Upload originals (if enabled)
+        if self.upload_original:
+            logger.info(f"=== UPLOAD PHASE: Originals ===")
+            for job in video_jobs:
+                if self._cancel_flag:
+                    break
+
+                self.job_progress.emit(job.id, 80, f"Uploading original: {job.file_name}...")
+                try:
+                    success = self._upload_file(job, is_original=True)
+                    if success:
+                        job.status = "completed"
+                        success_count += 1
+                        self.job_completed.emit(job.id)
+                    else:
+                        self.job_failed.emit(job.id, job.error_message or "Upload failed")
+                except Exception as e:
+                    job.status = "failed"
+                    job.error_message = str(e)
+                    self.job_failed.emit(job.id, str(e))
+        else:
+            # Mark video jobs as complete (only proxies were uploaded)
+            for job in video_jobs:
+                if job.id in self._proxy_files and self._proxy_files[job.id]:
+                    job.status = "completed"
                     success_count += 1
                     self.job_completed.emit(job.id)
                 else:
-                    self.job_failed.emit(job.id, job.error_message or "Unknown error")
+                    job.status = "failed"
+                    job.error_message = "No proxies generated"
+                    self.job_failed.emit(job.id, "No proxies generated")
 
+        # Phase 4: Handle non-video files (upload directly)
+        for job in non_video_jobs:
+            if self._cancel_flag:
+                break
+
+            self.job_started.emit(job.id)
+            self.job_progress.emit(job.id, 0, f"Uploading {job.file_name}...")
+
+            try:
+                success = self._upload_file(job)
+                if success:
+                    job.status = "completed"
+                    success_count += 1
+                    self.job_completed.emit(job.id)
+                else:
+                    self.job_failed.emit(job.id, job.error_message or "Upload failed")
             except Exception as e:
-                logger.error(f"Job failed: {job.file_name}: {e}")
                 job.status = "failed"
                 job.error_message = str(e)
                 self.job_failed.emit(job.id, str(e))
 
+        logger.info(f"=== BATCH UPLOAD COMPLETE: {success_count}/{total_count} ===")
         self.all_completed.emit(success_count, total_count)
 
+    def _generate_quality_proxy(self, job: UnifiedUploadJob, quality: str) -> Optional[Path]:
+        """Generate a proxy at a specific quality level."""
+        if not self.encoder.available:
+            logger.error("FFmpeg not available")
+            return None
+
+        output_path = self.encoder.generate_quality_proxy(
+            input_path=str(job.file_path),
+            output_dir=str(self.proxy_dir),
+            quality=quality,
+            progress_callback=lambda p: self.job_progress.emit(
+                job.id, p * 30, f"Generating {quality}: {int(p * 100)}%"
+            ),
+        )
+
+        if output_path:
+            return Path(output_path)
+        return None
+
+    def _upload_proxy_file(self, job: UnifiedUploadJob, proxy_path: Path, quality: str) -> bool:
+        """Upload a proxy file and register it as a rendition."""
+        from src.services.asset_uploader import AssetUploaderService, AssetUploadJob
+
+        project_id = job.destination_config.get("project_id") or self.config.get_project_id()
+        if not project_id:
+            logger.error("No project ID for proxy upload")
+            return False
+
+        folder_id = job.destination_config.get("folder_id")
+        asset_uploader = AssetUploaderService(self.config)
+
+        # Get presigned URL for this rendition
+        logger.info(f"Uploading {quality} rendition for {job.file_name}...")
+        upload_data = asset_uploader.get_upload_url(
+            project_id=project_id,
+            filename=proxy_path.name,
+            content_type="video/mp4",
+            asset_type="video",
+            folder_id=folder_id,
+            name=f"{job.file_path.stem} ({quality})",
+        )
+
+        if not upload_data:
+            logger.error(f"Failed to get upload URL for {quality} proxy")
+            return False
+
+        upload_url = upload_data.get("upload_url")
+        asset_id = upload_data.get("asset_id")
+
+        # Create asset upload job
+        asset_job = AssetUploadJob(
+            file_path=proxy_path,
+            file_name=proxy_path.name,
+            file_size=proxy_path.stat().st_size,
+            content_type="video/mp4",
+            asset_type="video",
+        )
+
+        # Upload
+        success = asset_uploader.upload_file(asset_job, upload_url, 0)
+
+        if success and asset_id:
+            asset_uploader.complete_upload(asset_id, proxy_path.stat().st_size)
+
+            # Link to Dailies if requested
+            if job.destination_config.get("link_to_dailies"):
+                asset_uploader.link_to_dailies(
+                    asset_id=asset_id,
+                    camera=job.destination_config.get("camera_label", "A"),
+                )
+
+            # Link to Review if requested
+            if job.destination_config.get("link_to_review"):
+                asset_uploader.link_to_review(
+                    asset_id=asset_id,
+                    folder_id=job.destination_config.get("review_folder_id"),
+                )
+
+            return True
+
+        return False
+
     def _process_job(self, job: UnifiedUploadJob):
-        """Process a single upload job."""
+        """Legacy: Process a single upload job (for non-batch cases)."""
         logger.info(f"Processing job: {job.file_name} -> {job.destination}")
 
         # Check if we need to generate proxy (video files going to dailies)
@@ -200,8 +410,8 @@ class UploadWorker(QThread):
             # Don't fail the whole job, just skip proxy
             return None
 
-    def _upload_file(self, job: UnifiedUploadJob) -> bool:
-        """Upload the original file to S3."""
+    def _upload_file(self, job: UnifiedUploadJob, is_original: bool = False) -> bool:
+        """Upload the file to S3. If is_original=True, marks it as original quality."""
         project_id = job.destination_config.get("project_id")
         if not project_id:
             project_id = self.config.get_project_id()
@@ -2038,6 +2248,18 @@ class UploadOptionsPanel(QWidget):
         self.resume_check.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 11px;")
         layout.addWidget(self.resume_check)
 
+        layout.addSpacing(8)
+
+        # Upload original file checkbox (off by default for bandwidth savings)
+        self.upload_original_check = QCheckBox("Upload original")
+        self.upload_original_check.setChecked(False)
+        self.upload_original_check.setToolTip(
+            "Upload the original source file in addition to optimized proxies.\n"
+            "Note: Project owner must enable 'Allow Original Quality' in project settings."
+        )
+        self.upload_original_check.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 11px;")
+        layout.addWidget(self.upload_original_check)
+
         # Hidden but kept for API compatibility
         self.auto_upload_combo = QComboBox()
         self.auto_upload_combo.addItems([
@@ -2052,6 +2274,7 @@ class UploadOptionsPanel(QWidget):
             "parallel": self.parallel_spin.value(),
             "verify_checksums": self.verify_check.isChecked(),
             "resume_failed": self.resume_check.isChecked(),
+            "upload_original": self.upload_original_check.isChecked(),
             "auto_upload_mode": self.auto_upload_combo.currentIndex(),
         }
 
@@ -2512,12 +2735,19 @@ class UnifiedUploadPage(QWidget):
             })
             logger.info(f"Job {job.file_name}: destination='assets', folder={assets_folder_id}, link_dailies={link_to_dailies}, link_review={link_to_review}")
 
+        # Get upload options
+        upload_options = self.options_panel.get_options()
+        upload_original = upload_options.get("upload_original", False)
+
+        logger.info(f"Upload original: {upload_original}")
+
         # Create and start upload worker
         self._upload_worker = UploadWorker(
             config=self.config,
             jobs=jobs,
             verify_checksums=self.session.verify_checksums,
             parallel_uploads=self.session.parallel_uploads,
+            upload_original=upload_original,
         )
 
         # Connect worker signals

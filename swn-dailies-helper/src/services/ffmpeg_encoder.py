@@ -227,6 +227,44 @@ RESOLUTION_PRESETS = {
     "4k": (3840, 2160),
 }
 
+# Quality presets for proxy-first upload workflow (H264)
+QUALITY_PRESETS = {
+    "720p": {
+        "resolution": "720p",
+        "bitrate": "2.5M",
+        "codec": "h264",
+    },
+    "1080p": {
+        "resolution": "1080p",
+        "bitrate": "5M",
+        "codec": "h264",
+    },
+    "4k": {
+        "resolution": "4k",
+        "bitrate": "15M",
+        "codec": "h264",
+    },
+}
+
+
+def get_qualities_for_source(width: int, height: int) -> list[str]:
+    """
+    Determine which quality tiers to generate based on source resolution.
+
+    Args:
+        width: Source video width
+        height: Source video height
+
+    Returns:
+        List of quality tier names to generate (e.g., ["720p", "1080p", "4k"])
+    """
+    if width >= 3840 or height >= 2160:
+        return ["720p", "1080p", "4k"]
+    elif width >= 1920 or height >= 1080:
+        return ["720p", "1080p"]
+    else:
+        return ["720p"]
+
 
 class FFmpegEncoder:
     """
@@ -322,6 +360,26 @@ class FFmpegEncoder:
             pass
 
         return {}
+
+    def get_video_resolution(self, input_path: str) -> tuple[int, int]:
+        """
+        Get video resolution (width, height) for a file.
+
+        Args:
+            input_path: Path to the video file
+
+        Returns:
+            Tuple of (width, height). Defaults to (1920, 1080) if detection fails.
+        """
+        info = self.get_media_info(input_path)
+
+        for stream in info.get("streams", []):
+            if stream.get("codec_type") == "video":
+                width = stream.get("width", 1920)
+                height = stream.get("height", 1080)
+                return (width, height)
+
+        return (1920, 1080)  # Default fallback
 
     def generate_proxy(
         self,
@@ -912,6 +970,110 @@ class FFmpegEncoder:
         except Exception as e:
             print(f"Audio extraction failed: {e}")
             return False
+
+    def generate_quality_proxy(
+        self,
+        input_path: str,
+        output_dir: str,
+        quality: str,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> Optional[str]:
+        """
+        Generate a proxy at a specific quality level (720p, 1080p, 4k).
+
+        Args:
+            input_path: Path to source video file
+            output_dir: Directory for output file
+            quality: Quality tier ("720p", "1080p", "4k")
+            progress_callback: Optional callback with progress (0.0-1.0)
+
+        Returns:
+            Path to output file if successful, None otherwise
+        """
+        if not self.ffmpeg_path:
+            logger.error("FFmpeg not available - cannot generate proxy")
+            return None
+
+        preset = QUALITY_PRESETS.get(quality)
+        if not preset:
+            logger.error(f"Unknown quality preset: {quality}")
+            return None
+
+        # Get resolution
+        width, height = RESOLUTION_PRESETS.get(preset["resolution"], (1920, 1080))
+
+        # Build output path
+        input_name = Path(input_path).stem
+        output_name = f"{input_name}_{quality}.mp4"
+        output_path = str(Path(output_dir) / output_name)
+
+        # Get duration for progress
+        duration = self._get_duration(input_path)
+
+        # Build FFmpeg command for H264 proxy
+        cmd = [
+            self.ffmpeg_path,
+            "-y",  # Overwrite output
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-b:v", preset["bitrate"],
+            "-pix_fmt", "yuv420p",
+            "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",  # Web-optimized
+            "-progress", "pipe:1",
+            output_path
+        ]
+
+        try:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            logger.info(f"Generating {quality} proxy: {input_path} -> {output_path}")
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+
+            # Parse progress output
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+
+                if line.startswith("out_time_ms="):
+                    try:
+                        time_ms = int(line.split("=")[1])
+                        time_sec = time_ms / 1_000_000
+                        if duration > 0 and progress_callback:
+                            progress = min(time_sec / duration, 1.0)
+                            progress_callback(progress)
+                    except (ValueError, IndexError):
+                        pass
+
+            return_code = process.wait()
+
+            if return_code == 0 and os.path.exists(output_path):
+                if progress_callback:
+                    progress_callback(1.0)
+                logger.info(f"Generated {quality} proxy: {output_path}")
+                return output_path
+            else:
+                stderr = process.stderr.read()
+                self.last_error = f"FFmpeg exit code {return_code}: {stderr[:500]}"
+                logger.error(f"FFmpeg failed for {input_path}: {self.last_error}")
+                return None
+
+        except Exception as e:
+            import traceback
+            self.last_error = f"{type(e).__name__}: {str(e)}"
+            logger.error(f"Quality proxy generation failed: {self.last_error}")
+            logger.error(traceback.format_exc())
+            return None
 
     def build_burnin_filter(
         self,
