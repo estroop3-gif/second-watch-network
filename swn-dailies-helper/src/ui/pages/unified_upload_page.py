@@ -1581,39 +1581,19 @@ class DestinationSettingsPanel(QWidget):
         assets_container.addWidget(self.assets_btn)
         layout.addLayout(assets_container)
 
-        # Dailies destination (optional)
-        dailies_container = QHBoxLayout()
-        dailies_container.setSpacing(4)
+        # Dailies and Review destinations removed - all uploads go to Assets
+        # These could be re-added later when backend linking is implemented
         self.dailies_check = QCheckBox()
         self.dailies_check.setChecked(False)
-        self.dailies_check.setToolTip("Also add to Dailies")
-        self.dailies_check.stateChanged.connect(self._on_dailies_toggled)
-        dailies_container.addWidget(self.dailies_check)
-        self.dailies_btn = QPushButton("📦 Dailies")
-        self.dailies_btn.setMinimumHeight(32)
-        self.dailies_btn.setMinimumWidth(140)
-        self.dailies_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.dailies_btn.clicked.connect(lambda: self._open_settings_dialog("dailies"))
-        self.dailies_btn.setStyleSheet(self._get_compact_button_style(enabled=False))
-        dailies_container.addWidget(self.dailies_btn)
-        layout.addLayout(dailies_container)
+        self.dailies_check.setVisible(False)
+        self.dailies_btn = QPushButton()
+        self.dailies_btn.setVisible(False)
 
-        # Review destination (optional)
-        review_container = QHBoxLayout()
-        review_container.setSpacing(4)
         self.review_check = QCheckBox()
         self.review_check.setChecked(False)
-        self.review_check.setToolTip("Also add to Review")
-        self.review_check.stateChanged.connect(self._on_review_toggled)
-        review_container.addWidget(self.review_check)
-        self.review_btn = QPushButton("🎬 Review")
-        self.review_btn.setMinimumHeight(32)
-        self.review_btn.setMinimumWidth(140)
-        self.review_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.review_btn.clicked.connect(lambda: self._open_settings_dialog("review"))
-        self.review_btn.setStyleSheet(self._get_compact_button_style(enabled=False))
-        review_container.addWidget(self.review_btn)
-        layout.addLayout(review_container)
+        self.review_check.setVisible(False)
+        self.review_btn = QPushButton()
+        self.review_btn.setVisible(False)
 
         layout.addStretch()
 
@@ -2447,32 +2427,8 @@ class UnifiedUploadPage(QWidget):
             )
             return
 
-        # Get destination configs
-        dailies_config = self.dest_settings.get_dailies_config()
-        review_config = self.dest_settings.get_review_config()
+        # Get assets config (all uploads go to assets)
         assets_config = self.dest_settings.get_assets_config()
-
-        # Auto-create dailies folder if production day is selected but no folder exists
-        dailies_jobs = [j for j in jobs if j.destination == "dailies"]
-        if dailies_jobs:
-            prod_day_id = dailies_config.get("production_day_id")
-            dailies_day_id = dailies_config.get("dailies_day_id")
-
-            # If production day selected but no folder, create one
-            if prod_day_id and not dailies_day_id:
-                self.progress_label.setText("Creating dailies folder...")
-                try:
-                    result = self._project_api.create_dailies_day(
-                        project_id=project_id,
-                        production_day_id=prod_day_id
-                    )
-                    if result:
-                        dailies_day_id = result.get("id")
-                        dailies_config["dailies_day_id"] = dailies_day_id
-                        logger.info(f"Created dailies folder: {dailies_day_id}")
-                except Exception as e:
-                    logger.warning(f"Could not create dailies folder: {e}")
-                    # Continue anyway - upload without specific day
 
         # Create session
         self.session = UploadSession.create()
@@ -2489,50 +2445,23 @@ class UnifiedUploadPage(QWidget):
         self.progress_label.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 12px;")
         self.progress_bar.setValue(0)
 
-        # Determine primary destination based on user's settings
-        # Assets is always enabled as primary destination if a folder is selected
+        # All uploads go to Assets - single upload destination
         assets_folder_id = assets_config.get("folder_id")
-        dailies_enabled = self.dest_settings.dailies_check.isChecked()
-        review_enabled = self.dest_settings.review_check.isChecked()
 
-        logger.info(f"Upload settings: assets_folder={assets_folder_id}, dailies={dailies_enabled}, review={review_enabled}")
+        logger.info(f"Upload settings: assets_folder={assets_folder_id}")
 
-        # Apply destination configs to each job
+        # Apply destination configs to each job - ALL jobs go to assets
         for job in jobs:
             job.destination_config["project_id"] = project_id
 
-            # Override destination to assets if an asset folder is selected
-            # This ensures files go where the user configured, not auto-detection
-            if assets_folder_id:
-                job.destination = "assets"
-                logger.info(f"Job {job.file_name}: destination overridden to 'assets' (folder: {assets_folder_id})")
-            elif dailies_enabled:
-                job.destination = "dailies"
-                logger.info(f"Job {job.file_name}: destination set to 'dailies'")
-            elif review_enabled:
-                job.destination = "review"
-                logger.info(f"Job {job.file_name}: destination set to 'review'")
-            # else: keep auto-detected destination
-
-            if job.destination == "dailies":
-                job.destination_config.update({
-                    "production_day_id": dailies_config.get("production_day_id"),
-                    "dailies_day_id": dailies_config.get("dailies_day_id"),
-                    "camera_label": dailies_config.get("camera_label", "A"),
-                    "generate_proxy": dailies_config.get("generate_proxy", True),
-                })
-            elif job.destination == "review":
-                job.destination_config.update({
-                    "folder_id": review_config.get("folder_id"),
-                    "quality": review_config.get("quality", "high"),
-                    "generate_proxy": review_config.get("generate_proxy", False),
-                })
-            elif job.destination == "assets":
-                job.destination_config.update({
-                    "folder_id": assets_config.get("folder_id"),
-                    "tags": assets_config.get("tags", []),
-                    "generate_proxy": assets_config.get("generate_proxy", False),
-                })
+            # Force all jobs to assets destination
+            job.destination = "assets"
+            job.destination_config.update({
+                "folder_id": assets_folder_id,
+                "tags": assets_config.get("tags", []),
+                "generate_proxy": assets_config.get("generate_proxy", False),
+            })
+            logger.info(f"Job {job.file_name}: destination='assets', folder={assets_folder_id}")
 
         # Create and start upload worker
         self._upload_worker = UploadWorker(
