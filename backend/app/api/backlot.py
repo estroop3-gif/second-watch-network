@@ -26932,7 +26932,7 @@ async def verify_review_asset_access(
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review asset and return asset data"""
-    asset_response = client.table("backlot_review_assets").select("*, backlot_projects(*)").eq("id", asset_id).execute()
+    asset_response = client.table("backlot_review_assets").select("*").eq("id", asset_id).execute()
 
     if not asset_response.data:
         raise HTTPException(status_code=404, detail="Review asset not found")
@@ -26953,13 +26953,19 @@ async def verify_review_version_access(
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review version and return version data"""
-    version_response = client.table("backlot_review_versions").select("*, backlot_review_assets(project_id)").eq("id", version_id).execute()
+    version_response = client.table("backlot_review_versions").select("*").eq("id", version_id).execute()
 
     if not version_response.data:
         raise HTTPException(status_code=404, detail="Review version not found")
 
     version = version_response.data[0]
-    project_id = version["backlot_review_assets"]["project_id"]
+
+    # Get asset to find project_id
+    asset_response = client.table("backlot_review_assets").select("project_id").eq("id", version["asset_id"]).execute()
+    if not asset_response.data:
+        raise HTTPException(status_code=404, detail="Review asset not found")
+
+    project_id = asset_response.data[0]["project_id"]
 
     # Verify project access
     await verify_project_access(client, project_id, user_id, require_edit)
@@ -26974,15 +26980,26 @@ async def verify_review_note_access(
     require_edit: bool = False
 ) -> Dict[str, Any]:
     """Verify user has access to review note and return note data"""
-    note_response = client.table("backlot_review_notes").select(
-        "*, backlot_review_versions(asset_id, backlot_review_assets(project_id))"
-    ).eq("id", note_id).execute()
+    note_response = client.table("backlot_review_notes").select("*").eq("id", note_id).execute()
 
     if not note_response.data:
         raise HTTPException(status_code=404, detail="Review note not found")
 
     note = note_response.data[0]
-    project_id = note["backlot_review_versions"]["backlot_review_assets"]["project_id"]
+
+    # Get version to find asset_id
+    version_response = client.table("backlot_review_versions").select("asset_id").eq("id", note["version_id"]).execute()
+    if not version_response.data:
+        raise HTTPException(status_code=404, detail="Review version not found")
+
+    asset_id = version_response.data[0]["asset_id"]
+
+    # Get asset to find project_id
+    asset_response = client.table("backlot_review_assets").select("project_id").eq("id", asset_id).execute()
+    if not asset_response.data:
+        raise HTTPException(status_code=404, detail="Review asset not found")
+
+    project_id = asset_response.data[0]["project_id"]
 
     # Verify project access
     await verify_project_access(client, project_id, user_id, require_edit)
@@ -30293,13 +30310,33 @@ async def get_dailies_clip_stream_url(
 
         # Use file_path as the S3 key (original quality)
         original_s3_key = clip.get("file_path") or ""
+
+        # Handle case where file_path is a full URL instead of just the S3 key
+        if original_s3_key.startswith("https://"):
+            # Extract just the key from the URL
+            for bucket in ["swn-backlot-files-517220555400", "swn-backlot-517220555400"]:
+                if f"{bucket}.s3" in original_s3_key:
+                    # Handle both URL formats: bucket.s3.region.amazonaws.com/key or bucket.s3.amazonaws.com/key
+                    if f"{bucket}.s3.us-east-1.amazonaws.com/" in original_s3_key:
+                        original_s3_key = original_s3_key.split(f"{bucket}.s3.us-east-1.amazonaws.com/")[-1]
+                    elif f"{bucket}.s3.amazonaws.com/" in original_s3_key:
+                        original_s3_key = original_s3_key.split(f"{bucket}.s3.amazonaws.com/")[-1]
+                    break
+
         if not original_s3_key and clip.get("cloud_url"):
             # Extract key from cloud_url if file_path is empty
             cloud_url = clip["cloud_url"]
-            if f"{bucket_name}.s3" in cloud_url:
-                original_s3_key = cloud_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
-            elif "s3.amazonaws.com" in cloud_url:
-                original_s3_key = cloud_url.split(f"s3.us-east-1.amazonaws.com/{bucket_name}/")[-1]
+            for bucket in ["swn-backlot-files-517220555400", "swn-backlot-517220555400"]:
+                if f"{bucket}.s3" in cloud_url:
+                    if f"{bucket}.s3.us-east-1.amazonaws.com/" in cloud_url:
+                        original_s3_key = cloud_url.split(f"{bucket}.s3.us-east-1.amazonaws.com/")[-1]
+                    elif f"{bucket}.s3.amazonaws.com/" in cloud_url:
+                        original_s3_key = cloud_url.split(f"{bucket}.s3.amazonaws.com/")[-1]
+                    break
+
+        # Strip any query parameters from the key
+        if "?" in original_s3_key:
+            original_s3_key = original_s3_key.split("?")[0]
 
         if not original_s3_key:
             raise HTTPException(status_code=404, detail="Clip file path not found")
@@ -42860,14 +42897,17 @@ async def complete_review_upload_for_desktop(
         client = get_client()
 
         # Get version and verify access
-        version = client.table("backlot_review_versions").select(
-            "*, asset:backlot_review_assets(project_id)"
-        ).eq("id", version_id).single().execute()
+        version = client.table("backlot_review_versions").select("*").eq("id", version_id).single().execute()
 
         if not version.data:
             raise HTTPException(status_code=404, detail="Version not found")
 
-        project_id = version.data["asset"]["project_id"]
+        # Get asset to find project_id
+        asset = client.table("backlot_review_assets").select("project_id").eq("id", version.data["asset_id"]).single().execute()
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        project_id = asset.data["project_id"]
         await verify_desktop_key_and_project_access(x_api_key, project_id)
 
         # Update version with file info

@@ -85,12 +85,17 @@ class UploadWorker(QThread):
 
     def run(self):
         """
-        Main worker loop - upload files to Assets, then link to Dailies/Review.
+        Main worker loop - generate proxies FIRST, then upload.
 
-        Workflow:
-        1. Upload each file to Assets (standalone_assets table)
-        2. If video and proxies enabled: generate proxies locally, upload as separate assets
-        3. Link to Dailies/Review based on settings
+        Workflow for VIDEO files:
+        1. Generate proxy (720p) first
+        2. Upload the proxy as the main asset
+        3. Link to Dailies/Review
+        4. If upload_original enabled, upload original as well
+
+        Workflow for NON-VIDEO files:
+        1. Upload the file directly
+        2. Link to Dailies/Review
         """
         success_count = 0
         total_count = len(self.jobs)
@@ -103,67 +108,74 @@ class UploadWorker(QThread):
                 break
 
             self.job_started.emit(job.id)
+            is_video = job.file_type.lower() in VIDEO_EXTENSIONS
 
             try:
-                # Step 1: Upload the file to Assets
-                self.job_progress.emit(job.id, 0, f"Uploading {job.file_name} to Assets...")
-                success = self._upload_file(job)
+                asset_id = None
 
-                if not success:
-                    self.job_failed.emit(job.id, job.error_message or "Upload failed")
-                    continue
+                # VIDEO FILES: Generate proxy first, then upload proxy
+                if is_video and self.generate_proxies and self.encoder.available:
+                    logger.info(f"Video file detected: {job.file_name}, generating proxy first...")
 
-                asset_id = job.destination_config.get("uploaded_asset_id")
-                logger.info(f"Uploaded to Assets: {job.file_name} -> asset_id={asset_id}")
+                    # Step 1: Generate 720p proxy (primary playback quality)
+                    self.job_progress.emit(job.id, 5, f"Generating 720p proxy for {job.file_name}...")
+                    proxy_path = self._generate_quality_proxy(job, "720p")
 
-                # Step 2: Link to Dailies if requested
+                    if not proxy_path:
+                        logger.error(f"Failed to generate proxy for {job.file_name}")
+                        self.job_failed.emit(job.id, "Failed to generate proxy")
+                        continue
+
+                    logger.info(f"Generated 720p proxy: {proxy_path}")
+
+                    # Step 2: Upload the proxy as the main asset
+                    self.job_progress.emit(job.id, 40, f"Uploading proxy to Assets...")
+                    proxy_asset_id = self._upload_proxy_as_main_asset(job, proxy_path)
+
+                    if not proxy_asset_id:
+                        logger.error(f"Failed to upload proxy for {job.file_name}")
+                        self.job_failed.emit(job.id, "Failed to upload proxy")
+                        continue
+
+                    asset_id = proxy_asset_id
+                    logger.info(f"Uploaded proxy to Assets: {job.file_name} -> asset_id={asset_id}")
+
+                    # Clean up temp proxy file
+                    try:
+                        proxy_path.unlink()
+                    except Exception:
+                        pass
+
+                    # Step 3: Optionally upload original
+                    if self.upload_original:
+                        self.job_progress.emit(job.id, 70, f"Uploading original file...")
+                        original_success = self._upload_file(job)
+                        if original_success:
+                            logger.info(f"Also uploaded original: {job.file_name}")
+                        else:
+                            logger.warning(f"Failed to upload original (proxy was uploaded successfully)")
+
+                # NON-VIDEO FILES: Upload directly
+                else:
+                    self.job_progress.emit(job.id, 0, f"Uploading {job.file_name} to Assets...")
+                    success = self._upload_file(job)
+
+                    if not success:
+                        self.job_failed.emit(job.id, job.error_message or "Upload failed")
+                        continue
+
+                    asset_id = job.destination_config.get("uploaded_asset_id")
+                    logger.info(f"Uploaded to Assets: {job.file_name} -> asset_id={asset_id}")
+
+                # Step 4: Link to Dailies if requested
                 if job.destination_config.get("link_to_dailies") and asset_id:
-                    self.job_progress.emit(job.id, 70, f"Linking to Dailies...")
+                    self.job_progress.emit(job.id, 85, f"Linking to Dailies...")
                     self._link_to_dailies(asset_id, job)
 
-                # Step 3: Link to Review if requested
+                # Step 5: Link to Review if requested
                 if job.destination_config.get("link_to_review") and asset_id:
-                    self.job_progress.emit(job.id, 85, f"Linking to Review...")
+                    self.job_progress.emit(job.id, 90, f"Linking to Review...")
                     self._link_to_review(asset_id, job)
-
-                # Step 4: Generate and upload proxies for video files
-                if self.generate_proxies and job.file_type.lower() in VIDEO_EXTENSIONS and self.encoder.available:
-                    self.job_progress.emit(job.id, 70, f"Generating proxies...")
-
-                    # Determine which quality tiers to generate based on source resolution
-                    from src.services.ffmpeg_encoder import get_qualities_for_source
-                    width, height = self.encoder.get_video_resolution(str(job.file_path))
-                    qualities = get_qualities_for_source(width, height)
-                    logger.info(f"Source resolution: {width}x{height}, generating: {qualities}")
-
-                    # Generate and upload each quality tier
-                    renditions = {}
-                    for i, quality in enumerate(qualities):
-                        if self._cancel_flag:
-                            break
-
-                        progress_base = 70 + (i * 10)
-                        self.job_progress.emit(job.id, progress_base, f"Generating {quality} proxy...")
-
-                        proxy_path = self._generate_quality_proxy(job, quality)
-                        if proxy_path:
-                            logger.info(f"Generated {quality} proxy: {proxy_path}")
-
-                            # Upload the proxy
-                            self.job_progress.emit(job.id, progress_base + 5, f"Uploading {quality} proxy...")
-                            proxy_result = self._upload_proxy_file(job, proxy_path, quality)
-                            if proxy_result:
-                                renditions[quality] = proxy_result
-                                logger.info(f"Uploaded {quality} proxy: {proxy_result}")
-
-                    # Clean up temp proxy files
-                    for quality in qualities:
-                        job_proxy_files = self._proxy_files.get(job.id, {})
-                        if quality in job_proxy_files and job_proxy_files[quality].exists():
-                            try:
-                                job_proxy_files[quality].unlink()
-                            except Exception:
-                                pass
 
                 job.status = "completed"
                 job.progress = 100.0
@@ -285,6 +297,56 @@ class UploadWorker(QThread):
             return True
 
         return False
+
+    def _upload_proxy_as_main_asset(self, job: UnifiedUploadJob, proxy_path: Path) -> Optional[str]:
+        """Upload a proxy file as the main asset (using original file's name)."""
+        from src.services.asset_uploader import AssetUploaderService, AssetUploadJob
+
+        project_id = job.destination_config.get("project_id") or self.config.get_project_id()
+        if not project_id:
+            logger.error("No project ID for proxy upload")
+            return None
+
+        folder_id = job.destination_config.get("folder_id")
+        asset_uploader = AssetUploaderService(self.config)
+
+        # Get presigned URL - use original file name but upload proxy content
+        logger.info(f"Uploading proxy as main asset for {job.file_name}...")
+        upload_data = asset_uploader.get_upload_url(
+            project_id=project_id,
+            filename=job.file_name,  # Use original filename for display
+            content_type="video/mp4",
+            asset_type="video",
+            folder_id=folder_id,
+            name=job.file_path.stem,  # Original name without extension
+        )
+
+        if not upload_data:
+            logger.error(f"Failed to get upload URL for proxy")
+            return None
+
+        upload_url = upload_data.get("upload_url")
+        asset_id = upload_data.get("asset_id")
+
+        # Create asset upload job with proxy file but original name
+        asset_job = AssetUploadJob(
+            file_path=proxy_path,
+            file_name=job.file_name,  # Show original name
+            file_size=proxy_path.stat().st_size,
+            content_type="video/mp4",
+            asset_type="video",
+        )
+
+        # Upload the proxy file
+        success = asset_uploader.upload_file(asset_job, upload_url, 0)
+
+        if success and asset_id:
+            asset_uploader.complete_upload(asset_id, proxy_path.stat().st_size)
+            # Store the asset_id for linking
+            job.destination_config["uploaded_asset_id"] = asset_id
+            return asset_id
+
+        return None
 
     def _process_job(self, job: UnifiedUploadJob):
         """Legacy: Process a single upload job (for non-batch cases)."""
