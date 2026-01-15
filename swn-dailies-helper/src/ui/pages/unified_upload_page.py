@@ -56,6 +56,7 @@ class UploadWorker(QThread):
         verify_checksums: bool = True,
         parallel_uploads: int = 3,
         upload_original: bool = False,
+        generate_proxies: bool = True,
     ):
         super().__init__()
         self.config = config
@@ -63,6 +64,7 @@ class UploadWorker(QThread):
         self.verify_checksums = verify_checksums
         self.parallel_uploads = parallel_uploads
         self.upload_original = upload_original
+        self.generate_proxies = generate_proxies
         self._cancel_flag = False
 
         # Services
@@ -94,7 +96,7 @@ class UploadWorker(QThread):
         total_count = len(self.jobs)
 
         logger.info(f"=== UPLOAD START ===")
-        logger.info(f"Total jobs: {total_count}, Upload original: {self.upload_original}")
+        logger.info(f"Total jobs: {total_count}, Upload original: {self.upload_original}, Generate proxies: {self.generate_proxies}")
 
         for job in self.jobs:
             if self._cancel_flag:
@@ -124,14 +126,44 @@ class UploadWorker(QThread):
                     self.job_progress.emit(job.id, 85, f"Linking to Review...")
                     self._link_to_review(asset_id, job)
 
-                # Step 4: Generate proxies for video files (optional, for future playback)
-                if job.file_type.lower() in VIDEO_EXTENSIONS and self.encoder.available:
-                    self.job_progress.emit(job.id, 90, f"Generating proxy (background)...")
-                    # Generate 720p proxy in background for web playback
-                    proxy_path = self._generate_quality_proxy(job, "720p")
-                    if proxy_path:
-                        logger.info(f"Generated 720p proxy: {proxy_path}")
-                        # TODO: Upload proxy and update asset renditions
+                # Step 4: Generate and upload proxies for video files
+                if self.generate_proxies and job.file_type.lower() in VIDEO_EXTENSIONS and self.encoder.available:
+                    self.job_progress.emit(job.id, 70, f"Generating proxies...")
+
+                    # Determine which quality tiers to generate based on source resolution
+                    from src.services.ffmpeg_encoder import get_qualities_for_source
+                    width, height = self.encoder.get_video_resolution(str(job.file_path))
+                    qualities = get_qualities_for_source(width, height)
+                    logger.info(f"Source resolution: {width}x{height}, generating: {qualities}")
+
+                    # Generate and upload each quality tier
+                    renditions = {}
+                    for i, quality in enumerate(qualities):
+                        if self._cancel_flag:
+                            break
+
+                        progress_base = 70 + (i * 10)
+                        self.job_progress.emit(job.id, progress_base, f"Generating {quality} proxy...")
+
+                        proxy_path = self._generate_quality_proxy(job, quality)
+                        if proxy_path:
+                            logger.info(f"Generated {quality} proxy: {proxy_path}")
+
+                            # Upload the proxy
+                            self.job_progress.emit(job.id, progress_base + 5, f"Uploading {quality} proxy...")
+                            proxy_result = self._upload_proxy_file(job, proxy_path, quality)
+                            if proxy_result:
+                                renditions[quality] = proxy_result
+                                logger.info(f"Uploaded {quality} proxy: {proxy_result}")
+
+                    # Clean up temp proxy files
+                    for quality in qualities:
+                        job_proxy_files = self._proxy_files.get(job.id, {})
+                        if quality in job_proxy_files and job_proxy_files[quality].exists():
+                            try:
+                                job_proxy_files[quality].unlink()
+                            except Exception:
+                                pass
 
                 job.status = "completed"
                 job.progress = 100.0
@@ -2189,18 +2221,6 @@ class UploadOptionsPanel(QWidget):
         self.resume_check.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 11px;")
         layout.addWidget(self.resume_check)
 
-        layout.addSpacing(8)
-
-        # Upload original file checkbox (off by default for bandwidth savings)
-        self.upload_original_check = QCheckBox("Upload original")
-        self.upload_original_check.setChecked(False)
-        self.upload_original_check.setToolTip(
-            "Upload the original source file in addition to optimized proxies.\n"
-            "Note: Project owner must enable 'Allow Original Quality' in project settings."
-        )
-        self.upload_original_check.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 11px;")
-        layout.addWidget(self.upload_original_check)
-
         # Hidden but kept for API compatibility
         self.auto_upload_combo = QComboBox()
         self.auto_upload_combo.addItems([
@@ -2215,7 +2235,6 @@ class UploadOptionsPanel(QWidget):
             "parallel": self.parallel_spin.value(),
             "verify_checksums": self.verify_check.isChecked(),
             "resume_failed": self.resume_check.isChecked(),
-            "upload_original": self.upload_original_check.isChecked(),
             "auto_upload_mode": self.auto_upload_combo.currentIndex(),
         }
 
@@ -2678,9 +2697,13 @@ class UnifiedUploadPage(QWidget):
 
         # Get upload options
         upload_options = self.options_panel.get_options()
-        upload_original = upload_options.get("upload_original", False)
 
-        logger.info(f"Upload original: {upload_original}")
+        # Read upload settings from config (Settings tab)
+        upload_settings = self.config.get_upload_settings()
+        upload_original = upload_settings.get("upload_original", False)
+        generate_proxies = upload_settings.get("generate_proxies", True)
+
+        logger.info(f"Upload original: {upload_original}, Generate proxies: {generate_proxies}")
 
         # Create and start upload worker
         self._upload_worker = UploadWorker(
@@ -2689,6 +2712,7 @@ class UnifiedUploadPage(QWidget):
             verify_checksums=self.session.verify_checksums,
             parallel_uploads=self.session.parallel_uploads,
             upload_original=upload_original,
+            generate_proxies=generate_proxies,
         )
 
         # Connect worker signals

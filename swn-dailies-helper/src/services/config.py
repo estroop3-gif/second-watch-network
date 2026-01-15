@@ -231,6 +231,8 @@ class ConfigManager:
             "verify_checksum": True,
             "register_clips": True,
             "auto_upload_watch_folder": False,
+            "generate_proxies": True,  # Always generate proxies by default
+            "upload_original": False,  # Don't upload original by default
         })
 
     def set_upload_settings(self, settings: dict):

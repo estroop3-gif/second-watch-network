@@ -74,6 +74,10 @@ class SettingsPage(QWidget):
         proxy_card = self.create_proxy_settings()
         layout.addWidget(proxy_card)
 
+        # Upload Settings Card
+        upload_card = self.create_upload_settings()
+        layout.addWidget(upload_card)
+
         # Project Folders Card
         folders_card = self.create_project_folders_settings()
         layout.addWidget(folders_card)
@@ -228,6 +232,56 @@ class SettingsPage(QWidget):
         hint = QLabel(
             "Proxies are H.264 files optimized for web playback. "
             "Faster encoding uses more CPU but takes less time."
+        )
+        hint.setObjectName("label-small")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        return card
+
+    def create_upload_settings(self) -> QFrame:
+        """Create upload settings card."""
+        card = QFrame()
+        card.setObjectName("card")
+
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+
+        title = QLabel("Upload Settings")
+        title.setObjectName("card-title")
+        layout.addWidget(title)
+
+        # Load saved settings
+        upload_settings = self.config.get_upload_settings()
+
+        # Generate proxies checkbox
+        proxy_layout = QHBoxLayout()
+        self.generate_proxies_cb = QCheckBox("Generate proxies for video files")
+        self.generate_proxies_cb.setChecked(upload_settings.get("generate_proxies", True))
+        self.generate_proxies_cb.setToolTip(
+            "Always generate proxy versions (720p, 1080p, 4K) for video files. "
+            "Proxies are optimized for streaming playback."
+        )
+        proxy_layout.addWidget(self.generate_proxies_cb)
+        proxy_layout.addStretch()
+        layout.addLayout(proxy_layout)
+
+        # Upload original checkbox
+        original_layout = QHBoxLayout()
+        self.upload_original_cb = QCheckBox("Upload original file")
+        self.upload_original_cb.setChecked(upload_settings.get("upload_original", False))
+        self.upload_original_cb.setToolTip(
+            "Upload the original source file in addition to proxies. "
+            "Uses more bandwidth and storage but preserves full quality."
+        )
+        original_layout.addWidget(self.upload_original_cb)
+        original_layout.addStretch()
+        layout.addLayout(original_layout)
+
+        # Hint
+        hint = QLabel(
+            "Proxies are smaller, streamable versions of your videos. "
+            "Enable 'Upload original' only if you need full-quality source files in Backlot."
         )
         hint.setObjectName("label-small")
         hint.setWordWrap(True)
@@ -467,6 +521,8 @@ class SettingsPage(QWidget):
 
     def create_about_settings(self) -> QFrame:
         """Create about/licenses settings card."""
+        from src.version import __version__
+
         card = QFrame()
         card.setObjectName("card")
 
@@ -478,7 +534,7 @@ class SettingsPage(QWidget):
         layout.addWidget(title)
 
         # Version info
-        version_label = QLabel("SWN Dailies Helper v1.0.0")
+        version_label = QLabel(f"SWN Dailies Helper v{__version__}")
         layout.addWidget(version_label)
 
         # Description
@@ -604,6 +660,12 @@ class SettingsPage(QWidget):
             "lut_path": self.lut_path.text() if self.lut_enabled.isChecked() else "",
         }
         self.config.set_proxy_settings(settings)
+
+        # Save upload settings
+        current_upload = self.config.get_upload_settings()
+        current_upload["generate_proxies"] = self.generate_proxies_cb.isChecked()
+        current_upload["upload_original"] = self.upload_original_cb.isChecked()
+        self.config.set_upload_settings(current_upload)
 
         # Show confirmation
         QMessageBox.information(
