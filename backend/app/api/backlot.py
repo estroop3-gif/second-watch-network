@@ -42957,47 +42957,26 @@ async def link_asset_to_dailies(
         project_id = asset_data["project_id"]
         await verify_desktop_key_and_project_access(x_api_key, project_id)
 
-        # Get or create dailies day
-        day_id = request.get("day_id")
-        if not day_id:
-            # Create a default "Uploads" day if none specified
-            existing_day = client.table("backlot_dailies_days").select("id").eq(
-                "project_id", project_id
-            ).eq("title", "Desktop Uploads").execute()
-
-            if existing_day.data:
-                day_id = existing_day.data[0]["id"]
-            else:
-                new_day = client.table("backlot_dailies_days").insert({
-                    "project_id": project_id,
-                    "title": "Desktop Uploads",
-                    "date": datetime.now().date().isoformat(),
-                }).execute()
-                day_id = new_day.data[0]["id"]
-
         # Build S3 URL from key
         bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-files-517220555400")
         s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
 
-        # Create dailies clip entry
+        # Create dailies clip entry in backlot_dailies_clips
         clip_data = {
             "project_id": project_id,
-            "day_id": day_id,
             "file_name": asset_data["file_name"],
-            "clip_name": asset_data["name"],
-            "source_url": s3_url,
-            "source_file_size": asset_data.get("file_size_bytes"),
-            "storage_mode": "cloud",
             "cloud_url": s3_url,
-            "processing_status": "completed",  # Already processed
-            "camera": request.get("camera", "A"),
+            "storage_mode": "cloud",
+            "upload_status": "completed",
+            "camera_label": request.get("camera", "A"),
+            "file_size_bytes": asset_data.get("file_size_bytes"),
             "linked_standalone_asset_id": asset_id,
         }
 
         if asset_data.get("duration_seconds"):
-            clip_data["duration_seconds"] = int(asset_data["duration_seconds"])
+            clip_data["duration_seconds"] = float(asset_data["duration_seconds"])
 
-        result = client.table("backlot_dailies").insert(clip_data).execute()
+        result = client.table("backlot_dailies_clips").insert(clip_data).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create dailies link")
@@ -43005,7 +42984,6 @@ async def link_asset_to_dailies(
         return {
             "success": True,
             "dailies_clip_id": result.data[0]["id"],
-            "day_id": day_id,
         }
 
     except HTTPException:

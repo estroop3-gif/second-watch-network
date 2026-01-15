@@ -2,12 +2,12 @@
 -- Adds columns to link dailies and review entries back to standalone assets
 -- This enables the "upload once, link to multiple places" workflow
 
--- Add linked_standalone_asset_id to backlot_dailies
-ALTER TABLE backlot_dailies
+-- Add linked_standalone_asset_id to backlot_dailies_clips
+ALTER TABLE backlot_dailies_clips
   ADD COLUMN IF NOT EXISTS linked_standalone_asset_id UUID REFERENCES backlot_standalone_assets(id) ON DELETE SET NULL;
 
-CREATE INDEX IF NOT EXISTS idx_backlot_dailies_linked_asset
-  ON backlot_dailies(linked_standalone_asset_id)
+CREATE INDEX IF NOT EXISTS idx_backlot_dailies_clips_linked_asset
+  ON backlot_dailies_clips(linked_standalone_asset_id)
   WHERE linked_standalone_asset_id IS NOT NULL;
 
 -- Add linked_standalone_asset_id to backlot_review_assets
