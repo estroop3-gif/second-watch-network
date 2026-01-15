@@ -38,6 +38,7 @@ from PyQt6.QtGui import QFont
 
 from src.services.config import ConfigManager
 from src.services.proxy_queue import ProxyQueue, ProxyQueueItem, get_proxy_queue
+from src.services.proxy_transcoder import ProxyTranscoder
 from src.models.transcode_presets import (
     TranscodePreset,
     TranscodeSettings,
@@ -229,6 +230,7 @@ class OutputSettingsPanel(QFrame):
         preset_row.addWidget(preset_label)
 
         self.preset_combo = QComboBox()
+        self.preset_combo.setMaxVisibleItems(10)  # Make dropdown scrollable
         self.preset_combo.setStyleSheet(f"""
             QComboBox {{
                 background-color: {COLORS['charcoal-dark']};
@@ -1138,9 +1140,10 @@ class ProxyPage(QWidget):
         self.config = config
         self.preset_manager = PresetManager()
         self._queue: ProxyQueue = None
+        self._transcoder: ProxyTranscoder = None
         self.setup_ui()
 
-        # Connect to queue
+        # Connect to queue and transcoder
         self._connect_queue()
 
         # Update timer
@@ -1149,7 +1152,7 @@ class ProxyPage(QWidget):
         self.update_timer.start(500)  # Update every 500ms
 
     def _connect_queue(self):
-        """Connect to the proxy queue."""
+        """Connect to the proxy queue and transcoder."""
         try:
             self._queue = get_proxy_queue()
             self._queue.item_added.connect(self._on_item_added)
@@ -1159,6 +1162,9 @@ class ProxyPage(QWidget):
             self._queue.progress_updated.connect(self._on_progress_updated)
             self._queue.queue_started.connect(self._on_queue_started)
             self._queue.queue_stopped.connect(self._on_queue_stopped)
+
+            # Get or create the transcoder singleton
+            self._transcoder = ProxyTranscoder.get_instance(self.config)
         except Exception as e:
             print(f"Could not connect to proxy queue: {e}")
 
@@ -1409,22 +1415,28 @@ class ProxyPage(QWidget):
 
     def _start_queue(self):
         """Start processing the queue."""
-        if self._queue:
+        if self._transcoder:
+            # Set output directory before starting
             output_dir = Path(self.output_settings.get_output_folder())
-            self._queue.start(output_dir)
+            self._queue.output_dir = output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Start the transcoder (which also starts the queue)
+            self._transcoder.start()
 
     def _toggle_pause(self):
         """Toggle pause/resume."""
-        if self._queue:
+        if self._transcoder:
             if self._queue.is_paused:
-                output_dir = Path(self.output_settings.get_output_folder())
-                self._queue.start(output_dir)
+                self._transcoder.resume()
             else:
-                self._queue.pause()
+                self._transcoder.pause()
 
     def _cancel_current(self):
         """Cancel the current job."""
-        if self._queue:
+        if self._transcoder and self._transcoder._worker:
+            self._transcoder._worker.cancel_current()
+        elif self._queue:
             self._queue.cancel_current()
 
     def _clear_completed(self):
