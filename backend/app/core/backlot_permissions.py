@@ -689,19 +689,25 @@ async def get_effective_view_config(project_id: str, user_id: str) -> Dict[str, 
 
     Resolution order:
     1. If project owner -> full access
-    2. Get user's backlot role -> base config
-    3. Check for project-specific view profile -> merge
-    4. Check for user-specific overrides -> merge
+    2. Check org owner/admin of project's org -> full access
+    3. Check org collaborative access -> use org_project_access permissions
+    4. Check external seat (freelancer/client) -> use seat permissions
+    5. Get user's backlot role -> base config
+    6. Check for project-specific view profile -> merge
+    7. Check for user-specific overrides -> merge
 
     Returns config in format:
     {
         "role": "showrunner" | "producer" | etc,
         "is_owner": bool,
         "has_overrides": bool,
+        "access_type": "owner" | "org_admin" | "org_collaborative" | "external_seat" | "member",
         "tabs": { "tab_name": { "view": bool, "edit": bool }, ... },
         "sections": { "section_name": { "view": bool, "edit": bool }, ... }
     }
     """
+    client = get_client()
+
     # Check if owner
     if await is_project_owner(project_id, user_id):
         owner_config = DEFAULT_VIEW_CONFIGS["showrunner"].copy()
@@ -709,10 +715,71 @@ async def get_effective_view_config(project_id: str, user_id: str) -> Dict[str, 
             "role": "owner",
             "is_owner": True,
             "has_overrides": False,
+            "access_type": "owner",
             **owner_config,
         }
 
-    # Get user's role
+    # Check organization access
+    org_access = await get_org_project_access(project_id, user_id)
+    if org_access:
+        if org_access["role"] in ("owner", "admin"):
+            # Org owners/admins get full access to org projects
+            owner_config = DEFAULT_VIEW_CONFIGS["showrunner"].copy()
+            return {
+                "role": "org_admin",
+                "is_owner": False,
+                "has_overrides": False,
+                "access_type": "org_admin",
+                "organization_id": org_access["organization_id"],
+                **owner_config,
+            }
+        elif org_access["role"] == "collaborative":
+            # Collaborative members get their custom tab permissions
+            return {
+                "role": "collaborative",
+                "is_owner": False,
+                "has_overrides": True,
+                "access_type": "org_collaborative",
+                "organization_id": org_access["organization_id"],
+                "tabs": org_access.get("tab_permissions", {}),
+                "sections": {},
+            }
+
+    # Check external seat (freelancer/client)
+    external_seat = await get_external_seat_access(project_id, user_id)
+    if external_seat:
+        if external_seat["seat_type"] == "project":
+            # Freelancers get limited access based on their permissions
+            freelancer_tabs = {
+                "overview": {"view": True, "edit": False},
+                "timecards": {"view": external_seat.get("can_timecard", True), "edit": external_seat.get("can_timecard", True)},
+                "receipts": {"view": external_seat.get("can_expense", True), "edit": external_seat.get("can_expense", True)},
+            }
+            return {
+                "role": "freelancer",
+                "is_owner": False,
+                "has_overrides": True,
+                "access_type": "external_seat",
+                "seat_type": "project",
+                "tabs": freelancer_tabs,
+                "sections": {},
+            }
+        elif external_seat["seat_type"] == "view_only":
+            # Clients get custom tab visibility (view only)
+            client_tabs = {}
+            for tab, visible in (external_seat.get("tab_permissions") or {}).items():
+                client_tabs[tab] = {"view": visible, "edit": False}
+            return {
+                "role": "client",
+                "is_owner": False,
+                "has_overrides": True,
+                "access_type": "external_seat",
+                "seat_type": "view_only",
+                "tabs": client_tabs,
+                "sections": {},
+            }
+
+    # Get user's role (standard project member flow)
     backlot_role = await get_user_backlot_role(project_id, user_id)
     if not backlot_role:
         backlot_role = "crew"  # Default to crew if no role assigned
@@ -736,6 +803,7 @@ async def get_effective_view_config(project_id: str, user_id: str) -> Dict[str, 
         "role": backlot_role,
         "is_owner": False,
         "has_overrides": has_overrides,
+        "access_type": "member",
         **base_config,
     }
 
@@ -784,3 +852,195 @@ async def get_all_backlot_roles() -> List[str]:
 async def get_default_config_for_role(role: str) -> Dict[str, Any]:
     """Get the default view config for a specific role."""
     return DEFAULT_VIEW_CONFIGS.get(role, DEFAULT_VIEW_CONFIGS["crew"]).copy()
+
+
+# =============================================================================
+# Organization and External Seat Access
+# =============================================================================
+
+async def get_org_project_access(project_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Check if user has access to project through organization membership.
+
+    Returns organization access info if user is:
+    - Owner/admin of the org that owns this project
+    - Collaborative member with explicit project access
+
+    Returns None if no org access.
+    """
+    client = get_client()
+
+    # Get project's organization
+    project_resp = client.table("backlot_projects").select("organization_id").eq(
+        "id", project_id
+    ).limit(1).execute()
+
+    if not project_resp.data or not project_resp.data[0].get("organization_id"):
+        return None
+
+    org_id = project_resp.data[0]["organization_id"]
+
+    # Check if user is an org member
+    member_resp = client.table("organization_members").select("role, can_create_projects").eq(
+        "organization_id", org_id
+    ).eq("user_id", user_id).eq("status", "active").limit(1).execute()
+
+    if not member_resp.data:
+        return None
+
+    member = member_resp.data[0]
+    role = member["role"]
+
+    if role in ("owner", "admin"):
+        # Org owners/admins have full access to all org projects
+        return {
+            "organization_id": org_id,
+            "role": role,
+            "can_create_projects": True,
+        }
+    elif role == "collaborative":
+        # Collaborative members need explicit project access
+        access_resp = client.table("organization_project_access").select("tab_permissions").eq(
+            "organization_id", org_id
+        ).eq("user_id", user_id).eq("project_id", project_id).limit(1).execute()
+
+        if access_resp.data:
+            return {
+                "organization_id": org_id,
+                "role": role,
+                "can_create_projects": member.get("can_create_projects", False),
+                "tab_permissions": access_resp.data[0].get("tab_permissions") or {},
+            }
+
+    return None
+
+
+async def get_external_seat_access(project_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Check if user has an external seat (freelancer/client) on this project.
+
+    Returns seat info if found, None otherwise.
+    """
+    client = get_client()
+
+    seat_resp = client.table("backlot_project_external_seats").select("*").eq(
+        "project_id", project_id
+    ).eq("user_id", user_id).eq("status", "active").limit(1).execute()
+
+    if seat_resp.data:
+        return seat_resp.data[0]
+
+    return None
+
+
+async def has_backlot_access(user_id: str) -> Dict[str, Any]:
+    """
+    Check if user has Backlot access through any means.
+
+    Returns:
+    {
+        "has_access": bool,
+        "reason": "admin" | "subscription" | "organization_seat" | "no_access",
+        "organization_id": str or None,
+        "organization_name": str or None,
+        "role": str or None,
+        "can_create_projects": bool
+    }
+    """
+    from app.core.database import execute_single
+
+    # Check profile flags and subscription
+    profile = execute_single("""
+        SELECT id, is_admin, is_superadmin, backlot_subscription_status
+        FROM profiles WHERE id = :user_id
+    """, {"user_id": user_id})
+
+    if not profile:
+        return {"has_access": False, "reason": "no_profile"}
+
+    # Admins always have access
+    if profile.get("is_admin") or profile.get("is_superadmin"):
+        return {"has_access": True, "reason": "admin", "can_create_projects": True}
+
+    # Check individual subscription
+    if profile.get("backlot_subscription_status") in ["active", "trialing"]:
+        return {"has_access": True, "reason": "subscription", "can_create_projects": True}
+
+    # Check organization seat
+    org_seat = execute_single("""
+        SELECT
+            o.id as organization_id,
+            o.name as organization_name,
+            om.role,
+            om.can_create_projects
+        FROM organization_members om
+        JOIN organizations o ON om.organization_id = o.id
+        WHERE om.user_id = :user_id
+          AND om.status = 'active'
+          AND om.role IN ('owner', 'admin', 'collaborative')
+          AND o.backlot_enabled = TRUE
+          AND o.backlot_billing_status IN ('free', 'trial', 'active')
+        LIMIT 1
+    """, {"user_id": user_id})
+
+    if org_seat:
+        return {
+            "has_access": True,
+            "reason": "organization_seat",
+            "organization_id": org_seat["organization_id"],
+            "organization_name": org_seat["organization_name"],
+            "role": org_seat["role"],
+            "can_create_projects": org_seat["can_create_projects"] or org_seat["role"] in ("owner", "admin"),
+        }
+
+    return {"has_access": False, "reason": "no_access", "can_create_projects": False}
+
+
+async def transfer_work_on_removal(project_id: str, removed_user_id: str, new_owner_id: str = None) -> Dict[str, int]:
+    """
+    Transfer work items from a removed user to the project owner (or specified user).
+
+    Transfers:
+    - Timecards
+    - Expenses/receipts
+    - Invoices created by user
+
+    Returns counts of transferred items.
+    """
+    from app.core.database import execute_update, execute_single
+
+    # Get project owner if no new owner specified
+    if not new_owner_id:
+        project = execute_single(
+            "SELECT owner_id FROM backlot_projects WHERE id = :project_id",
+            {"project_id": project_id}
+        )
+        new_owner_id = project["owner_id"] if project else None
+
+    if not new_owner_id:
+        return {"error": "No owner found for work transfer"}
+
+    transferred = {
+        "timecards": 0,
+        "receipts": 0,
+        "invoices": 0,
+    }
+
+    # Transfer timecards
+    result = execute_update("""
+        UPDATE backlot_timecards
+        SET notes = COALESCE(notes, '') || ' [Transferred from departed team member]'
+        WHERE project_id = :project_id AND user_id = :removed_user_id
+        RETURNING id
+    """, {"project_id": project_id, "removed_user_id": removed_user_id})
+    # Note: We don't change user_id as timecards should stay attributed to original worker
+
+    # Transfer receipt/expense ownership
+    result = execute_update("""
+        UPDATE backlot_receipt_entries
+        SET notes = COALESCE(notes, '') || ' [Transferred from departed team member]'
+        WHERE project_id = :project_id AND submitted_by = :removed_user_id
+        RETURNING id
+    """, {"project_id": project_id, "removed_user_id": removed_user_id})
+
+    return transferred

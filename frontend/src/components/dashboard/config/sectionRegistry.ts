@@ -39,6 +39,7 @@ export const SECTION_COMPONENTS: SectionRegistry = {
   'creator-dailies': lazy(() => import('../sections/creator/DailiesWidget')),
   'creator-casting': lazy(() => import('../sections/creator/CastingWidget')),
   'creator-budget': lazy(() => import('../sections/creator/BudgetWidget')),
+  'creator-organizations': lazy(() => import('../sections/creator/OrganizationsWidget')),
 
   // Social sections
   'friends-activity': lazy(() => import('../sections/social/FriendsActivityWidget')),

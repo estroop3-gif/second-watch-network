@@ -123,7 +123,8 @@ async def check_backlot_access(user=Depends(get_current_user)):
     Returns True if:
     - Stripe backlot prices not configured (dev mode), OR
     - User has active backlot subscription, OR
-    - User is admin/superadmin
+    - User is admin/superadmin, OR
+    - User has an active organization seat (owner/admin/collaborative)
     """
     # If Stripe backlot prices not configured, grant access to all (dev mode)
     if not settings.STRIPE_BACKLOT_MONTHLY_PRICE_ID:
@@ -141,6 +142,8 @@ async def check_backlot_access(user=Depends(get_current_user)):
     if not profile:
         return {"has_access": False, "reason": "no_profile"}
 
+    profile_id = profile["id"]
+
     # Admins always have access
     if profile.get("is_admin") or profile.get("is_superadmin"):
         return {"has_access": True, "reason": "admin"}
@@ -149,6 +152,33 @@ async def check_backlot_access(user=Depends(get_current_user)):
     backlot_status = profile.get("backlot_subscription_status")
     if backlot_status in ["active", "trialing"]:
         return {"has_access": True, "reason": "subscription"}
+
+    # Check for organization seat access
+    org_seat = execute_single("""
+        SELECT
+            o.id as organization_id,
+            o.name as organization_name,
+            om.role,
+            om.can_create_projects
+        FROM organization_members om
+        JOIN organizations o ON om.organization_id = o.id
+        WHERE om.user_id = :user_id
+          AND om.status = 'active'
+          AND om.role IN ('owner', 'admin', 'collaborative')
+          AND o.backlot_enabled = TRUE
+          AND o.backlot_billing_status IN ('free', 'trial', 'active')
+        LIMIT 1
+    """, {"user_id": profile_id})
+
+    if org_seat:
+        return {
+            "has_access": True,
+            "reason": "organization_seat",
+            "organization_id": org_seat["organization_id"],
+            "organization_name": org_seat["organization_name"],
+            "role": org_seat["role"],
+            "can_create_projects": org_seat["can_create_projects"] or False
+        }
 
     return {"has_access": False, "reason": "no_subscription"}
 

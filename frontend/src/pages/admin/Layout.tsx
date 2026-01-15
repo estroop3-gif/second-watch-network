@@ -19,6 +19,7 @@ import {
   UserCog,
   HardDrive,
   Mail,
+  Building2,
 } from 'lucide-react';
 
 const AdminLayout = () => {
@@ -36,6 +37,7 @@ const AdminLayout = () => {
     { name: 'Order', href: '/admin/order', icon: Users },
     { name: 'Backlot', href: '/admin/backlot', icon: Clapperboard },
     { name: 'Billing', href: '/admin/billing', icon: CreditCard },
+    { name: 'Organizations', href: '/admin/organizations', icon: Building2 },
     { name: 'Partners', href: '/admin/partners', icon: Handshake },
     { name: 'Community', href: '/admin/community', icon: Users2 },
     { name: 'Moderation', href: '/admin/moderation', icon: Flag },

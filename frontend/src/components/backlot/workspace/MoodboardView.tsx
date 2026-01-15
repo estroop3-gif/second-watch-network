@@ -11,6 +11,7 @@
  * - Export CSV and Print view
  */
 import React, { useState, useCallback, useMemo } from 'react';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -58,7 +59,6 @@ import {
   AlertCircle,
   ArrowLeft,
   Download,
-  Printer,
   MoreVertical,
   Pencil,
   ChevronUp,
@@ -94,6 +94,8 @@ import {
   useReorderMoodboardItems,
   useMoodboardItemImageUpload,
   getMoodboardExportUrl,
+  getMoodboardPdfExportUrl,
+  getSectionPdfExportUrl,
   Moodboard,
   MoodboardSection,
   MoodboardItem,
@@ -715,15 +717,109 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
     setShowEditSectionDialog(true);
   };
 
-  const handleExportCSV = () => {
+  const handleExportCSV = async () => {
     if (!selectedMoodboardId) return;
-    window.open(getMoodboardExportUrl(projectId, selectedMoodboardId), '_blank');
+    toast.info('Exporting CSV...');
+
+    try {
+      const token = api.getToken();
+      const response = await fetch(getMoodboardExportUrl(projectId, selectedMoodboardId), {
+        method: 'GET',
+        headers: {
+          'Accept': 'text/csv',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to export CSV');
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${moodboard?.title || 'moodboard'}_export.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast.success('CSV downloaded');
+    } catch (error) {
+      console.error('CSV export error:', error);
+      toast.error('Failed to export CSV');
+    }
   };
 
-  const handlePrintView = () => {
+  const handleExportPDF = async () => {
     if (!selectedMoodboardId) return;
-    // Open print view in new tab
-    window.open(`/backlot/${projectId}/moodboards/${selectedMoodboardId}/print`, '_blank');
+    toast.info('Generating PDF...', { description: 'This may take a moment for large moodboards.' });
+
+    try {
+      const token = api.getToken();
+      const response = await fetch(getMoodboardPdfExportUrl(projectId, selectedMoodboardId), {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/pdf',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate PDF');
+      }
+
+      // Create blob URL and trigger download
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${moodboard?.title || 'moodboard'}_export.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast.success('PDF downloaded');
+    } catch (error) {
+      console.error('PDF export error:', error);
+      toast.error('Failed to export PDF');
+    }
+  };
+
+  const handleExportSectionPDF = async (sectionId: string) => {
+    if (!selectedMoodboardId) return;
+    toast.info('Generating section PDF...');
+
+    try {
+      const section = moodboard?.sections?.find(s => s.id === sectionId);
+      const token = api.getToken();
+      const response = await fetch(getSectionPdfExportUrl(projectId, selectedMoodboardId, sectionId), {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/pdf',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate section PDF');
+      }
+
+      // Create blob URL and trigger download
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${section?.title || 'section'}_export.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      toast.success('Section PDF downloaded');
+    } catch (error) {
+      console.error('Section PDF export error:', error);
+      toast.error('Failed to export section PDF');
+    }
   };
 
   // Render moodboard list
@@ -954,9 +1050,9 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
             <Download className="w-4 h-4 mr-2" />
             CSV
           </Button>
-          <Button variant="outline" size="sm" onClick={handlePrintView}>
-            <Printer className="w-4 h-4 mr-2" />
-            Print
+          <Button variant="outline" size="sm" onClick={handleExportPDF}>
+            <Download className="w-4 h-4 mr-2" />
+            PDF
           </Button>
           {canEdit && (
             <Button
@@ -1070,57 +1166,72 @@ export function MoodboardView({ projectId, canEdit }: MoodboardViewProps) {
                   {filteredItems.sections.find((s) => s.id === section.id)?.items.length || 0}
                 </Badge>
               </div>
-              {canEdit && (
-                <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleReorderSection(section.id, 'UP');
-                    }}
-                    disabled={idx === 0}
-                  >
-                    <ChevronUp className="w-3 h-3" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleReorderSection(section.id, 'DOWN');
-                    }}
-                    disabled={idx === (moodboard.sections?.length || 0) - 1}
-                  >
-                    <ChevronDown className="w-3 h-3" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openEditSection(section);
-                    }}
-                  >
-                    <Pencil className="w-3 h-3" />
-                  </Button>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6 text-red-400"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setEditingSection(section);
-                      setShowDeleteSectionConfirm(true);
-                    }}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </Button>
-                </div>
-              )}
+              <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* PDF Export - available to all viewers */}
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-6 w-6"
+                  title="Export section as PDF"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleExportSectionPDF(section.id);
+                  }}
+                >
+                  <Download className="w-3 h-3" />
+                </Button>
+                {canEdit && (
+                  <>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleReorderSection(section.id, 'UP');
+                      }}
+                      disabled={idx === 0}
+                    >
+                      <ChevronUp className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleReorderSection(section.id, 'DOWN');
+                      }}
+                      disabled={idx === (moodboard.sections?.length || 0) - 1}
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditSection(section);
+                      }}
+                    >
+                      <Pencil className="w-3 h-3" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-red-400"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingSection(section);
+                        setShowDeleteSectionConfirm(true);
+                      }}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
           ))}
 

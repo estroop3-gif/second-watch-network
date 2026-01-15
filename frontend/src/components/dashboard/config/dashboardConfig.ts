@@ -24,6 +24,7 @@ export type DashboardSectionId =
   | 'creator-dailies'
   | 'creator-casting'
   | 'creator-budget'
+  | 'creator-organizations'
   | 'friends-activity'
   | 'creator-updates'
   | 'watch-streaks'
@@ -258,6 +259,16 @@ export const DASHBOARD_SECTIONS: DashboardSectionConfig[] = [
     roles: CREATOR_ROLES,
     category: 'creator',
     description: 'Budget health and pending approvals',
+  },
+  {
+    id: 'creator-organizations',
+    title: 'Organizations',
+    priority: 16,
+    requiresAuth: true,
+    requiresData: true,
+    roles: CREATOR_ROLES,
+    category: 'creator',
+    description: 'Organizations with Backlot access',
   },
 
   // SOCIAL SECTIONS

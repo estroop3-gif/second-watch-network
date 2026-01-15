@@ -1379,3 +1379,311 @@ async def suggest_role_for_contact(
         "role_interest": role_interest,
         "suggested_role": suggested_role,
     }
+
+
+# =============================================================================
+# EXTERNAL SEATS - Freelancers and Clients
+# =============================================================================
+
+class ExternalSeatCreate(BaseModel):
+    user_id: str
+    seat_type: str = Field(..., pattern="^(project|view_only)$")
+    display_name: Optional[str] = None
+    company_name: Optional[str] = None
+    # For project seats (freelancers)
+    can_invoice: bool = True
+    can_expense: bool = True
+    can_timecard: bool = True
+    # For view_only seats (clients)
+    tab_permissions: Optional[Dict[str, bool]] = None
+
+
+class ExternalSeatUpdate(BaseModel):
+    display_name: Optional[str] = None
+    company_name: Optional[str] = None
+    can_invoice: Optional[bool] = None
+    can_expense: Optional[bool] = None
+    can_timecard: Optional[bool] = None
+    tab_permissions: Optional[Dict[str, bool]] = None
+
+
+class ExternalSeatResponse(BaseModel):
+    id: str
+    project_id: str
+    user_id: str
+    seat_type: str
+    display_name: Optional[str] = None
+    company_name: Optional[str] = None
+    can_invoice: bool = False
+    can_expense: bool = False
+    can_timecard: bool = False
+    tab_permissions: Dict[str, bool] = {}
+    status: str
+    invited_by: Optional[str] = None
+    invited_at: Optional[str] = None
+    # User info
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    user_avatar: Optional[str] = None
+
+
+@router.get("/projects/{project_id}/external-seats")
+async def list_external_seats(
+    project_id: str,
+    seat_type: Optional[str] = None,
+    authorization: str = Header(None)
+) -> List[ExternalSeatResponse]:
+    """List all external seats (freelancers and clients) for a project."""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+
+    # Verify access (owner or admin)
+    if not await can_manage_access(project_id, user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to view external seats")
+
+    client = get_client()
+
+    query = client.table("backlot_project_external_seats").select(
+        "*, profiles:user_id(display_name, email, avatar_url)"
+    ).eq("project_id", project_id)
+
+    if seat_type:
+        query = query.eq("seat_type", seat_type)
+
+    result = query.order("created_at", desc=True).execute()
+
+    seats = []
+    for s in (result.data or []):
+        profile = s.get("profiles") or {}
+        seats.append(ExternalSeatResponse(
+            id=s["id"],
+            project_id=s["project_id"],
+            user_id=s["user_id"],
+            seat_type=s["seat_type"],
+            display_name=s.get("display_name"),
+            company_name=s.get("company_name"),
+            can_invoice=s.get("can_invoice", False),
+            can_expense=s.get("can_expense", False),
+            can_timecard=s.get("can_timecard", False),
+            tab_permissions=s.get("tab_permissions") or {},
+            status=s["status"],
+            invited_by=s.get("invited_by"),
+            invited_at=str(s["invited_at"]) if s.get("invited_at") else None,
+            user_name=profile.get("display_name"),
+            user_email=profile.get("email"),
+            user_avatar=profile.get("avatar_url")
+        ))
+
+    return seats
+
+
+@router.post("/projects/{project_id}/external-seats")
+async def add_external_seat(
+    project_id: str,
+    seat: ExternalSeatCreate,
+    authorization: str = Header(None)
+) -> ExternalSeatResponse:
+    """Add a freelancer or client to a project."""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+
+    # Verify access (owner or admin)
+    if not await can_manage_access(project_id, user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to add external seats")
+
+    client = get_client()
+
+    # Check if user exists
+    target_user = execute_single(
+        "SELECT id, display_name, email, avatar_url FROM profiles WHERE id = :user_id",
+        {"user_id": seat.user_id}
+    )
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if already has external seat
+    existing = client.table("backlot_project_external_seats").select("id").eq(
+        "project_id", project_id
+    ).eq("user_id", seat.user_id).execute()
+
+    if existing.data:
+        raise HTTPException(status_code=400, detail="User already has an external seat on this project")
+
+    # Create external seat
+    insert_data = {
+        "project_id": project_id,
+        "user_id": seat.user_id,
+        "seat_type": seat.seat_type,
+        "display_name": seat.display_name,
+        "company_name": seat.company_name,
+        "status": "active",
+        "invited_by": user_id,
+        "invited_at": datetime.utcnow().isoformat(),
+    }
+
+    if seat.seat_type == "project":
+        # Freelancer permissions
+        insert_data["can_invoice"] = seat.can_invoice
+        insert_data["can_expense"] = seat.can_expense
+        insert_data["can_timecard"] = seat.can_timecard
+    else:
+        # Client tab permissions
+        insert_data["tab_permissions"] = seat.tab_permissions or {}
+
+    result = client.table("backlot_project_external_seats").insert(insert_data).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to add external seat")
+
+    s = result.data[0]
+    return ExternalSeatResponse(
+        id=s["id"],
+        project_id=s["project_id"],
+        user_id=s["user_id"],
+        seat_type=s["seat_type"],
+        display_name=s.get("display_name"),
+        company_name=s.get("company_name"),
+        can_invoice=s.get("can_invoice", False),
+        can_expense=s.get("can_expense", False),
+        can_timecard=s.get("can_timecard", False),
+        tab_permissions=s.get("tab_permissions") or {},
+        status=s["status"],
+        invited_by=s.get("invited_by"),
+        invited_at=str(s["invited_at"]) if s.get("invited_at") else None,
+        user_name=target_user.get("display_name"),
+        user_email=target_user.get("email"),
+        user_avatar=target_user.get("avatar_url")
+    )
+
+
+@router.patch("/projects/{project_id}/external-seats/{seat_id}")
+async def update_external_seat(
+    project_id: str,
+    seat_id: str,
+    seat: ExternalSeatUpdate,
+    authorization: str = Header(None)
+) -> ExternalSeatResponse:
+    """Update an external seat's permissions."""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+
+    # Verify access (owner or admin)
+    if not await can_manage_access(project_id, user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to update external seats")
+
+    client = get_client()
+
+    # Get existing seat
+    existing = client.table("backlot_project_external_seats").select(
+        "*, profiles:user_id(display_name, email, avatar_url)"
+    ).eq("id", seat_id).eq("project_id", project_id).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="External seat not found")
+
+    # Build update data
+    update_data = {"updated_at": datetime.utcnow().isoformat()}
+
+    if seat.display_name is not None:
+        update_data["display_name"] = seat.display_name
+    if seat.company_name is not None:
+        update_data["company_name"] = seat.company_name
+    if seat.can_invoice is not None:
+        update_data["can_invoice"] = seat.can_invoice
+    if seat.can_expense is not None:
+        update_data["can_expense"] = seat.can_expense
+    if seat.can_timecard is not None:
+        update_data["can_timecard"] = seat.can_timecard
+    if seat.tab_permissions is not None:
+        update_data["tab_permissions"] = seat.tab_permissions
+
+    result = client.table("backlot_project_external_seats").update(
+        update_data
+    ).eq("id", seat_id).execute()
+
+    s = result.data[0] if result.data else existing.data[0]
+    profile = existing.data[0].get("profiles") or {}
+
+    return ExternalSeatResponse(
+        id=s["id"],
+        project_id=s["project_id"],
+        user_id=s["user_id"],
+        seat_type=s["seat_type"],
+        display_name=s.get("display_name"),
+        company_name=s.get("company_name"),
+        can_invoice=s.get("can_invoice", False),
+        can_expense=s.get("can_expense", False),
+        can_timecard=s.get("can_timecard", False),
+        tab_permissions=s.get("tab_permissions") or {},
+        status=s["status"],
+        invited_by=s.get("invited_by"),
+        invited_at=str(s["invited_at"]) if s.get("invited_at") else None,
+        user_name=profile.get("display_name"),
+        user_email=profile.get("email"),
+        user_avatar=profile.get("avatar_url")
+    )
+
+
+@router.delete("/projects/{project_id}/external-seats/{seat_id}")
+async def remove_external_seat(
+    project_id: str,
+    seat_id: str,
+    transfer_work: bool = True,
+    authorization: str = Header(None)
+):
+    """
+    Remove an external seat from a project.
+    Optionally transfers their work to the project owner.
+    """
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+
+    # Verify access (owner or admin)
+    if not await can_manage_access(project_id, user_id):
+        raise HTTPException(status_code=403, detail="Not authorized to remove external seats")
+
+    client = get_client()
+
+    # Get existing seat
+    existing = client.table("backlot_project_external_seats").select("*").eq(
+        "id", seat_id
+    ).eq("project_id", project_id).execute()
+
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="External seat not found")
+
+    seat_data = existing.data[0]
+    removed_user_id = seat_data["user_id"]
+
+    # Get project owner for work transfer
+    project = execute_single(
+        "SELECT owner_id FROM backlot_projects WHERE id = :project_id",
+        {"project_id": project_id}
+    )
+    owner_id = project["owner_id"] if project else user_id
+
+    if transfer_work:
+        # Update the seat with transfer info
+        client.table("backlot_project_external_seats").update({
+            "status": "revoked",
+            "revoked_at": datetime.utcnow().isoformat(),
+            "revoked_by": user_id,
+            "work_transferred_to": owner_id,
+            "work_transferred_at": datetime.utcnow().isoformat(),
+        }).eq("id", seat_id).execute()
+
+        # TODO: Actually transfer work items (invoices, expenses, timecards)
+        # This would involve updating owner_id or created_by on those records
+    else:
+        # Just revoke without transfer tracking
+        client.table("backlot_project_external_seats").update({
+            "status": "revoked",
+            "revoked_at": datetime.utcnow().isoformat(),
+            "revoked_by": user_id,
+        }).eq("id", seat_id).execute()
+
+    return {
+        "success": True,
+        "message": "External seat removed",
+        "work_transferred_to": owner_id if transfer_work else None
+    }

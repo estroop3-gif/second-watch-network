@@ -455,6 +455,11 @@ export {
   useProjectDeliverable,
   useDeliverablesSummary,
   useDeliverableMutations,
+  // Unified Assets & Folders
+  useUnifiedAssets,
+  useUnifiedAssetsSummary,
+  useStandaloneAssets,
+  useAssetFolders,
 } from './useAssets';
 
 // Producer Analytics (READ-ONLY)
@@ -1419,6 +1424,8 @@ export {
   useItemImageUpload as useMoodboardItemImageUpload,
   useMoodboardPrintData,
   getMoodboardExportUrl,
+  getMoodboardPdfExportUrl,
+  getSectionPdfExportUrl,
   MOODBOARD_CATEGORIES,
 } from './useMoodboard';
 export type {
@@ -1672,3 +1679,16 @@ export type {
   GenerateScriptSidesInput,
   OutdatedSidesInfo,
 } from './useScriptSidesExports';
+
+// External Seats (Freelancers & Clients)
+export {
+  useExternalSeats,
+  useAddExternalSeat,
+  useUpdateExternalSeat,
+  useRemoveExternalSeat,
+} from './useExternalSeats';
+export type {
+  ExternalSeat,
+  CreateExternalSeatParams,
+  UpdateExternalSeatParams,
+} from './useExternalSeats';

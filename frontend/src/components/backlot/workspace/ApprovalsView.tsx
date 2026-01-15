@@ -1422,24 +1422,24 @@ export default function ApprovalsView({
       </div>
 
       {/* SECTION: Recently Processed */}
-      {filteredProcessedItems.length > 0 && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-green-400" />
-              Recently Processed
-            </h3>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowHistoryModal(true)}
-              className="text-muted-gray hover:text-bone-white"
-            >
-              View Full History ({filteredProcessedItems.length})
-              <ChevronRight className="w-4 h-4 ml-1" />
-            </Button>
-          </div>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-medium text-bone-white flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-green-400" />
+            Recently Processed
+          </h3>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowHistoryModal(true)}
+            className="text-muted-gray hover:text-bone-white"
+          >
+            View Full History ({filteredProcessedItems.length})
+            <ChevronRight className="w-4 h-4 ml-1" />
+          </Button>
+        </div>
 
+        {filteredProcessedItems.length > 0 && (
           <Card className="bg-charcoal-black border-muted-gray/20">
             <CardContent className="p-0">
               <ScrollArea className="max-h-[400px]">
@@ -1521,8 +1521,8 @@ export default function ApprovalsView({
               </ScrollArea>
             </CardContent>
           </Card>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Approval Detail Dialog */}
       {selectedItem && (
@@ -1591,7 +1591,7 @@ export default function ApprovalsView({
               Approval History ({filteredProcessedItems.length})
             </DialogTitle>
           </DialogHeader>
-          <ScrollArea className="flex-1 -mx-6 px-6">
+          <ScrollArea className="flex-1 -mx-6 px-6 max-h-[calc(85vh-100px)]">
             <div className="divide-y divide-muted-gray/10">
               {filteredProcessedItems.map((item) => {
                 const categoryConfig = CATEGORY_CONFIG[item.category];

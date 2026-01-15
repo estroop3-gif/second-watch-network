@@ -212,12 +212,17 @@ class UploadWorker(QThread):
             return False
 
         # Route to appropriate upload method based on destination
+        logger.info(f"Upload routing: destination={job.destination}, project={project_id}")
+        logger.info(f"Destination config: {job.destination_config}")
+
         if job.destination == "assets":
+            logger.info("Routing to ASSET upload endpoint")
             return self._upload_asset_file(job, project_id)
         elif job.destination == "review":
+            logger.info("Routing to REVIEW upload endpoint")
             return self._upload_review_file(job, project_id)
         else:
-            # Default: dailies upload
+            logger.info("Routing to DAILIES upload endpoint")
             return self._upload_dailies_file(job, project_id)
 
     def _upload_dailies_file(self, job: UnifiedUploadJob, project_id: str) -> bool:
@@ -279,12 +284,16 @@ class UploadWorker(QThread):
         # Detect asset type from extension
         asset_type = asset_uploader.detect_asset_type(job.file_path)
 
+        logger.info(f"=== ASSET UPLOAD START ===")
+        logger.info(f"File: {job.file_name}, Project: {project_id}, Folder: {folder_id}, Type: {asset_type}")
+
         def on_progress(idx: int, progress: float, status: str):
             self.job_progress.emit(job.id, progress, status)
 
         asset_uploader.set_progress_callback(on_progress)
 
         # Get presigned upload URL (creates asset record with folder_id)
+        logger.info(f"Requesting presigned URL from backend...")
         upload_data = asset_uploader.get_upload_url(
             project_id=project_id,
             filename=job.file_name,
@@ -295,13 +304,24 @@ class UploadWorker(QThread):
         )
 
         if not upload_data:
+            error_msg = f"Failed to get asset upload URL [project={project_id}, folder={folder_id}]"
+            logger.error(error_msg)
             job.status = "failed"
-            job.error_message = f"Failed to get asset upload URL [project={project_id}, folder={folder_id}]"
+            job.error_message = error_msg
             return False
 
         upload_url = upload_data.get("upload_url")
         job.s3_key = upload_data.get("s3_key")
         asset_id = upload_data.get("asset_id")
+
+        logger.info(f"Got presigned URL. Asset ID: {asset_id}, S3 Key: {job.s3_key}")
+
+        if not upload_url:
+            error_msg = f"No upload_url in response: {upload_data}"
+            logger.error(error_msg)
+            job.status = "failed"
+            job.error_message = error_msg
+            return False
 
         # Create asset upload job
         asset_job = AssetUploadJob(
@@ -312,17 +332,30 @@ class UploadWorker(QThread):
             asset_type=asset_type,
         )
 
-        # Upload the file
+        # Upload the file to S3
+        logger.info(f"Starting S3 upload for {job.file_name} ({job.file_size} bytes)...")
         success = asset_uploader.upload_file(asset_job, upload_url, 0)
+        logger.info(f"S3 upload result: success={success}, error={asset_job.error}")
 
         if success and asset_id:
             # Complete the upload
-            asset_uploader.complete_upload(asset_id, job.file_size)
-            job.checksum_verified = True
-            return True
+            logger.info(f"Completing upload for asset {asset_id}...")
+            complete_success = asset_uploader.complete_upload(asset_id, job.file_size)
+            logger.info(f"Complete upload result: {complete_success}")
+
+            if complete_success:
+                job.checksum_verified = True
+                logger.info(f"=== ASSET UPLOAD SUCCESS ===")
+                return True
+            else:
+                job.status = "failed"
+                job.error_message = f"Failed to complete asset upload [asset_id={asset_id}]"
+                logger.error(job.error_message)
+                return False
         else:
             job.status = "failed"
             job.error_message = asset_job.error or f"Asset upload failed [project={project_id}, folder={folder_id}]"
+            logger.error(f"=== ASSET UPLOAD FAILED: {job.error_message} ===")
             return False
 
     def _upload_review_file(self, job: UnifiedUploadJob, project_id: str) -> bool:

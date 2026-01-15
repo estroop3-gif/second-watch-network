@@ -436,3 +436,17 @@ export function useMoodboardPrintData(projectId: string | null, moodboardId: str
 export function getMoodboardExportUrl(projectId: string, moodboardId: string): string {
   return `/api/v1/backlot/projects/${projectId}/moodboards/${moodboardId}/export.csv`;
 }
+
+/**
+ * Get PDF export URL for a moodboard
+ */
+export function getMoodboardPdfExportUrl(projectId: string, moodboardId: string, embedImages: boolean = true): string {
+  return `/api/v1/backlot/projects/${projectId}/moodboards/${moodboardId}/export.pdf?embed_images=${embedImages}`;
+}
+
+/**
+ * Get PDF export URL for a single moodboard section
+ */
+export function getSectionPdfExportUrl(projectId: string, moodboardId: string, sectionId: string, embedImages: boolean = true): string {
+  return `/api/v1/backlot/projects/${projectId}/moodboards/${moodboardId}/sections/${sectionId}/export.pdf?embed_images=${embedImages}`;
+}

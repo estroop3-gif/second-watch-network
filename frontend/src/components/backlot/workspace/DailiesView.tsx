@@ -1,7 +1,9 @@
 /**
  * DailiesView - Main dailies management view with day/card/clip browsing
  */
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -48,6 +50,8 @@ import {
   Search,
   SlidersHorizontal,
   Monitor,
+  Apple,
+  Terminal,
   Wifi,
   WifiOff,
   Link as LinkIcon,
@@ -87,6 +91,7 @@ import {
   DAILIES_RATING_LABELS,
 } from '@/types/backlot';
 import { formatDate } from '@/lib/dateUtils';
+import { format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import ClipDetailView from './ClipDetailView';
 import LocalBrowser from './LocalBrowser';
@@ -625,6 +630,28 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
   // Production day import hooks
   const { data: unlinkedDays = [], isLoading: loadingUnlinkedDays } = useUnlinkedProductionDays(projectId);
   const importDays = useImportProductionDays();
+
+  // Dailies Helper download URLs (authenticated)
+  const { data: helperDownloads, isLoading: loadingDownloads } = useQuery({
+    queryKey: ['dailies-helper-downloads'],
+    queryFn: () => api.get('/api/v1/downloads/dailies-helper'),
+    staleTime: 1000 * 60 * 60, // 1 hour (matches presigned URL expiry)
+  });
+
+  // Detect user's platform for download recommendation
+  const userPlatform = useMemo((): 'windows' | 'mac' | 'linux' => {
+    const platform = navigator.platform.toLowerCase();
+    if (platform.includes('win')) return 'windows';
+    if (platform.includes('mac')) return 'mac';
+    return 'linux';
+  }, []);
+
+  // Platform icons and labels
+  const platformConfig = {
+    windows: { icon: Monitor, label: 'Windows', ext: '.exe' },
+    mac: { icon: Apple, label: 'macOS', ext: '.dmg' },
+    linux: { icon: Terminal, label: 'Linux', ext: '.AppImage' },
+  };
 
   // Day form state
   const [dayForm, setDayForm] = useState<DailiesDayInput>({
@@ -1223,31 +1250,92 @@ const DailiesView: React.FC<DailiesViewProps> = ({ projectId, canEdit }) => {
               </li>
             </ul>
 
+            {/* Download Buttons */}
             <div className="pt-4 space-y-3">
-              <div className="bg-accent-yellow/10 border border-accent-yellow/30 rounded-lg p-4">
-                <p className="text-sm font-medium text-bone-white mb-2 text-center">
-                  Alpha Release Available
-                </p>
-                <p className="text-xs text-muted-gray text-center mb-3">
-                  Compiled binaries coming soon. For now, install from source:
-                </p>
-                <div className="bg-charcoal-black rounded p-3 font-mono text-xs text-muted-gray">
-                  <p>pip install git+https://github.com/estroop3-gif/swn-dailies-helper.git</p>
-                  <p className="mt-1">swn-helper</p>
+              {loadingDownloads ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-5 h-5 animate-spin text-accent-yellow" />
+                  <span className="ml-2 text-sm text-muted-gray">Loading downloads...</span>
                 </div>
-              </div>
+              ) : helperDownloads?.downloads && Object.keys(helperDownloads.downloads).length > 0 ? (
+                <>
+                  {/* Available platforms */}
+                  {(() => {
+                    const availablePlatforms = Object.keys(helperDownloads.downloads) as ('windows' | 'mac' | 'linux')[];
+                    const userPlatformAvailable = availablePlatforms.includes(userPlatform);
+                    const primaryPlatform = userPlatformAvailable ? userPlatform : availablePlatforms[0];
+                    const otherPlatforms = availablePlatforms.filter(p => p !== primaryPlatform);
+
+                    return (
+                      <>
+                        {/* Primary download button */}
+                        {primaryPlatform && helperDownloads.downloads[primaryPlatform] && (
+                          <Button
+                            onClick={() => window.open(helperDownloads.downloads[primaryPlatform].url, '_blank')}
+                            className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white font-medium"
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Download for {platformConfig[primaryPlatform].label} ({platformConfig[primaryPlatform].ext})
+                          </Button>
+                        )}
+
+                        {/* Other available platforms */}
+                        {otherPlatforms.length > 0 && (
+                          <Accordion type="single" collapsible className="w-full">
+                            <AccordionItem value="other-platforms" className="border-muted-gray/20">
+                              <AccordionTrigger className="text-sm text-muted-gray hover:text-bone-white py-2">
+                                Other platforms ({otherPlatforms.length})
+                              </AccordionTrigger>
+                              <AccordionContent>
+                                <div className="flex flex-col gap-2 pt-2">
+                                  {otherPlatforms.map(platform => {
+                                    const config = platformConfig[platform];
+                                    const download = helperDownloads.downloads[platform];
+                                    const Icon = config.icon;
+                                    return (
+                                      <Button
+                                        key={platform}
+                                        variant="outline"
+                                        onClick={() => window.open(download?.url, '_blank')}
+                                        className="w-full justify-start border-muted-gray/30 text-bone-white hover:bg-muted-gray/10"
+                                      >
+                                        <Icon className="w-4 h-4 mr-2" />
+                                        {config.label} ({config.ext})
+                                      </Button>
+                                    );
+                                  })}
+                                </div>
+                              </AccordionContent>
+                            </AccordionItem>
+                          </Accordion>
+                        )}
+
+                        {/* Note if user's platform not available */}
+                        {!userPlatformAvailable && (
+                          <p className="text-xs text-amber-400 text-center">
+                            {platformConfig[userPlatform].label} version coming soon
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
+
+                  {helperDownloads.version && (
+                    <p className="text-xs text-muted-gray text-center">
+                      Version {helperDownloads.version}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+                  <p className="text-sm text-red-400 text-center">
+                    Downloads unavailable. Please try again later.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="pt-4 flex flex-col items-center gap-3">
-              <a
-                href="https://github.com/estroop3-gif/swn-dailies-helper/releases"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2 bg-accent-yellow text-charcoal-black rounded-lg hover:bg-bone-white transition-colors font-medium text-sm"
-              >
-                <ExternalLink className="w-4 h-4" />
-                View on GitHub
-              </a>
               <Link
                 to="/account?tab=api-keys"
                 className="inline-flex items-center gap-2 px-4 py-2 border border-accent-yellow/50 text-accent-yellow rounded-lg hover:bg-accent-yellow/10 transition-colors font-medium text-sm"

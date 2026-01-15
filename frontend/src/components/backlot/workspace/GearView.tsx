@@ -266,8 +266,13 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   const [selectedTaskListId, setSelectedTaskListId] = useState<string>('');
 
   // Task hooks
-  const { taskLists } = useTaskLists({ projectId });
+  const { taskLists, createTaskList } = useTaskLists({ projectId });
   const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
+
+  // Create task list dialog state
+  const [showCreateTaskListDialog, setShowCreateTaskListDialog] = useState(false);
+  const [newTaskListName, setNewTaskListName] = useState('');
+  const [newTaskListDescription, setNewTaskListDescription] = useState('');
 
   // Tips panel state
   const [showTipsPanel, setShowTipsPanel] = useState(false);
@@ -394,7 +399,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
   const handleOpenTaskModal = (item: BacklotGearItem) => {
     setTaskGearItem(item);
     setTaskTitle(`Gear task: ${item.name}`);
-    setTaskDescription(`Category: ${item.category}\nStatus: ${item.status}\n${item.is_owned ? 'Owned' : `Rental: ${item.rental_house || 'N/A'}`}`);
+    setTaskDescription(`Category: ${item.category || 'Uncategorized'}\nStatus: ${item.status}\n${item.is_owned ? 'Owned' : `Rental: ${item.rental_house || 'N/A'}`}`);
     setSelectedTaskListId(taskLists[0]?.id || '');
     setShowTaskModal(true);
   };
@@ -419,6 +424,27 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
       setTaskDescription('');
     } catch (error) {
       sonnerToast.error('Failed to create task');
+    }
+  };
+
+  const handleCreateTaskList = async () => {
+    if (!newTaskListName.trim()) {
+      sonnerToast.error('Please enter a task list name');
+      return;
+    }
+
+    try {
+      const newList = await createTaskList.mutateAsync({
+        name: newTaskListName.trim(),
+        description: newTaskListDescription.trim() || undefined,
+      });
+      sonnerToast.success('Task list created');
+      setSelectedTaskListId(newList.id);
+      setShowCreateTaskListDialog(false);
+      setNewTaskListName('');
+      setNewTaskListDescription('');
+    } catch (error) {
+      sonnerToast.error('Failed to create task list');
     }
   };
 
@@ -711,13 +737,13 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="category">Category</Label>
+                <Label htmlFor="category">Category *</Label>
                 <Select
                   value={formData.category}
                   onValueChange={(v) => setFormData({ ...formData, category: v })}
                   disabled={isSubmitting}
                 >
-                  <SelectTrigger id="category">
+                  <SelectTrigger id="category" className={!formData.category ? 'border-red-500/50' : ''}>
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
                   <SelectContent>
@@ -904,7 +930,7 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               </Button>
               <Button
                 type="submit"
-                disabled={isSubmitting || !formData.name.trim()}
+                disabled={isSubmitting || !formData.name.trim() || !formData.category}
                 className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
               >
                 {isSubmitting ? (
@@ -935,7 +961,13 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
           <div className="space-y-4">
             <div>
               <Label>Task List *</Label>
-              <Select value={selectedTaskListId} onValueChange={setSelectedTaskListId}>
+              <Select value={selectedTaskListId} onValueChange={(value) => {
+                if (value === '__create_new__') {
+                  setShowCreateTaskListDialog(true);
+                } else {
+                  setSelectedTaskListId(value);
+                }
+              }}>
                 <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
                   <SelectValue placeholder="Select a task list" />
                 </SelectTrigger>
@@ -945,8 +977,20 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
                       {list.name}
                     </SelectItem>
                   ))}
+                  {taskLists.length > 0 && (
+                    <div className="h-px bg-muted-gray/30 my-1" />
+                  )}
+                  <SelectItem value="__create_new__" className="text-accent-yellow">
+                    <div className="flex items-center gap-2">
+                      <Plus className="w-4 h-4" />
+                      Create new task list
+                    </div>
+                  </SelectItem>
                 </SelectContent>
               </Select>
+              {taskLists.length === 0 && (
+                <p className="text-xs text-muted-gray mt-1">No task lists yet. Create one to continue.</p>
+              )}
             </div>
             <div>
               <Label>Task Title *</Label>
@@ -984,6 +1028,56 @@ const GearView: React.FC<GearViewProps> = ({ projectId, canEdit }) => {
               className="bg-primary text-white hover:bg-primary/90"
             >
               {createTaskFromSource.isPending ? 'Creating...' : 'Create Task'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Task List Dialog */}
+      <Dialog open={showCreateTaskListDialog} onOpenChange={setShowCreateTaskListDialog}>
+        <DialogContent className="bg-soft-black border-muted-gray/30 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Plus className="w-5 h-5 text-accent-yellow" />
+              Create Task List
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label>Name *</Label>
+              <Input
+                value={newTaskListName}
+                onChange={(e) => setNewTaskListName(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="e.g., Gear Prep, Equipment Maintenance"
+                autoFocus
+              />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea
+                value={newTaskListDescription}
+                onChange={(e) => setNewTaskListDescription(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30"
+                placeholder="Optional description for this task list"
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => {
+              setShowCreateTaskListDialog(false);
+              setNewTaskListName('');
+              setNewTaskListDescription('');
+            }}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateTaskList}
+              disabled={!newTaskListName.trim() || createTaskList.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {createTaskList.isPending ? 'Creating...' : 'Create List'}
             </Button>
           </DialogFooter>
         </DialogContent>

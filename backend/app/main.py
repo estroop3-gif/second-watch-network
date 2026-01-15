@@ -26,7 +26,8 @@ from app.api import (
     auth, users, content, filmmakers, messages, forum,
     profiles, submissions, notifications, connections,
     admin, admin_community, admin_content, admin_backlot, admin_profiles,
-    admin_roles, admin_storage, admin_users, admin_emails, ses_webhook,
+    admin_roles, admin_storage, admin_users, admin_emails, admin_organizations, ses_webhook,
+    organization_usage,
     availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses, camera_log,
@@ -60,9 +61,11 @@ from app.api import (
     script_sides,  # Script sides auto generator
     stripboard,  # Stripboard schedule planning
     project_files,  # Project file management
+    downloads,  # Application downloads (Dailies Helper)
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
 from app.api import org_messages  # Organization messaging
+from app.api import organization_backlot  # Organization Backlot seat management
 
 # Configure structured logging
 setup_logging(level="INFO")
@@ -235,6 +238,8 @@ app.include_router(admin_roles.router, prefix=f"{settings.API_V1_PREFIX}/admin",
 app.include_router(admin_storage.router, prefix=f"{settings.API_V1_PREFIX}/admin/storage", tags=["Admin Storage"])
 app.include_router(admin_users.router, prefix=f"{settings.API_V1_PREFIX}/admin/users", tags=["Admin Users"])
 app.include_router(admin_emails.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Emails"])
+app.include_router(admin_organizations.router, prefix=f"{settings.API_V1_PREFIX}/admin/organizations", tags=["Admin Organizations"])
+app.include_router(organization_usage.router, prefix=f"{settings.API_V1_PREFIX}/organizations", tags=["Organization Usage"])
 app.include_router(ses_webhook.router, prefix=f"{settings.API_V1_PREFIX}", tags=["SES Webhook"])
 app.include_router(availability.router, prefix=f"{settings.API_V1_PREFIX}/availability", tags=["Availability"])
 app.include_router(credits.router, prefix=f"{settings.API_V1_PREFIX}/credits", tags=["Credits"])
@@ -276,6 +281,7 @@ app.include_router(story_management.router, prefix=f"{settings.API_V1_PREFIX}/ba
 app.include_router(script_sides.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Script Sides"])
 app.include_router(stripboard.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Stripboard"])
 app.include_router(project_files.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Project Files"])
+app.include_router(downloads.router, prefix=f"{settings.API_V1_PREFIX}/downloads", tags=["Downloads"])
 app.include_router(coms.router, prefix=f"{settings.API_V1_PREFIX}/coms", tags=["Coms"])
 app.include_router(dm_adapter.router, prefix=f"{settings.API_V1_PREFIX}/dm", tags=["Direct Messages"])
 app.include_router(uploads.router, prefix=f"{settings.API_V1_PREFIX}/uploads", tags=["Uploads"])
@@ -306,6 +312,7 @@ app.include_router(media.router, prefix=f"{settings.API_V1_PREFIX}/media", tags=
 
 # Creator Monetization & Organizations
 app.include_router(organizations.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organizations"])
+app.include_router(organization_backlot.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Organization Backlot"])
 app.include_router(creator_earnings.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Creator Earnings"])
 
 # Phase 2A: Linear Channels

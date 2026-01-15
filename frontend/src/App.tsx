@@ -63,6 +63,7 @@ import BillingReturn from "./pages/BillingReturn";
 import Donations from "./pages/Donations";
 import PartnerApply from "./pages/PartnerApply";
 import OrderSettings from "./pages/OrderSettings";
+import OrganizationsPage from "./pages/Organizations";
 
 // Green Room Pages
 import GreenRoom from "./pages/GreenRoom";
@@ -109,6 +110,7 @@ import AuditLog from "./pages/admin/AuditLog";
 import AdminDonations from "./pages/admin/Donations";
 import AlphaTesting from "./pages/admin/AlphaTesting";
 import EmailLogs from "./pages/admin/EmailLogs";
+import AdminOrganizations from "./pages/admin/Organizations";
 
 // Partner Pages
 import PartnerLayout from "./pages/partner/Layout";
@@ -294,6 +296,7 @@ const App = () => (
                     {/* keep legacy path working */}
                     <Route path="/account/subscription-settings" element={<SubscriptionSettingsPage />} />
                     <Route path="/account/themes" element={<ThemeEditorPage />} />
+                    <Route path="/organizations" element={<OrganizationsPage />} />
                     <Route path="/notifications" element={<Notifications />} />
                     <Route path="/connections" element={<Connections />} />
                     <Route path="/my-applications" element={<MyApplications />} />
@@ -405,6 +408,7 @@ const App = () => (
                         <Route path="order" element={<OrderManagement />} />
                         <Route path="backlot" element={<BacklotOversight />} />
                         <Route path="billing" element={<BillingManagement />} />
+                        <Route path="organizations" element={<AdminOrganizations />} />
                         <Route path="partners" element={<PartnerManagement />} />
                         <Route path="moderation" element={<Moderation />} />
                         <Route path="community" element={<CommunityManagement />} />

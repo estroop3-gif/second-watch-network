@@ -196,26 +196,80 @@ async def get_unified_inbox(user_id: str):
     Returns items sorted by last_message_at descending.
     """
     try:
+        from app.core.database import execute_query
         client = get_client()
         inbox_items = []
 
-        # 1. Get DM conversations
-        dm_response = client.rpc("get_user_conversations", {"user_id": user_id}).execute()
-        dm_conversations = dm_response.data or []
+        # 1. Get DM conversations using direct SQL query
+        # Get unique conversation partners from backlot_direct_messages
+        dm_query = """
+            WITH dm_partners AS (
+                SELECT DISTINCT
+                    CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END as partner_id
+                FROM backlot_direct_messages
+                WHERE sender_id = :user_id OR recipient_id = :user_id
+            ),
+            last_messages AS (
+                SELECT DISTINCT ON (
+                    CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END
+                )
+                    CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END as partner_id,
+                    id as message_id,
+                    content as last_message,
+                    created_at as last_message_at,
+                    read_at
+                FROM backlot_direct_messages
+                WHERE sender_id = :user_id OR recipient_id = :user_id
+                ORDER BY
+                    CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END,
+                    created_at DESC
+            ),
+            unread_counts AS (
+                SELECT
+                    sender_id as partner_id,
+                    COUNT(*) as unread_count
+                FROM backlot_direct_messages
+                WHERE recipient_id = :user_id AND read_at IS NULL
+                GROUP BY sender_id
+            )
+            SELECT
+                lm.partner_id as id,
+                p.username,
+                p.full_name,
+                p.avatar_url,
+                lm.last_message,
+                lm.last_message_at,
+                COALESCE(uc.unread_count, 0) as unread_count
+            FROM last_messages lm
+            JOIN profiles p ON p.id = lm.partner_id
+            LEFT JOIN unread_counts uc ON uc.partner_id = lm.partner_id
+            ORDER BY lm.last_message_at DESC
+        """
+        try:
+            dm_conversations = execute_query(dm_query, {"user_id": user_id})
+        except Exception as dm_err:
+            logger.warning(f"Error fetching DM conversations: {dm_err}")
+            dm_conversations = []
 
         for conv in dm_conversations:
-            inbox_items.append({
-                "id": conv.get("id"),
-                "type": "dm",
-                "project_id": None,
-                "project_title": None,
-                "project_thumbnail": None,
-                "other_participant": conv.get("other_participant"),
-                "last_message": conv.get("last_message", {}).get("content") if conv.get("last_message") else None,
-                "last_message_at": conv.get("last_message_at"),
-                "update_type": None,
-                "unread_count": conv.get("unread_count", 0),
-            })
+            if isinstance(conv, dict):
+                inbox_items.append({
+                    "id": str(conv.get("id", "")),
+                    "type": "dm",
+                    "project_id": None,
+                    "project_title": None,
+                    "project_thumbnail": None,
+                    "other_participant": {
+                        "id": str(conv.get("id", "")),
+                        "username": conv.get("username"),
+                        "full_name": conv.get("full_name"),
+                        "avatar_url": conv.get("avatar_url"),
+                    },
+                    "last_message": conv.get("last_message"),
+                    "last_message_at": conv.get("last_message_at"),
+                    "update_type": None,
+                    "unread_count": conv.get("unread_count", 0),
+                })
 
         # 2. Get user's projects (owner or member)
         # First get projects they own

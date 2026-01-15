@@ -82,6 +82,14 @@ import {
   ChevronDown,
   Play,
   HardDrive,
+  Folder,
+  FolderOpen,
+  File,
+  Music,
+  Image,
+  FileText,
+  Box,
+  Home,
 } from 'lucide-react';
 import { parseLocalDate } from '@/lib/dateUtils';
 import {
@@ -93,6 +101,8 @@ import {
   useDeliverableMutations,
   useDeliverableTemplates,
   useAssetSourceClips,
+  useAssetFolders,
+  useStandaloneAssets,
 } from '@/hooks/backlot';
 import {
   BacklotAsset,
@@ -109,6 +119,8 @@ import {
 } from '@/types/backlot';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { AssetFolderTree, CreateAssetFolderModal } from './assets';
+import { AssetFolder, AssetFolderInput } from '@/types/backlot';
 
 interface AssetsViewProps {
   projectId: string;
@@ -272,6 +284,13 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
   const [typeFilter, setTypeFilter] = useState<BacklotAssetType | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<BacklotDeliverableStatus | 'all'>('all');
 
+  // Files tab state
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [showFolderModal, setShowFolderModal] = useState(false);
+  const [editingFolder, setEditingFolder] = useState<AssetFolder | null>(null);
+  const [parentFolderIdForCreate, setParentFolderIdForCreate] = useState<string | null>(null);
+  const [folderDeleteTarget, setFolderDeleteTarget] = useState<AssetFolder | null>(null);
+
   // Asset modal state
   const [showAssetModal, setShowAssetModal] = useState(false);
   const [editingAsset, setEditingAsset] = useState<BacklotAsset | null>(null);
@@ -311,6 +330,24 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
   const { data: deliverables, isLoading: deliverablesLoading } = useProjectDeliverables(projectId);
   const { data: deliverablesSummary } = useDeliverablesSummary(projectId);
   const { data: templates = [] } = useDeliverableTemplates();
+
+  // Asset folders
+  const {
+    folders: assetFolders,
+    isLoading: foldersLoading,
+    createFolder,
+    updateFolder,
+    deleteFolder,
+  } = useAssetFolders({ projectId });
+
+  // Standalone assets (files uploaded from desktop)
+  const {
+    assets: standaloneAssets,
+    isLoading: standaloneLoading,
+  } = useStandaloneAssets({
+    projectId,
+    folderId: selectedFolderId,
+  });
 
   // Mutations
   const assetMutations = useAssetMutations(projectId);
@@ -511,6 +548,51 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  // Folder handlers
+  const handleCreateFolder = (parentId: string | null) => {
+    setEditingFolder(null);
+    setParentFolderIdForCreate(parentId);
+    setShowFolderModal(true);
+  };
+
+  const handleEditFolder = (folder: AssetFolder) => {
+    setEditingFolder(folder);
+    setParentFolderIdForCreate(null);
+    setShowFolderModal(true);
+  };
+
+  const handleFolderSubmit = async (input: AssetFolderInput) => {
+    try {
+      if (editingFolder) {
+        await updateFolder.mutateAsync({
+          folderId: editingFolder.id,
+          data: { name: input.name, folder_type: input.folder_type },
+        });
+        toast.success('Folder updated');
+      } else {
+        await createFolder.mutateAsync(input);
+        toast.success('Folder created');
+      }
+      setShowFolderModal(false);
+    } catch (error) {
+      toast.error(editingFolder ? 'Failed to update folder' : 'Failed to create folder');
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!folderDeleteTarget) return;
+    try {
+      await deleteFolder.mutateAsync(folderDeleteTarget.id);
+      if (selectedFolderId === folderDeleteTarget.id) {
+        setSelectedFolderId(null);
+      }
+      toast.success('Folder deleted');
+      setFolderDeleteTarget(null);
+    } catch (error) {
+      toast.error('Failed to delete folder');
+    }
+  };
+
   if (assetsLoading || deliverablesLoading) {
     return (
       <div className="space-y-4">
@@ -632,27 +714,92 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
 
         {/* Assets Tab */}
         <TabsContent value="assets" className="mt-6">
-          {filteredAssets.length === 0 ? (
-            <Card className="bg-charcoal-black/50 border-muted-gray/20 border-dashed">
-              <CardContent className="flex flex-col items-center justify-center py-12">
-                <Film className="w-12 h-12 text-muted-gray mb-4" />
-                <h3 className="text-lg font-medium text-bone-white mb-2">No assets yet</h3>
-                <p className="text-muted-gray text-sm mb-4">
-                  {searchQuery || typeFilter !== 'all' || statusFilter !== 'all'
-                    ? 'No assets match your filters'
-                    : 'Add your first asset to start tracking'}
-                </p>
-                {canEdit && !searchQuery && typeFilter === 'all' && statusFilter === 'all' && (
-                  <Button onClick={() => openAssetModal()} className="bg-accent-yellow text-charcoal-black hover:bg-bone-white">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Asset
-                  </Button>
-                )}
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredAssets.map((asset) => (
+          <div className="flex gap-6">
+            {/* Folder Sidebar */}
+            <div className="w-56 flex-shrink-0">
+              <Card className="bg-charcoal-black/50 border-muted-gray/20 h-[600px]">
+                <AssetFolderTree
+                  folders={assetFolders || []}
+                  selectedFolderId={selectedFolderId}
+                  onSelectFolder={setSelectedFolderId}
+                  onCreateFolder={handleCreateFolder}
+                  onEditFolder={handleEditFolder}
+                  onDeleteFolder={(folder) => setFolderDeleteTarget(folder)}
+                  isLoading={foldersLoading}
+                  canEdit={canEdit}
+                />
+              </Card>
+            </div>
+
+            {/* Assets Content */}
+            <div className="flex-1 space-y-6">
+              {/* Standalone Files from Folder (uploaded from desktop) */}
+              {(standaloneAssets && standaloneAssets.length > 0) && (
+                <div>
+                  <h3 className="text-sm font-medium text-bone-white mb-3 flex items-center gap-2">
+                    <File className="w-4 h-4 text-accent-yellow" />
+                    Files {selectedFolderId ? 'in folder' : '(all)'} ({standaloneAssets.length})
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+                    {standaloneAssets.map((file) => (
+                      <Card key={file.id} className="bg-charcoal-black/50 border-muted-gray/20 hover:border-accent-yellow/30 transition-colors p-3">
+                        <div className="flex items-start gap-3">
+                          <div className="p-2 rounded bg-white/5">
+                            {file.asset_type === 'audio' ? <Music className="w-5 h-5 text-accent-yellow" /> :
+                             file.asset_type === '3d_model' ? <Box className="w-5 h-5 text-accent-yellow" /> :
+                             file.asset_type === 'image' ? <Image className="w-5 h-5 text-accent-yellow" /> :
+                             file.asset_type === 'document' ? <FileText className="w-5 h-5 text-accent-yellow" /> :
+                             <File className="w-5 h-5 text-accent-yellow" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-bone-white truncate">{file.name}</p>
+                            <p className="text-xs text-muted-gray">{file.file_name}</p>
+                            {file.file_size_bytes && (
+                              <p className="text-xs text-muted-gray mt-1">
+                                {(file.file_size_bytes / 1024 / 1024).toFixed(1)} MB
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {standaloneLoading && (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent-yellow" />
+                </div>
+              )}
+
+              {/* Video Assets Grid */}
+              <div>
+                <h3 className="text-sm font-medium text-bone-white mb-3 flex items-center gap-2">
+                  <Film className="w-4 h-4 text-accent-yellow" />
+                  Video Assets ({filteredAssets.length})
+                </h3>
+              {filteredAssets.length === 0 ? (
+                <Card className="bg-charcoal-black/50 border-muted-gray/20 border-dashed">
+                  <CardContent className="flex flex-col items-center justify-center py-12">
+                    <Film className="w-12 h-12 text-muted-gray mb-4" />
+                    <h3 className="text-lg font-medium text-bone-white mb-2">No video assets yet</h3>
+                    <p className="text-muted-gray text-sm mb-4">
+                      {searchQuery || typeFilter !== 'all' || statusFilter !== 'all'
+                        ? 'No assets match your filters'
+                        : 'Add your first video asset to start tracking'}
+                    </p>
+                    {canEdit && !searchQuery && typeFilter === 'all' && statusFilter === 'all' && (
+                      <Button onClick={() => openAssetModal()} className="bg-accent-yellow text-charcoal-black hover:bg-bone-white">
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Asset
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {filteredAssets.map((asset) => (
                 <Card key={asset.id} className="bg-charcoal-black/50 border-muted-gray/20 hover:border-accent-yellow/30 transition-colors">
                   <CardHeader className="pb-2">
                     <div className="flex items-start justify-between">
@@ -737,12 +884,15 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
                     </div>
                   </CardContent>
 
-                  {/* Source Clips Section */}
-                  <SourceClipsSection assetId={asset.id} />
-                </Card>
-              ))}
+                    {/* Source Clips Section */}
+                    <SourceClipsSection assetId={asset.id} />
+                  </Card>
+                ))}
+              </div>
+            )}
+              </div>
             </div>
-          )}
+          </div>
         </TabsContent>
 
         {/* Deliverables Tab */}
@@ -842,7 +992,40 @@ const AssetsView: React.FC<AssetsViewProps> = ({ projectId, canEdit }) => {
             </div>
           )}
         </TabsContent>
+
       </Tabs>
+
+      {/* Create/Edit Folder Modal */}
+      <CreateAssetFolderModal
+        open={showFolderModal}
+        onOpenChange={setShowFolderModal}
+        onSubmit={handleFolderSubmit}
+        parentFolderId={parentFolderIdForCreate}
+        editFolder={editingFolder}
+        isSubmitting={createFolder.isPending || updateFolder.isPending}
+      />
+
+      {/* Folder Delete Confirmation */}
+      <AlertDialog open={!!folderDeleteTarget} onOpenChange={() => setFolderDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{folderDeleteTarget?.name}"? This action cannot be undone.
+              Any files in this folder will be moved to the root level.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteFolder}
+              className="bg-red-500 hover:bg-red-600"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Asset Modal */}
       <Dialog open={showAssetModal} onOpenChange={setShowAssetModal}>

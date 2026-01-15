@@ -1337,60 +1337,86 @@ async def check_storage_quota(user_id: str, file_size: int = 0) -> Dict[str, Any
     Raises:
         HTTPException 403 if quota would be exceeded
     """
-    client = get_client()
-
-    # Get current usage
-    usage_result = client.table("user_storage_usage").select(
-        "total_bytes_used, custom_quota_bytes"
-    ).eq("user_id", user_id).single().execute()
-
-    current_usage = 0
-    custom_quota = None
-
-    if usage_result.data:
-        current_usage = usage_result.data.get("total_bytes_used") or 0
-        custom_quota = usage_result.data.get("custom_quota_bytes")
-
-    # Get effective quota
-    if custom_quota:
-        effective_quota = custom_quota
-    else:
-        # Get max quota from user's roles
-        roles_result = client.table("user_roles").select(
-            "custom_roles(storage_quota_bytes)"
-        ).eq("user_id", user_id).execute()
-
-        max_quota = 1073741824  # 1GB default
-        for role in (roles_result.data or []):
-            role_quota = (role.get("custom_roles") or {}).get("storage_quota_bytes") or 0
-            if role_quota > max_quota:
-                max_quota = role_quota
-        effective_quota = max_quota
-
-    bytes_remaining = effective_quota - current_usage
-    can_upload = (current_usage + file_size) <= effective_quota
-
-    result = {
-        "can_upload": can_upload,
-        "bytes_used": current_usage,
-        "quota_bytes": effective_quota,
-        "bytes_remaining": bytes_remaining,
-        "percentage_used": round((current_usage / effective_quota) * 100, 1) if effective_quota > 0 else 0
+    # Default quota values - allow uploads if quota check fails
+    default_quota = 10737418240  # 10GB default
+    default_result = {
+        "can_upload": True,
+        "bytes_used": 0,
+        "quota_bytes": default_quota,
+        "bytes_remaining": default_quota,
+        "percentage_used": 0
     }
 
-    if not can_upload and file_size > 0:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "message": "Storage quota exceeded",
-                "bytes_used": current_usage,
-                "quota_bytes": effective_quota,
-                "file_size": file_size,
-                "bytes_remaining": bytes_remaining
-            }
-        )
+    try:
+        client = get_client()
 
-    return result
+        # Get current usage - don't use single() to avoid error on missing records
+        try:
+            usage_result = client.table("user_storage_usage").select(
+                "total_bytes_used, custom_quota_bytes"
+            ).eq("user_id", user_id).execute()
+        except Exception as e:
+            print(f"Warning: Could not query user_storage_usage: {e}")
+            return default_result
+
+        current_usage = 0
+        custom_quota = None
+
+        # Get first result if any exist
+        if usage_result.data and len(usage_result.data) > 0:
+            current_usage = usage_result.data[0].get("total_bytes_used") or 0
+            custom_quota = usage_result.data[0].get("custom_quota_bytes")
+
+        # Get effective quota
+        if custom_quota:
+            effective_quota = custom_quota
+        else:
+            # Get max quota from user's roles - wrap in try-catch
+            try:
+                roles_result = client.table("user_roles").select(
+                    "custom_roles(storage_quota_bytes)"
+                ).eq("user_id", user_id).execute()
+
+                max_quota = default_quota
+                for role in (roles_result.data or []):
+                    role_quota = (role.get("custom_roles") or {}).get("storage_quota_bytes") or 0
+                    if role_quota > max_quota:
+                        max_quota = role_quota
+                effective_quota = max_quota
+            except Exception as e:
+                print(f"Warning: Could not query user_roles: {e}")
+                effective_quota = default_quota
+
+        bytes_remaining = effective_quota - current_usage
+        can_upload = (current_usage + file_size) <= effective_quota
+
+        result = {
+            "can_upload": can_upload,
+            "bytes_used": current_usage,
+            "quota_bytes": effective_quota,
+            "bytes_remaining": bytes_remaining,
+            "percentage_used": round((current_usage / effective_quota) * 100, 1) if effective_quota > 0 else 0
+        }
+
+        if not can_upload and file_size > 0:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": "Storage quota exceeded",
+                    "bytes_used": current_usage,
+                    "quota_bytes": effective_quota,
+                    "file_size": file_size,
+                    "bytes_remaining": bytes_remaining
+                }
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Warning: Storage quota check failed: {e}")
+        return default_result
 
 
 async def verify_project_access(
@@ -25770,7 +25796,7 @@ async def update_task(
         await verify_task_list_access(client, task_result.data["task_list_id"], user["id"], require_edit=True)
 
         # Build update data
-        update_data = {"last_updated_by_user_id": user["id"]}
+        update_data = {}
 
         if request.title is not None:
             update_data["title"] = request.title
@@ -26625,7 +26651,6 @@ async def reorder_tasks(
         for task_item in request.tasks:
             update_data = {
                 "sort_index": task_item.sort_index,
-                "last_updated_by_user_id": user["id"],
             }
 
             if task_item.status is not None:
@@ -42433,6 +42458,67 @@ async def get_review_folders_for_desktop(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/desktop-keys/projects/{project_id}/review/folders")
+async def create_review_folder_for_desktop(
+    project_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Create review folder using desktop API key authentication."""
+    try:
+        user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        folder_id = str(uuid.uuid4())
+        name = request.get("name", "New Folder")
+        description = request.get("description")
+        color = request.get("color")
+        parent_folder_id = request.get("parent_folder_id")
+
+        # Validate parent folder if specified
+        if parent_folder_id:
+            parent_resp = client.table("backlot_review_folders").select("id").eq(
+                "id", parent_folder_id
+            ).eq("project_id", project_id).execute()
+            if not parent_resp.data:
+                raise HTTPException(status_code=404, detail="Parent folder not found")
+
+        # Get max sort_order for this level
+        sort_query = client.table("backlot_review_folders").select("sort_order").eq(
+            "project_id", project_id
+        )
+        if parent_folder_id:
+            sort_query = sort_query.eq("parent_folder_id", parent_folder_id)
+        else:
+            sort_query = sort_query.is_("parent_folder_id", "null")
+        sort_resp = sort_query.order("sort_order", desc=True).limit(1).execute()
+        max_sort = (sort_resp.data[0]["sort_order"] if sort_resp.data else 0) + 1
+
+        folder_data = {
+            "id": folder_id,
+            "project_id": project_id,
+            "name": name,
+            "description": description,
+            "color": color,
+            "parent_folder_id": parent_folder_id,
+            "sort_order": max_sort,
+            "created_by_user_id": user_id
+        }
+
+        result = client.table("backlot_review_folders").insert(folder_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create folder")
+
+        return {"folder": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating review folder for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/desktop-keys/projects/{project_id}/review/assets")
 async def get_review_assets_for_desktop(
     project_id: str,
@@ -42662,6 +42748,39 @@ async def get_asset_folders_for_desktop(
         raise
     except Exception as e:
         print(f"Error getting asset folders for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/projects/{project_id}/assets/folders")
+async def create_asset_folder_for_desktop(
+    project_id: str,
+    folder_input: AssetFolderInput,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """Create asset folder using desktop API key authentication."""
+    try:
+        user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        insert_data = {
+            "project_id": project_id,
+            "name": folder_input.name,
+            "folder_type": folder_input.folder_type,
+            "parent_folder_id": folder_input.parent_folder_id,
+            "created_by_user_id": user_id,
+        }
+
+        result = client.table("backlot_asset_folders").insert(insert_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create folder")
+
+        return {"folder": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating asset folder for desktop: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

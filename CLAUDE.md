@@ -5,11 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Second Watch Network is a faith-driven filmmaking platform with three main components:
-- **Backend**: FastAPI Python REST API (~50 API modules)
-- **Frontend**: Vite/React TypeScript web app with shadcn/ui
+- **Backend**: FastAPI Python REST API (~70 API modules) - see `backend/CLAUDE.md`
+- **Frontend**: Vite/React TypeScript web app with shadcn/ui - see `frontend/CLAUDE.md`
 - **SWN Dailies Helper**: PyQt6 desktop app for footage management
 
-Database: Supabase (PostgreSQL)
+Database: AWS RDS PostgreSQL (SQLAlchemy with Supabase-compatible query wrapper)
 
 ## Development Commands
 
@@ -55,69 +55,73 @@ cd swn-dailies-helper && DISPLAY=:0 python -m src.main
 ## Architecture
 
 ### Backend Structure (`backend/app/`)
-- `api/` - Route modules organized by domain (auth, users, filmmakers, submissions, backlot, messages, notifications, billing, etc.)
-- `core/` - Config (Pydantic settings), Supabase client, startup logic
-- `models/` - SQLModel database models
-- `schemas/` - Pydantic request/response schemas
-- `services/` - Business logic (email_service, etc.)
-- `main.py` - FastAPI app entry point
-- `socketio_app.py` - WebSocket configuration
+- `api/` - ~70 route modules organized by domain and phase
+- `core/` - Config, database client, auth, permissions, storage
+- `services/` - Business logic (email, PDF generation, media orchestration, revenue calculation)
+- `main.py` - FastAPI app entry with all router registrations
 
-**Largest API module**: `api/backlot.py` (~40k lines) - Production management hub
-
-Deployment: AWS Lambda via SAM (`template.yaml`, `deploy.sh`)
+**Major API domains**:
+- Auth/Users: `auth.py`, `users.py`, `profiles.py`
+- Production (Backlot): `backlot.py` (~40k lines), plus `scene_view.py`, `day_view.py`, `timecards.py`, `invoices.py`, etc.
+- Streaming: `consumer_video.py`, `worlds.py`, `episodes.py`, `shorts.py`, `live_events.py`
+- Church Tools: `church_services.py`, `church_people.py`, `church_planning.py`
+- Admin: `admin.py`, `admin_users.py`, `admin_content.py`, `admin_backlot.py`
+- Monetization: `creator_earnings.py`, `organizations.py`, `billing.py`, `financing.py`
 
 ### Frontend Structure (`frontend/src/`)
-- `pages/` - Route components (70+ pages)
-- `components/` - Feature-based organization
-  - `ui/` - shadcn/ui base components (do not edit directly)
-  - `backlot/workspace/` - Production management UI (largest: clearances, casting, invoices, etc.)
-- `hooks/` - Custom React hooks
-  - `backlot/` - 50+ specialized hooks for production features (useClearances, useCastingCrew, useInvoices, etc.)
-- `context/` - React Context providers (AuthContext, SettingsContext, SocketContext)
-- `lib/api.ts` - Centralized API client (APIClient class with token management)
-- `types/` - TypeScript type definitions (backlot.ts is the largest)
-
-Routes defined in `src/App.tsx`. Vite proxies `/api` to backend at localhost:8000.
+- `pages/` - 70+ route components organized by domain
+- `components/` - Feature-based: `backlot/`, `gear/`, `admin/`, `order/`, `watch/`, `dashboard/`
+- `hooks/` - Domain hooks: `backlot/` (60+), `gear/`, `watch/`
+- `context/` - Providers: AuthContext, EnrichedProfileContext, SocketContext, ThemeContext
+- `lib/api.ts` - Centralized API client (~4100 lines) with domain sub-clients
 
 ### Dailies Helper Structure (`swn-dailies-helper/src/`)
 - `ui/pages/` - PyQt6 page components
-- `ui/dialogs/` - Modal dialogs
-- `services/` - Business logic (proxy transcoding, uploads, MHL generation)
+- `services/` - Proxy transcoding, uploads, ASC-MHL manifest generation
 - `models/` - Data models
-- `bin/` - Bundled binaries (rclone, smartctl, mhl-tool)
+- `bin/` - Bundled binaries (rclone, ffmpeg, mhl-tool)
 
 ## Key Patterns
 
-### Frontend
-- TypeScript exclusively
-- shadcn/ui components (import from `@/components/ui/`)
-- Tailwind CSS for styling
-- React Router for navigation
-- TanStack React Query for data fetching (hooks in `hooks/backlot/`)
-- React Hook Form + Zod for forms
+### Database Access (Backend)
+```python
+# Supabase-style client (simple CRUD)
+from app.core.database import get_client
+client = get_client()
+result = client.table("profiles").select("*").eq("id", user_id).single().execute()
 
-### Backend
-- Async/await throughout with FastAPI
-- Two database patterns:
-  - Supabase client for simple CRUD: `from app.core.database import get_client`
-  - Raw SQL via SQLAlchemy for complex queries: `from app.core.database import execute_query, execute_single`
-- Modular API routes organized by domain
-- JWT authentication via AWS Cognito
-- **Cognito ID → Profile ID**: Auth tokens contain Cognito user IDs, but the `profiles` table uses UUIDs. Use `get_profile_id_from_cognito_id()` helper to resolve (see `app/api/users.py`)
-
-### Database Migrations
-Located in `backend/migrations/`. Run manually against Supabase:
-```bash
-PGPASSWORD='...' psql -h <host> -U swn_admin -d secondwatchnetwork -f migrations/044_*.sql
+# Raw SQL (complex queries)
+from app.core.database import execute_query, execute_single, execute_insert
+rows = execute_query("SELECT * FROM worlds WHERE creator_id = :id", {"id": user_id})
 ```
 
-### Design System Colors
-- Primary Red: #FF3C3C
-- Charcoal Black: #121212
-- Bone White: #F9F5EF
-- Muted Gray: #4C4C4C
-- Accent Yellow: #FCDC58
+### Authentication
+- AWS Cognito JWT tokens
+- Cognito `sub` → Profile UUID mapping via `get_profile_id_from_cognito_id()`
+- Permission system in `app/core/permissions.py` with `Permission.BACKLOT_VIEW`, etc.
+- Role-based deps in `app/core/deps.py`: `require_admin`, `require_order_member`, `require_premium_content_access`
+
+### Frontend Data Fetching
+```typescript
+import { api } from '@/lib/api';
+import { useQuery } from '@tanstack/react-query';
+
+const { data } = useQuery({
+  queryKey: ['backlot-project', projectId],
+  queryFn: () => api.get(`/backlot/projects/${projectId}`)
+});
+```
+
+### Design System
+| Color | Hex | Tailwind Class |
+|-------|-----|----------------|
+| Primary Red | #FF3C3C | `text-primary-red` |
+| Charcoal Black | #121212 | `bg-charcoal-black` |
+| Bone White | #F9F5EF | `text-bone-white` |
+| Muted Gray | #4C4C4C | `text-muted-gray` |
+| Accent Yellow | #FCDC58 | `text-accent-yellow` |
+
+**Fonts**: Space Grotesk (headings), IBM Plex Sans (body), Permanent Marker/Special Elite (decorative)
 
 ## Service Ports
 | Service | Port | Endpoint |
@@ -127,11 +131,6 @@ PGPASSWORD='...' psql -h <host> -U swn_admin -d secondwatchnetwork -f migrations
 | Dailies Helper | 47284 | /status |
 
 ## Deployment
-- Backend: AWS Lambda + SAM (`template.yaml`, `deploy.sh`)
-- Frontend: S3 + CloudFront (via GitHub Actions on push to master)
-- Production API: https://vnvvoelid6.execute-api.us-east-1.amazonaws.com
-
-### Deploy Commands
 ```bash
 # Backend (AWS Lambda)
 cd backend && sam build && sam deploy
@@ -142,7 +141,14 @@ aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
 aws cloudfront create-invalidation --distribution-id EJRGRTMJFSXN2 --paths "/*"
 ```
 
+Production API: https://vnvvoelid6.execute-api.us-east-1.amazonaws.com
+
 ## Custom Claude Agents
 Located in `.claude/commands/`:
 - `/admin` - Admin panel specialist for planning, building, and debugging admin features
 - `/backlot_specialist` - Backlot production management expert for production features
+
+## Component-Specific Documentation
+For detailed patterns and architecture, see:
+- `backend/CLAUDE.md` - Database patterns, permissions, services, migrations
+- `frontend/CLAUDE.md` - Hooks, components, dashboard system, Gear House, expense system

@@ -10,9 +10,13 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 import csv
 import io
+import json
 import re
+import logging
 
 from app.core.database import get_client, execute_query, execute_single
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -619,19 +623,25 @@ async def create_item(
         "source_url": request.source_url,
         "title": request.title,
         "notes": request.notes,
-        "tags": request.tags or [],
+        "tags": json.dumps(request.tags or []),  # JSONB column
         "category": request.category,
         "rating": request.rating,
-        "color_palette": request.color_palette or [],
+        "color_palette": json.dumps(request.color_palette or []),  # JSONB column
         "aspect_ratio": request.aspect_ratio,
         "created_by_user_id": user["id"],
     }
 
-    result = client.table("moodboard_items").insert(item_data).execute()
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Failed to create item")
-
-    return result.data[0]
+    try:
+        result = client.table("moodboard_items").insert(item_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create item")
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"Error creating moodboard item: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to create item: {str(e)}")
 
 
 @router.put("/projects/{project_id}/moodboards/{moodboard_id}/items/{item_id}")
@@ -951,3 +961,149 @@ async def get_moodboard_print_data(
         "unsorted_items": items_by_section.get(None, []),
         "generated_at": datetime.utcnow().isoformat(),
     }
+
+
+# =====================================================
+# PDF Export Endpoints
+# =====================================================
+
+@router.get("/projects/{project_id}/moodboards/{moodboard_id}/export.pdf")
+async def export_moodboard_pdf(
+    project_id: str,
+    moodboard_id: str,
+    embed_images: bool = Query(True, description="Embed images as base64 (slower but works offline)"),
+    authorization: str = Header(None)
+):
+    """Export moodboard as PDF."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get project name
+    project = client.table("backlot_projects").select("title").eq("id", project_id).execute()
+    project_title = project.data[0]["title"] if project.data else "Unknown Project"
+
+    # Get moodboard
+    moodboard = client.table("moodboards").select("*").eq("id", moodboard_id).eq("project_id", project_id).execute()
+    if not moodboard.data:
+        raise HTTPException(status_code=404, detail="Moodboard not found")
+
+    moodboard_data = moodboard.data[0]
+
+    # Get sections
+    sections = client.table("moodboard_sections").select("*").eq("moodboard_id", moodboard_id).order("sort_order").execute()
+
+    # Get items
+    items = client.table("moodboard_items").select("*").eq("moodboard_id", moodboard_id).order("sort_order").execute()
+
+    # Group items by section
+    items_by_section: Dict[Optional[str], List[Dict]] = {None: []}
+    for section in (sections.data or []):
+        items_by_section[section["id"]] = []
+
+    for item in (items.data or []):
+        section_key = item.get("section_id")
+        if section_key in items_by_section:
+            items_by_section[section_key].append(item)
+        else:
+            items_by_section[None].append(item)
+
+    # Build sections with items
+    pdf_sections = []
+    for section in (sections.data or []):
+        pdf_sections.append({
+            "title": section["title"],
+            "items": items_by_section.get(section["id"], [])
+        })
+
+    try:
+        from app.services.moodboard_pdf_service import generate_moodboard_pdf
+
+        pdf_bytes = generate_moodboard_pdf(
+            project_title=project_title,
+            moodboard_title=moodboard_data["title"],
+            moodboard_description=moodboard_data.get("description"),
+            sections=pdf_sections,
+            unsorted_items=items_by_section.get(None, []),
+            embed_images=embed_images,
+        )
+
+        # Sanitize filename
+        safe_title = re.sub(r'[^\w\s-]', '', moodboard_data["title"]).strip().replace(' ', '_')[:50]
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_title}_moodboard.pdf"'
+            }
+        )
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error generating moodboard PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
+@router.get("/projects/{project_id}/moodboards/{moodboard_id}/sections/{section_id}/export.pdf")
+async def export_section_pdf(
+    project_id: str,
+    moodboard_id: str,
+    section_id: str,
+    embed_images: bool = Query(True, description="Embed images as base64 (slower but works offline)"),
+    authorization: str = Header(None)
+):
+    """Export a single moodboard section as PDF."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+
+    # Get project name
+    project = client.table("backlot_projects").select("title").eq("id", project_id).execute()
+    project_title = project.data[0]["title"] if project.data else "Unknown Project"
+
+    # Get moodboard
+    moodboard = client.table("moodboards").select("title").eq("id", moodboard_id).eq("project_id", project_id).execute()
+    if not moodboard.data:
+        raise HTTPException(status_code=404, detail="Moodboard not found")
+
+    moodboard_title = moodboard.data[0]["title"]
+
+    # Get section
+    section = client.table("moodboard_sections").select("*").eq("id", section_id).eq("moodboard_id", moodboard_id).execute()
+    if not section.data:
+        raise HTTPException(status_code=404, detail="Section not found")
+
+    section_data = section.data[0]
+
+    # Get items for this section
+    items = client.table("moodboard_items").select("*").eq("moodboard_id", moodboard_id).eq("section_id", section_id).order("sort_order").execute()
+
+    try:
+        from app.services.moodboard_pdf_service import generate_section_pdf
+
+        pdf_bytes = generate_section_pdf(
+            project_title=project_title,
+            moodboard_title=moodboard_title,
+            section_title=section_data["title"],
+            items=items.data or [],
+            embed_images=embed_images,
+        )
+
+        # Sanitize filename
+        safe_title = re.sub(r'[^\w\s-]', '', section_data["title"]).strip().replace(' ', '_')[:50]
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_title}_section.pdf"'
+            }
+        )
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error generating section PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
