@@ -2489,9 +2489,30 @@ class UnifiedUploadPage(QWidget):
         self.progress_label.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 12px;")
         self.progress_bar.setValue(0)
 
+        # Determine primary destination based on user's settings
+        # Assets is always enabled as primary destination if a folder is selected
+        assets_folder_id = assets_config.get("folder_id")
+        dailies_enabled = self.dest_settings.dailies_check.isChecked()
+        review_enabled = self.dest_settings.review_check.isChecked()
+
+        logger.info(f"Upload settings: assets_folder={assets_folder_id}, dailies={dailies_enabled}, review={review_enabled}")
+
         # Apply destination configs to each job
         for job in jobs:
             job.destination_config["project_id"] = project_id
+
+            # Override destination to assets if an asset folder is selected
+            # This ensures files go where the user configured, not auto-detection
+            if assets_folder_id:
+                job.destination = "assets"
+                logger.info(f"Job {job.file_name}: destination overridden to 'assets' (folder: {assets_folder_id})")
+            elif dailies_enabled:
+                job.destination = "dailies"
+                logger.info(f"Job {job.file_name}: destination set to 'dailies'")
+            elif review_enabled:
+                job.destination = "review"
+                logger.info(f"Job {job.file_name}: destination set to 'review'")
+            # else: keep auto-detected destination
 
             if job.destination == "dailies":
                 job.destination_config.update({
