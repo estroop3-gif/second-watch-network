@@ -1,4 +1,4 @@
 """Version information for SWN Dailies Helper."""
 
-__version__ = "1.2.1"
-__build_date__ = "2025-01-15"
+__version__ = "1.3.0"
+__build_date__ = "2026-01-15"

@@ -1,7 +1,9 @@
 """
 Settings page - Configure proxy settings, paths, etc.
 """
+import logging
 from typing import Optional, Callable, TYPE_CHECKING
+from datetime import date
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -17,14 +19,19 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QFileDialog,
     QDialog,
+    QInputDialog,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt
 
 from src.services.config import ConfigManager
+from src.services.project_api import ProjectAPIService
 from src.ui.styles import COLORS
 
 if TYPE_CHECKING:
     from src.services.connection_manager import ConnectionManager
+
+logger = logging.getLogger("swn-helper")
 
 
 class SettingsPage(QWidget):
@@ -39,6 +46,7 @@ class SettingsPage(QWidget):
         super().__init__()
         self.config = config
         self.connection_manager = connection_manager
+        self.project_api = ProjectAPIService(config)
         self.on_disconnect = on_disconnect
         self.setup_ui()
 
@@ -65,6 +73,10 @@ class SettingsPage(QWidget):
         # Proxy Settings Card
         proxy_card = self.create_proxy_settings()
         layout.addWidget(proxy_card)
+
+        # Project Folders Card
+        folders_card = self.create_project_folders_settings()
+        layout.addWidget(folders_card)
 
         # Connection Card
         conn_card = self.create_connection_settings()
@@ -222,6 +234,203 @@ class SettingsPage(QWidget):
         layout.addWidget(hint)
 
         return card
+
+    def create_project_folders_settings(self) -> QFrame:
+        """Create project folders management card."""
+        card = QFrame()
+        card.setObjectName("card")
+
+        layout = QVBoxLayout(card)
+        layout.setSpacing(15)
+
+        title = QLabel("Project Folders")
+        title.setObjectName("card-title")
+        layout.addWidget(title)
+
+        # Description
+        desc = QLabel(
+            "Create folders in your Backlot project. These folders will appear "
+            "in the web interface for organizing dailies, assets, and review content."
+        )
+        desc.setObjectName("label-small")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        # Folder creation buttons
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        # Create Dailies Day button
+        dailies_btn = QPushButton("+ New Dailies Day")
+        dailies_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        dailies_btn.clicked.connect(self._create_dailies_day)
+        dailies_btn.setToolTip("Create a new production day for dailies")
+        btn_layout.addWidget(dailies_btn)
+
+        # Create Asset Folder button
+        asset_btn = QPushButton("+ New Asset Folder")
+        asset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        asset_btn.clicked.connect(self._create_asset_folder)
+        asset_btn.setToolTip("Create a new folder for assets")
+        btn_layout.addWidget(asset_btn)
+
+        # Create Review Folder button
+        review_btn = QPushButton("+ New Review Folder")
+        review_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        review_btn.clicked.connect(self._create_review_folder)
+        review_btn.setToolTip("Create a new folder for review content")
+        btn_layout.addWidget(review_btn)
+
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+        # Note
+        note = QLabel("You must be connected to a project to create folders.")
+        note.setObjectName("label-small")
+        note.setStyleSheet(f"color: {COLORS['muted-gray']}; font-style: italic;")
+        layout.addWidget(note)
+
+        return card
+
+    def _create_dailies_day(self):
+        """Create a new dailies day via dialog."""
+        project_id = self.config.get_project_id()
+        if not project_id:
+            QMessageBox.warning(self, "No Project", "Please connect to a project first.")
+            return
+
+        # Get day label from user
+        label, ok = QInputDialog.getText(
+            self,
+            "New Dailies Day",
+            "Day label (e.g., 'Day 1', 'Pickup Day'):",
+            QLineEdit.EchoMode.Normal,
+            "Day 1"
+        )
+
+        if not ok or not label.strip():
+            return
+
+        # Get shoot date
+        today = date.today().isoformat()
+        shoot_date, ok = QInputDialog.getText(
+            self,
+            "Shoot Date",
+            "Shoot date (YYYY-MM-DD):",
+            QLineEdit.EchoMode.Normal,
+            today
+        )
+
+        if not ok:
+            return
+
+        # Create via uploader service (has the endpoint)
+        try:
+            from src.services.uploader import UploaderService
+            uploader = UploaderService(self.config)
+            new_day = uploader.create_dailies_day(project_id, label.strip(), shoot_date)
+            if new_day:
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Created dailies day: {label}\n\nThe folder will appear in Backlot's Dailies tab."
+                )
+                logger.info(f"Created dailies day: {new_day.get('id')}")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to create dailies day.")
+        except Exception as e:
+            logger.error(f"Error creating dailies day: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to create day: {e}")
+
+    def _create_asset_folder(self):
+        """Create a new asset folder via dialog."""
+        project_id = self.config.get_project_id()
+        if not project_id:
+            QMessageBox.warning(self, "No Project", "Please connect to a project first.")
+            return
+
+        # Get folder name from user
+        name, ok = QInputDialog.getText(
+            self,
+            "New Asset Folder",
+            "Folder name:",
+            QLineEdit.EchoMode.Normal,
+            "New Folder"
+        )
+
+        if not ok or not name.strip():
+            return
+
+        # Get folder type
+        types = ["mixed", "audio", "3d", "graphics", "documents"]
+        type_labels = ["Mixed", "Audio", "3D Assets", "Graphics", "Documents"]
+        folder_type, ok = QInputDialog.getItem(
+            self,
+            "Folder Type",
+            "Select folder type:",
+            type_labels,
+            0,
+            False
+        )
+
+        if not ok:
+            return
+
+        # Map back to type value
+        selected_type = types[type_labels.index(folder_type)]
+
+        # Create via project API
+        try:
+            new_folder = self.project_api.create_asset_folder(
+                project_id, name.strip(), selected_type
+            )
+            if new_folder:
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Created asset folder: {name}\n\nThe folder will appear in Backlot's Assets tab."
+                )
+                logger.info(f"Created asset folder: {new_folder.get('id')}")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to create asset folder.")
+        except Exception as e:
+            logger.error(f"Error creating asset folder: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to create folder: {e}")
+
+    def _create_review_folder(self):
+        """Create a new review folder via dialog."""
+        project_id = self.config.get_project_id()
+        if not project_id:
+            QMessageBox.warning(self, "No Project", "Please connect to a project first.")
+            return
+
+        # Get folder name from user
+        name, ok = QInputDialog.getText(
+            self,
+            "New Review Folder",
+            "Folder name:",
+            QLineEdit.EchoMode.Normal,
+            "New Folder"
+        )
+
+        if not ok or not name.strip():
+            return
+
+        # Create via project API
+        try:
+            new_folder = self.project_api.create_review_folder(project_id, name.strip())
+            if new_folder:
+                QMessageBox.information(
+                    self,
+                    "Success",
+                    f"Created review folder: {name}\n\nThe folder will appear in Backlot's Review tab."
+                )
+                logger.info(f"Created review folder: {new_folder.get('id')}")
+            else:
+                QMessageBox.warning(self, "Error", "Failed to create review folder.")
+        except Exception as e:
+            logger.error(f"Error creating review folder: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to create folder: {e}")
 
     def create_connection_settings(self) -> QFrame:
         """Create connection settings card."""

@@ -102,6 +102,49 @@ class ProjectAPIService:
             logger.error(f"Error fetching review folders: {e}")
             return []
 
+    def create_review_folder(
+        self,
+        project_id: str,
+        name: str,
+        description: str = None,
+        color: str = None,
+        parent_folder_id: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create a new review folder for a project.
+        Returns the created folder or None on failure.
+        """
+        try:
+            url = f"{self.API_BASE}/api/v1/backlot/desktop-keys/projects/{project_id}/review/folders"
+            payload = {"name": name}
+            if description:
+                payload["description"] = description
+            if color:
+                payload["color"] = color
+            if parent_folder_id:
+                payload["parent_folder_id"] = parent_folder_id
+
+            with httpx.Client(timeout=self.TIMEOUT) as client:
+                response = client.post(url, headers=self._get_headers(), json=payload)
+
+                if response.status_code != 200:
+                    logger.error(f"API error {response.status_code}: {response.text}")
+
+                response.raise_for_status()
+                data = response.json()
+                return data.get("folder")
+        except httpx.HTTPStatusError as e:
+            error_detail = "Unknown error"
+            try:
+                error_detail = e.response.json().get("detail", e.response.text)
+            except Exception:
+                error_detail = e.response.text
+            logger.error(f"Error creating review folder: {error_detail}")
+            return None
+        except Exception as e:
+            logger.error(f"Error creating review folder: {e}")
+            return None
+
     def get_asset_folders(self, project_id: str) -> List[Dict[str, Any]]:
         """
         Get asset folders for a project.

@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFrame,
     QStatusBar,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QFont, QPixmap
@@ -168,8 +169,37 @@ class MainWindow(QMainWindow):
         sep.setStyleSheet(f"background-color: {COLORS['border-gray']};")
         layout.addWidget(sep)
 
-        # Navigation buttons
+        # Navigation buttons in scroll area
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        nav_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        nav_scroll.setStyleSheet(f"""
+            QScrollArea {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollArea > QWidget > QWidget {{
+                background: transparent;
+            }}
+            QScrollBar:vertical {{
+                background: {COLORS['charcoal-black']};
+                width: 8px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {COLORS['muted-gray']};
+                min-height: 20px;
+                border-radius: 4px;
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0px;
+            }}
+        """)
+
         nav_container = QWidget()
+        nav_container.setStyleSheet("background: transparent;")
         nav_layout = QVBoxLayout(nav_container)
         nav_layout.setContentsMargins(0, 10, 0, 10)
         nav_layout.setSpacing(2)
@@ -195,11 +225,12 @@ class MainWindow(QMainWindow):
         nav_layout.addWidget(self.btn_metadata)
         nav_layout.addWidget(self.btn_reports)
         nav_layout.addWidget(self.btn_settings)
+        nav_layout.addStretch()
 
-        layout.addWidget(nav_container)
-        layout.addStretch()
+        nav_scroll.setWidget(nav_container)
+        layout.addWidget(nav_scroll, 1)  # Give scroll area stretch factor
 
-        # Connection status widget (live updating, clickable)
+        # Connection status widget (live updating, clickable) - fixed at bottom
         self.connection_status_widget = ConnectionStatusWidget(self.connection_manager)
         layout.addWidget(self.connection_status_widget)
 
