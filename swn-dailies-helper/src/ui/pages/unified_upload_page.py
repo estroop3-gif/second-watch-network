@@ -211,12 +211,21 @@ class UploadWorker(QThread):
             job.error_message = "No project ID configured"
             return False
 
-        # Get day_id for dailies
+        # Route to appropriate upload method based on destination
+        if job.destination == "assets":
+            return self._upload_asset_file(job, project_id)
+        elif job.destination == "review":
+            return self._upload_review_file(job, project_id)
+        else:
+            # Default: dailies upload
+            return self._upload_dailies_file(job, project_id)
+
+    def _upload_dailies_file(self, job: UnifiedUploadJob, project_id: str) -> bool:
+        """Upload file to dailies using the dailies endpoint."""
         day_id = job.destination_config.get("production_day_id")
         camera_label = job.destination_config.get("camera_label", "A")
         roll_name = job.destination_config.get("roll_name", "001")
 
-        # Create upload job for the uploader service
         upload_job = UploadJob(
             file_path=job.file_path,
             file_name=job.file_name,
@@ -225,9 +234,8 @@ class UploadWorker(QThread):
         )
 
         def on_progress(idx: int, progress: float, status: str):
-            # Scale upload progress based on whether we have proxy
             base = 30 if job.destination_config.get("generate_proxy", True) else 0
-            scaled_progress = base + (progress * 0.5)  # 30-80% or 0-50%
+            scaled_progress = base + (progress * 0.5)
             self.job_progress.emit(job.id, scaled_progress, status)
 
         self.uploader.set_progress_callback(on_progress)
@@ -259,6 +267,133 @@ class UploadWorker(QThread):
             logger.error(traceback.format_exc())
             job.status = "failed"
             job.error_message = error_detail
+            return False
+
+    def _upload_asset_file(self, job: UnifiedUploadJob, project_id: str) -> bool:
+        """Upload file to assets using the asset-specific endpoint."""
+        from src.services.asset_uploader import AssetUploaderService, AssetUploadJob
+
+        folder_id = job.destination_config.get("folder_id")
+        asset_uploader = AssetUploaderService(self.config)
+
+        # Detect asset type from extension
+        asset_type = asset_uploader.detect_asset_type(job.file_path)
+
+        def on_progress(idx: int, progress: float, status: str):
+            self.job_progress.emit(job.id, progress, status)
+
+        asset_uploader.set_progress_callback(on_progress)
+
+        # Get presigned upload URL (creates asset record with folder_id)
+        upload_data = asset_uploader.get_upload_url(
+            project_id=project_id,
+            filename=job.file_name,
+            content_type=self._get_content_type(job.file_type),
+            asset_type=asset_type,
+            folder_id=folder_id,
+            name=job.file_path.stem,
+        )
+
+        if not upload_data:
+            job.status = "failed"
+            job.error_message = f"Failed to get asset upload URL [project={project_id}, folder={folder_id}]"
+            return False
+
+        upload_url = upload_data.get("upload_url")
+        job.s3_key = upload_data.get("s3_key")
+        asset_id = upload_data.get("asset_id")
+
+        # Create asset upload job
+        asset_job = AssetUploadJob(
+            file_path=job.file_path,
+            file_name=job.file_name,
+            file_size=job.file_size,
+            content_type=self._get_content_type(job.file_type),
+            asset_type=asset_type,
+        )
+
+        # Upload the file
+        success = asset_uploader.upload_file(asset_job, upload_url, 0)
+
+        if success and asset_id:
+            # Complete the upload
+            asset_uploader.complete_upload(asset_id, job.file_size)
+            job.checksum_verified = True
+            return True
+        else:
+            job.status = "failed"
+            job.error_message = asset_job.error or f"Asset upload failed [project={project_id}, folder={folder_id}]"
+            return False
+
+    def _upload_review_file(self, job: UnifiedUploadJob, project_id: str) -> bool:
+        """Upload file to review using the review-specific endpoint."""
+        from src.services.review_uploader import ReviewUploaderService, ReviewUploadJob
+
+        folder_id = job.destination_config.get("folder_id")
+        review_uploader = ReviewUploaderService(self.config)
+
+        def on_progress(idx: int, progress: float, status: str):
+            self.job_progress.emit(job.id, progress, status)
+
+        review_uploader.set_progress_callback(on_progress)
+
+        try:
+            # Step 1: Create review asset
+            asset_name = job.file_path.stem
+            asset = review_uploader.create_review_asset(
+                project_id=project_id,
+                name=asset_name,
+                folder_id=folder_id,
+            )
+
+            if not asset:
+                job.status = "failed"
+                job.error_message = f"Failed to create review asset [project={project_id}, folder={folder_id}]"
+                return False
+
+            asset_id = asset.get("id")
+
+            # Step 2: Get presigned upload URL
+            upload_data = review_uploader.get_upload_url(
+                project_id=project_id,
+                asset_id=asset_id,
+                filename=job.file_name,
+                content_type=self._get_content_type(job.file_type),
+            )
+
+            if not upload_data:
+                job.status = "failed"
+                job.error_message = f"Failed to get review upload URL [project={project_id}, folder={folder_id}]"
+                return False
+
+            upload_url = upload_data.get("upload_url")
+            job.s3_key = upload_data.get("s3_key")
+            version_id = upload_data.get("version_id")
+
+            # Step 3: Create review upload job and upload the file
+            review_job = ReviewUploadJob(
+                file_path=job.file_path,
+                file_name=job.file_name,
+                file_size=job.file_size,
+                content_type=self._get_content_type(job.file_type),
+            )
+
+            success = review_uploader.upload_file(review_job, upload_url, 0)
+
+            if success and version_id:
+                # Step 4: Complete the upload
+                review_uploader.complete_upload(version_id, job.file_size)
+                job.checksum_verified = True
+                return True
+            else:
+                job.status = "failed"
+                job.error_message = review_job.error or f"Review upload failed [project={project_id}, folder={folder_id}]"
+                return False
+
+        except Exception as e:
+            logger.error(f"Review upload error: {e}")
+            job.status = "failed"
+            job.error_message = str(e)
             return False
 
     def _upload_proxy(self, job: UnifiedUploadJob, proxy_path: Path):
