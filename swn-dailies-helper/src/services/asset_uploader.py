@@ -422,3 +422,47 @@ class AssetUploaderService:
                 all_success = False
 
         return all_success
+
+    def link_to_dailies(self, asset_id: str, day_id: Optional[str] = None, camera: str = "A") -> Optional[dict]:
+        """Link an uploaded asset to the Dailies view."""
+        try:
+            api_url = self.config.get_api_url() or self.API_BASE
+            url = f"{api_url}/api/v1/backlot/desktop-keys/assets/{asset_id}/link-to-dailies"
+
+            payload = {"camera": camera}
+            if day_id:
+                payload["day_id"] = day_id
+
+            logger.info(f"Linking asset {asset_id} to dailies...")
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(url, headers=self._get_headers(), json=payload)
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Linked to dailies: clip_id={result.get('dailies_clip_id')}")
+                return result
+        except Exception as e:
+            logger.error(f"Failed to link asset to dailies: {e}")
+            return None
+
+    def link_to_review(self, asset_id: str, folder_id: Optional[str] = None) -> Optional[dict]:
+        """Link an uploaded asset to the Review view."""
+        try:
+            api_url = self.config.get_api_url() or self.API_BASE
+            url = f"{api_url}/api/v1/backlot/desktop-keys/assets/{asset_id}/link-to-review"
+
+            payload = {}
+            if folder_id:
+                payload["folder_id"] = folder_id
+
+            logger.info(f"Linking asset {asset_id} to review...")
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(url, headers=self._get_headers(), json=payload)
+                response.raise_for_status()
+                result = response.json()
+                logger.info(f"Linked to review: asset_id={result.get('review_asset_id')}")
+                return result
+        except Exception as e:
+            logger.error(f"Failed to link asset to review: {e}")
+            return None

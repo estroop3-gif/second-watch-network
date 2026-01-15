@@ -345,6 +345,33 @@ class UploadWorker(QThread):
 
             if complete_success:
                 job.checksum_verified = True
+                # Store asset_id for linking
+                job.destination_config["uploaded_asset_id"] = asset_id
+
+                # Link to Dailies if requested
+                if job.destination_config.get("link_to_dailies"):
+                    logger.info(f"Linking asset {asset_id} to Dailies...")
+                    dailies_result = asset_uploader.link_to_dailies(
+                        asset_id=asset_id,
+                        camera=job.destination_config.get("camera_label", "A"),
+                    )
+                    if dailies_result:
+                        logger.info(f"Linked to Dailies: clip_id={dailies_result.get('dailies_clip_id')}")
+                    else:
+                        logger.warning(f"Failed to link to Dailies (upload still succeeded)")
+
+                # Link to Review if requested
+                if job.destination_config.get("link_to_review"):
+                    logger.info(f"Linking asset {asset_id} to Review...")
+                    review_result = asset_uploader.link_to_review(
+                        asset_id=asset_id,
+                        folder_id=job.destination_config.get("review_folder_id"),
+                    )
+                    if review_result:
+                        logger.info(f"Linked to Review: asset_id={review_result.get('review_asset_id')}")
+                    else:
+                        logger.warning(f"Failed to link to Review (upload still succeeded)")
+
                 logger.info(f"=== ASSET UPLOAD SUCCESS ===")
                 return True
             else:
@@ -1581,19 +1608,35 @@ class DestinationSettingsPanel(QWidget):
         assets_container.addWidget(self.assets_btn)
         layout.addLayout(assets_container)
 
-        # Dailies and Review destinations removed - all uploads go to Assets
-        # These could be re-added later when backend linking is implemented
+        # Dailies destination (links to dailies after asset upload)
+        dailies_container = QHBoxLayout()
+        dailies_container.setSpacing(4)
         self.dailies_check = QCheckBox()
         self.dailies_check.setChecked(False)
-        self.dailies_check.setVisible(False)
-        self.dailies_btn = QPushButton()
-        self.dailies_btn.setVisible(False)
+        self.dailies_check.setToolTip("Also link to Dailies view")
+        dailies_container.addWidget(self.dailies_check)
+        self.dailies_btn = QPushButton("📦 + Dailies")
+        self.dailies_btn.setMinimumHeight(32)
+        self.dailies_btn.setMinimumWidth(120)
+        self.dailies_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.dailies_btn.setStyleSheet(self._get_compact_button_style(enabled=False))
+        dailies_container.addWidget(self.dailies_btn)
+        layout.addLayout(dailies_container)
 
+        # Review destination (links to review after asset upload)
+        review_container = QHBoxLayout()
+        review_container.setSpacing(4)
         self.review_check = QCheckBox()
         self.review_check.setChecked(False)
-        self.review_check.setVisible(False)
-        self.review_btn = QPushButton()
-        self.review_btn.setVisible(False)
+        self.review_check.setToolTip("Also link to Review view")
+        review_container.addWidget(self.review_check)
+        self.review_btn = QPushButton("🎬 + Review")
+        self.review_btn.setMinimumHeight(32)
+        self.review_btn.setMinimumWidth(120)
+        self.review_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.review_btn.setStyleSheet(self._get_compact_button_style(enabled=False))
+        review_container.addWidget(self.review_btn)
+        layout.addLayout(review_container)
 
         layout.addStretch()
 
@@ -2445,12 +2488,14 @@ class UnifiedUploadPage(QWidget):
         self.progress_label.setStyleSheet(f"color: {COLORS['bone-white']}; font-size: 12px;")
         self.progress_bar.setValue(0)
 
-        # All uploads go to Assets - single upload destination
+        # All uploads go to Assets - with optional linking to Dailies/Review
         assets_folder_id = assets_config.get("folder_id")
+        link_to_dailies = self.dest_settings.dailies_check.isChecked()
+        link_to_review = self.dest_settings.review_check.isChecked()
 
-        logger.info(f"Upload settings: assets_folder={assets_folder_id}")
+        logger.info(f"Upload settings: assets_folder={assets_folder_id}, link_dailies={link_to_dailies}, link_review={link_to_review}")
 
-        # Apply destination configs to each job - ALL jobs go to assets
+        # Apply destination configs to each job - ALL jobs go to assets first
         for job in jobs:
             job.destination_config["project_id"] = project_id
 
@@ -2460,8 +2505,12 @@ class UnifiedUploadPage(QWidget):
                 "folder_id": assets_folder_id,
                 "tags": assets_config.get("tags", []),
                 "generate_proxy": assets_config.get("generate_proxy", False),
+                # Linking options
+                "link_to_dailies": link_to_dailies,
+                "link_to_review": link_to_review,
+                "camera_label": "A",  # Default camera for dailies
             })
-            logger.info(f"Job {job.file_name}: destination='assets', folder={assets_folder_id}")
+            logger.info(f"Job {job.file_name}: destination='assets', folder={assets_folder_id}, link_dailies={link_to_dailies}, link_review={link_to_review}")
 
         # Create and start upload worker
         self._upload_worker = UploadWorker(

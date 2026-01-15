@@ -42931,6 +42931,174 @@ async def complete_asset_upload_for_desktop(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/desktop-keys/assets/{asset_id}/link-to-dailies")
+async def link_asset_to_dailies(
+    asset_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Link a standalone asset to the Dailies system.
+    Creates a dailies clip entry that references the asset's S3 URL.
+    """
+    try:
+        await verify_desktop_key(x_api_key)
+        client = get_client()
+
+        # Get asset details
+        asset = client.table("backlot_standalone_assets").select("*").eq(
+            "id", asset_id
+        ).single().execute()
+
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        asset_data = asset.data
+        project_id = asset_data["project_id"]
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+
+        # Get or create dailies day
+        day_id = request.get("day_id")
+        if not day_id:
+            # Create a default "Uploads" day if none specified
+            existing_day = client.table("backlot_dailies_days").select("id").eq(
+                "project_id", project_id
+            ).eq("title", "Desktop Uploads").execute()
+
+            if existing_day.data:
+                day_id = existing_day.data[0]["id"]
+            else:
+                new_day = client.table("backlot_dailies_days").insert({
+                    "project_id": project_id,
+                    "title": "Desktop Uploads",
+                    "date": datetime.now().date().isoformat(),
+                }).execute()
+                day_id = new_day.data[0]["id"]
+
+        # Build S3 URL from key
+        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-files-517220555400")
+        s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
+
+        # Create dailies clip entry
+        clip_data = {
+            "project_id": project_id,
+            "day_id": day_id,
+            "file_name": asset_data["file_name"],
+            "clip_name": asset_data["name"],
+            "source_url": s3_url,
+            "source_file_size": asset_data.get("file_size_bytes"),
+            "storage_mode": "cloud",
+            "cloud_url": s3_url,
+            "processing_status": "completed",  # Already processed
+            "camera": request.get("camera", "A"),
+            "linked_standalone_asset_id": asset_id,
+        }
+
+        if asset_data.get("duration_seconds"):
+            clip_data["duration_seconds"] = int(asset_data["duration_seconds"])
+
+        result = client.table("backlot_dailies").insert(clip_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create dailies link")
+
+        return {
+            "success": True,
+            "dailies_clip_id": result.data[0]["id"],
+            "day_id": day_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error linking asset to dailies: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/desktop-keys/assets/{asset_id}/link-to-review")
+async def link_asset_to_review(
+    asset_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Link a standalone asset to the Review system.
+    Creates a review asset and version that references the asset's S3 URL.
+    """
+    try:
+        await verify_desktop_key(x_api_key)
+        client = get_client()
+
+        # Get asset details
+        asset = client.table("backlot_standalone_assets").select("*").eq(
+            "id", asset_id
+        ).single().execute()
+
+        if not asset.data:
+            raise HTTPException(status_code=404, detail="Asset not found")
+
+        asset_data = asset.data
+        project_id = asset_data["project_id"]
+        await verify_desktop_key_and_project_access(x_api_key, project_id)
+
+        # Get folder_id if specified
+        folder_id = request.get("folder_id")
+
+        # Build S3 URL from key
+        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-files-517220555400")
+        s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
+
+        # Create review asset
+        review_asset_data = {
+            "project_id": project_id,
+            "folder_id": folder_id,
+            "name": asset_data["name"],
+            "status": "draft",
+            "linked_standalone_asset_id": asset_id,
+        }
+
+        asset_result = client.table("backlot_review_assets").insert(review_asset_data).execute()
+
+        if not asset_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create review asset")
+
+        review_asset_id = asset_result.data[0]["id"]
+
+        # Create review version
+        version_data = {
+            "asset_id": review_asset_id,
+            "version_number": 1,
+            "storage_mode": "s3",
+            "s3_key": asset_data["s3_key"],
+            "cloud_url": s3_url,
+            "original_filename": asset_data["file_name"],
+            "file_size_bytes": asset_data.get("file_size_bytes"),
+            "transcode_status": "completed",  # Already in usable format
+            "linked_standalone_asset_id": asset_id,
+        }
+
+        version_result = client.table("backlot_review_versions").insert(version_data).execute()
+
+        if not version_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create review version")
+
+        return {
+            "success": True,
+            "review_asset_id": review_asset_id,
+            "review_version_id": version_result.data[0]["id"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error linking asset to review: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # Document Packages & Crew Onboarding
 # =====================================================
