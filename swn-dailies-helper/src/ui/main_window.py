@@ -31,6 +31,7 @@ from src.ui.styles import APP_STYLESHEET, COLORS
 from src.services.config import ConfigManager
 from src.services.connection_manager import ConnectionManager
 from src.services.session_manager import SessionManager
+from src.version import __version__
 
 
 class MainWindow(QMainWindow):
@@ -50,7 +51,7 @@ class MainWindow(QMainWindow):
 
     def setup_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("SWN Dailies Helper")
+        self.setWindowTitle(f"SWN Dailies Helper v{__version__}")
         self.setMinimumSize(900, 600)
 
         # Apply brand stylesheet
