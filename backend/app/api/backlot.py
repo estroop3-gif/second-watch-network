@@ -5177,14 +5177,30 @@ async def create_budget_category(
     await verify_budget_access(client, budget["project_id"], user_id)
 
     # Create category
-    category_data = category.model_dump()
-    category_data["budget_id"] = budget_id
+    try:
+        import uuid
+        from datetime import datetime
 
-    result = client.table("backlot_budget_categories").insert(category_data).execute()
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Failed to create category")
+        category_data = category.model_dump()
+        category_data["id"] = str(uuid.uuid4())
+        category_data["budget_id"] = budget_id
+        category_data["estimated_subtotal"] = 0
+        category_data["actual_subtotal"] = 0
+        category_data["created_at"] = datetime.utcnow().isoformat()
+        category_data["updated_at"] = datetime.utcnow().isoformat()
 
-    return result.data[0]
+        result = client.table("backlot_budget_categories").insert(category_data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create category - no data returned")
+
+        return result.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error creating budget category: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to create category: {str(e)}")
 
 
 @router.put("/budgets/{budget_id}/categories/{category_id}", response_model=BudgetCategory)
