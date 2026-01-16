@@ -30306,7 +30306,16 @@ async def get_dailies_clip_stream_url(
         # Generate presigned URL for the clip
         import boto3
         s3_client = boto3.client('s3', region_name='us-east-1')
+
+        # Detect which bucket the file is in from cloud_url or file_path
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        source_url = clip.get("cloud_url") or clip.get("file_path") or ""
+
+        # Check which bucket the file is in
+        if "swn-backlot-517220555400.s3" in source_url:
+            bucket_name = "swn-backlot-517220555400"
+        elif "swn-backlot-files-517220555400.s3" in source_url:
+            bucket_name = "swn-backlot-files-517220555400"
 
         # Use file_path as the S3 key (original quality)
         original_s3_key = clip.get("file_path") or ""
@@ -30321,6 +30330,7 @@ async def get_dailies_clip_stream_url(
                         original_s3_key = original_s3_key.split(f"{bucket}.s3.us-east-1.amazonaws.com/")[-1]
                     elif f"{bucket}.s3.amazonaws.com/" in original_s3_key:
                         original_s3_key = original_s3_key.split(f"{bucket}.s3.amazonaws.com/")[-1]
+                    bucket_name = bucket  # Use the detected bucket
                     break
 
         if not original_s3_key and clip.get("cloud_url"):
@@ -30332,6 +30342,7 @@ async def get_dailies_clip_stream_url(
                         original_s3_key = cloud_url.split(f"{bucket}.s3.us-east-1.amazonaws.com/")[-1]
                     elif f"{bucket}.s3.amazonaws.com/" in cloud_url:
                         original_s3_key = cloud_url.split(f"{bucket}.s3.amazonaws.com/")[-1]
+                    bucket_name = bucket  # Use the detected bucket
                     break
 
         # Strip any query parameters from the key
@@ -43172,8 +43183,8 @@ async def link_asset_to_dailies(
         project_id = asset_data["project_id"]
         await verify_desktop_key_and_project_access(x_api_key, project_id)
 
-        # Build S3 URL from key
-        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-files-517220555400")
+        # Build S3 URL from key (use same bucket as upload endpoint)
+        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
         s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
 
         # Create dailies clip entry in backlot_dailies_clips
@@ -43239,8 +43250,8 @@ async def link_asset_to_review(
         # Get folder_id if specified
         folder_id = request.get("folder_id")
 
-        # Build S3 URL from key
-        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-files-517220555400")
+        # Build S3 URL from key (use same bucket as upload endpoint)
+        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
         s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
 
         # Create review asset
