@@ -30307,13 +30307,19 @@ async def get_dailies_clip_stream_url(
         import boto3
         s3_client = boto3.client('s3', region_name='us-east-1')
 
-        # Detect which bucket the file is in from cloud_url or file_path
+        # Detect which bucket the file is in
+        # Default to files bucket for traditional dailies uploads
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        main_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
         source_url = clip.get("cloud_url") or clip.get("file_path") or ""
 
-        # Check which bucket the file is in
-        if "swn-backlot-517220555400.s3" in source_url:
-            bucket_name = "swn-backlot-517220555400"
+        # Determine bucket based on S3 key pattern:
+        # - Keys starting with "assets/" are in the main bucket (linked from standalone_assets)
+        # - Keys starting with "dailies/" are in the files bucket
+        if "/assets/" in source_url or source_url.startswith("assets/"):
+            bucket_name = main_bucket
+        elif "swn-backlot-517220555400.s3" in source_url:
+            bucket_name = main_bucket
         elif "swn-backlot-files-517220555400.s3" in source_url:
             bucket_name = "swn-backlot-files-517220555400"
 
@@ -30497,16 +30503,33 @@ async def get_dailies_clip_stream_urls(
 
         import boto3
         s3_client = boto3.client('s3', region_name='us-east-1')
+
+        # Detect which bucket the file is in
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        main_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        source_url = clip.get("cloud_url") or clip.get("file_path") or ""
+
+        # Determine bucket based on S3 key pattern
+        if "/assets/" in source_url or source_url.startswith("assets/"):
+            bucket_name = main_bucket
+        elif "swn-backlot-517220555400.s3" in source_url:
+            bucket_name = main_bucket
 
         # Get original S3 key
         original_s3_key = clip.get("file_path") or ""
         if not original_s3_key and clip.get("cloud_url"):
             cloud_url = clip["cloud_url"]
-            if f"{bucket_name}.s3" in cloud_url:
-                original_s3_key = cloud_url.split(f"{bucket_name}.s3.us-east-1.amazonaws.com/")[-1]
-            elif "s3.amazonaws.com" in cloud_url:
-                original_s3_key = cloud_url.split(f"s3.us-east-1.amazonaws.com/{bucket_name}/")[-1]
+            for bucket in ["swn-backlot-files-517220555400", "swn-backlot-517220555400"]:
+                if f"{bucket}.s3" in cloud_url:
+                    if f"{bucket}.s3.us-east-1.amazonaws.com/" in cloud_url:
+                        original_s3_key = cloud_url.split(f"{bucket}.s3.us-east-1.amazonaws.com/")[-1]
+                    elif f"{bucket}.s3.amazonaws.com/" in cloud_url:
+                        original_s3_key = cloud_url.split(f"{bucket}.s3.amazonaws.com/")[-1]
+                    break
+
+        # Strip query params
+        if "?" in original_s3_key:
+            original_s3_key = original_s3_key.split("?")[0]
 
         renditions = clip.get("renditions") or {}
         qualities = {}
