@@ -392,6 +392,71 @@ export function useUpdateApplicationStatus() {
   });
 }
 
+/**
+ * Request a tape from a shortlisted applicant
+ */
+export function useRequestTape() {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (applicationId: string) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/applications/${applicationId}/request-tape`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to request tape');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-role-applications'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-roles'] });
+    },
+  });
+}
+
+/**
+ * Submit a tape for an application (as applicant)
+ */
+export function useSubmitTape() {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ applicationId, selfTapeUrl }: { applicationId: string; selfTapeUrl: string }) => {
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/applications/${applicationId}/submit-tape`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ self_tape_url: selfTapeUrl }),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to submit tape');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-role-applications'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-my-applications'] });
+    },
+  });
+}
+
 // =============================================================================
 // USER AVAILABILITY HOOKS
 // =============================================================================

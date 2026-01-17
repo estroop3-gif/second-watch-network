@@ -66,6 +66,8 @@ export {
   // Share Links
   useCallSheetShares,
   usePublicCallSheet,
+  // Weather
+  useWeatherForecast,
 } from './useSchedule';
 export type {
   BacklotSavedCallSheetTemplate,
@@ -81,6 +83,10 @@ export type {
   AutoSchedulerScene,
   SuggestedDay,
   AutoSchedulerResult,
+  // Weather types
+  WeatherResponse,
+  WeatherForecastData,
+  WeatherHourlyForecast,
 } from './useSchedule';
 
 // Tasks
@@ -315,6 +321,8 @@ export {
   useLocationNeeds,
   // Task & Budget Generation
   useGenerateTasks,
+  usePreviewGeneratedTasks,
+  useCreateTasksFromPreview,
   useGenerateBudgetSuggestions,
   useBudgetSuggestions,
   useBudgetSuggestionMutations,
@@ -361,6 +369,9 @@ export {
   useMyApplications,
   useApplyToRole,
   useUpdateApplicationStatus,
+  // Tape Workflow
+  useRequestTape,
+  useSubmitTape,
   // Availability
   useMyAvailability,
   useUserAvailability,
@@ -378,6 +389,14 @@ export {
   useRemoveRoleFromCommunity,
 } from './useCastingCrew';
 export type { DealMemoStatusHistory } from './useCastingCrew';
+
+// Project Collabs (Community collabs linked to Backlot projects)
+export {
+  useProjectCollabs,
+  useCollabApplications,
+  useProjectCollabMutations,
+  useUpdateCollabApplicationStatus,
+} from './useProjectCollabs';
 
 // Crew Rates (Day Rate Schedules)
 export {
@@ -1347,6 +1366,10 @@ export {
   useProjectStoryboards,
   useLinkStoryboard,
   useUnlinkStoryboard,
+  // Episode-Story Linking (Beat Sheets)
+  useEpisodeStoryLinks,
+  useLinkEpisodeToStory,
+  useUnlinkEpisodeFromStory,
   // Approvals
   useRequestApproval,
   useDecideApproval,
@@ -1405,6 +1428,7 @@ export type {
   ApprovalStatus,
   MilestoneWithEpisode,
   SubjectWithContactData,
+  EpisodeStoryLink,
 } from './useEpisodes';
 
 // Moodboard

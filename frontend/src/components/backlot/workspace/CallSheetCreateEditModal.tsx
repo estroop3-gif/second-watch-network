@@ -8,6 +8,13 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import {
   Dialog,
   DialogContent,
@@ -74,10 +81,19 @@ import {
   Check,
   List,
   BookmarkPlus,
+  MoreHorizontal,
+  GripVertical,
+  User,
+  ChevronDown,
+  Timer,
+  UserPlus,
+  Pencil,
 } from 'lucide-react';
-import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations, useScenesList, useScenes, useCallSheetSceneLinkMutations, useCallSheetTemplates, useCallSheetFullData, BacklotSavedCallSheetTemplate, CallSheetFullData } from '@/hooks/backlot';
+import { useCallSheets, useProductionDays, useCallSheetLocations, useCallSheetScenes, useProjectLocations, useGlobalLocationSearch, useScenesList, useScenes, useCallSheetSceneLinkMutations, useCallSheetTemplates, useCallSheetFullData, BacklotSavedCallSheetTemplate, CallSheetFullData, useWeatherForecast, WeatherResponse, useProjectMembersForSend } from '@/hooks/backlot';
 import { CallSheetSourcePicker } from './CallSheetSourcePicker';
+import { CreateLocationModal } from './CreateLocationModal';
 import { api } from '@/lib/api';
+import { useAWSAddressAutocomplete, AWSPlaceResult } from '@/hooks/useAWSAddressAutocomplete';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 import { useToast } from '@/hooks/use-toast';
@@ -106,11 +122,38 @@ import { parseLocalDate } from '@/lib/dateUtils';
 import { cn } from '@/lib/utils';
 import { CallSheetPeopleManager } from './CallSheetPeopleManager';
 
+// Pre-population data from production day
+interface ProductionDayData {
+  id: string;
+  date: string;
+  title?: string;
+  day_number: number;
+  general_call_time?: string;
+  wrap_time?: string;
+  location_name?: string;
+  location_address?: string;
+}
+
+// Pre-loaded scene data from production day
+interface PreloadedScene {
+  id: string;
+  scene_number: string;
+  set_name?: string;
+  slugline?: string;
+  int_ext?: string;
+  time_of_day?: string;
+  page_length?: number;
+  description?: string;
+}
+
 interface CallSheetCreateEditModalProps {
   isOpen: boolean;
   onClose: () => void;
   projectId: string;
   callSheet?: BacklotCallSheet | null;
+  // NEW: For pre-populating from production day
+  productionDay?: ProductionDayData;
+  preloadedScenes?: PreloadedScene[];
 }
 
 // Icon mapping for template types
@@ -146,15 +189,22 @@ interface LocalLocation {
   library_location_id?: string;  // ID of linked library location (for snapshot tracking)
   name: string;
   address: string;
+  city?: string;
+  state?: string;
+  latitude?: number;
+  longitude?: number;
   parking_instructions: string;
   basecamp_location: string;
   call_time: string;
   notes: string;
+  region_tag?: string;
   // Clearance status (for display)
   clearance_status?: 'pending' | 'approved' | 'denied' | 'none';
   // Library sync tracking
   is_from_library?: boolean;  // True if linked from library
   needs_library_save?: boolean;  // True if should prompt to save to library
+  // Editing state
+  isEditing?: boolean;  // True when in edit mode, false when saved/view-only
 }
 
 // Local scene state type
@@ -173,26 +223,75 @@ interface LocalScene {
   sort_order: number;
 }
 
+// Local person state type (for managing cast & crew before save)
+interface LocalPerson {
+  temp_id: string;                  // For local tracking before save
+  name: string;
+  role: string;
+  department: string;
+  call_time: string;
+  phone: string;
+  email: string;
+  notes: string;
+  makeup_time: string;
+  wardrobe_notes: string;
+  sort_order: number;
+  is_cast: boolean;
+  cast_number: string;
+  character_name: string;
+  pickup_time: string;
+  on_set_time: string;
+}
+
+// Standard departments for crew organization
+const CREW_DEPARTMENTS = [
+  'Production',
+  'Directing',
+  'Camera',
+  'Sound',
+  'Grip/Electric',
+  'Art',
+  'Wardrobe',
+  'Makeup/Hair',
+  'Stunts',
+  'VFX',
+  'Transport',
+  'Catering',
+  'Other',
+];
+
 const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   isOpen,
   onClose,
   projectId,
   callSheet,
+  productionDay,
+  preloadedScenes,
 }) => {
   const { toast } = useToast();
   const isEditMode = !!callSheet;
   const [closeConfirmCount, setCloseConfirmCount] = useState(0);
   const { createCallSheet, updateCallSheet } = useCallSheets(projectId);
   const { days } = useProductionDays(projectId);
-  const { locations: projectLocations, isLoading: projectLocationsLoading, createLocation: createLibraryLocation } = useProjectLocations(projectId);
+  const { locations: projectLocations, isLoading: projectLocationsLoading, createLocation: createLibraryLocation, attachLocation } = useProjectLocations(projectId);
+
+  // Location picker state (must be before useGlobalLocationSearch hook)
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
+  const [locationPickerIndex, setLocationPickerIndex] = useState<number | null>(null);
+  const [locationPickerMode, setLocationPickerMode] = useState<'choose' | 'library'>('choose'); // 'choose' = initial choice, 'library' = browsing library
+  const [locationPickerTab, setLocationPickerTab] = useState<'project' | 'public'>('project');
+  const [globalLocationSearch, setGlobalLocationSearch] = useState('');
+  const [showCreateLocationModal, setShowCreateLocationModal] = useState(false);
+
+  // Global location library - fetch all public locations, optionally filtered by search
+  const { data: globalLocationResults, isLoading: globalLocationsLoading } = useGlobalLocationSearch({
+    query: globalLocationSearch || undefined,
+    limit: 50, // Show more locations
+  });
 
   // Scene creation and linking hooks
   const { createScene } = useScenes({ projectId });
   const { linkScene } = useCallSheetSceneLinkMutations();
-
-  // Location picker state
-  const [showLocationPicker, setShowLocationPicker] = useState(false);
-  const [locationPickerIndex, setLocationPickerIndex] = useState<number | null>(null);
 
   // Save to Library dialog state
   const [showSaveToLibrary, setShowSaveToLibrary] = useState(false);
@@ -254,8 +353,54 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   // Multiple locations
   const [locations, setLocations] = useState<LocalLocation[]>([]);
 
+  // Address autocomplete state for inline location editing
+  const [activeAddressIndex, setActiveAddressIndex] = useState<number | null>(null);
+  const [addressInputs, setAddressInputs] = useState<Record<number, string>>({});
+
+  // AWS address autocomplete for inline location editing
+  const activeAddressQuery = activeAddressIndex !== null ? (addressInputs[activeAddressIndex] || '') : '';
+  const {
+    data: addressAutocompleteData,
+    isLoading: addressAutocompleteLoading,
+  } = useAWSAddressAutocomplete(activeAddressQuery, {
+    enabled: activeAddressIndex !== null && activeAddressQuery.length >= 3,
+    debounceMs: 300,
+    limit: 5,
+  });
+
   // Scenes / Segments
   const [scenes, setScenes] = useState<LocalScene[]>([]);
+
+  // Project members for quick-add (used in create mode)
+  const { data: projectMembers = [] } = useProjectMembersForSend(projectId);
+
+  // Cast & Crew (local state for create mode)
+  const [people, setPeople] = useState<LocalPerson[]>([]);
+  const [showAddPersonModal, setShowAddPersonModal] = useState(false);
+  const [editingPersonIndex, setEditingPersonIndex] = useState<number | null>(null);
+  const [personForm, setPersonForm] = useState({
+    name: '',
+    role: '',
+    department: '',
+    call_time: '06:00',
+    phone: '',
+    email: '',
+    notes: '',
+    makeup_time: '',
+    wardrobe_notes: '',
+    is_cast: false,
+    cast_number: '',
+    character_name: '',
+    pickup_time: '',
+    on_set_time: '',
+  });
+
+  // Bulk time update state (for create mode)
+  const [showBulkTimeModal, setShowBulkTimeModal] = useState(false);
+  const [bulkTimeDepartment, setBulkTimeDepartment] = useState('');
+  const [bulkCallTime, setBulkCallTime] = useState('');
+  const [bulkMakeupTime, setBulkMakeupTime] = useState('');
+  const [bulkApplyTo, setBulkApplyTo] = useState<'all' | 'empty_only'>('all');
 
   // Get IDs of scenes already added to call sheet (to disable them in picker)
   const alreadyAddedSceneIds = new Set(
@@ -307,6 +452,14 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
   const [productionContact, setProductionContact] = useState('');
   const [productionPhone, setProductionPhone] = useState('');
   const [weatherInfo, setWeatherInfo] = useState('');
+
+  // Timezone and Weather API state
+  const [timezone, setTimezone] = useState('');
+  const [timezoneOffset, setTimezoneOffset] = useState('');
+  const [weatherData, setWeatherData] = useState<WeatherResponse | null>(null);
+  const [fetchingWeather, setFetchingWeather] = useState(false);
+  // Per-location weather data: keyed by location temp_id
+  const [locationWeatherData, setLocationWeatherData] = useState<Record<string, WeatherResponse>>({});
   const [hospitalName, setHospitalName] = useState('');
   const [hospitalPhone, setHospitalPhone] = useState('');
 
@@ -632,15 +785,8 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     setEstimatedWrapTime('18:00');
     setSunriseTime('');
     setSunsetTime('');
-    setLocations([{
-      location_number: 1,
-      name: '',
-      address: '',
-      parking_instructions: '',
-      basecamp_location: '',
-      call_time: '',
-      notes: '',
-    }]);
+    setLocations([]);
+    setPeople([]);
     setLocationName('');
     setLocationAddress('');
     setParkingNotes('');
@@ -661,6 +807,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     setCustomContacts([]);
     setWeatherForecast('');
     setWeatherInfo('');
+    setLocationWeatherData({});
     setNearestHospital('');
     setHospitalAddress('');
     setSetMedic('');
@@ -771,9 +918,13 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         ...departmentNotes,
         // Custom contacts
         custom_contacts: customContacts.filter(c => c.name || c.role),
-        // Weather
+        // Weather and Timezone
         weather_forecast: weatherForecast,
         weather_info: weatherInfo,
+        timezone: timezone,
+        timezone_offset: timezoneOffset,
+        weather_data: weatherData,
+        location_weather_data: Object.keys(locationWeatherData).length > 0 ? locationWeatherData : undefined,
         // Safety
         nearest_hospital: nearestHospital,
         hospital_address: hospitalAddress,
@@ -1005,9 +1156,12 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         // Custom contacts
         setCustomContacts(callSheet.custom_contacts || []);
 
-        // Weather
+        // Weather and Timezone
         setWeatherForecast(callSheet.weather_forecast || '');
         setWeatherInfo(callSheet.weather_info || '');
+        setTimezone((callSheet as any).timezone || '');
+        setTimezoneOffset((callSheet as any).timezone_offset || '');
+        setWeatherData((callSheet as any).weather_data || null);
 
         // Safety
         setNearestHospital(callSheet.nearest_hospital || '');
@@ -1105,16 +1259,8 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         setSunriseTime('');
         setSunsetTime('');
 
-        // Empty locations - user will add
-        setLocations([{
-          location_number: 1,
-          name: '',
-          address: '',
-          parking_instructions: '',
-          basecamp_location: '',
-          call_time: '',
-          notes: '',
-        }]);
+        // Empty locations - user will add via modal
+        setLocations([]);
         setLocationName('');
         setLocationAddress('');
         setParkingNotes('');
@@ -1145,6 +1291,7 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
         // Weather
         setWeatherForecast('');
         setWeatherInfo('');
+        setLocationWeatherData({});
 
         // Safety
         setNearestHospital('');
@@ -1236,31 +1383,137 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     }
   }, [productionDayId, days, isEditMode, title, locations, shootDayNumber]);
 
+  // Pre-populate from productionDay prop (when opening from Schedule view)
+  useEffect(() => {
+    if (isOpen && productionDay && !callSheet) {
+      // Set production day ID
+      setProductionDayId(productionDay.id);
+
+      // Set date from production day
+      setDate(productionDay.date);
+
+      // Set title
+      setTitle(productionDay.title || `Day ${productionDay.day_number} Call Sheet`);
+
+      // Set shoot day number
+      setShootDayNumber(productionDay.day_number);
+
+      // Set call time if available
+      if (productionDay.general_call_time) {
+        setGeneralCallTime(productionDay.general_call_time);
+      }
+
+      // Set wrap time if available
+      if (productionDay.wrap_time) {
+        setEstimatedWrapTime(productionDay.wrap_time);
+      }
+
+      // Set location if available
+      if (productionDay.location_name || productionDay.location_address) {
+        setLocations([{
+          location_number: 1,
+          name: productionDay.location_name || '',
+          address: productionDay.location_address || '',
+          parking_instructions: '',
+          basecamp_location: '',
+          call_time: '',
+          notes: '',
+        }]);
+      }
+    }
+  }, [isOpen, productionDay, callSheet]);
+
+  // Pre-populate scenes from preloadedScenes prop
+  useEffect(() => {
+    if (isOpen && preloadedScenes && preloadedScenes.length > 0 && !callSheet) {
+      const mappedScenes: LocalScene[] = preloadedScenes.map((scene, idx) => ({
+        linked_scene_id: scene.id,
+        is_linked: true,
+        scene_number: scene.scene_number || '',
+        segment_label: '',
+        page_count: scene.page_length ? String(scene.page_length) : '',
+        set_name: scene.set_name || scene.slugline || '',
+        int_ext: (scene.int_ext as BacklotIntExt) || '',
+        time_of_day: (scene.time_of_day as BacklotTimeOfDay) || '',
+        description: scene.description || '',
+        cast_ids: '',
+        sort_order: idx,
+      }));
+      setScenes(mappedScenes);
+    }
+  }, [isOpen, preloadedScenes, callSheet]);
+
   // Location management
   const handleAddLocation = () => {
-    const nextNumber = locations.length > 0
-      ? Math.max(...locations.map(l => l.location_number)) + 1
-      : 1;
-    setLocations([...locations, {
-      location_number: nextNumber,
-      name: '',
-      address: '',
-      parking_instructions: '',
-      basecamp_location: '',
-      call_time: '',
-      notes: '',
-    }]);
+    // Open the location picker modal in "choose" mode
+    setLocationPickerIndex(null); // null means we're adding a new location
+    setLocationPickerMode('choose');
+    setShowLocationPicker(true);
   };
 
   const handleRemoveLocation = (index: number) => {
-    if (locations.length > 1) {
-      setLocations(locations.filter((_, i) => i !== index));
-    }
+    setLocations(locations.filter((_, i) => i !== index));
+  };
+
+  // Add a new location to the list (called when creating or selecting from library)
+  const addNewLocationToList = (locationData: Partial<LocalLocation>) => {
+    const nextNumber = locations.length > 0
+      ? Math.max(...locations.map(l => l.location_number)) + 1
+      : 1;
+    // Locations from library are saved (not editing), new locations start in edit mode
+    const isFromLibrary = locationData.is_from_library || false;
+    setLocations([...locations, {
+      location_number: nextNumber,
+      name: locationData.name || '',
+      address: locationData.address || '',
+      city: locationData.city || '',
+      state: locationData.state || '',
+      latitude: locationData.latitude,
+      longitude: locationData.longitude,
+      parking_instructions: locationData.parking_instructions || '',
+      basecamp_location: locationData.basecamp_location || '',
+      call_time: locationData.call_time || '',
+      notes: locationData.notes || '',
+      library_location_id: locationData.library_location_id,
+      is_from_library: isFromLibrary,
+      isEditing: !isFromLibrary, // Library locations are saved, new ones need editing
+    }]);
   };
 
   const handleUpdateLocation = (index: number, field: keyof LocalLocation, value: string | number) => {
     const updated = [...locations];
     updated[index] = { ...updated[index], [field]: value };
+    setLocations(updated);
+  };
+
+  // Handle selecting an address from AWS autocomplete dropdown
+  const handleSelectAddress = (index: number, place: AWSPlaceResult) => {
+    const fullAddress = place.label;
+    const updated = [...locations];
+    updated[index] = {
+      ...updated[index],
+      address: fullAddress,
+      city: place.city || '',
+      state: place.state || '',
+      latitude: place.lat,
+      longitude: place.lon,
+    };
+    setLocations(updated);
+    setActiveAddressIndex(null);
+    setAddressInputs((prev) => ({ ...prev, [index]: '' }));
+  };
+
+  // Save location (switch from editing to view-only)
+  const handleSaveLocation = (index: number) => {
+    const updated = [...locations];
+    updated[index] = { ...updated[index], isEditing: false };
+    setLocations(updated);
+  };
+
+  // Edit location (switch from view-only to editing)
+  const handleEditLocation = (index: number) => {
+    const updated = [...locations];
+    updated[index] = { ...updated[index], isEditing: true };
     setLocations(updated);
   };
 
@@ -1272,9 +1525,6 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
 
   // Select a location from the project library and populate the form
   const handleSelectProjectLocation = (projectLocation: BacklotLocation) => {
-    if (locationPickerIndex === null) return;
-
-    const updated = [...locations];
     const fullAddress = [
       projectLocation.address,
       projectLocation.city,
@@ -1282,24 +1532,137 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       projectLocation.zip,
     ].filter(Boolean).join(', ');
 
-    // Snapshot data from library location
-    updated[locationPickerIndex] = {
-      ...updated[locationPickerIndex],
+    const locationData = {
       library_location_id: projectLocation.id,
       is_from_library: true,
-      needs_library_save: false,
       name: projectLocation.name,
       address: fullAddress || '',
       parking_instructions: projectLocation.parking_notes || '',
       notes: projectLocation.load_in_notes || '',
     };
-    setLocations(updated);
+
+    if (locationPickerIndex === null) {
+      // Adding a new location
+      addNewLocationToList(locationData);
+    } else {
+      // Updating an existing location
+      const updated = [...locations];
+      updated[locationPickerIndex] = {
+        ...updated[locationPickerIndex],
+        ...locationData,
+        needs_library_save: false,
+      };
+      setLocations(updated);
+    }
+
     setShowLocationPicker(false);
     setLocationPickerIndex(null);
+    setLocationPickerMode('choose');
 
     toast({
       title: 'Location Selected',
       description: `"${projectLocation.name}" has been added to this call sheet.`,
+    });
+  };
+
+  // Select a location from the global library, attach to project, and use it
+  const handleSelectGlobalLocation = async (globalLocation: BacklotLocation) => {
+    try {
+      // First, attach the global location to the project
+      await attachLocation.mutateAsync({
+        location_id: globalLocation.id,
+      });
+
+      const fullAddress = [
+        globalLocation.address,
+        globalLocation.city,
+        globalLocation.state,
+        globalLocation.zip,
+      ].filter(Boolean).join(', ');
+
+      const locationData = {
+        library_location_id: globalLocation.id,
+        is_from_library: true,
+        name: globalLocation.name,
+        address: fullAddress || '',
+        parking_instructions: globalLocation.parking_notes || '',
+        notes: globalLocation.load_in_notes || '',
+      };
+
+      if (locationPickerIndex === null) {
+        // Adding a new location
+        addNewLocationToList(locationData);
+      } else {
+        // Updating an existing location
+        const updated = [...locations];
+        updated[locationPickerIndex] = {
+          ...updated[locationPickerIndex],
+          ...locationData,
+          needs_library_save: false,
+        };
+        setLocations(updated);
+      }
+
+      setShowLocationPicker(false);
+      setLocationPickerIndex(null);
+      setGlobalLocationSearch('');
+      setLocationPickerTab('project');
+      setLocationPickerMode('choose');
+
+      toast({
+        title: 'Location Added',
+        description: `"${globalLocation.name}" has been added to your project and this call sheet.`,
+      });
+    } catch (err) {
+      toast({
+        title: 'Error',
+        description: 'Failed to add location. Please try again.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  // Handle location created from the full creation modal
+  const handleLocationCreated = (newLocation: BacklotLocation) => {
+    const fullAddress = [
+      newLocation.address,
+      newLocation.city,
+      newLocation.state,
+      newLocation.zip,
+    ].filter(Boolean).join(', ');
+
+    const locationData = {
+      library_location_id: newLocation.id,
+      is_from_library: true,
+      name: newLocation.name,
+      address: fullAddress || '',
+      parking_instructions: newLocation.parking_notes || '',
+      notes: newLocation.description || '',
+    };
+
+    if (locationPickerIndex === null) {
+      // Adding a new location
+      addNewLocationToList(locationData);
+    } else {
+      // Updating an existing location
+      const updated = [...locations];
+      updated[locationPickerIndex] = {
+        ...updated[locationPickerIndex],
+        ...locationData,
+        needs_library_save: false,
+      };
+      setLocations(updated);
+    }
+
+    setShowCreateLocationModal(false);
+    setShowLocationPicker(false);
+    setLocationPickerIndex(null);
+    setLocationPickerTab('project');
+    setLocationPickerMode('choose');
+
+    toast({
+      title: 'Location Created',
+      description: `"${newLocation.name}" has been created and added to this call sheet.`,
     });
   };
 
@@ -1405,6 +1768,157 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     });
   };
 
+  // Fetch weather for ALL locations with coordinates
+  const handleFetchWeather = async () => {
+    if (!date) {
+      toast({
+        title: 'No Date Selected',
+        description: 'Select a shoot date to fetch weather.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Build list of locations with coordinates
+    const locationsWithCoords: { loc: LocalLocation; lat: number; lng: number; name: string }[] = [];
+
+    for (const loc of locations) {
+      let lat: number | null = null;
+      let lng: number | null = null;
+      let locName = loc.name || 'Location';
+
+      // First check if location has coordinates directly (from AWS autocomplete)
+      if (loc.latitude && loc.longitude) {
+        lat = loc.latitude;
+        lng = loc.longitude;
+      }
+      // Fall back to library location coordinates
+      else if (loc.library_location_id) {
+        const libraryLoc = projectLocations.find(l => l.id === loc.library_location_id);
+        if (libraryLoc?.latitude && libraryLoc?.longitude) {
+          lat = libraryLoc.latitude;
+          lng = libraryLoc.longitude;
+          locName = libraryLoc.name || loc.name || 'Location';
+        }
+      }
+
+      if (lat && lng) {
+        locationsWithCoords.push({ loc, lat, lng, name: locName });
+      }
+    }
+
+    if (locationsWithCoords.length === 0) {
+      toast({
+        title: 'No Coordinates Found',
+        description: 'Add locations with valid addresses to fetch weather.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setFetchingWeather(true);
+    const token = api.getToken();
+    const newWeatherData: Record<string, WeatherResponse> = {};
+    const forecastTexts: string[] = [];
+    let firstWeather: WeatherResponse | null = null;
+    let successCount = 0;
+
+    try {
+      // Fetch weather for each location
+      for (let i = 0; i < locationsWithCoords.length; i++) {
+        const { loc, lat, lng, name } = locationsWithCoords[i];
+
+        try {
+          const params = new URLSearchParams({
+            lat: String(lat),
+            lng: String(lng),
+            date: date,
+            include_hourly: 'true',
+          });
+
+          const response = await fetch(
+            `${API_BASE}/api/v1/backlot/weather?${params}`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            }
+          );
+
+          if (response.ok) {
+            const weather: WeatherResponse = await response.json();
+            newWeatherData[loc.temp_id] = weather;
+
+            // Store first weather for timezone/sunrise/sunset
+            if (!firstWeather) {
+              firstWeather = weather;
+            }
+
+            // Format forecast text for this location
+            const forecast = weather.forecast;
+            const locationLabel = locations.length > 1 ? `${name}: ` : '';
+            forecastTexts.push(
+              `${locationLabel}${forecast.condition}, High ${forecast.high_temp_f}°F / Low ${forecast.low_temp_f}°F, ${forecast.precipitation_chance}% chance of rain, Wind ${forecast.wind_mph} mph ${forecast.wind_direction}`
+            );
+            successCount++;
+          }
+        } catch (locError) {
+          console.error(`Weather fetch error for ${name}:`, locError);
+        }
+      }
+
+      if (successCount > 0) {
+        setLocationWeatherData(newWeatherData);
+
+        // Use first location's weather for legacy single-weather fields
+        if (firstWeather) {
+          setWeatherData(firstWeather);
+          setTimezone(firstWeather.timezone);
+          setTimezoneOffset(firstWeather.timezone_offset);
+          setSunriseTime(firstWeather.sunrise);
+          setSunsetTime(firstWeather.sunset);
+        }
+
+        // Combine all forecasts into the text field
+        setWeatherForecast(forecastTexts.join('\n\n'));
+
+        toast({
+          title: 'Weather Fetched',
+          description: `Updated weather for ${successCount} location${successCount > 1 ? 's' : ''} on ${date}`,
+        });
+      } else {
+        toast({
+          title: 'Weather Fetch Failed',
+          description: 'Could not retrieve weather data for any location.',
+          variant: 'destructive',
+        });
+      }
+    } catch (error) {
+      console.error('Weather fetch error:', error);
+      toast({
+        title: 'Weather Fetch Failed',
+        description: 'Could not retrieve weather data. Please try again or enter manually.',
+        variant: 'destructive',
+      });
+    } finally {
+      setFetchingWeather(false);
+    }
+  };
+
+  // Check if we can fetch weather (has location with coords and date)
+  const canFetchWeather = date && locations.some(loc => {
+    // Check for direct coordinates (from AWS autocomplete)
+    if (loc.latitude && loc.longitude) {
+      return true;
+    }
+    // Check for library location coordinates
+    if (loc.library_location_id) {
+      const libraryLoc = projectLocations.find(l => l.id === loc.library_location_id);
+      return libraryLoc?.latitude && libraryLoc?.longitude;
+    }
+    return false;
+  });
+
   // Scene / Segment management
   // Add a new manually created scene
   const handleAddScene = () => {
@@ -1500,6 +2014,198 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
     const updated = [...scenes];
     updated[index] = { ...updated[index], [field]: value };
     setScenes(updated);
+  };
+
+  // Person management (for create mode)
+  const resetPersonForm = () => {
+    setPersonForm({
+      name: '',
+      role: '',
+      department: '',
+      call_time: '06:00',
+      phone: '',
+      email: '',
+      notes: '',
+      makeup_time: '',
+      wardrobe_notes: '',
+      is_cast: false,
+      cast_number: '',
+      character_name: '',
+      pickup_time: '',
+      on_set_time: '',
+    });
+  };
+
+  const handleAddPerson = () => {
+    if (!personForm.name.trim()) {
+      toast({ title: 'Name required', description: 'Please enter a name for this person.', variant: 'destructive' });
+      return;
+    }
+    const newPerson: LocalPerson = {
+      temp_id: crypto.randomUUID(),
+      name: personForm.name.trim(),
+      role: personForm.role.trim(),
+      department: personForm.is_cast ? 'Cast' : (personForm.department || 'Other'),
+      call_time: personForm.call_time || '06:00',
+      phone: personForm.phone,
+      email: personForm.email,
+      notes: personForm.notes,
+      makeup_time: personForm.makeup_time,
+      wardrobe_notes: personForm.wardrobe_notes,
+      sort_order: people.length,
+      is_cast: personForm.is_cast,
+      cast_number: personForm.cast_number,
+      character_name: personForm.character_name,
+      pickup_time: personForm.pickup_time,
+      on_set_time: personForm.on_set_time,
+    };
+    setPeople([...people, newPerson]);
+    resetPersonForm();
+    setShowAddPersonModal(false);
+    toast({ title: 'Person added', description: `${newPerson.name} has been added to the call sheet.` });
+  };
+
+  const handleUpdatePerson = () => {
+    if (editingPersonIndex === null) return;
+    if (!personForm.name.trim()) {
+      toast({ title: 'Name required', description: 'Please enter a name for this person.', variant: 'destructive' });
+      return;
+    }
+    const updated = [...people];
+    updated[editingPersonIndex] = {
+      ...updated[editingPersonIndex],
+      name: personForm.name.trim(),
+      role: personForm.role.trim(),
+      department: personForm.is_cast ? 'Cast' : (personForm.department || 'Other'),
+      call_time: personForm.call_time || '06:00',
+      phone: personForm.phone,
+      email: personForm.email,
+      notes: personForm.notes,
+      makeup_time: personForm.makeup_time,
+      wardrobe_notes: personForm.wardrobe_notes,
+      is_cast: personForm.is_cast,
+      cast_number: personForm.cast_number,
+      character_name: personForm.character_name,
+      pickup_time: personForm.pickup_time,
+      on_set_time: personForm.on_set_time,
+    };
+    setPeople(updated);
+    resetPersonForm();
+    setEditingPersonIndex(null);
+    toast({ title: 'Person updated', description: `${personForm.name} has been updated.` });
+  };
+
+  const handleEditPerson = (index: number) => {
+    const person = people[index];
+    setPersonForm({
+      name: person.name,
+      role: person.role,
+      department: person.department,
+      call_time: person.call_time,
+      phone: person.phone,
+      email: person.email,
+      notes: person.notes,
+      makeup_time: person.makeup_time,
+      wardrobe_notes: person.wardrobe_notes,
+      is_cast: person.is_cast,
+      cast_number: person.cast_number,
+      character_name: person.character_name,
+      pickup_time: person.pickup_time,
+      on_set_time: person.on_set_time,
+    });
+    setEditingPersonIndex(index);
+  };
+
+  const handleRemovePerson = (index: number) => {
+    const person = people[index];
+    setPeople(people.filter((_, i) => i !== index));
+    toast({ title: 'Person removed', description: `${person.name} has been removed from the call sheet.` });
+  };
+
+  // Group people by department for display
+  const groupedPeople = React.useMemo(() => {
+    const groups: Record<string, LocalPerson[]> = {};
+    const cast = people.filter(p => p.is_cast);
+    const crew = people.filter(p => !p.is_cast);
+    if (cast.length > 0) {
+      groups['Cast'] = cast.sort((a, b) => {
+        if (a.cast_number && b.cast_number) return a.cast_number.localeCompare(b.cast_number, undefined, { numeric: true });
+        return a.sort_order - b.sort_order;
+      });
+    }
+    crew.forEach(person => {
+      const dept = person.department || 'Other';
+      if (!groups[dept]) groups[dept] = [];
+      groups[dept].push(person);
+    });
+    Object.keys(groups).forEach(dept => {
+      if (dept !== 'Cast') groups[dept].sort((a, b) => a.sort_order - b.sort_order);
+    });
+    return groups;
+  }, [people]);
+
+  // Get unique departments from current people
+  const currentDepartments = React.useMemo(() => {
+    const departments = new Set<string>();
+    people.forEach(p => {
+      if (p.is_cast) departments.add('Cast');
+      else if (p.department) departments.add(p.department);
+    });
+    return Array.from(departments);
+  }, [people]);
+
+  // Quick-add person from project member
+  const handleQuickAddFromMember = (member: { user_id: string; name: string; email?: string; role: string; production_role?: string }) => {
+    if (people.some(p => p.name === member.name)) {
+      toast({ title: 'Already added', description: `${member.name} is already on this call sheet.`, variant: 'destructive' });
+      return;
+    }
+    const newPerson: LocalPerson = {
+      temp_id: crypto.randomUUID(),
+      name: member.name,
+      role: member.production_role || member.role || '',
+      department: 'Production',
+      call_time: '06:00',
+      phone: '',
+      email: member.email || '',
+      notes: '',
+      makeup_time: '',
+      wardrobe_notes: '',
+      sort_order: people.length,
+      is_cast: false,
+      cast_number: '',
+      character_name: '',
+      pickup_time: '',
+      on_set_time: '',
+    };
+    setPeople([...people, newPerson]);
+    toast({ title: 'Person added', description: `${member.name} has been added to the call sheet.` });
+  };
+
+  // Bulk time update for a department
+  const handleBulkTimeUpdate = () => {
+    if (!bulkTimeDepartment) return;
+    const updated = people.map(person => {
+      const isInDepartment = bulkTimeDepartment === 'Cast' ? person.is_cast : (!person.is_cast && person.department === bulkTimeDepartment);
+      if (!isInDepartment) return person;
+      const newCallTime = bulkApplyTo === 'all' || !person.call_time ? (bulkCallTime || person.call_time) : person.call_time;
+      const newMakeupTime = bulkApplyTo === 'all' || !person.makeup_time ? (bulkMakeupTime || person.makeup_time) : person.makeup_time;
+      return { ...person, call_time: newCallTime, makeup_time: newMakeupTime };
+    });
+    setPeople(updated);
+    setShowBulkTimeModal(false);
+    setBulkTimeDepartment('');
+    setBulkCallTime('');
+    setBulkMakeupTime('');
+    toast({ title: 'Times updated', description: `Call times updated for ${bulkTimeDepartment}.` });
+  };
+
+  const openBulkTimeModal = (department: string) => {
+    setBulkTimeDepartment(department);
+    setBulkCallTime('');
+    setBulkMakeupTime('');
+    setBulkApplyTo('all');
+    setShowBulkTimeModal(true);
   };
 
   // Schedule management
@@ -1680,9 +2386,13 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       transport_notes: departmentNotes.transport_notes || undefined,
       catering_notes: departmentNotes.catering_notes || undefined,
 
-      // Weather
+      // Weather and Timezone
       weather_forecast: weatherForecast || undefined,
       weather_info: weatherInfo || undefined,
+      timezone: timezone || undefined,
+      timezone_offset: timezoneOffset || undefined,
+      weather_data: weatherData || undefined,
+      location_weather_data: Object.keys(locationWeatherData).length > 0 ? locationWeatherData : undefined,
 
       // Safety
       nearest_hospital: nearestHospital || undefined,
@@ -1760,6 +2470,11 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
       // Save scenes if any were added/modified
       if (scenes.length > 0 || (isEditMode && callSheet?.scenes && callSheet.scenes.length > 0)) {
         await saveScenes(savedCallSheetId);
+      }
+
+      // Save people if any were added (only in create mode - edit mode uses CallSheetPeopleManager)
+      if (!isEditMode && people.length > 0) {
+        await savePeople(savedCallSheetId);
       }
 
       toast({
@@ -1857,6 +2572,36 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
           });
         }
       }
+    }
+  };
+
+  // Helper function to save people via API
+  const savePeople = async (callSheetId: string) => {
+    const token = getAuthToken();
+    const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1';
+    for (const person of people) {
+      const personInput = {
+        name: person.name,
+        role: person.role || undefined,
+        department: person.department || 'Other',
+        call_time: person.call_time || '06:00',
+        phone: person.phone || undefined,
+        email: person.email || undefined,
+        notes: person.notes || undefined,
+        makeup_time: person.makeup_time || undefined,
+        wardrobe_notes: person.wardrobe_notes || undefined,
+        sort_order: person.sort_order,
+        is_cast: person.is_cast,
+        cast_number: person.is_cast ? (person.cast_number || undefined) : undefined,
+        character_name: person.is_cast ? (person.character_name || undefined) : undefined,
+        pickup_time: person.pickup_time || undefined,
+        on_set_time: person.on_set_time || undefined,
+      };
+      await fetch(`${API_BASE_URL}/backlot/call-sheets/${callSheetId}/people`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(personInput),
+      });
     }
   };
 
@@ -2296,11 +3041,110 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
               </div>
 
               {/* Weather */}
-              <div className="space-y-2">
-                <Label className="text-bone-white flex items-center gap-1">
-                  <Cloud className="w-4 h-4" />
-                  Weather Forecast
-                </Label>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-bone-white flex items-center gap-1">
+                    <Cloud className="w-4 h-4" />
+                    Weather Forecast
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleFetchWeather}
+                    disabled={!canFetchWeather || fetchingWeather}
+                    className="border-muted-gray/30"
+                  >
+                    {fetchingWeather ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                        Fetching...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="w-4 h-4 mr-1" />
+                        Fetch Weather
+                      </>
+                    )}
+                  </Button>
+                </div>
+
+                {/* Timezone display */}
+                {timezone && (
+                  <div className="flex items-center gap-2 text-sm text-muted-gray bg-muted-gray/10 rounded-lg px-3 py-2">
+                    <Clock className="w-4 h-4" />
+                    <span>Timezone: <span className="text-bone-white">{timezone}</span></span>
+                    {timezoneOffset && (
+                      <span className="text-muted-gray/60">(UTC{timezoneOffset})</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Per-location weather data cards */}
+                {Object.keys(locationWeatherData).length > 0 && (
+                  <div className="space-y-3">
+                    {locations.map((loc, index) => {
+                      const weather = locationWeatherData[loc.temp_id];
+                      if (!weather) return null;
+
+                      // Get location name
+                      let locName = loc.name;
+                      if (loc.library_location_id) {
+                        const libraryLoc = projectLocations.find(l => l.id === loc.library_location_id);
+                        if (libraryLoc) locName = libraryLoc.name;
+                      }
+
+                      return (
+                        <div key={loc.temp_id} className="bg-muted-gray/10 rounded-lg p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30 text-xs">
+                                Location {index + 1}
+                              </Badge>
+                              <span className="text-bone-white font-medium">{locName}</span>
+                            </div>
+                            <span className="text-muted-gray text-sm">{weather.date}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-sm">
+                            <Cloud className="w-4 h-4 text-muted-gray" />
+                            <span className="text-bone-white">{weather.forecast.condition}</span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+                            <div>
+                              <span className="text-muted-gray">High:</span>{' '}
+                              <span className="text-bone-white">{weather.forecast.high_temp_f}°F</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-gray">Low:</span>{' '}
+                              <span className="text-bone-white">{weather.forecast.low_temp_f}°F</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-gray">Rain:</span>{' '}
+                              <span className="text-bone-white">{weather.forecast.precipitation_chance}%</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-gray">Wind:</span>{' '}
+                              <span className="text-bone-white">{weather.forecast.wind_mph} mph {weather.forecast.wind_direction}</span>
+                            </div>
+                          </div>
+                          {loc.address && (
+                            <div className="text-xs text-muted-gray truncate">
+                              <MapPin className="w-3 h-3 inline mr-1" />
+                              {loc.address}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {!canFetchWeather && (
+                  <p className="text-xs text-muted-gray">
+                    Add a location from the library with GPS coordinates and select a date to auto-fetch weather.
+                  </p>
+                )}
+
                 <Textarea
                   value={weatherForecast}
                   onChange={(e) => setWeatherForecast(e.target.value)}
@@ -2318,214 +3162,503 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                     <MapPin className="w-4 h-4 text-accent-yellow" />
                     Shoot Locations
                   </Label>
-                  {projectLocations.length > 0 && (
-                    <p className="text-xs text-muted-gray mt-1">
-                      {projectLocations.length} location{projectLocations.length !== 1 ? 's' : ''} in project library
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-gray mt-1">
+                    {locations.length > 0
+                      ? `${locations.length} location${locations.length !== 1 ? 's' : ''} added`
+                      : 'No locations added yet'}
+                  </p>
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleAddLocation}
-                  className="border-muted-gray/30"
+                  className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   Add Location
                 </Button>
               </div>
 
-              <div className="space-y-4">
-                {locations.map((location, index) => (
-                  <div key={index} className={cn(
-                    "border rounded-lg p-4 space-y-4",
-                    location.is_from_library
-                      ? "border-accent-yellow/30 bg-accent-yellow/5"
-                      : "border-muted-gray/30"
-                  )}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
-                          Location {location.location_number}
-                        </Badge>
-                        {/* Library link indicator */}
-                        {location.is_from_library ? (
-                          <Badge variant="outline" className="text-green-400 border-green-400/30 text-xs">
-                            <Link className="w-3 h-3 mr-1" />
-                            Linked to Library
-                          </Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-muted-gray border-muted-gray/30 text-xs">
-                            Not in Library
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        {/* Action buttons based on library status */}
-                        {location.is_from_library ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleSyncFromLibrary(index)}
-                            className="text-accent-yellow hover:text-bone-white text-xs h-6 px-2"
-                            title="Refresh data from library"
-                          >
-                            <RefreshCw className="w-3 h-3 mr-1" />
-                            Sync
-                          </Button>
-                        ) : (
-                          <>
-                            {projectLocations.length > 0 && (
+              {/* Empty state */}
+              {locations.length === 0 ? (
+                <div className="text-center py-12 border border-dashed border-muted-gray/30 rounded-lg">
+                  <MapPin className="w-12 h-12 mx-auto text-muted-gray/30 mb-4" />
+                  <h3 className="text-bone-white font-medium mb-2">No Locations Added</h3>
+                  <p className="text-sm text-muted-gray mb-4">
+                    Add a shooting location to your call sheet
+                  </p>
+                  <Button
+                    onClick={handleAddLocation}
+                    className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Add Location
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {locations.map((location, index) => (
+                    <div key={index} className={cn(
+                      "border rounded-lg p-4",
+                      location.is_from_library
+                        ? "border-green-500/30 bg-green-500/5"
+                        : "border-muted-gray/30"
+                    )}>
+                      {/* View Mode - Read-only card */}
+                      {!location.isEditing ? (
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 flex-wrap mb-2">
+                                <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
+                                  Location {location.location_number}
+                                </Badge>
+                                {location.is_from_library && (
+                                  <Badge variant="outline" className="text-green-400 border-green-400/30 text-xs">
+                                    <Link className="w-3 h-3 mr-1" />
+                                    From Library
+                                  </Badge>
+                                )}
+                                {location.latitude && location.longitude && (
+                                  <Badge variant="outline" className="text-blue-400 border-blue-400/30 text-xs">
+                                    <MapPin className="w-3 h-3 mr-1" />
+                                    GPS
+                                  </Badge>
+                                )}
+                              </div>
+                              <h4 className="text-bone-white font-medium text-lg">
+                                {location.name || 'Unnamed Location'}
+                              </h4>
+                              {location.address && (
+                                <p className="text-muted-gray text-sm mt-1">
+                                  {location.address}
+                                </p>
+                              )}
+                              {location.call_time && (
+                                <p className="text-accent-yellow text-sm mt-2">
+                                  <Clock className="w-3 h-3 inline mr-1" />
+                                  Call Time: {location.call_time}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1">
+                              {location.is_from_library && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleSyncFromLibrary(index)}
+                                  className="text-accent-yellow hover:text-bone-white text-xs h-7 px-2"
+                                  title="Refresh data from library"
+                                >
+                                  <RefreshCw className="w-3 h-3 mr-1" />
+                                  Sync
+                                </Button>
+                              )}
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => handleOpenLocationPicker(index)}
-                                className="text-accent-yellow hover:text-bone-white text-xs h-6 px-2"
+                                onClick={() => handleEditLocation(index)}
+                                className="text-blue-400 hover:text-blue-300 h-7 px-2"
                               >
-                                <Building className="w-3 h-3 mr-1" />
-                                Select from Library
+                                <Wand2 className="w-3 h-3 mr-1" />
+                                Edit
                               </Button>
-                            )}
-                            {location.name && (
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => handleOpenSaveToLibrary(index)}
-                                className="text-green-400 hover:text-green-300 text-xs h-6 px-2"
-                                title="Save this location to your library"
+                                onClick={() => handleRemoveLocation(index)}
+                                className="text-red-400 hover:text-red-300 h-7 px-2"
                               >
-                                <Plus className="w-3 h-3 mr-1" />
-                                Save to Library
+                                <Trash2 className="w-4 h-4" />
                               </Button>
-                            )}
-                          </>
-                        )}
-                        {locations.length > 1 && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleRemoveLocation(index)}
-                            className="text-red-400 hover:text-red-300"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label className="text-muted-gray">Location Name</Label>
-                        <Input
-                          value={location.name}
-                          onChange={(e) => handleUpdateLocation(index, 'name', e.target.value)}
-                          placeholder="Main Studio"
-                          className="bg-charcoal-black border-muted-gray/30"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-muted-gray">Call Time (if different)</Label>
-                        <Input
-                          type="time"
-                          value={location.call_time}
-                          onChange={(e) => handleUpdateLocation(index, 'call_time', e.target.value)}
-                          className="bg-charcoal-black border-muted-gray/30"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label className="text-muted-gray">Address</Label>
-                      <Input
-                        value={location.address}
-                        onChange={(e) => handleUpdateLocation(index, 'address', e.target.value)}
-                        placeholder="123 Film Street, Hollywood, CA 90028"
-                        className="bg-charcoal-black border-muted-gray/30"
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label className="text-muted-gray flex items-center gap-1">
-                          <Car className="w-4 h-4" />
-                          Parking
-                        </Label>
-                        <Textarea
-                          value={location.parking_instructions}
-                          onChange={(e) => handleUpdateLocation(index, 'parking_instructions', e.target.value)}
-                          placeholder="Parking instructions..."
-                          className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label className="text-muted-gray">Basecamp / Holding</Label>
-                        <Textarea
-                          value={location.basecamp_location}
-                          onChange={(e) => handleUpdateLocation(index, 'basecamp_location', e.target.value)}
-                          placeholder="Basecamp location..."
-                          className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Location Picker Modal */}
-              {showLocationPicker && (
-                <Dialog open={showLocationPicker} onOpenChange={setShowLocationPicker}>
-                  <DialogContent className="max-w-lg bg-charcoal-black border-muted-gray/30">
-                    <DialogHeader>
-                      <DialogTitle className="text-bone-white flex items-center gap-2">
-                        <Building className="w-5 h-5 text-accent-yellow" />
-                        Select Location from Library
-                      </DialogTitle>
-                      <DialogDescription className="text-muted-gray">
-                        Choose a location from your project's location library
-                      </DialogDescription>
-                    </DialogHeader>
-                    <ScrollArea className="max-h-[400px]">
-                      {projectLocationsLoading ? (
-                        <div className="flex items-center justify-center py-8">
-                          <Loader2 className="w-6 h-6 animate-spin text-accent-yellow" />
-                        </div>
-                      ) : projectLocations.length === 0 ? (
-                        <div className="text-center py-8">
-                          <MapPin className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
-                          <p className="text-muted-gray text-sm">No locations in project library</p>
-                          <p className="text-muted-gray/60 text-xs mt-1">
-                            Add locations in the Locations tab first
-                          </p>
+                            </div>
+                          </div>
+                          {/* Show additional details if present */}
+                          {(location.parking_instructions || location.basecamp_location) && (
+                            <div className="grid grid-cols-2 gap-4 pt-2 border-t border-muted-gray/20">
+                              {location.parking_instructions && (
+                                <div>
+                                  <p className="text-muted-gray text-xs flex items-center gap-1 mb-1">
+                                    <Car className="w-3 h-3" /> Parking
+                                  </p>
+                                  <p className="text-bone-white/80 text-sm">{location.parking_instructions}</p>
+                                </div>
+                              )}
+                              {location.basecamp_location && (
+                                <div>
+                                  <p className="text-muted-gray text-xs mb-1">Basecamp / Holding</p>
+                                  <p className="text-bone-white/80 text-sm">{location.basecamp_location}</p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ) : (
-                        <div className="space-y-2 p-1">
-                          {projectLocations.map((loc) => (
-                            <button
-                              key={loc.id}
-                              onClick={() => handleSelectProjectLocation(loc)}
-                              className="w-full text-left p-3 rounded-lg border border-muted-gray/20 hover:border-accent-yellow/50 hover:bg-accent-yellow/5 transition-colors"
-                            >
-                              <div className="flex items-start justify-between">
-                                <div className="flex-1">
-                                  <div className="font-medium text-bone-white">{loc.name}</div>
-                                  {loc.address && (
-                                    <div className="text-sm text-muted-gray mt-1">
-                                      {[loc.address, loc.city, loc.state].filter(Boolean).join(', ')}
+                        /* Edit Mode - Editable form */
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Badge variant="outline" className="text-accent-yellow border-accent-yellow/30">
+                                Location {location.location_number}
+                              </Badge>
+                              {location.is_from_library && (
+                                <Badge variant="outline" className="text-green-400 border-green-400/30 text-xs">
+                                  <Link className="w-3 h-3 mr-1" />
+                                  From Library
+                                </Badge>
+                              )}
+                              <Badge variant="outline" className="text-blue-400 border-blue-400/30 text-xs">
+                                Editing
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleRemoveLocation(index)}
+                                className="text-red-400 hover:text-red-300"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label className="text-muted-gray">Location Name</Label>
+                              <Input
+                                value={location.name}
+                                onChange={(e) => handleUpdateLocation(index, 'name', e.target.value)}
+                                placeholder="Main Studio"
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-muted-gray">Call Time (if different)</Label>
+                              <Input
+                                type="time"
+                                value={location.call_time}
+                                onChange={(e) => handleUpdateLocation(index, 'call_time', e.target.value)}
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                          </div>
+                          <div className="space-y-2 relative">
+                            <Label className="text-muted-gray">Address</Label>
+                            <div className="relative">
+                              <Input
+                                value={activeAddressIndex === index ? (addressInputs[index] ?? location.address) : location.address}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setAddressInputs((prev) => ({ ...prev, [index]: value }));
+                                  setActiveAddressIndex(index);
+                                  handleUpdateLocation(index, 'address', value);
+                                }}
+                                onFocus={() => setActiveAddressIndex(index)}
+                                onBlur={() => {
+                                  setTimeout(() => {
+                                    if (activeAddressIndex === index) {
+                                      setActiveAddressIndex(null);
+                                    }
+                                  }, 200);
+                                }}
+                                placeholder="123 Film Street, Hollywood, CA 90028"
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                              {/* AWS Address Autocomplete Dropdown */}
+                              {activeAddressIndex === index && (addressInputs[index]?.length >= 3 || location.address.length >= 3) && (
+                                <div className="absolute z-50 w-full mt-1 bg-charcoal-black border border-muted-gray/30 rounded-lg shadow-lg max-h-[200px] overflow-y-auto">
+                                  {addressAutocompleteLoading ? (
+                                    <div className="p-3 text-center text-muted-gray">
+                                      <Loader2 className="w-4 h-4 animate-spin mx-auto" />
                                     </div>
-                                  )}
-                                  {loc.region_tag && (
-                                    <Badge variant="outline" className="mt-2 text-xs border-muted-gray/30">
-                                      {loc.region_tag}
-                                    </Badge>
-                                  )}
+                                  ) : addressAutocompleteData?.results && addressAutocompleteData.results.length > 0 ? (
+                                    addressAutocompleteData.results.map((place) => (
+                                      <button
+                                        key={place.place_id}
+                                        type="button"
+                                        className="w-full text-left px-3 py-2 hover:bg-accent-yellow/10 text-bone-white text-sm border-b border-muted-gray/10 last:border-0"
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => handleSelectAddress(index, place)}
+                                      >
+                                        <div className="flex items-start gap-2">
+                                          <MapPin className="w-4 h-4 text-accent-yellow mt-0.5 flex-shrink-0" />
+                                          <span>{place.label}</span>
+                                        </div>
+                                      </button>
+                                    ))
+                                  ) : addressInputs[index]?.length >= 3 ? (
+                                    <div className="p-3 text-center text-muted-gray text-sm">
+                                      No addresses found
+                                    </div>
+                                  ) : null}
                                 </div>
-                                <ChevronRight className="w-4 h-4 text-muted-gray mt-1" />
+                              )}
+                            </div>
+                            {location.latitude && location.longitude && (
+                              <div className="text-xs text-muted-gray/70 mt-1">
+                                GPS: {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
                               </div>
-                            </button>
-                          ))}
+                            )}
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                              <Label className="text-muted-gray flex items-center gap-1">
+                                <Car className="w-4 h-4" />
+                                Parking
+                              </Label>
+                              <Textarea
+                                value={location.parking_instructions}
+                                onChange={(e) => handleUpdateLocation(index, 'parking_instructions', e.target.value)}
+                                placeholder="Parking instructions..."
+                                className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-muted-gray">Basecamp / Holding</Label>
+                              <Textarea
+                                value={location.basecamp_location}
+                                onChange={(e) => handleUpdateLocation(index, 'basecamp_location', e.target.value)}
+                                placeholder="Basecamp location..."
+                                className="bg-charcoal-black border-muted-gray/30 min-h-[60px]"
+                              />
+                            </div>
+                          </div>
+                          {/* Save Button */}
+                          <div className="flex justify-end pt-2 border-t border-muted-gray/20">
+                            <Button
+                              type="button"
+                              onClick={() => handleSaveLocation(index)}
+                              className="bg-green-600 hover:bg-green-700 text-white"
+                              disabled={!location.name || !location.address}
+                            >
+                              <Check className="w-4 h-4 mr-1" />
+                              Save Location
+                            </Button>
+                          </div>
                         </div>
                       )}
-                    </ScrollArea>
-                  </DialogContent>
-                </Dialog>
+                    </div>
+                  ))}
+                </div>
               )}
+
+              {/* Location Picker Modal - Two-step flow */}
+              {showLocationPicker && (
+                <Dialog open={showLocationPicker} onOpenChange={(open) => {
+                  setShowLocationPicker(open);
+                  if (!open) {
+                    setGlobalLocationSearch('');
+                    setLocationPickerTab('project');
+                    setLocationPickerMode('choose');
+                  }
+                }}>
+                  <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto bg-charcoal-black border-muted-gray/30">
+                    <DialogHeader>
+                      <DialogTitle className="text-bone-white flex items-center gap-2">
+                        <MapPin className="w-5 h-5 text-accent-yellow" />
+                        Add Location
+                      </DialogTitle>
+                      <DialogDescription className="text-muted-gray">
+                        {locationPickerMode === 'choose'
+                          ? 'Choose how you want to add a location'
+                          : 'Select a location from your library'}
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {/* Step 1: Choose between Create New or Library */}
+                    {locationPickerMode === 'choose' ? (
+                      <div className="grid grid-cols-2 gap-4 py-4">
+                        <button
+                          onClick={() => {
+                            setShowLocationPicker(false);
+                            setShowCreateLocationModal(true);
+                          }}
+                          className="flex flex-col items-center gap-3 p-6 rounded-lg border-2 border-green-500/30 bg-green-500/5 hover:border-green-500/50 hover:bg-green-500/10 transition-colors"
+                        >
+                          <div className="p-3 rounded-full bg-green-500/20">
+                            <Plus className="w-6 h-6 text-green-400" />
+                          </div>
+                          <div className="text-center">
+                            <div className="font-medium text-bone-white">Create New</div>
+                            <div className="text-xs text-muted-gray mt-1">
+                              Add a new location with full details
+                            </div>
+                          </div>
+                        </button>
+
+                        <button
+                          onClick={() => setLocationPickerMode('library')}
+                          className="flex flex-col items-center gap-3 p-6 rounded-lg border-2 border-accent-yellow/30 bg-accent-yellow/5 hover:border-accent-yellow/50 hover:bg-accent-yellow/10 transition-colors"
+                        >
+                          <div className="p-3 rounded-full bg-accent-yellow/20">
+                            <Building className="w-6 h-6 text-accent-yellow" />
+                          </div>
+                          <div className="text-center">
+                            <div className="font-medium text-bone-white">Choose from Library</div>
+                            <div className="text-xs text-muted-gray mt-1">
+                              Select from existing locations
+                            </div>
+                          </div>
+                        </button>
+                      </div>
+                    ) : (
+                      /* Step 2: Browse Library (Project or Public tabs) */
+                      <>
+                        <div className="flex items-center gap-2 mb-4">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setLocationPickerMode('choose')}
+                            className="text-muted-gray hover:text-bone-white"
+                          >
+                            <ChevronRight className="w-4 h-4 mr-1 rotate-180" />
+                            Back
+                          </Button>
+                        </div>
+
+                        <Tabs value={locationPickerTab} onValueChange={(v) => setLocationPickerTab(v as 'project' | 'public')}>
+                          <TabsList className="grid w-full grid-cols-2 bg-muted-gray/10">
+                            <TabsTrigger value="project" className="data-[state=active]:bg-accent-yellow/20 data-[state=active]:text-accent-yellow">
+                              <Building className="w-4 h-4 mr-2" />
+                              Project ({projectLocations.length})
+                            </TabsTrigger>
+                            <TabsTrigger value="public" className="data-[state=active]:bg-accent-yellow/20 data-[state=active]:text-accent-yellow">
+                              <MapPin className="w-4 h-4 mr-2" />
+                              Public Library
+                            </TabsTrigger>
+                          </TabsList>
+
+                          {/* Project Locations Tab */}
+                          <TabsContent value="project" className="mt-4">
+                            <ScrollArea className="max-h-[300px]">
+                              {projectLocationsLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <Loader2 className="w-6 h-6 animate-spin text-accent-yellow" />
+                                </div>
+                              ) : projectLocations.length === 0 ? (
+                                <div className="text-center py-8">
+                                  <MapPin className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
+                                  <p className="text-muted-gray text-sm">No locations in project library</p>
+                                  <p className="text-muted-gray/60 text-xs mt-1">
+                                    Search the public library or create a new location
+                                  </p>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="mt-4 border-accent-yellow/30 text-accent-yellow"
+                                    onClick={() => setLocationPickerTab('public')}
+                                  >
+                                    <Search className="w-4 h-4 mr-2" />
+                                    Search Public Library
+                                  </Button>
+                                </div>
+                              ) : (
+                                <div className="space-y-2 p-1">
+                                  {projectLocations.map((loc) => (
+                                    <button
+                                      key={loc.id}
+                                      onClick={() => handleSelectProjectLocation(loc)}
+                                      className="w-full text-left p-3 rounded-lg border border-muted-gray/20 hover:border-accent-yellow/50 hover:bg-accent-yellow/5 transition-colors"
+                                    >
+                                      <div className="flex items-start justify-between">
+                                        <div className="flex-1">
+                                          <div className="font-medium text-bone-white">{loc.name}</div>
+                                          {loc.address && (
+                                            <div className="text-sm text-muted-gray mt-1">
+                                              {[loc.address, loc.city, loc.state].filter(Boolean).join(', ')}
+                                            </div>
+                                          )}
+                                          {loc.region_tag && (
+                                        <Badge variant="outline" className="mt-2 text-xs border-muted-gray/30">
+                                          {loc.region_tag}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    <ChevronRight className="w-4 h-4 text-muted-gray mt-1" />
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </ScrollArea>
+                      </TabsContent>
+
+                      {/* Public Library Tab */}
+                      <TabsContent value="public" className="mt-4 space-y-4">
+                        {/* Search/Filter Input */}
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+                          <Input
+                            placeholder="Filter by name, city, or type..."
+                            value={globalLocationSearch}
+                            onChange={(e) => setGlobalLocationSearch(e.target.value)}
+                            className="pl-10 bg-charcoal-black/50 border-muted-gray/30"
+                          />
+                        </div>
+
+                        <ScrollArea className="max-h-[300px]">
+                          {globalLocationsLoading ? (
+                            <div className="flex items-center justify-center py-8">
+                              <Loader2 className="w-6 h-6 animate-spin text-accent-yellow" />
+                            </div>
+                          ) : !globalLocationResults?.locations || globalLocationResults.locations.length === 0 ? (
+                            <div className="text-center py-8">
+                              <MapPin className="w-8 h-8 mx-auto text-muted-gray/50 mb-2" />
+                              <p className="text-muted-gray text-sm">
+                                {globalLocationSearch ? 'No locations found' : 'No public locations available'}
+                              </p>
+                              <p className="text-muted-gray/60 text-xs mt-1">
+                                {globalLocationSearch ? 'Try a different search term' : 'Create a new location to add it to the library'}
+                              </p>
+                            </div>
+                          ) : (
+                            <div className="space-y-2 p-1">
+                              {globalLocationResults.locations.map((loc) => (
+                                <button
+                                  key={loc.id}
+                                  onClick={() => handleSelectGlobalLocation(loc)}
+                                  disabled={attachLocation.isPending}
+                                  className="w-full text-left p-3 rounded-lg border border-muted-gray/20 hover:border-accent-yellow/50 hover:bg-accent-yellow/5 transition-colors disabled:opacity-50"
+                                >
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="font-medium text-bone-white">{loc.name}</div>
+                                      {(loc.address || loc.city || loc.state) && (
+                                        <div className="text-sm text-muted-gray mt-1">
+                                          {[loc.address, loc.city, loc.state].filter(Boolean).join(', ')}
+                                        </div>
+                                      )}
+                                      <div className="flex items-center gap-2 mt-2">
+                                        {loc.location_type && (
+                                          <Badge variant="outline" className="text-xs border-muted-gray/30">
+                                            {loc.location_type}
+                                          </Badge>
+                                        )}
+                                        {loc.region_tag && (
+                                          <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-400">
+                                            {loc.region_tag}
+                                          </Badge>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {attachLocation.isPending ? (
+                                      <Loader2 className="w-4 h-4 text-accent-yellow animate-spin mt-1" />
+                                    ) : (
+                                      <Plus className="w-4 h-4 text-accent-yellow mt-1" />
+                                    )}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </ScrollArea>
+                      </TabsContent>
+                    </Tabs>
+                  </>
+                )}
+              </DialogContent>
+            </Dialog>
+          )}
 
               {/* Save to Library Modal */}
               {showSaveToLibrary && saveToLibraryIndex !== null && (
@@ -2589,6 +3722,19 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                   </DialogContent>
                 </Dialog>
               )}
+
+              {/* Create Location Modal (full form) */}
+              <CreateLocationModal
+                isOpen={showCreateLocationModal}
+                onClose={() => {
+                  setShowCreateLocationModal(false);
+                }}
+                onSubmit={async (data) => {
+                  const newLocation = await createLibraryLocation.mutateAsync(data);
+                  return newLocation;
+                }}
+                onLocationCreated={handleLocationCreated}
+              />
             </TabsContent>
 
             {/* Scenes / Segments Tab */}
@@ -2965,13 +4111,444 @@ const CallSheetCreateEditModal: React.FC<CallSheetCreateEditModalProps> = ({
                   projectId={projectId}
                 />
               ) : (
-                <div className="border border-dashed border-muted-gray/30 rounded-lg p-8 text-center">
-                  <Users className="w-12 h-12 text-muted-gray mx-auto mb-3" />
-                  <p className="text-muted-gray mb-2">Save the call sheet first</p>
-                  <p className="text-xs text-muted-gray">
-                    Cast & crew can be added after creating the call sheet.
-                  </p>
-                </div>
+                <>
+                  {/* Header with actions */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-5 h-5 text-accent-yellow" />
+                      <span className="text-bone-white font-medium">
+                        Cast & Crew ({people.length})
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* Quick Add from Project Members */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-muted-gray border-muted-gray/30"
+                          >
+                            <UserPlus className="w-4 h-4 mr-1" />
+                            Quick Add
+                            <ChevronDown className="w-3 h-3 ml-1" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent className="bg-charcoal-black border-muted-gray/30 max-h-64 overflow-y-auto">
+                          {projectMembers && projectMembers.length > 0 ? (
+                            projectMembers.map((member) => (
+                              <DropdownMenuItem
+                                key={member.id}
+                                onClick={() => handleQuickAddFromMember(member)}
+                                className="text-bone-white hover:bg-muted-gray/20 cursor-pointer"
+                              >
+                                <User className="w-4 h-4 mr-2 text-muted-gray" />
+                                <div className="flex flex-col">
+                                  <span>{member.display_name || member.email}</span>
+                                  {member.role && (
+                                    <span className="text-xs text-muted-gray">{member.role}</span>
+                                  )}
+                                </div>
+                              </DropdownMenuItem>
+                            ))
+                          ) : (
+                            <DropdownMenuItem disabled className="text-muted-gray">
+                              No project members available
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+
+                      {/* Bulk Time Update */}
+                      {people.length > 0 && currentDepartments.length > 0 && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-muted-gray border-muted-gray/30"
+                            >
+                              <Timer className="w-4 h-4 mr-1" />
+                              Bulk Times
+                              <ChevronDown className="w-3 h-3 ml-1" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent className="bg-charcoal-black border-muted-gray/30">
+                            {currentDepartments.map((dept) => (
+                              <DropdownMenuItem
+                                key={dept}
+                                onClick={() => openBulkTimeModal(dept)}
+                                className="text-bone-white hover:bg-muted-gray/20 cursor-pointer"
+                              >
+                                Set call time for {dept}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
+
+                      {/* Add Person Button */}
+                      <Button
+                        onClick={() => {
+                          resetPersonForm();
+                          setShowAddPersonModal(true);
+                        }}
+                        size="sm"
+                        className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Add Person
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Empty State */}
+                  {people.length === 0 ? (
+                    <div className="border border-dashed border-muted-gray/30 rounded-lg p-8 text-center">
+                      <Users className="w-12 h-12 text-muted-gray mx-auto mb-3" />
+                      <p className="text-muted-gray mb-2">No cast or crew added yet</p>
+                      <p className="text-xs text-muted-gray mb-4">
+                        Add people to your call sheet to set their call times and details.
+                      </p>
+                      <Button
+                        onClick={() => {
+                          resetPersonForm();
+                          setShowAddPersonModal(true);
+                        }}
+                        size="sm"
+                        className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                      >
+                        <Plus className="w-4 h-4 mr-1" />
+                        Add First Person
+                      </Button>
+                    </div>
+                  ) : (
+                    /* People List Grouped by Department */
+                    <Accordion type="multiple" defaultValue={currentDepartments} className="space-y-2">
+                      {Object.entries(groupedPeople).map(([department, deptPeople]) => (
+                        <AccordionItem
+                          key={department}
+                          value={department}
+                          className="border border-muted-gray/30 rounded-lg overflow-hidden"
+                        >
+                          <AccordionTrigger className="px-4 py-3 hover:no-underline hover:bg-muted-gray/10">
+                            <div className="flex items-center gap-2">
+                              <span className="text-bone-white font-medium">{department}</span>
+                              <Badge variant="outline" className="text-xs text-muted-gray border-muted-gray/30">
+                                {deptPeople.length}
+                              </Badge>
+                            </div>
+                          </AccordionTrigger>
+                          <AccordionContent className="px-4 pb-4">
+                            <div className="space-y-2">
+                              {deptPeople.map((person) => {
+                                const personIndex = people.findIndex(p => p.temp_id === person.temp_id);
+                                return (
+                                  <div
+                                    key={person.temp_id}
+                                    className="flex items-center justify-between p-3 bg-muted-gray/10 rounded-lg"
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <GripVertical className="w-4 h-4 text-muted-gray/50" />
+                                      <div>
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-bone-white font-medium">{person.name}</span>
+                                          {person.is_cast && (
+                                            <Badge className="bg-accent-yellow/20 text-accent-yellow text-xs">
+                                              Cast {person.cast_number && `#${person.cast_number}`}
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        <div className="text-sm text-muted-gray">
+                                          {person.role}
+                                          {person.character_name && ` • ${person.character_name}`}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                      <div className="text-right">
+                                        <div className="text-accent-yellow font-mono text-sm">
+                                          {person.call_time || '--:--'}
+                                        </div>
+                                        <div className="text-xs text-muted-gray">Call Time</div>
+                                      </div>
+                                      <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                          <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 text-muted-gray hover:text-bone-white"
+                                          >
+                                            <MoreHorizontal className="w-4 h-4" />
+                                          </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent className="bg-charcoal-black border-muted-gray/30">
+                                          <DropdownMenuItem
+                                            onClick={() => handleEditPerson(personIndex)}
+                                            className="text-bone-white hover:bg-muted-gray/20 cursor-pointer"
+                                          >
+                                            <Pencil className="w-4 h-4 mr-2" />
+                                            Edit
+                                          </DropdownMenuItem>
+                                          <DropdownMenuItem
+                                            onClick={() => handleRemovePerson(personIndex)}
+                                            className="text-red-400 hover:bg-red-400/10 cursor-pointer"
+                                          >
+                                            <Trash2 className="w-4 h-4 mr-2" />
+                                            Remove
+                                          </DropdownMenuItem>
+                                        </DropdownMenuContent>
+                                      </DropdownMenu>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </AccordionContent>
+                        </AccordionItem>
+                      ))}
+                    </Accordion>
+                  )}
+
+                  {/* Add/Edit Person Modal */}
+                  <Dialog open={showAddPersonModal} onOpenChange={setShowAddPersonModal}>
+                    <DialogContent className="bg-charcoal-black border-muted-gray/30 max-w-2xl max-h-[90vh] overflow-y-auto">
+                      <DialogHeader>
+                        <DialogTitle className="text-bone-white">
+                          {editingPersonIndex !== null ? 'Edit Person' : 'Add Person'}
+                        </DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4 py-4">
+                        {/* Basic Info */}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Name *</Label>
+                            <Input
+                              value={personForm.name}
+                              onChange={(e) => setPersonForm({ ...personForm, name: e.target.value })}
+                              placeholder="John Smith"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Role</Label>
+                            <Input
+                              value={personForm.role}
+                              onChange={(e) => setPersonForm({ ...personForm, role: e.target.value })}
+                              placeholder="Director of Photography"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Department</Label>
+                            <select
+                              value={personForm.department}
+                              onChange={(e) => setPersonForm({ ...personForm, department: e.target.value })}
+                              className="w-full h-10 bg-charcoal-black border border-muted-gray/30 rounded-md px-3 text-bone-white"
+                            >
+                              <option value="">Select Department</option>
+                              {CREW_DEPARTMENTS.map((dept) => (
+                                <option key={dept} value={dept}>{dept}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Call Time</Label>
+                            <Input
+                              type="time"
+                              value={personForm.call_time}
+                              onChange={(e) => setPersonForm({ ...personForm, call_time: e.target.value })}
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Cast Toggle */}
+                        <div className="flex items-center space-x-2 py-2">
+                          <Checkbox
+                            id="is_cast"
+                            checked={personForm.is_cast}
+                            onCheckedChange={(checked) => setPersonForm({ ...personForm, is_cast: !!checked })}
+                          />
+                          <Label htmlFor="is_cast" className="text-bone-white cursor-pointer">
+                            This is a cast member
+                          </Label>
+                        </div>
+
+                        {/* Cast-specific fields */}
+                        {personForm.is_cast && (
+                          <div className="grid grid-cols-2 gap-4 p-4 bg-accent-yellow/5 border border-accent-yellow/20 rounded-lg">
+                            <div className="space-y-2">
+                              <Label className="text-bone-white">Cast Number</Label>
+                              <Input
+                                value={personForm.cast_number}
+                                onChange={(e) => setPersonForm({ ...personForm, cast_number: e.target.value })}
+                                placeholder="1"
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-bone-white">Character Name</Label>
+                              <Input
+                                value={personForm.character_name}
+                                onChange={(e) => setPersonForm({ ...personForm, character_name: e.target.value })}
+                                placeholder="John Doe"
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-bone-white">Pickup Time</Label>
+                              <Input
+                                type="time"
+                                value={personForm.pickup_time}
+                                onChange={(e) => setPersonForm({ ...personForm, pickup_time: e.target.value })}
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-bone-white">On Set Time</Label>
+                              <Input
+                                type="time"
+                                value={personForm.on_set_time}
+                                onChange={(e) => setPersonForm({ ...personForm, on_set_time: e.target.value })}
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label className="text-bone-white">Makeup Time</Label>
+                              <Input
+                                type="time"
+                                value={personForm.makeup_time}
+                                onChange={(e) => setPersonForm({ ...personForm, makeup_time: e.target.value })}
+                                className="bg-charcoal-black border-muted-gray/30"
+                              />
+                            </div>
+                            <div className="space-y-2 col-span-2">
+                              <Label className="text-bone-white">Wardrobe Notes</Label>
+                              <Textarea
+                                value={personForm.wardrobe_notes}
+                                onChange={(e) => setPersonForm({ ...personForm, wardrobe_notes: e.target.value })}
+                                placeholder="Costume details, changes, etc."
+                                className="bg-charcoal-black border-muted-gray/30"
+                                rows={2}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Contact Info */}
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Phone</Label>
+                            <Input
+                              value={personForm.phone}
+                              onChange={(e) => setPersonForm({ ...personForm, phone: e.target.value })}
+                              placeholder="(555) 123-4567"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <Label className="text-bone-white">Email</Label>
+                            <Input
+                              value={personForm.email}
+                              onChange={(e) => setPersonForm({ ...personForm, email: e.target.value })}
+                              placeholder="john@example.com"
+                              className="bg-charcoal-black border-muted-gray/30"
+                            />
+                          </div>
+                        </div>
+
+                        {/* Notes */}
+                        <div className="space-y-2">
+                          <Label className="text-bone-white">Notes</Label>
+                          <Textarea
+                            value={personForm.notes}
+                            onChange={(e) => setPersonForm({ ...personForm, notes: e.target.value })}
+                            placeholder="Additional notes..."
+                            className="bg-charcoal-black border-muted-gray/30"
+                            rows={2}
+                          />
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setShowAddPersonModal(false);
+                            setEditingPersonIndex(null);
+                            resetPersonForm();
+                          }}
+                          className="border-muted-gray/30 text-muted-gray"
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            if (editingPersonIndex !== null) {
+                              handleUpdatePerson(editingPersonIndex, personForm);
+                            } else {
+                              handleAddPerson(personForm);
+                            }
+                            setShowAddPersonModal(false);
+                            setEditingPersonIndex(null);
+                            resetPersonForm();
+                          }}
+                          disabled={!personForm.name.trim()}
+                          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                        >
+                          {editingPersonIndex !== null ? 'Save Changes' : 'Add Person'}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+
+                  {/* Bulk Time Modal */}
+                  <Dialog open={showBulkTimeModal} onOpenChange={setShowBulkTimeModal}>
+                    <DialogContent className="bg-charcoal-black border-muted-gray/30 max-w-md">
+                      <DialogHeader>
+                        <DialogTitle className="text-bone-white">
+                          Set Call Time for {bulkTimeDepartment}
+                        </DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-4 py-4">
+                        <div className="space-y-2">
+                          <Label className="text-bone-white">Call Time</Label>
+                          <Input
+                            type="time"
+                            value={bulkCallTime}
+                            onChange={(e) => setBulkCallTime(e.target.value)}
+                            className="bg-charcoal-black border-muted-gray/30"
+                          />
+                        </div>
+                        <p className="text-sm text-muted-gray">
+                          This will update the call time for all {groupedPeople[bulkTimeDepartment]?.length || 0} people in {bulkTimeDepartment}.
+                        </p>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          variant="outline"
+                          onClick={() => setShowBulkTimeModal(false)}
+                          className="border-muted-gray/30 text-muted-gray"
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            handleBulkTimeUpdate(bulkTimeDepartment, bulkCallTime);
+                            setShowBulkTimeModal(false);
+                          }}
+                          disabled={!bulkCallTime}
+                          className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                        >
+                          Update Times
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </>
               )}
             </TabsContent>
 

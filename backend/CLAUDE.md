@@ -129,12 +129,35 @@ async def route(profile = Depends(require_premium_content_access)):
 
 ## Migrations
 
-Located in `migrations/`. Currently at 076. Run via Node.js pg client (psql not installed).
+Located in `migrations/`. Currently at 169. Run via Node.js pg client (psql not installed).
+
+## S3 Buckets
+
+Two main buckets for file storage:
+- `AWS_S3_BACKLOT_BUCKET` (`swn-backlot-517220555400`) - Main assets, uploads via desktop app
+- `AWS_S3_BACKLOT_FILES_BUCKET` (`swn-backlot-files-517220555400`) - Dailies files, review versions
+
+When generating presigned URLs, detect bucket from file path patterns:
+- `/assets/` or `swn-backlot-517220555400` → use main bucket
+- `/dailies/` or `swn-backlot-files-517220555400` → use files bucket
 
 ## Environment Variables
 
 Key variables in `.env` and Lambda parameters:
 - `DATABASE_URL` / `DatabaseUrl` - PostgreSQL connection
 - `COGNITO_USER_POOL_ID` / `CognitoUserPoolId` - Auth
-- `AWS_S3_BACKLOT_BUCKET` - Production file storage
+- `AWS_S3_BACKLOT_BUCKET` - Main production file storage
+- `AWS_S3_BACKLOT_FILES_BUCKET` - Dailies/review file storage
 - `ANTHROPIC_API_KEY` - AI features
+
+## Supabase-Style Client Limitations
+
+The custom Supabase-compatible query client does NOT support nested joins:
+```python
+# WRONG - will fail
+client.table("backlot_clips").select("*, backlot_projects(*)").execute()
+
+# CORRECT - use separate queries
+clip = client.table("backlot_clips").select("*").eq("id", clip_id).single().execute()
+project = client.table("backlot_projects").select("*").eq("id", clip.data["project_id"]).single().execute()
+```

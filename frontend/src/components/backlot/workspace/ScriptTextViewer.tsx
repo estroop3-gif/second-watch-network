@@ -820,7 +820,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     const scaledWidth = (PAGE_WIDTH_PX * zoom) / 100;
     const scaledHeight = (PAGE_HEIGHT_PX * zoom) / 100;
     const fontSize = (12 * zoom) / 100;
-    const lineHeight = 1.0; // Single-spaced (matches PDF export)
+    const lineHeight = 1.5; // More spacing to prevent text overlap from wrapped lines
 
     return (
       <div
@@ -834,14 +834,19 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
         onMouseUp={handleMouseUp}
         onClick={(e) => handlePageClick(e, page.pageNumber)}
       >
-        {/* Page content area with margins */}
+        {/* Page content area with margins
+            IMPORTANT: Use relative positioning with normal document flow here.
+            DO NOT use absolute positioning for lines - it causes text overlap
+            when lines wrap to multiple visual lines. See regression test:
+            tests/e2e/script-text-overlap.spec.ts
+        */}
         <div
-          className="absolute overflow-hidden"
+          className="relative"
           style={{
-            top: (MARGIN_TOP * zoom) / 100,
-            left: (MARGIN_LEFT * zoom) / 100,
-            right: (MARGIN_RIGHT * zoom) / 100,
-            bottom: (MARGIN_BOTTOM * zoom) / 100,
+            paddingTop: (MARGIN_TOP * zoom) / 100,
+            paddingLeft: (MARGIN_LEFT * zoom) / 100,
+            paddingRight: (MARGIN_RIGHT * zoom) / 100,
+            paddingBottom: (MARGIN_BOTTOM * zoom) / 100,
             color: '#000',
           }}
         >
@@ -854,12 +859,11 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             return (
               <div
                 key={idx}
-                className="absolute"
+                className="relative"
                 style={{
                   ...textStyle,
-                  left: `${scaledLeft}px`,
+                  marginLeft: `${scaledLeft}px`,
                   width: `${scaledLineWidth}px`,
-                  top: `${idx * fontSize * lineHeight}px`,
                   fontSize: `${fontSize}px`,
                   lineHeight: lineHeight,
                   minHeight: `${fontSize * lineHeight}px`,

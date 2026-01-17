@@ -3494,6 +3494,95 @@ async def generate_call_sheet_pdf_endpoint(
         )
 
 
+# =============================================================================
+# WEATHER FORECAST ENDPOINT
+# =============================================================================
+
+class WeatherForecast(BaseModel):
+    """Weather forecast data"""
+    condition: str
+    weather_code: int
+    high_temp_f: Optional[float]
+    low_temp_f: Optional[float]
+    precipitation_chance: int
+    humidity: Optional[int]
+    wind_mph: Optional[float]
+    wind_direction: str
+    wind_degrees: float
+
+
+class HourlyWeather(BaseModel):
+    """Hourly weather data"""
+    time: str
+    temp_f: Optional[float]
+    condition: str
+    precipitation_chance: int
+
+
+class WeatherResponse(BaseModel):
+    """Weather API response"""
+    timezone: str
+    timezone_offset: str
+    date: str
+    sunrise: Optional[str]
+    sunset: Optional[str]
+    forecast: WeatherForecast
+    hourly: Optional[List[HourlyWeather]] = None
+    formatted_text: Optional[str] = None
+
+
+@router.get("/weather", response_model=WeatherResponse)
+async def get_weather_forecast(
+    lat: float,
+    lng: float,
+    date: str,
+    include_hourly: bool = True,
+    authorization: str = Header(None)
+):
+    """
+    Get weather forecast for a location and date.
+
+    Uses Open-Meteo API (free, no key required).
+    Also returns timezone information for the location.
+
+    Args:
+        lat: Latitude
+        lng: Longitude
+        date: Date in YYYY-MM-DD format
+        include_hourly: Whether to include hourly forecast data
+    """
+    # Basic auth check
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    await get_current_user_from_token(authorization)
+
+    # Validate date format
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    # Validate coordinates
+    if not (-90 <= lat <= 90):
+        raise HTTPException(status_code=400, detail="Latitude must be between -90 and 90")
+    if not (-180 <= lng <= 180):
+        raise HTTPException(status_code=400, detail="Longitude must be between -180 and 180")
+
+    # Fetch weather
+    from app.services.weather_service import fetch_weather_forecast, format_weather_forecast_text
+
+    weather_data = await fetch_weather_forecast(lat, lng, date, include_hourly)
+
+    if not weather_data:
+        raise HTTPException(status_code=503, detail="Weather service unavailable")
+
+    # Add formatted text
+    weather_data["formatted_text"] = format_weather_forecast_text(weather_data)
+
+    return weather_data
+
+
 @router.get("/call-sheets/{call_sheet_id}/download-pdf")
 async def download_call_sheet_pdf(
     call_sheet_id: str,
@@ -11282,6 +11371,10 @@ async def import_script(
                 })
 
             print(f"Parsed {ext.upper()} file: {page_count} pages, {len(parsed_scenes)} scenes")
+            if parsed_scenes:
+                print(f"First 5 scenes: {[s.get('slugline', '')[:50] for s in parsed_scenes[:5]]}")
+            else:
+                print(f"No scenes found. Text content preview: {text_content[:500] if text_content else 'None'}")
 
         except ImportError as ie:
             print(f"Script parser import error: {ie}")
@@ -11392,6 +11485,8 @@ async def import_script(
             seen_sluglines = set()
             unique_scenes = []
             scenes_to_update = []
+            skipped_existing = 0
+            skipped_duplicate = 0
             scene_sequence = 0
 
             for scene_data in parsed_scenes:
@@ -11399,6 +11494,7 @@ async def import_script(
 
                 # Skip duplicate sluglines within this import
                 if slugline in seen_sluglines:
+                    skipped_duplicate += 1
                     continue
 
                 seen_sluglines.add(slugline)
@@ -11417,9 +11513,12 @@ async def import_script(
                     scenes_to_update.append((existing_id, scene_data))
                 elif slugline in existing_sluglines:
                     # Scene with same slugline exists, skip to avoid duplicate
+                    skipped_existing += 1
                     continue
                 else:
                     unique_scenes.append(scene_data)
+
+            print(f"Scene processing: {len(unique_scenes)} new, {len(scenes_to_update)} updated, {skipped_existing} skipped (already exist), {skipped_duplicate} skipped (duplicates in import)")
 
             # Update existing scenes
             for existing_id, scene_data in scenes_to_update:
@@ -13150,11 +13249,200 @@ async def get_location_needs(
 # TASK GENERATION FROM BREAKDOWN
 # =====================================================
 
+class GenerateTasksInput(BaseModel):
+    scene_ids: Optional[List[str]] = None
+    item_types: Optional[List[str]] = None
+    regenerate: bool = False
+
+
+class ProposedTask(BaseModel):
+    """A proposed task for preview before creation"""
+    breakdown_item_id: str
+    scene_id: str
+    scene_number: str
+    title: str
+    description: str
+    department: str
+    priority: str = "medium"
+    item_type: str
+    item_label: str
+    quantity: int = 1
+
+
+class PreviewTasksResponse(BaseModel):
+    success: bool
+    proposed_tasks: List[ProposedTask]
+    message: str
+
+
+class CreateTasksFromPreviewInput(BaseModel):
+    """Input for creating tasks from preview"""
+    tasks: List[dict]  # List of task objects with title, description, department, priority, breakdown_item_id
+
+
+@router.post("/projects/{project_id}/script/preview-tasks")
+async def preview_tasks_from_breakdown(
+    project_id: str,
+    input_data: GenerateTasksInput = Body(default=GenerateTasksInput()),
+    authorization: str = Header(None)
+):
+    """Preview tasks that would be generated from breakdown items (without creating them)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    # Verify project access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to preview tasks")
+
+    # Map breakdown types to departments
+    type_to_department = {
+        "cast": "Casting",
+        "background": "Casting",
+        "stunt": "Stunts",
+        "location": "Locations",
+        "prop": "Art/Props",
+        "set_dressing": "Art/Set Dec",
+        "wardrobe": "Wardrobe",
+        "makeup": "Makeup/Hair",
+        "sfx": "SFX",
+        "vfx": "VFX",
+        "vehicle": "Transportation",
+        "animal": "Animals",
+        "greenery": "Art/Greens",
+        "special_equipment": "Grip/Electric",
+        "sound": "Sound",
+        "music": "Music"
+    }
+
+    try:
+        # Get scenes (all or filtered)
+        query = client.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id)
+        if input_data.scene_ids:
+            query = query.in_("id", input_data.scene_ids)
+        scenes = query.execute()
+
+        if not scenes.data:
+            return {"success": True, "proposed_tasks": [], "message": "No scenes found"}
+
+        scene_map = {s["id"]: s for s in scenes.data}
+        scene_id_list = list(scene_map.keys())
+
+        # Get breakdown items
+        breakdown_query = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list)
+        if not input_data.regenerate:
+            breakdown_query = breakdown_query.eq("task_generated", False)
+
+        items = breakdown_query.execute()
+
+        proposed_tasks = []
+        for item in items.data or []:
+            scene = scene_map.get(item["scene_id"])
+            if not scene:
+                continue
+
+            department = type_to_department.get(item["type"], "Production")
+
+            task_title = f"[Sc {scene['scene_number']}] {item['type'].replace('_', ' ').title()}: {item['label']}"
+            if item.get("quantity", 1) > 1:
+                task_title += f" (x{item['quantity']})"
+
+            task_description = f"From breakdown: {item.get('notes', '')}".strip() or f"Breakdown item for Scene {scene['scene_number']}"
+
+            proposed_tasks.append({
+                "breakdown_item_id": item["id"],
+                "scene_id": item["scene_id"],
+                "scene_number": scene["scene_number"],
+                "title": task_title,
+                "description": task_description,
+                "department": department,
+                "priority": "medium",
+                "item_type": item["type"],
+                "item_label": item["label"],
+                "quantity": item.get("quantity", 1)
+            })
+
+        return {
+            "success": True,
+            "proposed_tasks": proposed_tasks,
+            "message": f"Found {len(proposed_tasks)} breakdown items to create tasks from"
+        }
+
+    except Exception as e:
+        print(f"Error previewing tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/script/create-tasks-from-preview")
+async def create_tasks_from_preview(
+    project_id: str,
+    input_data: CreateTasksFromPreviewInput = Body(...),
+    authorization: str = Header(None)
+):
+    """Create tasks from a preview list (user-modified tasks)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    # Verify project access
+    project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    is_owner = str(project_response.data[0]["owner_id"]) == str(user_id)
+    if not is_owner:
+        member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+            raise HTTPException(status_code=403, detail="You don't have permission to create tasks")
+
+    try:
+        tasks_created = 0
+        for task in input_data.tasks:
+            task_data = {
+                "project_id": project_id,
+                "title": task.get("title", "Untitled Task"),
+                "description": task.get("description", ""),
+                "status": "todo",
+                "priority": task.get("priority", "medium"),
+                "department": task.get("department", "Production"),
+                "created_by_user_id": user_id
+            }
+
+            task_result = client.table("backlot_tasks").insert(task_data).execute()
+
+            if task_result.data:
+                # Mark breakdown item as having task generated if breakdown_item_id provided
+                breakdown_item_id = task.get("breakdown_item_id")
+                if breakdown_item_id:
+                    client.table("backlot_scene_breakdown_items").update({
+                        "task_generated": True,
+                        "task_id": task_result.data[0]["id"]
+                    }).eq("id", breakdown_item_id).execute()
+
+                tasks_created += 1
+
+        return {
+            "success": True,
+            "tasks_created": tasks_created,
+            "message": f"Created {tasks_created} tasks"
+        }
+
+    except Exception as e:
+        print(f"Error creating tasks from preview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/projects/{project_id}/script/generate-tasks")
 async def generate_tasks_from_breakdown(
     project_id: str,
-    scene_ids: List[str] = Body(None),  # Optional: limit to specific scenes
-    regenerate: bool = False,
+    input_data: GenerateTasksInput = Body(default=GenerateTasksInput()),
     authorization: str = Header(None)
 ):
     """Generate departmental tasks from breakdown items"""
@@ -13196,8 +13484,8 @@ async def generate_tasks_from_breakdown(
     try:
         # Get scenes (all or filtered)
         query = client.table("backlot_scenes").select("id, scene_number, slugline").eq("project_id", project_id)
-        if scene_ids:
-            query = query.in_("id", scene_ids)
+        if input_data.scene_ids:
+            query = query.in_("id", input_data.scene_ids)
         scenes = query.execute()
 
         if not scenes.data:
@@ -13208,7 +13496,7 @@ async def generate_tasks_from_breakdown(
 
         # Get breakdown items
         breakdown_query = client.table("backlot_scene_breakdown_items").select("*").in_("scene_id", scene_id_list)
-        if not regenerate:
+        if not input_data.regenerate:
             breakdown_query = breakdown_query.eq("task_generated", False)
 
         items = breakdown_query.execute()
@@ -14370,24 +14658,38 @@ async def create_script_highlight(
             if scene_by_number.data:
                 scene_id = scene_by_number.data[0]["id"]
                 print(f"DEBUG: Found scene_id from scene_number: {scene_id}")
-            elif input.scene_number == "PROLOGUE":
-                # Create a PROLOGUE scene for content before the first scene
-                prologue_data = {
+            else:
+                # Scene doesn't exist - create it automatically
+                # Determine sequence: PROLOGUE gets 0, others get next available
+                if input.scene_number == "PROLOGUE":
+                    sequence = 0
+                    slugline = input.scene_slugline or "PROLOGUE / COLD OPEN"
+                else:
+                    # Get next sequence number
+                    max_seq_result = client.table("backlot_scenes").select(
+                        "sequence"
+                    ).eq("project_id", project_id).order("sequence", desc=True).limit(1).execute()
+                    sequence = (max_seq_result.data[0]["sequence"] + 1) if max_seq_result.data else 1
+                    slugline = input.scene_slugline or f"Scene {input.scene_number}"
+
+                new_scene_data = {
                     "id": str(uuid.uuid4()),
                     "project_id": project_id,
-                    "scene_number": "PROLOGUE",
-                    "slugline": "PROLOGUE / COLD OPEN",
-                    "sequence": 0,  # Before all other scenes
+                    "script_id": script_id,
+                    "scene_number": input.scene_number,
+                    "slugline": slugline,
+                    "sequence": sequence,
                     "int_ext": None,
                     "time_of_day": None,
-                    "page_length": 1,
-                    "coverage_status": "not_scheduled",
                     "is_omitted": False,
+                    "is_shot": False,
+                    "is_scheduled": False,
+                    "needs_pickup": False,
                 }
-                prologue_result = client.table("backlot_scenes").insert(prologue_data).execute()
-                if prologue_result.data:
-                    scene_id = prologue_result.data[0]["id"]
-                    print(f"DEBUG: Created PROLOGUE scene with id: {scene_id}")
+                new_scene_result = client.table("backlot_scenes").insert(new_scene_data).execute()
+                if new_scene_result.data:
+                    scene_id = new_scene_result.data[0]["id"]
+                    print(f"DEBUG: Created new scene '{input.scene_number}' with id: {scene_id}")
 
         if not scene_id and input.page_number:
             # Try to find scene from page mapping table first
@@ -17897,6 +18199,7 @@ class ProjectRoleInput(BaseModel):
     character_description: Optional[str] = None
     age_range: Optional[str] = None
     gender_requirement: Optional[str] = None
+    cast_position_type_id: Optional[str] = None
     location: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -17910,6 +18213,10 @@ class ProjectRoleInput(BaseModel):
     status: Optional[Literal["draft", "open", "closed", "booked", "cancelled"]] = "open"
     requires_reel: bool = False
     requires_headshot: bool = False
+    requires_self_tape: bool = False
+    tape_instructions: Optional[str] = None
+    tape_format_preferences: Optional[str] = None
+    tape_workflow: Optional[Literal["upfront", "after_shortlist"]] = "upfront"
     application_deadline: Optional[str] = None
     max_applications: Optional[int] = None
 
@@ -17929,6 +18236,10 @@ class RoleApplicationInput(BaseModel):
     is_promoted: bool = False
     save_as_template: bool = False
     template_name: Optional[str] = None
+    # Cast-specific fields
+    demo_reel_url: Optional[str] = None
+    self_tape_url: Optional[str] = None
+    special_skills: Optional[List[str]] = None
 
 
 class ApplicationStatusUpdate(BaseModel):
@@ -18183,6 +18494,7 @@ async def create_project_role(
             "character_description": role_input.character_description,
             "age_range": role_input.age_range,
             "gender_requirement": role_input.gender_requirement,
+            "cast_position_type_id": role_input.cast_position_type_id,
             "location": role_input.location,
             "start_date": role_input.start_date,
             "end_date": role_input.end_date,
@@ -18311,6 +18623,7 @@ async def update_role(
             "character_description": role_input.character_description,
             "age_range": role_input.age_range,
             "gender_requirement": role_input.gender_requirement,
+            "cast_position_type_id": role_input.cast_position_type_id,
             "location": role_input.location,
             "start_date": role_input.start_date,
             "end_date": role_input.end_date,
@@ -18839,6 +19152,11 @@ async def apply_to_role(
         if role.get("requires_resume") and not application.resume_url:
             raise HTTPException(status_code=400, detail="A resume is required for this role")
 
+        # Check self-tape requirement (only required upfront if tape_workflow is 'upfront')
+        if role.get("requires_self_tape") and role.get("tape_workflow", "upfront") == "upfront":
+            if not application.self_tape_url:
+                raise HTTPException(status_code=400, detail="A self-tape is required for this role")
+
         # Get profile snapshot
         profile_snapshot = await get_user_profile_snapshot(client, user_id)
 
@@ -18858,6 +19176,10 @@ async def apply_to_role(
             "local_hire_confirmed": application.local_hire_confirmed,
             "is_promoted": application.is_promoted,
             "status": "applied",
+            # Cast-specific fields
+            "demo_reel_url": application.demo_reel_url,
+            "self_tape_url": application.self_tape_url,
+            "special_skills": application.special_skills or [],
         }
 
         result = client.table("backlot_project_role_applications").insert(application_data).execute()
@@ -19148,6 +19470,179 @@ async def promote_role_application(
         raise
     except Exception as e:
         print(f"Error promoting application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/applications/{application_id}/request-tape")
+async def request_tape_from_applicant(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Request a self-tape from a shortlisted applicant (for after_shortlist workflow)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application with role
+        app_result = client.table("backlot_project_role_applications").select(
+            "*, backlot_project_roles(project_id, title, tape_workflow, backlot_projects(title, owner_id))"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        application = app_result.data
+        role = application.get("backlot_project_roles", {})
+        project = role.get("backlot_projects", {})
+        project_id = role.get("project_id")
+
+        # Must be shortlisted or later to request tape
+        if application["status"] not in ["shortlisted", "interview", "offered"]:
+            raise HTTPException(status_code=400, detail="Applicant must be shortlisted before requesting tape")
+
+        # Check permissions - must be project owner or admin
+        is_owner = str(project.get("owner_id")) == str(user_id)
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq(
+                "project_id", project_id
+            ).eq("user_id", user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin", "editor"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Check if tape already requested
+        if application.get("tape_requested_at"):
+            raise HTTPException(status_code=400, detail="Tape has already been requested from this applicant")
+
+        # Update application with tape request
+        result = client.table("backlot_project_role_applications").update({
+            "tape_requested_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", application_id).execute()
+
+        # Send notification to applicant
+        try:
+            applicant_id = application["applicant_user_id"]
+            role_title = role.get("title", "a role")
+            project_title = project.get("title", "the project")
+
+            client.table("notifications").insert({
+                "user_id": applicant_id,
+                "type": "tape_requested",
+                "title": f"Self-tape requested for {role_title}",
+                "message": f"The casting team for {project_title} has requested a self-tape for your application to {role_title}.",
+                "data": {
+                    "application_id": application_id,
+                    "role_id": application["role_id"],
+                    "project_id": project_id,
+                    "role_title": role_title,
+                    "project_title": project_title,
+                },
+                "is_read": False,
+            }).execute()
+        except Exception as notify_err:
+            print(f"Warning: Failed to send tape request notification: {notify_err}")
+
+        return {
+            "success": True,
+            "message": "Tape request sent to applicant",
+            "application": result.data[0] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error requesting tape: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TapeSubmissionInput(BaseModel):
+    """Input for submitting a tape"""
+    self_tape_url: str
+
+
+@router.post("/applications/{application_id}/submit-tape")
+async def submit_tape_for_application(
+    application_id: str,
+    tape_input: TapeSubmissionInput,
+    authorization: str = Header(None)
+):
+    """Submit a self-tape for an application (after tape has been requested)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application
+        app_result = client.table("backlot_project_role_applications").select(
+            "*, backlot_project_roles(project_id, title, backlot_projects(title, owner_id))"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        application = app_result.data
+
+        # Must be the applicant
+        if application["applicant_user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="You can only submit tape for your own application")
+
+        # Check if tape was requested (for after_shortlist workflow)
+        if not application.get("tape_requested_at"):
+            raise HTTPException(status_code=400, detail="No tape has been requested for this application")
+
+        # Check if tape already submitted
+        if application.get("tape_submitted_at"):
+            raise HTTPException(status_code=400, detail="Tape has already been submitted")
+
+        # Update application with tape
+        result = client.table("backlot_project_role_applications").update({
+            "self_tape_url": tape_input.self_tape_url,
+            "tape_submitted_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", application_id).execute()
+
+        # Send notification to casting team (project owner)
+        try:
+            role = application.get("backlot_project_roles", {})
+            project = role.get("backlot_projects", {})
+            owner_id = project.get("owner_id")
+            role_title = role.get("title", "a role")
+            project_title = project.get("title", "the project")
+
+            # Get applicant name
+            profile = client.table("profiles").select("full_name, username").eq("id", user_id).single().execute()
+            applicant_name = profile.data.get("full_name") or profile.data.get("username") or "An applicant"
+
+            if owner_id:
+                client.table("notifications").insert({
+                    "user_id": owner_id,
+                    "type": "tape_submitted",
+                    "title": f"Tape received for {role_title}",
+                    "message": f"{applicant_name} has submitted their self-tape for {role_title} on {project_title}.",
+                    "data": {
+                        "application_id": application_id,
+                        "role_id": application["role_id"],
+                        "project_id": role.get("project_id"),
+                        "role_title": role_title,
+                        "project_title": project_title,
+                        "applicant_id": user_id,
+                    },
+                    "is_read": False,
+                }).execute()
+        except Exception as notify_err:
+            print(f"Warning: Failed to send tape submission notification: {notify_err}")
+
+        return {
+            "success": True,
+            "message": "Tape submitted successfully",
+            "application": result.data[0] if result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error submitting tape: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -36955,8 +37450,9 @@ async def create_call_sheet(
             "transport_notes", "catering_notes",
             # Schedule
             "schedule_blocks",
-            # Weather
+            # Weather and Timezone
             "weather_forecast", "weather_info",
+            "timezone", "timezone_offset", "weather_fetched_at", "weather_data",
             # Safety
             "nearest_hospital", "hospital_address", "hospital_name", "hospital_phone",
             "set_medic", "fire_safety_officer", "safety_notes",
@@ -36979,7 +37475,7 @@ async def create_call_sheet(
         ]
 
         # Fields that need JSON serialization for JSONB columns
-        jsonb_fields = ["schedule_blocks", "custom_contacts"]
+        jsonb_fields = ["schedule_blocks", "custom_contacts", "weather_data"]
 
         # Auto-create or auto-link production day if date provided but no production_day_id
         production_day_id = sheet.get("production_day_id")
@@ -37091,8 +37587,9 @@ async def update_call_sheet(
             "transport_notes", "catering_notes",
             # Schedule
             "schedule_blocks",
-            # Weather
+            # Weather and Timezone
             "weather_forecast", "weather_info",
+            "timezone", "timezone_offset", "weather_fetched_at", "weather_data",
             # Safety
             "nearest_hospital", "hospital_address", "hospital_name", "hospital_phone",
             "set_medic", "fire_safety_officer", "safety_notes",
@@ -37115,7 +37612,7 @@ async def update_call_sheet(
         ]
 
         # Fields that need JSON serialization for JSONB columns
-        jsonb_fields = ["schedule_blocks", "custom_contacts"]
+        jsonb_fields = ["schedule_blocks", "custom_contacts", "weather_data"]
 
         update_data = {}
         for field in allowed_fields:
@@ -44386,29 +44883,41 @@ async def get_crew_document_summary(
 ):
     """Get document completion summary for all crew in a project"""
     try:
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Authorization required")
         user = await get_user_from_token(authorization)
         client = get_client()
 
         # Use the crew_document_summary view if available, otherwise compute
         # First, get all booked people for this project
         booked_result = client.table("backlot_project_roles").select(
-            "user_id, title, type, department, profiles!user_id(id, full_name)"
-        ).eq("project_id", project_id).eq("status", "booked").not_.is_(
-            "user_id", "null"
-        ).execute()
+            "user_id, title, type, department"
+        ).eq("project_id", project_id).eq("status", "booked").execute()
 
-        if not booked_result.data:
+        # Filter out entries without user_id (client doesn't support .not_.is_)
+        booked_data = [r for r in (booked_result.data or []) if r.get("user_id")]
+
+        if not booked_data:
             return {"crew": []}
+
+        # Get profile names for all user_ids (separate query since nested joins aren't supported)
+        user_ids = list(set(r["user_id"] for r in booked_data))
+        profiles_by_id = {}
+        if user_ids:
+            profiles_result = client.table("profiles").select("id, full_name").in_("id", user_ids).execute()
+            profiles_by_id = {p["id"]: p for p in (profiles_result.data or [])}
 
         # Get clearance stats for each person
         crew_summaries = []
 
-        for role in booked_result.data:
+        for role in booked_data:
             user_id = role.get("user_id")
-            profile = role.get("profiles", {})
 
             if not user_id:
                 continue
+
+            # Get profile from our lookup
+            profile = profiles_by_id.get(user_id, {})
 
             # Get clearances for this person in this project
             clearances_result = client.table("backlot_clearance_items").select(
@@ -44426,7 +44935,7 @@ async def get_crew_document_summary(
 
             crew_summaries.append({
                 "person_id": user_id,
-                "person_name": profile.get("full_name", "Unknown") if profile else "Unknown",
+                "person_name": profile.get("full_name", "Unknown"),
                 "role_title": role.get("title"),
                 "role_type": role.get("type"),
                 "department": role.get("department"),

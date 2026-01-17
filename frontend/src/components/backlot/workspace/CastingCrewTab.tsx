@@ -2,7 +2,8 @@
  * CastingCrewTab - Main tab for managing project roles (cast & crew)
  */
 
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import {
   Card,
   CardContent,
@@ -49,7 +50,13 @@ import {
   useDealMemos,
   useDealMemoMutations,
   useProject,
+  useProjectCollabs,
+  useCollabApplications,
+  useProjectCollabMutations,
+  useUpdateCollabApplicationStatus,
 } from '@/hooks/backlot';
+import { CommunityCollab, CollabApprovalStatus } from '@/types/community';
+import { PRODUCTION_TYPE_LABELS, UNION_OPTIONS } from '@/types/productions';
 import {
   BacklotProjectRole,
   BacklotProjectRoleType,
@@ -96,8 +103,20 @@ import {
   FileSignature,
   Hash,
   Bell,
+  Globe,
+  AlertCircle,
+  ExternalLink,
+  Film,
+  Tv,
+  Briefcase,
+  Building2,
+  HelpCircle,
+  Star,
+  Camera,
+  Image,
+  VideoIcon,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 
 interface CastingCrewTabProps {
@@ -109,6 +128,7 @@ type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'communicatio
 
 export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCrewTabProps) {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabType>('roles');
   const [typeFilter, setTypeFilter] = useState<BacklotProjectRoleType | 'all'>('all');
@@ -120,6 +140,10 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
   const [viewingApplications, setViewingApplications] = useState<BacklotProjectRole | null>(null);
   const [showSendDocumentDialog, setShowSendDocumentDialog] = useState(false);
   const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
+  // Collab states
+  const [viewingCollab, setViewingCollab] = useState<CommunityCollab | null>(null);
+  const [editingCollab, setEditingCollab] = useState<CommunityCollab | null>(null);
+  const [viewingCollabApplications, setViewingCollabApplications] = useState<CommunityCollab | null>(null);
 
   // Get project data for CollabForm
   const { data: project } = useProject(projectId);
@@ -134,6 +158,10 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
   const { data: bookedPeople } = useBookedPeople(projectId);
   const { data: crewDocSummaries } = useCrewDocumentSummary(projectId);
   const { deleteRole } = useProjectRoleMutations(projectId);
+
+  // Project collabs (roles posted to the community)
+  const { data: projectCollabs, isLoading: collabsLoading } = useProjectCollabs(projectId);
+  const { deactivateCollab } = useProjectCollabMutations(projectId);
 
   // Filtered roles
   const filteredRoles = useMemo(() => {
@@ -155,15 +183,21 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
 
   // Stats
   const stats = useMemo(() => {
-    if (!roles) return { total: 0, open: 0, booked: 0, cast: 0, crew: 0 };
-    return {
-      total: roles.length,
-      open: roles.filter((r) => r.status === 'open').length,
-      booked: roles.filter((r) => r.status === 'booked').length,
-      cast: roles.filter((r) => r.type === 'cast').length,
-      crew: roles.filter((r) => r.type === 'crew').length,
+    const roleStats = {
+      total: roles?.length || 0,
+      open: roles?.filter((r) => r.status === 'open').length || 0,
+      booked: roles?.filter((r) => r.status === 'booked').length || 0,
+      cast: roles?.filter((r) => r.type === 'cast').length || 0,
+      crew: roles?.filter((r) => r.type === 'crew').length || 0,
     };
-  }, [roles]);
+    const collabStats = {
+      total: projectCollabs?.length || 0,
+      pending: projectCollabs?.filter((c) => c.approval_status === 'pending').length || 0,
+      approved: projectCollabs?.filter((c) => c.approval_status === 'approved').length || 0,
+      applications: projectCollabs?.reduce((sum, c) => sum + (c.application_count || 0), 0) || 0,
+    };
+    return { roles: roleStats, collabs: collabStats };
+  }, [roles, projectCollabs]);
 
   const handleDeleteRole = async (roleId: string) => {
     if (!confirm('Are you sure you want to delete this role?')) return;
@@ -211,14 +245,25 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
         <Card className="bg-charcoal-black border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
               <Users className="w-5 h-5 text-muted-gray" />
               <div>
-                <p className="text-2xl font-bold text-bone-white">{stats.total}</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.roles.total}</p>
                 <p className="text-xs text-muted-gray">Total Roles</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="bg-charcoal-black border-muted-gray/30">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2">
+              <Globe className="w-5 h-5 text-accent-yellow" />
+              <div>
+                <p className="text-2xl font-bold text-bone-white">{stats.collabs.total}</p>
+                <p className="text-xs text-muted-gray">Community Posts</p>
               </div>
             </div>
           </CardContent>
@@ -228,7 +273,7 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
             <div className="flex items-center gap-2">
               <CheckCircle className="w-5 h-5 text-green-400" />
               <div>
-                <p className="text-2xl font-bold text-bone-white">{stats.open}</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.roles.open}</p>
                 <p className="text-xs text-muted-gray">Open</p>
               </div>
             </div>
@@ -239,8 +284,8 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
             <div className="flex items-center gap-2">
               <UserCheck className="w-5 h-5 text-blue-400" />
               <div>
-                <p className="text-2xl font-bold text-bone-white">{stats.booked}</p>
-                <p className="text-xs text-muted-gray">Booked</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.roles.booked + stats.collabs.applications}</p>
+                <p className="text-xs text-muted-gray">Applications</p>
               </div>
             </div>
           </CardContent>
@@ -250,7 +295,7 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
             <div className="flex items-center gap-2">
               <Video className="w-5 h-5 text-red-400" />
               <div>
-                <p className="text-2xl font-bold text-bone-white">{stats.cast}</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.roles.cast}</p>
                 <p className="text-xs text-muted-gray">Cast Roles</p>
               </div>
             </div>
@@ -261,7 +306,7 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
             <div className="flex items-center gap-2">
               <Users className="w-5 h-5 text-purple-400" />
               <div>
-                <p className="text-2xl font-bold text-bone-white">{stats.crew}</p>
+                <p className="text-2xl font-bold text-bone-white">{stats.roles.crew}</p>
                 <p className="text-xs text-muted-gray">Crew Roles</p>
               </div>
             </div>
@@ -291,73 +336,45 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
 
         {/* Role Postings Tab */}
         <TabsContent value="roles" className="space-y-4">
-          {/* Filters */}
-          <div className="flex flex-wrap gap-4">
-            <div className="relative flex-1 min-w-[200px]">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                placeholder="Search roles..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
-              />
-            </div>
-            <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as any)}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue placeholder="Type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="cast">Cast</SelectItem>
-                <SelectItem value="crew">Crew</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
-              <SelectTrigger className="w-[140px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="open">Open</SelectItem>
-                <SelectItem value="closed">Closed</SelectItem>
-                <SelectItem value="booked">Booked</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
-              </SelectContent>
-            </Select>
+          {/* Community Postings */}
+          <div className="space-y-3">
+            {collabsLoading ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : projectCollabs && projectCollabs.length > 0 ? (
+              <div className="grid gap-3">
+                {projectCollabs.map((collab) => (
+                  <CollabCard
+                    key={collab.id}
+                    collab={collab}
+                    projectId={projectId}
+                    onView={() => setViewingCollab(collab)}
+                    onEdit={() => setEditingCollab(collab)}
+                    onDeactivate={async () => {
+                      if (confirm('Deactivate this posting?')) {
+                        await deactivateCollab.mutateAsync(collab.id);
+                        toast({
+                          title: 'Posting deactivated',
+                          description: 'The community posting has been deactivated.',
+                        });
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <Card className="bg-charcoal-black border-muted-gray/30 border-dashed">
+                <CardContent className="py-6 text-center">
+                  <Globe className="w-8 h-8 mx-auto mb-2 text-muted-gray" />
+                  <p className="text-sm text-muted-gray">
+                    No community postings yet. Click "Post Role" to advertise positions to the community.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
-          {/* Roles List */}
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : filteredRoles.length === 0 ? (
-            <Card className="bg-charcoal-black border-muted-gray/30">
-              <CardContent className="py-12 text-center">
-                <Users className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
-                <h3 className="text-lg font-semibold mb-2 text-bone-white">No roles yet</h3>
-                <p className="text-muted-gray mb-4">
-                  Post your first role to start building your cast and crew.
-                </p>
-                <Button onClick={() => setShowCreateDialog(true)}>
-                  <Plus className="w-4 h-4 mr-2" />
-                  Post Role
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="grid gap-4">
-              {filteredRoles.map((role) => (
-                <RoleCard
-                  key={role.id}
-                  role={role}
-                  onDelete={() => handleDeleteRole(role.id)}
-                  onViewApplications={() => setViewingApplications(role)}
-                />
-              ))}
-            </div>
-          )}
         </TabsContent>
 
         {/* Booked Tab */}
@@ -523,6 +540,492 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Collab View Dialog - Full-Featured */}
+      <Dialog
+        open={!!viewingCollab}
+        onOpenChange={(open) => !open && setViewingCollab(null)}
+      >
+        <DialogContent className="bg-deep-black border-muted-gray/30 max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Type Badge with Icon */}
+                {(() => {
+                  const typeConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
+                    looking_for_crew: { label: 'Looking for Crew', icon: Users, color: 'bg-blue-600' },
+                    looking_for_cast: { label: 'Looking for Cast', icon: Users, color: 'bg-amber-600' },
+                    available_for_hire: { label: 'Available for Hire', icon: Briefcase, color: 'bg-green-600' },
+                    partner_opportunity: { label: 'Partner Opportunity', icon: Building2, color: 'bg-purple-600' },
+                    crew: { label: 'Looking for Crew', icon: Users, color: 'bg-blue-600' },
+                    cast: { label: 'Looking for Cast', icon: Users, color: 'bg-amber-600' },
+                  };
+                  const config = typeConfig[viewingCollab?.type || ''] || { label: 'Opportunity', icon: Briefcase, color: 'bg-gray-600' };
+                  const TypeIcon = config.icon;
+                  return (
+                    <Badge className={`${config.color} text-white flex items-center gap-1`}>
+                      <TypeIcon className="w-3 h-3" />
+                      {config.label}
+                    </Badge>
+                  );
+                })()}
+                {/* Production Type Badge */}
+                {viewingCollab?.production_type && (
+                  <Badge variant="outline" className="border-blue-400/30 text-blue-300 text-xs">
+                    <Film className="w-3 h-3 mr-1" />
+                    {PRODUCTION_TYPE_LABELS[viewingCollab.production_type] || viewingCollab.production_type}
+                  </Badge>
+                )}
+                {/* Job Type Badge */}
+                {viewingCollab?.job_type && (
+                  <Badge variant="outline" className="border-muted-gray/50 text-muted-gray text-xs">
+                    {viewingCollab.job_type === 'full_time' ? 'Full-Time' : 'Freelance'}
+                  </Badge>
+                )}
+                {/* Featured Badge */}
+                {viewingCollab?.is_featured && (
+                  <Badge className="bg-accent-yellow/20 text-accent-yellow border border-accent-yellow/40">
+                    <Star className="w-3 h-3 mr-1" />
+                    Featured
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <DialogTitle className="text-xl font-heading text-bone-white mt-2">
+              {viewingCollab?.title}
+            </DialogTitle>
+            {/* Status Badges Row */}
+            <div className="flex flex-wrap gap-2 mt-2">
+              {viewingCollab?.approval_status && (
+                <Badge
+                  className={
+                    viewingCollab.approval_status === 'approved'
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : viewingCollab.approval_status === 'pending'
+                      ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                      : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                  }
+                >
+                  {viewingCollab.approval_status === 'pending' && <AlertCircle className="w-3 h-3 mr-1" />}
+                  {viewingCollab.approval_status.charAt(0).toUpperCase() + viewingCollab.approval_status.slice(1)}
+                </Badge>
+              )}
+              {viewingCollab?.is_order_only && (
+                <Badge className="bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
+                  <Shield className="w-3 h-3 mr-1" />
+                  Order Only
+                </Badge>
+              )}
+              {viewingCollab?.application_count !== undefined && viewingCollab.application_count > 0 && (
+                <Badge variant="secondary" className="text-xs">
+                  {viewingCollab.application_count} application{viewingCollab.application_count !== 1 ? 's' : ''}
+                </Badge>
+              )}
+            </div>
+          </DialogHeader>
+
+          {viewingCollab && (
+            <div className="space-y-6">
+              {/* Author Section */}
+              {viewingCollab.profile && (
+                <div className="flex items-center justify-between pt-2 border-t border-muted-gray/20">
+                  <Link
+                    to={`/profile/${viewingCollab.profile.username || 'member'}`}
+                    className="flex items-center gap-3 hover:text-accent-yellow transition-colors"
+                  >
+                    <Avatar className="w-10 h-10">
+                      <AvatarImage src={viewingCollab.profile.avatar_url || ''} />
+                      <AvatarFallback>
+                        {(viewingCollab.profile.display_name || viewingCollab.profile.full_name || 'M').charAt(0).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <span className="text-bone-white font-medium">
+                        {viewingCollab.profile.display_name || viewingCollab.profile.full_name || viewingCollab.profile.username || 'Member'}
+                      </span>
+                      {viewingCollab.profile.is_order_member && (
+                        <Shield className="w-3 h-3 text-emerald-400 inline ml-1" />
+                      )}
+                      <div className="text-xs text-muted-gray">
+                        Posted {formatDistanceToNow(new Date(viewingCollab.created_at), { addSuffix: true })}
+                      </div>
+                    </div>
+                  </Link>
+                  <Link
+                    to={`/profile/${viewingCollab.profile.username || 'member'}`}
+                    className="text-xs text-muted-gray hover:text-accent-yellow flex items-center gap-1"
+                  >
+                    View Profile <ExternalLink className="w-3 h-3" />
+                  </Link>
+                </div>
+              )}
+
+              {/* Company & Network */}
+              {(viewingCollab.company || viewingCollab.network || viewingCollab.company_data) && (
+                <div className="flex flex-wrap gap-4 text-sm">
+                  {(viewingCollab.company || viewingCollab.company_data) && (
+                    <div className="flex items-center gap-2 text-muted-gray">
+                      {viewingCollab.company_data?.logo_url ? (
+                        <img
+                          src={viewingCollab.company_data.logo_url}
+                          alt={viewingCollab.company_data.name}
+                          className="h-5 max-w-[80px] object-contain"
+                        />
+                      ) : (
+                        <>
+                          <Building2 className="w-4 h-4" />
+                          <span>{viewingCollab.company_data?.name || viewingCollab.company}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {viewingCollab.network && (
+                    <div className="flex items-center gap-2">
+                      {viewingCollab.network.logo_url ? (
+                        <img
+                          src={viewingCollab.network.logo_url}
+                          alt={viewingCollab.network.name}
+                          className="h-6 max-w-[100px] object-contain"
+                        />
+                      ) : (
+                        <div className="flex items-center gap-1 text-muted-gray">
+                          <Tv className="w-4 h-4" />
+                          <span>{viewingCollab.network.name}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Meta Info Grid */}
+              <div className="flex flex-wrap gap-4 text-sm">
+                {/* Location / Remote */}
+                {(viewingCollab.location || viewingCollab.is_remote) && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    {viewingCollab.is_remote ? (
+                      <>
+                        <Globe className="w-4 h-4" />
+                        <span>Remote</span>
+                        {viewingCollab.location && <span className="text-bone-white ml-1">({viewingCollab.location})</span>}
+                      </>
+                    ) : (
+                      <>
+                        <MapPin className="w-4 h-4" />
+                        <span>{viewingCollab.location}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Compensation */}
+                {viewingCollab.compensation_type && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    <DollarSign className="w-4 h-4" />
+                    <span>
+                      {viewingCollab.compensation_type === 'paid' ? 'Paid' :
+                       viewingCollab.compensation_type === 'unpaid' ? 'Unpaid' :
+                       viewingCollab.compensation_type === 'deferred' ? 'Deferred Pay' :
+                       viewingCollab.compensation_type === 'negotiable' ? 'Negotiable' :
+                       viewingCollab.compensation_type}
+                    </span>
+                  </div>
+                )}
+
+                {/* Day Rate Range (Freelance) */}
+                {viewingCollab.job_type === 'freelance' && (viewingCollab.day_rate_min || viewingCollab.day_rate_max) && (
+                  <div className="flex items-center gap-1 text-green-400">
+                    <DollarSign className="w-4 h-4" />
+                    <span>
+                      {viewingCollab.day_rate_min && viewingCollab.day_rate_max
+                        ? `$${viewingCollab.day_rate_min.toLocaleString()} - $${viewingCollab.day_rate_max.toLocaleString()}/day`
+                        : viewingCollab.day_rate_min
+                        ? `$${viewingCollab.day_rate_min.toLocaleString()}/day`
+                        : `Up to $${viewingCollab.day_rate_max?.toLocaleString()}/day`}
+                    </span>
+                  </div>
+                )}
+
+                {/* Salary Range (Full-Time) */}
+                {viewingCollab.job_type === 'full_time' && (viewingCollab.salary_min || viewingCollab.salary_max) && (
+                  <div className="flex items-center gap-1 text-green-400">
+                    <DollarSign className="w-4 h-4" />
+                    <span>
+                      {viewingCollab.salary_min && viewingCollab.salary_max
+                        ? `$${viewingCollab.salary_min.toLocaleString()} - $${viewingCollab.salary_max.toLocaleString()}/yr`
+                        : viewingCollab.salary_min
+                        ? `$${viewingCollab.salary_min.toLocaleString()}/yr+`
+                        : `Up to $${viewingCollab.salary_max?.toLocaleString()}/yr`}
+                    </span>
+                  </div>
+                )}
+
+                {/* Start Date */}
+                {viewingCollab.start_date && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    <Calendar className="w-4 h-4" />
+                    <span>Starts {format(parseLocalDate(viewingCollab.start_date), 'MMM d, yyyy')}</span>
+                  </div>
+                )}
+
+                {/* End Date */}
+                {viewingCollab.end_date && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    <Calendar className="w-4 h-4" />
+                    <span>Ends {format(parseLocalDate(viewingCollab.end_date), 'MMM d, yyyy')}</span>
+                  </div>
+                )}
+
+                {/* Application Deadline */}
+                {viewingCollab.application_deadline && (
+                  <div className="flex items-center gap-1 text-amber-400">
+                    <Clock className="w-4 h-4" />
+                    <span>Apply by {format(parseLocalDate(viewingCollab.application_deadline), 'MMM d, yyyy')}</span>
+                  </div>
+                )}
+
+                {/* Max Applications */}
+                {viewingCollab.max_applications && (
+                  <div className="flex items-center gap-1 text-muted-gray">
+                    <Users className="w-4 h-4" />
+                    <span>Max {viewingCollab.max_applications} applicants</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Benefits Info (Full-Time) */}
+              {viewingCollab.job_type === 'full_time' && viewingCollab.benefits_info && (
+                <div className="text-sm">
+                  <span className="text-muted-gray">Benefits:</span>{' '}
+                  <span className="text-bone-white">{viewingCollab.benefits_info}</span>
+                </div>
+              )}
+
+              {/* Description */}
+              <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
+                <p className="text-bone-white whitespace-pre-wrap">{viewingCollab.description}</p>
+              </div>
+
+              {/* General Requirements */}
+              {(viewingCollab.requires_resume || viewingCollab.requires_local_hire || viewingCollab.requires_order_membership || (viewingCollab.union_requirements && viewingCollab.union_requirements.length > 0)) && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-bone-white">Requirements</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {viewingCollab.requires_resume && (
+                      <Badge variant="outline" className="border-amber-400/30 text-amber-400">
+                        <FileText className="w-3 h-3 mr-1" />
+                        Resume Required
+                      </Badge>
+                    )}
+                    {viewingCollab.requires_local_hire && (
+                      <Badge variant="outline" className="border-amber-400/30 text-amber-400">
+                        <MapPin className="w-3 h-3 mr-1" />
+                        Local Hire Only
+                      </Badge>
+                    )}
+                    {viewingCollab.requires_order_membership && (
+                      <Badge className="bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
+                        <Shield className="w-3 h-3 mr-1" />
+                        Order Members Only
+                      </Badge>
+                    )}
+                    {viewingCollab.union_requirements?.map((union) => {
+                      const unionOption = UNION_OPTIONS.find(u => u.value === union);
+                      return (
+                        <Badge key={union} variant="outline" className="border-accent-yellow/40 text-accent-yellow">
+                          {unionOption?.label || union}
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Cast-Specific Requirements */}
+              {(viewingCollab.type === 'looking_for_cast' || viewingCollab.type === 'cast') &&
+               (viewingCollab.requires_reel || viewingCollab.requires_headshot || viewingCollab.requires_self_tape) && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-bone-white">Cast Requirements</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {viewingCollab.requires_reel && (
+                      <Badge variant="outline" className="border-purple-400/30 text-purple-400">
+                        <VideoIcon className="w-3 h-3 mr-1" />
+                        Demo Reel Required
+                      </Badge>
+                    )}
+                    {viewingCollab.requires_headshot && (
+                      <Badge variant="outline" className="border-purple-400/30 text-purple-400">
+                        <Image className="w-3 h-3 mr-1" />
+                        Headshot Required
+                      </Badge>
+                    )}
+                    {viewingCollab.requires_self_tape && (
+                      <Badge variant="outline" className="border-purple-400/30 text-purple-400">
+                        <Camera className="w-3 h-3 mr-1" />
+                        Self-Tape Required
+                        {viewingCollab.tape_workflow && (
+                          <span className="ml-1 text-xs opacity-75">
+                            ({viewingCollab.tape_workflow === 'upfront' ? 'Upfront' : 'After Shortlist'})
+                          </span>
+                        )}
+                      </Badge>
+                    )}
+                  </div>
+                  {/* Tape Instructions */}
+                  {viewingCollab.tape_instructions && (
+                    <div className="mt-2 text-sm">
+                      <span className="text-muted-gray">Tape Instructions:</span>
+                      <p className="text-bone-white mt-1 whitespace-pre-wrap">{viewingCollab.tape_instructions}</p>
+                    </div>
+                  )}
+                  {/* Tape Format Preferences */}
+                  {viewingCollab.tape_format_preferences && (
+                    <div className="mt-2 text-sm">
+                      <span className="text-muted-gray">Format Preferences:</span>
+                      <p className="text-bone-white mt-1">{viewingCollab.tape_format_preferences}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Custom Questions */}
+              {viewingCollab.custom_questions && viewingCollab.custom_questions.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="text-sm font-medium text-bone-white flex items-center gap-2">
+                    <HelpCircle className="w-4 h-4" />
+                    Screening Questions ({viewingCollab.custom_questions.length})
+                  </h4>
+                  <ul className="space-y-2 text-sm text-muted-gray">
+                    {viewingCollab.custom_questions.map((q, i) => (
+                      <li key={q.id || i} className="flex items-start gap-2">
+                        <span className="text-accent-yellow">{i + 1}.</span>
+                        <span>{q.question}</span>
+                        {q.required && (
+                          <Badge variant="outline" className="text-xs border-red-400/30 text-red-400 ml-1">
+                            Required
+                          </Badge>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Tags */}
+              {viewingCollab.tags && viewingCollab.tags.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {viewingCollab.tags.map((tag) => (
+                    <Badge key={tag} variant="outline" className="border-muted-gray/30 text-muted-gray">
+                      {tag}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              {/* Pending/Rejected Status Messages */}
+              {viewingCollab.approval_status === 'pending' && (
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-3">
+                  <p className="text-sm text-yellow-400 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    Awaiting admin approval. Not visible to community yet.
+                  </p>
+                </div>
+              )}
+              {viewingCollab.approval_status === 'rejected' && viewingCollab.rejection_reason && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                  <p className="text-sm text-red-400">
+                    <strong>Rejected:</strong> {viewingCollab.rejection_reason}
+                  </p>
+                </div>
+              )}
+
+              {/* Actions Footer */}
+              <div className="flex gap-3 pt-4 border-t border-muted-gray/20">
+                <Button
+                  variant="outline"
+                  className="border-muted-gray/30"
+                  onClick={() => setViewingCollab(null)}
+                >
+                  Close
+                </Button>
+                <Button
+                  variant="outline"
+                  className="border-muted-gray/30"
+                  onClick={() => {
+                    const collabIdToNavigate = viewingCollab?.id;
+                    setViewingCollab(null);
+                    if (collabIdToNavigate) {
+                      navigate(`/backlot/projects/${projectId}/postings/${collabIdToNavigate}/applicants`);
+                    }
+                  }}
+                >
+                  <Users className="w-4 h-4 mr-2" />
+                  View Applicants {viewingCollab?.application_count ? `(${viewingCollab.application_count})` : ''}
+                </Button>
+                <Button
+                  className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                  onClick={() => {
+                    setEditingCollab(viewingCollab);
+                    setViewingCollab(null);
+                  }}
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Edit
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Collab Edit Dialog */}
+      {editingCollab && (
+        <CollabForm
+          onClose={() => setEditingCollab(null)}
+          onSuccess={() => {
+            setEditingCollab(null);
+            queryClient.invalidateQueries({ queryKey: ['project-collabs', projectId] });
+            toast({
+              title: 'Posting updated',
+              description: 'Your community posting has been updated.',
+            });
+          }}
+          editCollab={editingCollab}
+          backlotProjectId={projectId}
+          backlotProjectData={project ? {
+            id: project.id,
+            title: project.title,
+            production_type: project.production_type,
+            company: project.company,
+            company_id: project.company_id,
+            network_id: project.network_id,
+            location: project.location,
+          } : undefined}
+        />
+      )}
+
+      {/* Collab Applications Dialog */}
+      <Dialog
+        open={!!viewingCollabApplications}
+        onOpenChange={(open) => !open && setViewingCollabApplications(null)}
+      >
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              Applications for {viewingCollabApplications?.title}
+            </DialogTitle>
+            <DialogDescription>
+              Review applications from the community
+            </DialogDescription>
+          </DialogHeader>
+          {viewingCollabApplications && (
+            <CollabApplicationsBoard
+              collabId={viewingCollabApplications.id}
+              collabTitle={viewingCollabApplications.title}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -617,12 +1120,12 @@ function RoleCard({ role, onDelete, onViewApplications }: RoleCardProps) {
 
             {/* Applications Summary */}
             {role.application_count !== undefined && (
-              <div className="mt-3 pt-3 border-t">
+              <div className="mt-3 pt-3 border-t border-muted-gray/30">
                 <Button
-                  variant="outline"
+                  variant="secondary"
                   size="sm"
                   onClick={onViewApplications}
-                  className="mr-2"
+                  className="mr-2 bg-muted-gray/20 hover:bg-muted-gray/30 text-bone-white border border-muted-gray/50"
                 >
                   <Eye className="w-4 h-4 mr-1" />
                   View Applications ({role.application_count})
@@ -653,17 +1156,17 @@ function RoleCard({ role, onDelete, onViewApplications }: RoleCardProps) {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon">
-                <MoreVertical className="w-4 h-4" />
+              <Button variant="ghost" size="icon" className="text-muted-gray hover:text-bone-white hover:bg-muted-gray/20">
+                <MoreVertical className="w-5 h-5" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={onViewApplications}>
+            <DropdownMenuContent align="end" className="bg-charcoal-black border-muted-gray/30">
+              <DropdownMenuItem onClick={onViewApplications} className="text-bone-white hover:bg-muted-gray/20">
                 <Eye className="w-4 h-4 mr-2" />
                 View Applications
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onDelete} className="text-red-600">
+              <DropdownMenuSeparator className="bg-muted-gray/30" />
+              <DropdownMenuItem onClick={onDelete} className="text-red-500 hover:bg-red-500/10 hover:text-red-400">
                 <Trash className="w-4 h-4 mr-2" />
                 Delete
               </DropdownMenuItem>
@@ -672,6 +1175,295 @@ function RoleCard({ role, onDelete, onViewApplications }: RoleCardProps) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// =============================================================================
+// Collab Card Component (for Community Postings)
+// =============================================================================
+
+interface CollabCardProps {
+  collab: CommunityCollab;
+  projectId: string;
+  onView: () => void;
+  onEdit: () => void;
+  onDeactivate: () => void;
+}
+
+function CollabCard({ collab, projectId, onView, onEdit, onDeactivate }: CollabCardProps) {
+  const navigate = useNavigate();
+
+  const getApprovalStatusColor = (status?: CollabApprovalStatus) => {
+    const colors: Record<string, string> = {
+      pending: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+      approved: 'bg-green-500/20 text-green-400 border-green-500/30',
+      rejected: 'bg-red-500/20 text-red-400 border-red-500/30',
+    };
+    return colors[status || 'approved'] || 'bg-muted-gray/20 text-muted-gray border-muted-gray/30';
+  };
+
+  const handleCardClick = () => {
+    onView();
+  };
+
+  const handleViewApplicants = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigate(`/backlot/projects/${projectId}/postings/${collab.id}/applicants`);
+  };
+
+  return (
+    <Card
+      className="bg-charcoal-black border-muted-gray/30 border-l-4 border-l-accent-yellow cursor-pointer hover:border-accent-yellow/50 transition-colors"
+      onClick={handleCardClick}
+    >
+      <CardContent className="pt-4">
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 mb-1">
+              <Globe className="w-4 h-4 text-accent-yellow" />
+              <h3 className="font-semibold text-lg text-bone-white">{collab.title}</h3>
+              <Badge variant="outline" className="border-muted-gray/50 text-muted-gray">
+                {collab.type}
+              </Badge>
+              {collab.approval_status && (
+                <Badge className={getApprovalStatusColor(collab.approval_status)}>
+                  {collab.approval_status === 'pending' && <AlertCircle className="w-3 h-3 mr-1" />}
+                  {collab.approval_status}
+                </Badge>
+              )}
+              {collab.is_remote && (
+                <Badge variant="secondary">Remote</Badge>
+              )}
+              {collab.is_order_only && (
+                <Badge variant="secondary" className="gap-1">
+                  <Shield className="w-3 h-3" />
+                  Order Only
+                </Badge>
+              )}
+            </div>
+
+            {collab.description && (
+              <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
+                {collab.description}
+              </p>
+            )}
+
+            <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+              {collab.location && (
+                <span className="flex items-center gap-1">
+                  <MapPin className="w-4 h-4" />
+                  {collab.location}
+                </span>
+              )}
+              {collab.compensation_type && (
+                <span className="flex items-center gap-1">
+                  <DollarSign className="w-4 h-4" />
+                  {collab.compensation_type}
+                </span>
+              )}
+              {collab.start_date && (
+                <span className="flex items-center gap-1">
+                  <Calendar className="w-4 h-4" />
+                  {format(parseLocalDate(collab.start_date), 'MMM d')}
+                  {collab.end_date && ` - ${format(parseLocalDate(collab.end_date), 'MMM d')}`}
+                </span>
+              )}
+            </div>
+
+            {/* View Applicants Button - Always visible */}
+            <div className="mt-3 pt-3 border-t border-muted-gray/30">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleViewApplicants}
+                className="mr-2"
+              >
+                <Eye className="w-4 h-4 mr-1" />
+                View Applicants {collab.application_count ? `(${collab.application_count})` : ''}
+              </Button>
+            </div>
+
+            {/* Pending Approval Warning */}
+            {collab.approval_status === 'pending' && (
+              <div className="mt-3 pt-3 border-t border-muted-gray/30">
+                <p className="text-xs text-yellow-400 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Awaiting admin approval. Not visible to community yet.
+                </p>
+              </div>
+            )}
+
+            {/* Rejection Reason */}
+            {collab.approval_status === 'rejected' && collab.rejection_reason && (
+              <div className="mt-3 pt-3 border-t border-muted-gray/30">
+                <p className="text-xs text-red-400">
+                  Rejected: {collab.rejection_reason}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+              <Button variant="ghost" size="icon">
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleCardClick(); }}>
+                <Eye className="w-4 h-4 mr-2" />
+                View Details
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onEdit(); }}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleViewApplicants}>
+                <Users className="w-4 h-4 mr-2" />
+                View Applicants {collab.application_count ? `(${collab.application_count})` : ''}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDeactivate(); }} className="text-red-600">
+                <Trash className="w-4 h-4 mr-2" />
+                Deactivate
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================================
+// Collab Applications Board Component
+// =============================================================================
+
+interface CollabApplicationsBoardProps {
+  collabId: string;
+  collabTitle: string;
+}
+
+function CollabApplicationsBoard({ collabId, collabTitle }: CollabApplicationsBoardProps) {
+  const { toast } = useToast();
+  const { data: applications, isLoading } = useCollabApplications(collabId);
+  const updateStatus = useUpdateCollabApplicationStatus(collabId);
+
+  const statusColumns = [
+    { id: 'applied', label: 'Applied', color: 'bg-muted-gray/20' },
+    { id: 'viewed', label: 'Viewed', color: 'bg-blue-500/20' },
+    { id: 'shortlisted', label: 'Shortlisted', color: 'bg-yellow-500/20' },
+    { id: 'interview', label: 'Interview', color: 'bg-purple-500/20' },
+    { id: 'offered', label: 'Offered', color: 'bg-green-500/20' },
+    { id: 'booked', label: 'Booked', color: 'bg-green-600/20' },
+    { id: 'rejected', label: 'Rejected', color: 'bg-red-500/20' },
+  ];
+
+  const handleStatusChange = async (applicationId: string, newStatus: string) => {
+    try {
+      await updateStatus.mutateAsync({ applicationId, status: newStatus });
+      toast({
+        title: 'Status updated',
+        description: `Application moved to ${newStatus}`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to update status',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!applications || applications.length === 0) {
+    return (
+      <div className="py-12 text-center">
+        <Users className="w-12 h-12 mx-auto mb-4 text-muted-gray" />
+        <h3 className="text-lg font-semibold mb-2 text-bone-white">No applications yet</h3>
+        <p className="text-muted-gray">
+          Applications will appear here when people apply to this posting.
+        </p>
+      </div>
+    );
+  }
+
+  // Group applications by status
+  const applicationsByStatus = statusColumns.reduce((acc, col) => {
+    acc[col.id] = applications.filter((app: any) => app.status === col.id);
+    return acc;
+  }, {} as Record<string, any[]>);
+
+  return (
+    <div className="space-y-4">
+      <ScrollArea className="w-full">
+        <div className="flex gap-4 pb-4 min-w-max">
+          {statusColumns.map((column) => (
+            <div
+              key={column.id}
+              className={`w-64 rounded-lg p-3 ${column.color}`}
+            >
+              <h4 className="font-medium text-sm mb-3 text-bone-white flex items-center justify-between">
+                {column.label}
+                <Badge variant="secondary" className="text-xs">
+                  {applicationsByStatus[column.id]?.length || 0}
+                </Badge>
+              </h4>
+              <div className="space-y-2">
+                {applicationsByStatus[column.id]?.map((app: any) => (
+                  <Card key={app.id} className="bg-charcoal-black border-muted-gray/30">
+                    <CardContent className="p-3">
+                      <div className="flex items-start gap-2">
+                        <Avatar className="h-8 w-8">
+                          <AvatarImage src={app.current_profile?.avatar_url} />
+                          <AvatarFallback>
+                            {app.current_profile?.full_name?.charAt(0) || '?'}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm text-bone-white truncate">
+                            {app.current_profile?.full_name || app.current_profile?.username || 'Unknown'}
+                          </p>
+                          {app.elevator_pitch && (
+                            <p className="text-xs text-muted-gray line-clamp-2 mt-1">
+                              {app.elevator_pitch}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-muted-gray/30">
+                        <Select
+                          value={app.status}
+                          onValueChange={(value) => handleStatusChange(app.id, value)}
+                        >
+                          <SelectTrigger className="h-7 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {statusColumns.map((col) => (
+                              <SelectItem key={col.id} value={col.id}>
+                                {col.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </ScrollArea>
+    </div>
   );
 }
 
@@ -757,7 +1549,7 @@ function DocumentsSection({ projectId }: DocumentsSectionProps) {
   const { data: teamMembers } = useQuery({
     queryKey: ['project-members', projectId],
     queryFn: async () => {
-      const response = await fetch(`/api/v1/backlot/projects/${projectId}/members`, {
+      const response = await fetch(`/api/v1/backlot/projects/${projectId}/access/members`, {
         headers: { Authorization: `Bearer ${api.getToken()}` },
       });
       if (!response.ok) throw new Error('Failed to fetch team members');

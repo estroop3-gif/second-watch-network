@@ -2211,3 +2211,121 @@ async def get_print_data(
         "generated_at": datetime.utcnow().isoformat(),
         "seasons": result_seasons
     }
+
+
+# =====================================================
+# Episode-Story Link Models
+# =====================================================
+
+class EpisodeStoryLinkCreate(BaseModel):
+    story_id: str
+    relationship: Optional[str] = Field(default='primary')
+    notes: Optional[str] = None
+
+
+# =====================================================
+# Episode-Story Link Endpoints (Episode-centric)
+# =====================================================
+
+@router.get("/projects/{project_id}/episodes/{episode_id}/stories")
+async def list_episode_story_links(
+    project_id: str,
+    episode_id: str,
+    authorization: str = Header(None)
+):
+    """List all beat sheets (stories) linked to an episode."""
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["user_id"])
+
+    # Verify episode exists
+    episode = execute_single(
+        "SELECT id FROM episodes WHERE id = :episode_id AND project_id = :project_id",
+        {"episode_id": episode_id, "project_id": project_id}
+    )
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    client = get_client()
+
+    # Get links with story (beat sheet) data
+    links = client.table("backlot_story_episodes").select("*").eq("episode_id", episode_id).execute()
+
+    # Enrich with story data
+    result = []
+    for link in (links.data or []):
+        story = client.table("backlot_stories").select(
+            "id, title, logline, genre, tone, structure_type"
+        ).eq("id", link["story_id"]).execute()
+        if story.data:
+            link["story"] = story.data[0]
+            result.append(link)
+
+    return {"links": result}
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/stories")
+async def link_episode_to_story(
+    project_id: str,
+    episode_id: str,
+    data: EpisodeStoryLinkCreate,
+    authorization: str = Header(None)
+):
+    """Link an episode to a beat sheet (story)."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Verify story exists and belongs to project
+    story = client.table("backlot_stories").select("id").eq("id", data.story_id).eq("project_id", project_id).execute()
+    if not story.data:
+        raise HTTPException(status_code=404, detail="Beat sheet not found")
+
+    # Check if link already exists
+    existing = client.table("backlot_story_episodes").select("id").eq("episode_id", episode_id).eq("story_id", data.story_id).execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="Episode is already linked to this beat sheet")
+
+    link_data = {
+        "story_id": data.story_id,
+        "episode_id": episode_id,
+        "relationship": data.relationship or 'primary',
+        "notes": data.notes,
+    }
+
+    result = client.table("backlot_story_episodes").insert(link_data).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create link")
+
+    # Return the created link with story data
+    created_link = result.data[0]
+    story_data = client.table("backlot_stories").select(
+        "id, title, logline, genre, tone, structure_type"
+    ).eq("id", data.story_id).execute()
+    if story_data.data:
+        created_link["story"] = story_data.data[0]
+
+    return created_link
+
+
+@router.delete("/projects/{project_id}/episodes/{episode_id}/stories/{link_id}")
+async def unlink_episode_from_story(
+    project_id: str,
+    episode_id: str,
+    link_id: str,
+    authorization: str = Header(None)
+):
+    """Remove an episode-story link."""
+    user = await get_current_user_from_token(authorization)
+    await verify_episode_access(project_id, episode_id, user["user_id"], require_edit=True)
+
+    client = get_client()
+
+    # Verify link exists and belongs to this episode
+    link = client.table("backlot_story_episodes").select("id").eq("id", link_id).eq("episode_id", episode_id).execute()
+    if not link.data:
+        raise HTTPException(status_code=404, detail="Link not found")
+
+    client.table("backlot_story_episodes").delete().eq("id", link_id).execute()
+
+    return {"success": True}

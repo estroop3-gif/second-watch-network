@@ -2563,3 +2563,74 @@ export function useBidirectionalSync(dayId: string | null) {
     result: mutation.data,
   };
 }
+
+// =====================================================
+// Weather Forecast
+// =====================================================
+
+export interface WeatherHourlyForecast {
+  time: string;
+  temp_f: number;
+  condition: string;
+}
+
+export interface WeatherForecastData {
+  condition: string;
+  high_temp_f: number;
+  low_temp_f: number;
+  precipitation_chance: number;
+  humidity: number;
+  wind_mph: number;
+  wind_direction: string;
+}
+
+export interface WeatherResponse {
+  timezone: string;
+  timezone_offset: string;
+  date: string;
+  sunrise: string;
+  sunset: string;
+  forecast: WeatherForecastData;
+  hourly: WeatherHourlyForecast[];
+}
+
+/**
+ * Fetch weather forecast for a location and date from Open-Meteo API
+ */
+export function useWeatherForecast(
+  lat: number | null,
+  lng: number | null,
+  date: string | null
+) {
+  return useQuery({
+    queryKey: ['weather-forecast', lat, lng, date],
+    queryFn: async (): Promise<WeatherResponse> => {
+      const token = getAuthToken();
+
+      const params = new URLSearchParams({
+        lat: String(lat),
+        lng: String(lng),
+        date: date!,
+        include_hourly: 'true',
+      });
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/weather?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch weather' }));
+        throw new Error(error.detail || 'Failed to fetch weather forecast');
+      }
+
+      return response.json();
+    },
+    enabled: !!lat && !!lng && !!date,
+    staleTime: 1000 * 60 * 30, // Cache for 30 minutes
+  });
+}

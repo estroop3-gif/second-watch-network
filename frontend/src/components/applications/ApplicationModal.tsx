@@ -12,8 +12,9 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Loader2, Send } from 'lucide-react';
+import { Loader2, Send, Video, Film, Image as ImageIcon, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 import ElevatorPitchInput from './ElevatorPitchInput';
@@ -74,6 +75,11 @@ const ApplicationModal: React.FC<ApplicationModalProps> = ({
     save_cover_letter_as_template: false,
     cover_letter_template_name: '',
     custom_question_responses: {},
+    // Cast-specific fields
+    demo_reel_url: '',
+    self_tape_url: '',
+    headshot_url: '',
+    special_skills: [] as string[],
   });
 
   // Data hooks
@@ -100,6 +106,11 @@ const ApplicationModal: React.FC<ApplicationModalProps> = ({
         save_cover_letter_as_template: false,
         cover_letter_template_name: '',
         custom_question_responses: {},
+        // Cast-specific fields
+        demo_reel_url: '',
+        self_tape_url: '',
+        headshot_url: '',
+        special_skills: [],
       });
 
       // Auto-select default template if available
@@ -228,6 +239,11 @@ const ApplicationModal: React.FC<ApplicationModalProps> = ({
           custom_question_responses: Object.keys(formState.custom_question_responses).length > 0
             ? formState.custom_question_responses
             : undefined,
+          // Cast-specific fields
+          demo_reel_url: formState.demo_reel_url || undefined,
+          self_tape_url: formState.self_tape_url || undefined,
+          headshot_url: formState.headshot_url || undefined,
+          special_skills: formState.special_skills.length > 0 ? formState.special_skills : undefined,
         },
       });
 
@@ -302,6 +318,120 @@ const ApplicationModal: React.FC<ApplicationModalProps> = ({
             onChange={(resumeId) => updateField('resume_id', resumeId)}
             required={requirements.requires_resume}
           />
+
+          {/* Cast-Specific Fields (shown for looking_for_cast type) */}
+          {collab.type === 'looking_for_cast' && (
+            <div className="space-y-4 p-4 bg-charcoal-black/30 border border-muted-gray/20 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Video className="w-5 h-5 text-accent-yellow" />
+                <Label className="text-bone-white font-medium">Cast Materials</Label>
+              </div>
+              <p className="text-xs text-muted-gray -mt-2">
+                {collab.tape_workflow === 'after_shortlist'
+                  ? 'Self-tape will be requested if you are shortlisted'
+                  : 'Provide the materials required for this role'}
+              </p>
+
+              {/* Demo Reel URL */}
+              {collab.requires_reel && (
+                <div className="space-y-2">
+                  <Label htmlFor="demo_reel_url" className="text-bone-white flex items-center gap-2">
+                    <Film className="w-4 h-4 text-purple-400" />
+                    Demo Reel URL
+                    <span className="text-primary-red text-xs">*</span>
+                  </Label>
+                  <Input
+                    id="demo_reel_url"
+                    value={formState.demo_reel_url}
+                    onChange={(e) => updateField('demo_reel_url', e.target.value)}
+                    placeholder="YouTube, Vimeo, or direct link to your demo reel"
+                    className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray"
+                  />
+                </div>
+              )}
+
+              {/* Self-Tape URL (only if workflow is upfront) */}
+              {collab.requires_self_tape && collab.tape_workflow === 'upfront' && (
+                <div className="space-y-2">
+                  <Label htmlFor="self_tape_url" className="text-bone-white flex items-center gap-2">
+                    <Video className="w-4 h-4 text-cyan-400" />
+                    Self-Tape URL
+                    <span className="text-primary-red text-xs">*</span>
+                  </Label>
+                  <Input
+                    id="self_tape_url"
+                    value={formState.self_tape_url}
+                    onChange={(e) => updateField('self_tape_url', e.target.value)}
+                    placeholder="YouTube, Vimeo, or direct link to your self-tape"
+                    className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray"
+                  />
+                  {collab.tape_instructions && (
+                    <div className="p-3 bg-muted-gray/10 rounded-md border border-muted-gray/20">
+                      <p className="text-xs text-muted-gray font-medium mb-1">Tape Instructions:</p>
+                      <p className="text-sm text-bone-white whitespace-pre-wrap">{collab.tape_instructions}</p>
+                    </div>
+                  )}
+                  {collab.tape_format_preferences && (
+                    <p className="text-xs text-muted-gray">
+                      Format: {collab.tape_format_preferences}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Tape will be requested notice (if workflow is after_shortlist) */}
+              {collab.requires_self_tape && collab.tape_workflow === 'after_shortlist' && (
+                <div className="p-3 bg-accent-yellow/10 border border-accent-yellow/30 rounded-md">
+                  <p className="text-sm text-accent-yellow">
+                    Self-tape will be requested if you are shortlisted for this role.
+                  </p>
+                  {collab.tape_instructions && (
+                    <p className="text-xs text-muted-gray mt-2">
+                      Instructions will be provided when requested.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Headshot URL */}
+              {collab.requires_headshot && (
+                <div className="space-y-2">
+                  <Label htmlFor="headshot_url" className="text-bone-white flex items-center gap-2">
+                    <ImageIcon className="w-4 h-4 text-amber-400" />
+                    Headshot URL
+                    <span className="text-primary-red text-xs">*</span>
+                  </Label>
+                  <Input
+                    id="headshot_url"
+                    value={formState.headshot_url}
+                    onChange={(e) => updateField('headshot_url', e.target.value)}
+                    placeholder="Direct link to your headshot"
+                    className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray"
+                  />
+                </div>
+              )}
+
+              {/* Special Skills */}
+              <div className="space-y-2">
+                <Label className="text-bone-white flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-emerald-400" />
+                  Special Skills (optional)
+                </Label>
+                <Input
+                  value={formState.special_skills.join(', ')}
+                  onChange={(e) => {
+                    const skills = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+                    updateField('special_skills', skills);
+                  }}
+                  placeholder="e.g., Stage combat, Horseback riding, Fluent Spanish"
+                  className="bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray"
+                />
+                <p className="text-xs text-muted-gray">
+                  Separate skills with commas
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Custom Screening Questions */}
           {collab.custom_questions && collab.custom_questions.length > 0 && (

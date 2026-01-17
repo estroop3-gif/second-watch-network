@@ -40,6 +40,8 @@ interface SearchableComboboxProps<T extends SearchableItem> {
   disabled?: boolean;
   className?: string;
   debounceMs?: number;
+  /** Pre-populated item to display before search results are loaded (for edit mode) */
+  initialSelectedItem?: T | null;
 }
 
 function SearchableCombobox<T extends SearchableItem>({
@@ -56,13 +58,24 @@ function SearchableCombobox<T extends SearchableItem>({
   disabled = false,
   className,
   debounceMs = 300,
+  initialSelectedItem,
 }: SearchableComboboxProps<T>) {
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [items, setItems] = useState<T[]>([]);
-  const [selectedItem, setSelectedItem] = useState<T | null>(null);
+  const [selectedItem, setSelectedItem] = useState<T | null>(initialSelectedItem || null);
   const [isSearching, setIsSearching] = useState(false);
   const [isAdding, setIsAdding] = useState(false);
+  // Track if we've initialized from initialSelectedItem
+  const [hasInitialized, setHasInitialized] = useState(!!initialSelectedItem);
+
+  // Initialize from initialSelectedItem on first render or when it changes
+  useEffect(() => {
+    if (initialSelectedItem && !hasInitialized) {
+      setSelectedItem(initialSelectedItem);
+      setHasInitialized(true);
+    }
+  }, [initialSelectedItem, hasInitialized]);
 
   // Debounced search - runs on open and on query change
   useEffect(() => {
@@ -85,18 +98,19 @@ function SearchableCombobox<T extends SearchableItem>({
     return () => clearTimeout(timer);
   }, [searchQuery, open, searchFn, debounceMs]);
 
-  // Load selected item when value changes
+  // Load selected item when value changes and we have items (for non-edit scenarios)
   useEffect(() => {
-    if (value && !selectedItem) {
+    if (value && !selectedItem && !initialSelectedItem) {
       // Try to find in current items
       const found = items.find((item) => item.id === value);
       if (found) {
         setSelectedItem(found);
       }
-    } else if (!value) {
+    } else if (!value && !initialSelectedItem && !hasInitialized) {
+      // Only clear if there's no initialSelectedItem (prevents clearing edit mode values)
       setSelectedItem(null);
     }
-  }, [value, items, selectedItem]);
+  }, [value, items, selectedItem, initialSelectedItem, hasInitialized]);
 
   const handleSelect = useCallback(
     (item: T) => {

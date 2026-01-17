@@ -60,7 +60,11 @@ import {
   Loader2,
   FileSignature,
   Award,
+  Video,
+  Film,
+  Image as ImageIcon,
 } from 'lucide-react';
+import VideoPreview from '@/components/shared/VideoPreview';
 import { format } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
 
@@ -466,6 +470,36 @@ function ApplicationCard({
           )}
         </div>
 
+        {/* Tape Status Badge */}
+        {(application.tape_requested_at || application.tape_submitted_at || application.self_tape_url || application.demo_reel_url) && (
+          <div className="flex flex-wrap gap-1 mt-2" onClick={(e) => e.stopPropagation()}>
+            {application.tape_submitted_at && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-emerald-600/20 text-emerald-400">
+                <Video className="w-2.5 h-2.5 mr-0.5" />
+                Tape Submitted
+              </Badge>
+            )}
+            {application.tape_requested_at && !application.tape_submitted_at && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-amber-600/20 text-amber-400">
+                <Video className="w-2.5 h-2.5 mr-0.5" />
+                Tape Requested
+              </Badge>
+            )}
+            {application.self_tape_url && !application.tape_submitted_at && !application.tape_requested_at && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-cyan-600/20 text-cyan-400">
+                <Video className="w-2.5 h-2.5 mr-0.5" />
+                Has Tape
+              </Badge>
+            )}
+            {application.demo_reel_url && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 bg-purple-600/20 text-purple-400">
+                <Film className="w-2.5 h-2.5 mr-0.5" />
+                Reel
+              </Badge>
+            )}
+          </div>
+        )}
+
         {/* Quick Info */}
         <div className="flex flex-wrap gap-1 mt-2 text-xs text-muted-foreground">
           {profile.city && (
@@ -590,7 +624,77 @@ function ApplicationDetails({
             </a>
           </Button>
         )}
+        {application.headshot_url && (
+          <Button variant="outline" size="sm" asChild>
+            <a href={application.headshot_url} target="_blank" rel="noopener noreferrer">
+              <ImageIcon className="w-4 h-4 mr-1" />
+              Headshot
+            </a>
+          </Button>
+        )}
       </div>
+
+      {/* Cast Materials - Video Previews */}
+      {(application.demo_reel_url || application.self_tape_url) && (
+        <div className="space-y-3">
+          <h4 className="font-medium text-sm flex items-center gap-1">
+            <Video className="w-4 h-4" />
+            Cast Materials
+          </h4>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {application.demo_reel_url && (
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Film className="w-3 h-3" />
+                  Demo Reel
+                </p>
+                <VideoPreview url={application.demo_reel_url} label="Demo Reel" />
+              </div>
+            )}
+            {application.self_tape_url && (
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Video className="w-3 h-3" />
+                  Self-Tape
+                  {application.tape_submitted_at && (
+                    <Badge variant="secondary" className="text-[10px] px-1 py-0 bg-emerald-600/20 text-emerald-400">
+                      Submitted
+                    </Badge>
+                  )}
+                </p>
+                <VideoPreview url={application.self_tape_url} label="Self-Tape" />
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tape Status */}
+      {application.tape_requested_at && !application.tape_submitted_at && (
+        <div className="p-3 bg-amber-600/10 border border-amber-600/30 rounded-lg">
+          <div className="flex items-center gap-2 text-amber-400">
+            <Video className="w-4 h-4" />
+            <span className="text-sm font-medium">Tape Requested</span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Tape was requested on {format(new Date(application.tape_requested_at), 'MMM d, yyyy')}. Awaiting submission.
+          </p>
+        </div>
+      )}
+
+      {/* Special Skills */}
+      {application.special_skills && application.special_skills.length > 0 && (
+        <div className="space-y-1">
+          <h4 className="font-medium text-sm">Special Skills</h4>
+          <div className="flex flex-wrap gap-1">
+            {application.special_skills.map((skill, index) => (
+              <Badge key={index} variant="secondary" className="text-xs">
+                {skill}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Cover Note */}
       {application.cover_note && (

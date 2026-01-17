@@ -98,7 +98,7 @@ interface ScriptLine {
 
 interface ScriptPage {
   pageNumber: number;
-  elements: ScriptElement[]; // Changed from lines to elements
+  lines: ScriptLine[]; // Line-based for pagination
   startLineIndex: number;
   endLineIndex: number;
 }
@@ -835,6 +835,8 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                     display: 'block',
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                    wordWrap: 'break-word',
                   }}
                 >
                   {element.content || '\u00A0'}
@@ -860,28 +862,78 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
     );
   };
 
-  // Render a single page
+  // Update an element's content for inline editing - simpler approach
+  const updateElementContent = useCallback((elementId: string, newContent: string) => {
+    const elementIndex = elements.findIndex(el => el.id === elementId);
+    if (elementIndex === -1) return;
+
+    const element = elements[elementIndex];
+
+    // Rebuild the full content with updated element
+    const allLines = content.split('\n');
+    const indent = ' '.repeat(element.originalIndent);
+
+    // Replace lines from startLineIndex to endLineIndex with new content
+    const newLines = newContent.split('\n').map(line => indent + line);
+    allLines.splice(element.startLineIndex, element.endLineIndex - element.startLineIndex + 1, ...newLines);
+
+    onContentChange?.(allLines.join('\n'));
+  }, [content, elements, onContentChange]);
+
+  // Simple keyboard handler for inline editing
+  const handleInlineKeyDown = useCallback((e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Ctrl+S to save
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+      e.preventDefault();
+      onSave?.();
+      return;
+    }
+
+    // Escape to stop editing
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setEditingElementId(null);
+    }
+
+    // Allow natural Enter and text flow - no special handling
+  }, [onSave]);
+
+  // Get elements that appear on a specific page (based on line indices)
+  const getPageElements = useCallback((page: ScriptPage) => {
+    return elements.filter(el =>
+      (el.startLineIndex >= page.startLineIndex && el.startLineIndex <= page.endLineIndex) ||
+      (el.endLineIndex >= page.startLineIndex && el.endLineIndex <= page.endLineIndex) ||
+      (el.startLineIndex <= page.startLineIndex && el.endLineIndex >= page.endLineIndex)
+    );
+  }, [elements]);
+
+  // Render a single page with element-based editing
   const renderPage = (page: ScriptPage, isVisible: boolean = true) => {
     const scaledWidth = (PAGE_WIDTH_PX * zoom) / 100;
     const scaledHeight = (PAGE_HEIGHT_PX * zoom) / 100;
+    const fontSize = (12 * zoom) / 100;
+    const lineHeightPx = Math.ceil(fontSize * 2); // Double the font size to prevent any overlap
+
+    // Get elements for this page
+    const pageElements = getPageElements(page);
 
     return (
       <div
         key={page.pageNumber}
         ref={(el) => { if (el) pageRefs.current.set(page.pageNumber, el); }}
         className={cn(
-          "relative bg-white shadow-lg mx-auto select-none",
+          "relative bg-white shadow-lg mx-auto",
           viewMode === 'continuous' && "mb-8",
           !isVisible && viewMode === 'single' && "hidden"
         )}
         style={{
           width: scaledWidth,
           minHeight: scaledHeight,
-          height: 'auto', // CRITICAL FIX: Allow page to expand when content wraps
-          overflow: 'visible', // CRITICAL: Allow content to flow beyond min height
+          height: 'auto',
+          overflow: 'visible',
         }}
       >
-        {/* Page content area with margins - using flow layout instead of absolute positioning */}
+        {/* Page content area with margins */}
         <div
           className="relative"
           style={{
@@ -890,113 +942,90 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
             paddingRight: (MARGIN_RIGHT * zoom) / 100,
             paddingBottom: (MARGIN_BOTTOM * zoom) / 100,
             color: '#000',
-            overflow: 'visible', // CRITICAL: Allow content to flow naturally and expand beyond min height
+            overflow: 'visible',
           }}
         >
-          {page.lines.map((line, idx) => {
-            const globalLineIndex = page.startLineIndex + idx;
-            const isEditingThis = isEditing && editingLineIndex === globalLineIndex;
+          {pageElements.map((element) => {
+            const isEditingThis = isEditing && editingElementId === element.id;
+            const config = ELEMENT_CONFIG[element.type] || ELEMENT_CONFIG.general;
+            const position = getElementPosition(element.type);
 
-            // When editing this line, use currentElementType to maintain position
-            // This prevents the line from jumping when the user types and the
-            // auto-detection would change the element type
-            const effectiveType = isEditingThis ? currentElementType : line.type;
-            const config = ELEMENT_CONFIG[effectiveType] || ELEMENT_CONFIG.general;
-            const position = getElementPosition(effectiveType);
-
-            const fontSize = (12 * zoom) / 100;
-            const lineHeight = 1.0; // Single-spaced (matches PDF export)
-
-            // Calculate scaled position values
             const scaledLeft = (position.left * zoom) / 100;
-            const scaledWidth = (position.width * zoom) / 100;
+            const scaledElementWidth = (position.width * zoom) / 100;
 
             return (
               <div
-                key={idx}
-                className={cn(
-                  "relative cursor-text",
-                  isEditingThis && "bg-yellow-100/50"
-                )}
+                key={element.id}
+                className="relative cursor-text"
                 style={{
                   ...config.textStyle,
                   marginLeft: `${scaledLeft}px`,
-                  width: `${scaledWidth}px`,
+                  width: `${scaledElementWidth}px`,
                   fontSize: `${fontSize}px`,
-                  lineHeight: lineHeight,
-                  minHeight: `${fontSize * lineHeight}px`,
+                  lineHeight: `${lineHeightPx}px`,
+                  minHeight: `${lineHeightPx}px`,
                   fontFamily: 'Courier New, Courier, monospace',
                   textAlign: position.textAlign || 'left',
+                  marginBottom: 0,
                 }}
-                onClick={() => {
-                  // When clicking to edit, find the element containing this line
-                  // and switch to element-based editing
-                  if (canEdit && onStartEdit) {
-                    // Find the element that contains this line
-                    const element = elements.find(el =>
-                      globalLineIndex >= el.startLineIndex && globalLineIndex <= el.endLineIndex
-                    );
-                    const detectedType = line.type === 'general' ? 'action' : line.type;
-
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (isEditing) {
+                    // Already in editing mode - select this element
+                    setEditingElementId(element.id);
+                    setCurrentElementType(element.type === 'general' ? 'action' : element.type);
+                  } else if (canEdit && onStartEdit) {
+                    // Start editing mode and select this element
                     onStartEdit();
                     setTimeout(() => {
-                      if (element) {
-                        setEditingElementId(element.id);
-                      }
-                      setCurrentElementType(detectedType);
-                    }, 100);
+                      setEditingElementId(element.id);
+                      setCurrentElementType(element.type === 'general' ? 'action' : element.type);
+                    }, 50);
                   }
                 }}
               >
                 {isEditingThis ? (
+                  // Seamless inline textarea - text flows naturally like a document
                   <textarea
                     ref={(el) => {
                       if (el) {
-                        lineInputRefs.current.set(globalLineIndex, el);
-                        // Auto-resize textarea height based on content
-                        // Force a reflow by setting height to 0 first, then to scrollHeight
-                        el.style.height = '0px';
+                        elementInputRefs.current.set(element.id, el);
+                        // Auto-size to content
+                        el.style.height = 'auto';
                         el.style.height = `${el.scrollHeight}px`;
                       }
                     }}
-                    value={line.content}
+                    value={element.content}
                     onChange={(e) => {
-                      updateLine(globalLineIndex, e.target.value);
-                      // Auto-resize on content change
+                      updateElementContent(element.id, e.target.value);
+                      // Auto-resize as content changes
                       const textarea = e.target as HTMLTextAreaElement;
-                      // Force a reflow by setting height to 0 first
-                      textarea.style.height = '0px';
-                      // Then set to actual scrollHeight to fit content
+                      textarea.style.height = 'auto';
                       textarea.style.height = `${textarea.scrollHeight}px`;
                     }}
-                    onKeyDown={(e) => handleKeyDown(e, globalLineIndex)}
+                    onKeyDown={handleInlineKeyDown}
                     placeholder={config.placeholder}
-                    className="w-full bg-transparent border-none outline-none resize-none overflow-y-hidden"
+                    className="w-full bg-transparent border-none outline-none resize-none focus:ring-0 focus:outline-none"
                     style={{
                       fontSize: `${fontSize}px`,
-                      lineHeight: lineHeight,
+                      lineHeight: `${lineHeightPx}px`,
                       fontFamily: 'Courier New, Courier, monospace',
                       color: '#000',
                       textAlign: position.textAlign || 'left',
-                      // Reset all browser default spacing to match static span exactly
                       padding: 0,
                       margin: 0,
                       border: 'none',
                       boxSizing: 'border-box',
-                      // Enable text wrapping (this is the key fix!)
                       display: 'block',
                       whiteSpace: 'pre-wrap',
                       wordWrap: 'break-word',
                       overflowWrap: 'break-word',
                       wordBreak: 'break-word',
-                      // Ensure text starts at exact same position as span
-                      textIndent: 0,
-                      letterSpacing: 'normal',
-                      wordSpacing: 'normal',
-                      // Allow height to expand vertically (no horizontal overflow)
-                      minHeight: `${fontSize * lineHeight}px`,
+                      minHeight: `${lineHeightPx}px`,
                       height: 'auto',
-                      overflowX: 'hidden',
+                      overflow: 'hidden',
+                      background: 'transparent',
+                      caretColor: '#000',
                     }}
                   />
                 ) : (
@@ -1005,52 +1034,55 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
                       display: 'block',
                       whiteSpace: 'pre-wrap',
                       wordBreak: 'break-word',
+                      overflowWrap: 'break-word',
+                      wordWrap: 'break-word',
+                      lineHeight: `${lineHeightPx}px`,
                     }}
                   >
-                    {line.content || '\u00A0'}
+                    {element.content || '\u00A0'}
                   </span>
                 )}
               </div>
             );
           })}
 
-          {/* Add new line button at end of page content */}
+          {/* Add new element at end of last page */}
           {isEditing && page.pageNumber === totalPages && (
             <div
-              className="absolute text-gray-500 cursor-pointer hover:text-gray-600"
-              style={{
-                fontSize: `${(12 * zoom) / 100}px`,
-                top: `${page.lines.length * (12 * zoom / 100) * 1.5 + 8}px`,
-                left: 0,
+              className="mt-2 text-gray-400 cursor-pointer hover:text-gray-600 text-center"
+              style={{ fontSize: `${fontSize}px` }}
+              onClick={() => {
+                // Add a new action element at the end
+                const newContent = content + '\n\n';
+                onContentChange?.(newContent);
               }}
-              onClick={() => insertLine(lines.length - 1, '')}
             >
-              + Click to add line
+              + Click to add text
             </div>
           )}
         </div>
 
-        {/* Page number - right aligned at top like standard screenplay */}
+        {/* Page number */}
         <div
           className="absolute text-black"
           style={{
             top: (36 * zoom) / 100,
             right: (MARGIN_RIGHT * zoom) / 100,
-            fontSize: `${(12 * zoom) / 100}px`,
+            fontSize: `${fontSize}px`,
             fontFamily: 'Courier New, Courier, monospace',
           }}
         >
           {page.pageNumber}.
         </div>
 
-        {/* Header on subsequent pages - title in header */}
+        {/* Header on subsequent pages */}
         {page.pageNumber > 1 && title && (
           <div
             className="absolute text-black"
             style={{
               top: (36 * zoom) / 100,
               left: (MARGIN_LEFT * zoom) / 100,
-              fontSize: `${(12 * zoom) / 100}px`,
+              fontSize: `${fontSize}px`,
               fontFamily: 'Courier New, Courier, monospace',
             }}
           >
@@ -1167,45 +1199,14 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           )}
         </div>
 
-        {/* Center: Element type indicator when editing */}
-        {isEditing && (
-          <TooltipProvider>
-            <div className={cn("flex items-center", isFullscreen ? "gap-2" : "gap-1")}>
-              {(['scene_heading', 'action', 'character', 'dialogue', 'parenthetical', 'transition'] as ScriptElementType[]).map((type) => {
-                const config = ELEMENT_CONFIG[type];
-                const Icon = config.icon;
-                const isActive = currentElementType === type;
-
-                return (
-                  <Tooltip key={type}>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant={isActive ? 'default' : 'ghost'}
-                        size="sm"
-                        onClick={() => {
-                          if (editingElementId !== null) {
-                            formatElementAs(editingElementId, type);
-                          }
-                          setCurrentElementType(type);
-                        }}
-                        className={cn(
-                          isFullscreen ? 'h-9 px-3' : 'h-7 px-2',
-                          isActive ? 'bg-accent-yellow text-charcoal-black' : 'text-muted-gray hover:text-bone-white'
-                        )}
-                      >
-                        <Icon className={cn(isFullscreen ? "w-4 h-4" : "w-3.5 h-3.5")} />
-                        {isFullscreen && <span className="ml-1 text-xs">{config.label.split(' ')[0]}</span>}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>{config.label}</p>
-                      <p className="text-xs text-muted-gray">{config.shortcut}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                );
-              })}
-            </div>
-          </TooltipProvider>
+        {/* Center: Current element type indicator when editing */}
+        {isEditing && editingElementId !== null && (
+          <div className={cn("flex items-center gap-2", isFullscreen ? "text-base" : "text-sm")}>
+            <span className="text-muted-gray">Editing:</span>
+            <Badge variant="outline" className="bg-accent-yellow/20 text-accent-yellow border-accent-yellow/50">
+              {ELEMENT_CONFIG[currentElementType]?.label || 'Text'}
+            </Badge>
+          </div>
         )}
 
         {/* Right: Zoom and actions */}
@@ -1308,28 +1309,20 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
           isFullscreen ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"
         )}>
           <span className="font-medium">Shortcuts:</span>
-          <span>Tab: Cycle element types →</span>
-          <span>Shift+Tab: Cycle ←</span>
-          <span>Ctrl+1-6: Direct element</span>
-          <span>Enter: New line (smart type)</span>
-          <span>↑↓: Navigate lines</span>
           <span>Ctrl+S: Save</span>
-          {isFullscreen && <span>Esc: Exit fullscreen</span>}
+          <span>Esc: Stop editing</span>
+          {isFullscreen && <span>| Exit fullscreen</span>}
         </div>
       )}
 
-      {/* Page view area - use element editor when editing, paginated view otherwise */}
+      {/* Page view area - always use paginated view, with inline editing support */}
       <ScrollArea className="flex-1">
-        <div className={cn("py-8", !isEditing && viewMode === 'single' && "flex items-start justify-center min-h-full")}>
-          {isEditing ? (
-            // Element-based editor for editing mode - flows naturally like a word processor
-            renderElementEditor()
-          ) : (
-            // Paginated view for reading mode
-            viewMode === 'single'
-              ? renderPage(pages[currentPage - 1] || pages[0], true)
-              : pages.map((page) => renderPage(page, true))
-          )}
+        <div className={cn("py-8", viewMode === 'single' && "flex items-start justify-center min-h-full")}>
+          {/* Paginated view with inline editing - no view switch */}
+          {viewMode === 'single'
+            ? renderPage(pages[currentPage - 1] || pages[0], true)
+            : pages.map((page) => renderPage(page, true))
+          }
         </div>
       </ScrollArea>
 
@@ -1339,9 +1332,9 @@ const ScriptPageView: React.FC<ScriptPageViewProps> = ({
         isFullscreen ? "px-6 py-3 text-sm" : "px-4 py-2 text-xs"
       )}>
         <div>
-          {elements.length} elements | {lines.length} lines | {totalPages} pages
+          {elements.length} elements | {totalPages} pages
           {isEditing && editingElementId !== null && (
-            <span className="ml-2">| Editing element</span>
+            <span className="ml-2">| Editing</span>
           )}
         </div>
         <div className="flex items-center gap-4">

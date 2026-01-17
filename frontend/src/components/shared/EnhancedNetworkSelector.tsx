@@ -21,6 +21,8 @@ interface EnhancedNetworkSelectorProps {
   onChange: (id: string | null, network?: Network) => void;
   disabled?: boolean;
   className?: string;
+  /** Pre-populated network for edit mode */
+  initialSelectedItem?: Network | null;
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -38,6 +40,7 @@ const EnhancedNetworkSelector: React.FC<EnhancedNetworkSelectorProps> = ({
   onChange,
   disabled = false,
   className,
+  initialSelectedItem,
 }) => {
   const { session } = useAuth();
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
@@ -154,7 +157,7 @@ const EnhancedNetworkSelector: React.FC<EnhancedNetworkSelectorProps> = ({
         ) : (
           <Tv className="h-4 w-4 text-muted-gray flex-shrink-0" />
         )}
-        <span className="truncate">{network.name}</span>
+        <span className="truncate text-bone-white">{network.name}</span>
       </div>
     );
   };
@@ -173,6 +176,7 @@ const EnhancedNetworkSelector: React.FC<EnhancedNetworkSelectorProps> = ({
       renderSelected={renderSelected}
       disabled={disabled}
       className={className}
+      initialSelectedItem={initialSelectedItem}
     />
   );
 };

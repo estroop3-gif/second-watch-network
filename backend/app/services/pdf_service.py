@@ -67,6 +67,8 @@ def generate_call_sheet_pdf_html(
     fallback_basecamp: Optional[str] = None,
     logo_url: Optional[str] = None,
     logo_base64: Optional[str] = None,
+    timezone: Optional[str] = None,
+    timezone_offset: Optional[str] = None,
 ) -> str:
     """
     Generate professional call sheet HTML for PDF conversion
@@ -875,6 +877,7 @@ def generate_call_sheet_pdf_html(
             <div class="call-sheet-num">{call_sheet_num}</div>
             <div class="shoot-day">{shoot_day_text}</div>
             <div style="font-size: 12px; font-weight: bold; margin-top: 8px;">{call_date}</div>
+            {f'<div style="font-size: 10px; color: #666; margin-top: 2px;">All times {timezone}{" (UTC" + timezone_offset + ")" if timezone_offset else ""}</div>' if timezone else ''}
         </div>
     </div>
 
@@ -1085,6 +1088,8 @@ async def generate_call_sheet_pdf(
         fallback_basecamp=_to_string(call_sheet.get("basecamp_location")),
         logo_url=logo_url,
         logo_base64=logo_base64,
+        timezone=_to_string(call_sheet.get("timezone")),
+        timezone_offset=_to_string(call_sheet.get("timezone_offset")),
     )
 
     # Convert HTML to PDF

@@ -48,6 +48,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   FileVideo,
+  Truck,
 } from 'lucide-react';
 import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, useCanApprove, BACKLOT_ROLES, useTodayShootDay } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
@@ -136,6 +137,7 @@ const ScriptSidesExportsView = lazy(() => import('@/components/backlot/workspace
 const StripboardView = lazy(() => import('@/components/backlot/workspace/StripboardView'));
 const FilesView = lazy(() => import('@/components/backlot/workspace/FilesView'));
 const ContinuityView = lazy(() => import('@/components/backlot/workspace/ContinuityView'));
+const TranspoView = lazy(() => import('@/components/backlot/workspace/TranspoView'));
 
 // Lazy loaded named exports (need wrapper)
 const CastingCrewTab = lazy(() =>
@@ -294,6 +296,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: 'Coming Soon',
     items: [
+      { id: 'transpo', label: 'Transpo Logistics', icon: Truck, comingSoon: true },
       { id: 'av-script', label: 'AV Script', icon: FileVideo, comingSoon: true },
       { id: 'run-of-show', label: 'Run of Show', icon: ListOrdered, comingSoon: true },
       { id: 'program-rundown', label: 'Program Rundown', icon: Clock, comingSoon: true },
@@ -1033,6 +1036,11 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'story-management' && (
             <StoryManagementView projectId={project.id} canEdit={isTabEditable('story-management')} />
+          )}
+
+          {/* Coming Soon: Transpo Logistics */}
+          {activeView === 'transpo' && (
+            <TranspoView projectId={project.id} />
           )}
 
           {/* Coming Soon: AV Script */}

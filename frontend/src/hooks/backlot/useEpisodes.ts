@@ -1153,6 +1153,78 @@ export function usePrintData(projectId: string | null, seasonId?: string, enable
 }
 
 // =====================================================
+// Episode-Story Link Types
+// =====================================================
+
+export interface EpisodeStoryLink {
+  id: string;
+  story_id: string;
+  episode_id: string;
+  relationship: string;
+  notes: string | null;
+  created_at: string;
+  story?: {
+    id: string;
+    title: string;
+    logline: string | null;
+    genre: string | null;
+    tone: string | null;
+    structure_type: string | null;
+  };
+}
+
+// =====================================================
+// Episode-Story Link Hooks
+// =====================================================
+
+export function useEpisodeStoryLinks(projectId: string | null, episodeId: string | null) {
+  return useQuery({
+    queryKey: [...episodeKeys.all, 'storyLinks', projectId || '', episodeId || ''],
+    queryFn: async (): Promise<EpisodeStoryLink[]> => {
+      if (!projectId || !episodeId) throw new Error('Project ID and Episode ID required');
+      const response = await api.get(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/stories`);
+      return response.links;
+    },
+    enabled: !!projectId && !!episodeId,
+    staleTime: 30000,
+  });
+}
+
+export function useLinkEpisodeToStory(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (data: { story_id: string; relationship?: string; notes?: string }) => {
+      if (!projectId || !episodeId) throw new Error('Project ID and Episode ID required');
+      return api.post(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/stories`, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...episodeKeys.all, 'storyLinks', projectId || '', episodeId || ''] });
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+      // Also invalidate story-side connections
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
+    },
+  });
+}
+
+export function useUnlinkEpisodeFromStory(projectId: string | null, episodeId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (linkId: string) => {
+      if (!projectId || !episodeId) throw new Error('Project ID and Episode ID required');
+      return api.delete(`/api/v1/backlot/projects/${projectId}/episodes/${episodeId}/stories/${linkId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [...episodeKeys.all, 'storyLinks', projectId || '', episodeId || ''] });
+      queryClient.invalidateQueries({ queryKey: episodeKeys.detail(projectId || '', episodeId || '') });
+      // Also invalidate story-side connections
+      queryClient.invalidateQueries({ queryKey: ['stories'] });
+    },
+  });
+}
+
+// =====================================================
 // Helper Functions
 // =====================================================
 

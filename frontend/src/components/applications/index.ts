@@ -20,3 +20,8 @@ export { default as CollabApplicationsView } from './CollabApplicationsView';
 // Unified application components
 export { default as UnifiedApplicationCard } from './UnifiedApplicationCard';
 export { default as ApplicationsReceivedCard } from './ApplicationsReceivedCard';
+
+// Workflow components
+export { default as ApplicationMessaging } from './ApplicationMessaging';
+export { default as ApplicationActionBar } from './ApplicationActionBar';
+export { default as BookingWizard } from './BookingWizard';

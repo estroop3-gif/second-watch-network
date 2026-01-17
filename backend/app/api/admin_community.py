@@ -102,6 +102,14 @@ class BulkDeactivateRequest(BaseModel):
     collab_ids: List[str]
 
 
+class ApproveCollabRequest(BaseModel):
+    notes: Optional[str] = None
+
+
+class RejectCollabRequest(BaseModel):
+    reason: str
+
+
 class WarnUserRequest(BaseModel):
     reason: str
     details: Optional[str] = None
@@ -623,7 +631,8 @@ async def list_collabs_admin(
     is_active: Optional[bool] = None,
     is_featured: Optional[bool] = None,
     collab_type: Optional[str] = None,
-    search: Optional[str] = None
+    search: Optional[str] = None,
+    approval_status: Optional[str] = None
 ):
     """List collabs with admin filters"""
     await require_admin(authorization)
@@ -644,6 +653,9 @@ async def list_collabs_admin(
     if search:
         where_clauses.append("c.title ILIKE :search")
         params["search"] = f"%{search}%"
+    if approval_status:
+        where_clauses.append("c.approval_status = :approval_status")
+        params["approval_status"] = approval_status
 
     where_sql = " AND ".join(where_clauses)
 
@@ -764,6 +776,175 @@ async def bulk_deactivate_collabs(request: BulkDeactivateRequest, authorization:
     })
 
     return {"success": True, "deactivated_count": len(request.collab_ids)}
+
+
+@router.get("/collabs/pending")
+async def list_pending_collabs(
+    authorization: str = Header(None),
+    skip: int = 0,
+    limit: int = 50
+):
+    """List collabs pending approval"""
+    await require_admin(authorization)
+
+    # Get total count
+    count_result = execute_single("""
+        SELECT COUNT(*) as total FROM community_collabs WHERE approval_status = 'pending'
+    """)
+    total = count_result["total"] if count_result else 0
+
+    # Get pending collabs with creator info
+    collabs = execute_query("""
+        SELECT c.*,
+               p.full_name as creator_full_name, p.username as creator_username, p.avatar_url as creator_avatar_url
+        FROM community_collabs c
+        LEFT JOIN profiles p ON c.user_id = p.id
+        WHERE c.approval_status = 'pending'
+        ORDER BY c.created_at DESC
+        LIMIT :limit OFFSET :skip
+    """, {"skip": skip, "limit": limit})
+
+    result = []
+    for collab in collabs:
+        result.append({
+            **{k: v for k, v in collab.items() if not k.startswith("creator_")},
+            "profiles": {
+                "full_name": collab["creator_full_name"],
+                "username": collab["creator_username"],
+                "avatar_url": collab["creator_avatar_url"]
+            } if collab.get("creator_username") else None
+        })
+
+    return {
+        "collabs": result,
+        "total": total
+    }
+
+
+@router.post("/collabs/{collab_id}/approve")
+async def approve_collab(
+    collab_id: str,
+    request: ApproveCollabRequest = None,
+    authorization: str = Header(None)
+):
+    """Approve a pending collab"""
+    admin = await require_admin(authorization)
+
+    # Update collab approval status
+    execute_update("""
+        UPDATE community_collabs
+        SET approval_status = 'approved',
+            approved_by = :approved_by,
+            approved_at = NOW()
+        WHERE id = :collab_id
+    """, {
+        "collab_id": collab_id,
+        "approved_by": admin["id"]
+    })
+
+    # Log action
+    execute_insert("""
+        INSERT INTO admin_audit_log (id, admin_id, action, target_type, target_id, details, created_at)
+        VALUES (:id, :admin_id, :action, :target_type, :target_id, :details, NOW())
+        RETURNING id
+    """, {
+        "id": str(uuid.uuid4()),
+        "admin_id": admin["id"],
+        "action": "approve_collab",
+        "target_type": "collab",
+        "target_id": collab_id,
+        "details": f'{{"notes": "{request.notes if request and request.notes else ""}"}}'
+    })
+
+    return {"success": True, "message": "Collab approved"}
+
+
+@router.post("/collabs/{collab_id}/reject")
+async def reject_collab(
+    collab_id: str,
+    request: RejectCollabRequest,
+    authorization: str = Header(None)
+):
+    """Reject a pending collab"""
+    admin = await require_admin(authorization)
+
+    # Update collab approval status
+    execute_update("""
+        UPDATE community_collabs
+        SET approval_status = 'rejected',
+            rejection_reason = :rejection_reason
+        WHERE id = :collab_id
+    """, {
+        "collab_id": collab_id,
+        "rejection_reason": request.reason
+    })
+
+    # Log action
+    execute_insert("""
+        INSERT INTO admin_audit_log (id, admin_id, action, target_type, target_id, details, created_at)
+        VALUES (:id, :admin_id, :action, :target_type, :target_id, :details, NOW())
+        RETURNING id
+    """, {
+        "id": str(uuid.uuid4()),
+        "admin_id": admin["id"],
+        "action": "reject_collab",
+        "target_type": "collab",
+        "target_id": collab_id,
+        "details": f'{{"reason": "{request.reason}"}}'
+    })
+
+    return {"success": True, "message": "Collab rejected"}
+
+
+@router.get("/settings/require_collab_approval")
+async def get_collab_approval_setting(authorization: str = Header(None)):
+    """Get the require_collab_approval setting"""
+    await require_admin(authorization)
+
+    setting = execute_single("""
+        SELECT value FROM settings WHERE key = 'require_collab_approval'
+    """)
+
+    # Value is stored as JSONB, could be "true" string or true boolean
+    enabled = False
+    if setting:
+        value = setting.get("value")
+        enabled = value == "true" or value is True
+
+    return {"enabled": enabled}
+
+
+@router.put("/settings/require_collab_approval")
+async def update_collab_approval_setting(
+    enabled: bool = Query(...),
+    authorization: str = Header(None)
+):
+    """Toggle the require_collab_approval setting"""
+    admin = await require_admin(authorization)
+
+    # Upsert the setting (value is JSONB, so we store it as a JSON boolean)
+    import json
+    json_value = json.dumps(enabled)
+    execute_query("""
+        INSERT INTO settings (key, value)
+        VALUES ('require_collab_approval', :value::jsonb)
+        ON CONFLICT (key) DO UPDATE SET value = :value::jsonb, updated_at = NOW()
+    """, {"value": json_value})
+
+    # Log action
+    execute_insert("""
+        INSERT INTO admin_audit_log (id, admin_id, action, target_type, details, created_at)
+        VALUES (:id, :admin_id, :action, :target_type, :details, NOW())
+        RETURNING id
+    """, {
+        "id": str(uuid.uuid4()),
+        "admin_id": admin["id"],
+        "action": "update_collab_approval_setting",
+        "target_type": "setting",
+        "details": f'{{"enabled": {str(enabled).lower()}}}'
+    })
+
+    return {"success": True, "enabled": enabled}
 
 
 # =====================================================

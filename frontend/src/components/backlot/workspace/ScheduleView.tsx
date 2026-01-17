@@ -55,6 +55,7 @@ import { toast } from 'sonner';
 import { AutoSchedulerWizard } from './schedule/AutoSchedulerWizard';
 import { SyncStatusBadge } from './SyncStatusBadge';
 import { BidirectionalSyncModal } from './BidirectionalSyncModal';
+import CallSheetCreateEditModal from './CallSheetCreateEditModal';
 import { RefreshCw } from 'lucide-react';
 import {
   DropdownMenu,
@@ -439,6 +440,7 @@ const DayCard: React.FC<{
   const [isExpanded, setIsExpanded] = useState(false);
   const [showScenePanel, setShowScenePanel] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showCreateCallSheetModal, setShowCreateCallSheetModal] = useState(false);
   const [generatingSides, setGeneratingSides] = useState(false);
   const { scenes, isLoading: loadingScenes } = useProductionDayScenes(day.id);
   const { data: linkedData } = useLinkedCallSheet(day.id);
@@ -457,12 +459,8 @@ const DayCard: React.FC<{
     return scenes.reduce((sum, s) => sum + (s.scene?.page_length || 0), 0);
   }, [scenes]);
 
-  const handleCreateCallSheet = async () => {
-    try {
-      await createCallSheet.mutateAsync({ include_scenes: true });
-    } catch (err) {
-      console.error('Failed to create call sheet:', err);
-    }
+  const handleCreateCallSheet = () => {
+    setShowCreateCallSheetModal(true);
   };
 
   // Generate script sides from assigned scenes
@@ -816,6 +814,33 @@ const DayCard: React.FC<{
         dayId={day.id}
         open={showSyncModal}
         onOpenChange={setShowSyncModal}
+      />
+
+      {/* Create Call Sheet Modal */}
+      <CallSheetCreateEditModal
+        isOpen={showCreateCallSheetModal}
+        onClose={() => setShowCreateCallSheetModal(false)}
+        projectId={projectId}
+        productionDay={{
+          id: day.id,
+          date: day.date,
+          title: day.title,
+          day_number: day.day_number,
+          general_call_time: day.general_call_time,
+          wrap_time: day.wrap_time,
+          location_name: day.location_name,
+          location_address: day.location_address,
+        }}
+        preloadedScenes={scenes.map(s => ({
+          id: s.scene_id,
+          scene_number: s.scene?.scene_number || '',
+          set_name: s.scene?.set_name,
+          slugline: s.scene?.slugline,
+          int_ext: s.scene?.int_ext,
+          time_of_day: s.scene?.time_of_day,
+          page_length: s.scene?.page_length,
+          description: s.scene?.description,
+        }))}
       />
     </div>
   );

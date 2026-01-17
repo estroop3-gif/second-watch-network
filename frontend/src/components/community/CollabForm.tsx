@@ -1,14 +1,14 @@
 /**
  * CollabForm - Form for creating/editing collaboration posts
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useCollabs } from '@/hooks/useCollabs';
-import { CollabType, CompensationType, CommunityCollab, JobType } from '@/types/community';
+import { CollabType, CompensationType, CommunityCollab, JobType, TapeWorkflow } from '@/types/community';
 import { ProductionType, UnionType, CustomQuestion } from '@/types/productions';
 import {
   X,
@@ -21,10 +21,13 @@ import {
   FileText,
   ClipboardCheck,
   Film,
+  Video,
+  Clapperboard,
 } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import { useEnrichedProfile } from '@/context/EnrichedProfileContext';
 
 // Import new components
 import ProductionTypeSelect from '@/components/shared/ProductionTypeSelect';
@@ -38,7 +41,8 @@ import EnhancedNetworkSelector from '@/components/shared/EnhancedNetworkSelector
 import FreelanceCompFields from '@/components/shared/FreelanceCompFields';
 import FullTimeCompFields from '@/components/shared/FullTimeCompFields';
 import FeaturePostToggle from '@/components/shared/FeaturePostToggle';
-import PositionSelector from '@/components/shared/PositionSelector';
+import PositionSelector, { POSITIONS } from '@/components/shared/PositionSelector';
+import CastPositionSelector from '@/components/shared/CastPositionSelector';
 
 interface BacklotProjectData {
   id: string;
@@ -68,6 +72,12 @@ const collabTypes: { id: CollabType; label: string; icon: React.ElementType; des
     description: 'You have a project and need team members',
   },
   {
+    id: 'looking_for_cast',
+    label: 'Looking for Cast',
+    icon: Clapperboard,
+    description: 'Seeking actors/talent for your production',
+  },
+  {
     id: 'partner_opportunity',
     label: 'Partner Opportunity',
     icon: Building2,
@@ -83,15 +93,22 @@ const commonTags = [
 
 const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab, backlotProjectId, backlotProjectData }) => {
   const { createCollab, updateCollab } = useCollabs();
+  const { profile } = useEnrichedProfile();
   const isEditing = !!editCollab;
   const isFromBacklot = !!backlotProjectId;
 
+  // Default location from profile, backlot project, or edit collab
+  const defaultLocation = editCollab?.location || backlotProjectData?.location || profile?.location || '';
+
+  // Look up position ID from title when editing (for crew positions)
+  const initialPositionId = editCollab?.title ? POSITIONS.find(p => p.name === editCollab.title)?.id || null : null;
+
   const [formData, setFormData] = useState({
     title: editCollab?.title || '',
-    position_id: null as string | null,  // Track selected position
+    position_id: initialPositionId,  // Track selected position (looked up from title when editing)
     type: editCollab?.type || (isFromBacklot ? 'looking_for_crew' : '' as CollabType | ''),
     description: editCollab?.description || '',
-    location: editCollab?.location || backlotProjectData?.location || '',
+    location: defaultLocation,
     is_remote: editCollab?.is_remote ?? false,
     tags: editCollab?.tags || [] as string[],
     is_order_only: editCollab?.is_order_only ?? false,
@@ -128,7 +145,113 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
     custom_questions: editCollab?.custom_questions || [] as CustomQuestion[],
     // Featured post
     is_featured: editCollab?.is_featured ?? false,
+    // Cast-specific fields
+    requires_reel: editCollab?.requires_reel ?? false,
+    requires_headshot: editCollab?.requires_headshot ?? false,
+    requires_self_tape: editCollab?.requires_self_tape ?? false,
+    tape_instructions: editCollab?.tape_instructions || '',
+    tape_format_preferences: editCollab?.tape_format_preferences || '',
+    tape_workflow: (editCollab?.tape_workflow || 'upfront') as TapeWorkflow,
+    cast_position_type_id: editCollab?.cast_position_type_id || null as string | null,
   });
+
+  // Compute initial selected items for selectors when editing
+  const initialPosition = useMemo(() => {
+    if (!editCollab?.title) return null;
+    // Only for crew positions (not cast)
+    if (editCollab?.type === 'looking_for_cast') return null;
+
+    // Look up position by name (title) - try exact match first, then case-insensitive
+    const exactMatch = POSITIONS.find(p => p.name === editCollab.title);
+    if (exactMatch) return exactMatch;
+    // Case-insensitive fallback
+    const lowerTitle = editCollab.title.toLowerCase();
+    const caseMatch = POSITIONS.find(p => p.name.toLowerCase() === lowerTitle);
+    if (caseMatch) return caseMatch;
+
+    // If no match found in POSITIONS, create a synthetic position so the title still displays
+    return {
+      id: `custom-${editCollab.title.replace(/\s+/g, '-').toLowerCase()}`,
+      name: editCollab.title,
+      department: 'Other',
+    };
+  }, [editCollab?.title, editCollab?.type]);
+
+  const initialCastPosition = useMemo(() => {
+    // Only for cast positions
+    if (editCollab?.type !== 'looking_for_cast') return null;
+
+    // Use the full object if available
+    if (editCollab?.cast_position_type) {
+      return {
+        id: editCollab.cast_position_type.id,
+        name: editCollab.cast_position_type.name,
+        slug: editCollab.cast_position_type.slug || '',
+      };
+    }
+    // Fallback: create from cast_position_type_id and title
+    if (editCollab?.cast_position_type_id && editCollab?.title) {
+      return {
+        id: editCollab.cast_position_type_id,
+        name: editCollab.title,
+        slug: '',
+      };
+    }
+    // Last resort fallback: just use title to display something
+    if (editCollab?.title) {
+      return {
+        id: `custom-${editCollab.title.replace(/\s+/g, '-').toLowerCase()}`,
+        name: editCollab.title,
+        slug: '',
+      };
+    }
+    return null;
+  }, [editCollab?.cast_position_type, editCollab?.cast_position_type_id, editCollab?.title, editCollab?.type]);
+
+  const initialProduction = useMemo(() => {
+    if (!editCollab?.production_id && !editCollab?.production_title) return null;
+    // Generate synthetic ID if production_id is null but we have a title
+    return {
+      id: editCollab.production_id || `custom-${(editCollab.production_title || '').replace(/\s+/g, '-').toLowerCase()}`,
+      name: editCollab.production_title || '',
+    };
+  }, [editCollab?.production_id, editCollab?.production_title]);
+
+  const initialCompany = useMemo(() => {
+    // Use the full company_data object if available
+    if (editCollab?.company_data) {
+      return {
+        id: editCollab.company_data.id,
+        name: editCollab.company_data.name,
+        logo_url: editCollab.company_data.logo_url,
+        is_verified: editCollab.company_data.is_verified,
+      };
+    }
+    // Fallback: if we have company_id and company name string
+    if (editCollab?.company_id && editCollab?.company) {
+      return {
+        id: editCollab.company_id,
+        name: editCollab.company,
+      };
+    }
+    return null;
+  }, [editCollab?.company_data, editCollab?.company_id, editCollab?.company]);
+
+  const initialNetwork = useMemo(() => {
+    // Use the full network object if available
+    if (editCollab?.network) {
+      return {
+        id: editCollab.network.id,
+        name: editCollab.network.name,
+        slug: editCollab.network.slug,
+        logo_url: editCollab.network.logo_url,
+        category: editCollab.network.category,
+      };
+    }
+    // Note: No fallback possible for network since we only store network_id, not the name
+    // The backend needs to return the network object for this to work
+    return null;
+  }, [editCollab?.network]);
 
   const [tagInput, setTagInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -192,6 +315,14 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
         custom_questions: formData.custom_questions.filter(q => q.question.trim()),
         // Featured post
         is_featured: formData.is_featured,
+        // Cast-specific fields (only for looking_for_cast)
+        requires_reel: formData.type === 'looking_for_cast' ? formData.requires_reel : undefined,
+        requires_headshot: formData.type === 'looking_for_cast' ? formData.requires_headshot : undefined,
+        requires_self_tape: formData.type === 'looking_for_cast' ? formData.requires_self_tape : undefined,
+        tape_instructions: formData.type === 'looking_for_cast' ? (formData.tape_instructions.trim() || undefined) : undefined,
+        tape_format_preferences: formData.type === 'looking_for_cast' ? (formData.tape_format_preferences.trim() || undefined) : undefined,
+        tape_workflow: formData.type === 'looking_for_cast' ? formData.tape_workflow : undefined,
+        cast_position_type_id: formData.type === 'looking_for_cast' ? (formData.cast_position_type_id || undefined) : undefined,
       };
 
       if (isEditing && editCollab) {
@@ -270,15 +401,34 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
           {/* Position */}
           <div className="space-y-2">
             <Label className="text-bone-white">Position</Label>
-            <PositionSelector
-              value={formData.position_id}
-              onChange={(id, position) => setFormData({
-                ...formData,
-                position_id: id,
-                title: position?.name || ''
-              })}
-            />
-            <p className="text-xs text-muted-gray">Select the position you're hiring for</p>
+            {formData.type === 'looking_for_cast' ? (
+              <CastPositionSelector
+                value={formData.cast_position_type_id}
+                onChange={(id, positionType) => setFormData({
+                  ...formData,
+                  cast_position_type_id: id,
+                  position_id: null,
+                  title: positionType?.name || ''
+                })}
+                initialSelectedItem={initialCastPosition}
+              />
+            ) : (
+              <PositionSelector
+                value={formData.position_id}
+                onChange={(id, position) => setFormData({
+                  ...formData,
+                  position_id: id,
+                  cast_position_type_id: null,
+                  title: position?.name || ''
+                })}
+                initialSelectedItem={initialPosition}
+              />
+            )}
+            <p className="text-xs text-muted-gray">
+              {formData.type === 'looking_for_cast'
+                ? 'Select role type (Lead, Supporting, etc.) or add a new one'
+                : 'Select the position you\'re hiring for'}
+            </p>
           </div>
 
           {/* Job Type Toggle */}
@@ -304,6 +454,7 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
                   production_id: id,
                   production_title: production?.name || null
                 })}
+                initialSelectedItem={initialProduction}
               />
               <p className="text-xs text-muted-gray">Search existing productions or add a new one</p>
             </div>
@@ -327,6 +478,7 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
                   company_id: id,
                   company: company?.name || ''
                 })}
+                initialSelectedItem={initialCompany}
               />
               <p className="text-xs text-muted-gray">Search existing companies or add a new one</p>
             </div>
@@ -337,6 +489,7 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
               <EnhancedNetworkSelector
                 value={formData.network_id}
                 onChange={(networkId) => setFormData({ ...formData, network_id: networkId })}
+                initialSelectedItem={initialNetwork}
               />
               <p className="text-xs text-muted-gray">Where is this being distributed? Search or add a network</p>
             </div>
@@ -530,17 +683,6 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
                 />
               </div>
 
-              {/* Resume Required */}
-              <div className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/10">
-                <div className="flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-cyan-400" />
-                  <span className="text-sm text-bone-white">Resume Required</span>
-                </div>
-                <Switch
-                  checked={formData.requires_resume}
-                  onCheckedChange={(checked) => setFormData({ ...formData, requires_resume: checked })}
-                />
-              </div>
             </div>
 
             {/* Application Deadline */}
@@ -573,6 +715,126 @@ const CollabForm: React.FC<CollabFormProps> = ({ onClose, onSuccess, editCollab,
               </div>
             </div>
           </div>
+
+          {/* Cast Requirements (only shown for looking_for_cast) */}
+          {formData.type === 'looking_for_cast' && (
+            <div className="space-y-4 p-4 bg-charcoal-black/30 border border-muted-gray/20 rounded-lg">
+              <div className="flex items-center gap-2">
+                <Video className="w-5 h-5 text-accent-yellow" />
+                <Label className="text-bone-white font-medium">Cast Requirements</Label>
+              </div>
+              <p className="text-xs text-muted-gray -mt-2">
+                Configure what materials you need from actors
+              </p>
+
+              {/* Tape Workflow Selection */}
+              <div className="space-y-3">
+                <Label className="text-sm text-bone-white">Self-Tape Workflow</Label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, tape_workflow: 'upfront' })}
+                    className={cn(
+                      'p-3 rounded-lg border text-left transition-colors',
+                      formData.tape_workflow === 'upfront'
+                        ? 'border-accent-yellow bg-accent-yellow/10'
+                        : 'border-muted-gray/30 hover:border-muted-gray/50'
+                    )}
+                  >
+                    <div className="text-sm font-medium text-bone-white">Require with application</div>
+                    <div className="text-xs text-muted-gray mt-1">Actors must submit tape when applying</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormData({ ...formData, tape_workflow: 'after_shortlist' })}
+                    className={cn(
+                      'p-3 rounded-lg border text-left transition-colors',
+                      formData.tape_workflow === 'after_shortlist'
+                        ? 'border-accent-yellow bg-accent-yellow/10'
+                        : 'border-muted-gray/30 hover:border-muted-gray/50'
+                    )}
+                  >
+                    <div className="text-sm font-medium text-bone-white">Request after shortlist</div>
+                    <div className="text-xs text-muted-gray mt-1">Request tapes from shortlisted actors</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Requirement Toggles */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                {/* Demo Reel Required */}
+                <div className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/10">
+                  <div className="flex items-center gap-2">
+                    <Film className="w-4 h-4 text-purple-400" />
+                    <span className="text-sm text-bone-white">Demo Reel</span>
+                  </div>
+                  <Switch
+                    checked={formData.requires_reel}
+                    onCheckedChange={(checked) => setFormData({ ...formData, requires_reel: checked })}
+                  />
+                </div>
+
+                {/* Self-Tape Required */}
+                <div className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/10">
+                  <div className="flex items-center gap-2">
+                    <Video className="w-4 h-4 text-cyan-400" />
+                    <span className="text-sm text-bone-white">Self-Tape</span>
+                  </div>
+                  <Switch
+                    checked={formData.requires_self_tape}
+                    onCheckedChange={(checked) => setFormData({ ...formData, requires_self_tape: checked })}
+                  />
+                </div>
+
+                {/* Headshot Required */}
+                <div className="flex items-center justify-between p-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/10">
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-amber-400" />
+                    <span className="text-sm text-bone-white">Headshot</span>
+                  </div>
+                  <Switch
+                    checked={formData.requires_headshot}
+                    onCheckedChange={(checked) => setFormData({ ...formData, requires_headshot: checked })}
+                  />
+                </div>
+              </div>
+
+              {/* Tape Instructions */}
+              {formData.requires_self_tape && (
+                <div className="space-y-2 pt-2">
+                  <Label htmlFor="tape_instructions" className="text-sm text-muted-gray">
+                    Tape Instructions
+                  </Label>
+                  <Textarea
+                    id="tape_instructions"
+                    value={formData.tape_instructions}
+                    onChange={(e) => setFormData({ ...formData, tape_instructions: e.target.value })}
+                    placeholder="Describe the scene/sides to perform, any specific directions, etc."
+                    className="bg-charcoal-black/50 border-muted-gray/30 min-h-[80px]"
+                  />
+                  <p className="text-xs text-muted-gray">
+                    Provide scene sides, monologues, or specific instructions for the self-tape
+                  </p>
+                </div>
+              )}
+
+              {/* Format Preferences */}
+              {formData.requires_self_tape && (
+                <div className="space-y-2">
+                  <Label htmlFor="tape_format_preferences" className="text-sm text-muted-gray">
+                    Format Preferences (optional)
+                  </Label>
+                  <Input
+                    id="tape_format_preferences"
+                    value={formData.tape_format_preferences}
+                    onChange={(e) => setFormData({ ...formData, tape_format_preferences: e.target.value })}
+                    placeholder="e.g., 1080p, MP4, max 3 minutes"
+                    className="bg-charcoal-black/50 border-muted-gray/30"
+                  />
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Custom Questions */}
           <CustomQuestionsBuilder

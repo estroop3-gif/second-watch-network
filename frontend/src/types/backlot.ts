@@ -2740,6 +2740,40 @@ export interface TaskGenerationResponse {
   tasks: BacklotTask[];
 }
 
+// Proposed task for preview before creation
+export interface ProposedTask {
+  breakdown_item_id: string;
+  scene_id: string;
+  scene_number: string;
+  title: string;
+  description: string;
+  department: string;
+  priority: BacklotTaskPriority;
+  item_type: string;
+  item_label: string;
+  quantity: number;
+  // UI state for editing
+  selected?: boolean;
+}
+
+// Task preview response
+export interface TaskPreviewResponse {
+  success: boolean;
+  proposed_tasks: ProposedTask[];
+  message: string;
+}
+
+// Input for creating tasks from preview
+export interface CreateTasksFromPreviewInput {
+  tasks: Array<{
+    title: string;
+    description: string;
+    department: string;
+    priority: string;
+    breakdown_item_id?: string;
+  }>;
+}
+
 // Budget suggestion generation response
 export interface BudgetSuggestionGenerationResponse {
   success: boolean;
@@ -3225,6 +3259,14 @@ export type BacklotAvailabilityStatus = 'available' | 'unavailable' | 'hold' | '
 // Rate Type
 export type BacklotRateType = 'flat' | 'daily' | 'weekly' | 'hourly';
 
+// Cast Position Type (database-backed, user-addable)
+export interface CastPositionType {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+}
+
 // Applicant Profile Snapshot (cached at application time)
 export interface BacklotApplicantProfileSnapshot {
   name: string;
@@ -3252,6 +3294,9 @@ export interface BacklotProjectRole {
   character_description: string | null;
   age_range: string | null;
   gender_requirement: string | null;
+  cast_position_type_id: string | null;
+  // Joined cast position type data
+  cast_position_type?: CastPositionType | null;
   // Location & Schedule
   location: string | null;
   start_date: string | null;
@@ -3272,6 +3317,13 @@ export interface BacklotProjectRole {
   // Application settings
   application_deadline: string | null;
   max_applications: number | null;
+  // Cast-specific application requirements
+  requires_reel: boolean;
+  requires_headshot: boolean;
+  requires_self_tape: boolean;
+  tape_instructions: string | null;
+  tape_format_preferences: string | null;
+  tape_workflow: 'upfront' | 'after_shortlist';
   // Audit
   created_by_user_id: string;
   created_at: string;
@@ -3311,6 +3363,12 @@ export interface BacklotRoleApplication {
   reel_url: string | null;
   headshot_url: string | null;
   resume_url: string | null;
+  // Cast-specific fields
+  demo_reel_url: string | null;
+  self_tape_url: string | null;
+  special_skills: string[] | null;
+  tape_requested_at: string | null;
+  tape_submitted_at: string | null;
   status: BacklotApplicationStatus;
   status_changed_at: string | null;
   status_changed_by_user_id: string | null;
@@ -3373,6 +3431,7 @@ export interface ProjectRoleInput {
   character_description?: string | null;
   age_range?: string | null;
   gender_requirement?: string | null;
+  cast_position_type_id?: string | null;
   location?: string | null;
   start_date?: string | null;
   end_date?: string | null;
@@ -3386,12 +3445,24 @@ export interface ProjectRoleInput {
   status?: BacklotProjectRoleStatus;
   application_deadline?: string | null;
   max_applications?: number | null;
+  // Cast-specific application requirements
+  requires_reel?: boolean;
+  requires_headshot?: boolean;
+  requires_self_tape?: boolean;
+  tape_instructions?: string | null;
+  tape_format_preferences?: string | null;
+  tape_workflow?: 'upfront' | 'after_shortlist';
 }
 
 export interface RoleApplicationInput {
   cover_note?: string | null;
   availability_notes?: string | null;
   resume_url?: string | null;
+  // Cast-specific fields
+  demo_reel_url?: string | null;
+  self_tape_url?: string | null;
+  headshot_url?: string | null;
+  special_skills?: string[] | null;
 }
 
 export interface ApplicationStatusUpdateInput {

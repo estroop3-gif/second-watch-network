@@ -63,7 +63,6 @@ import {
   Download,
   ClipboardCheck,
   Lightbulb,
-  Zap,
   MousePointer2,
   Highlighter,
   Palette,
@@ -89,7 +88,6 @@ import {
   useScenes,
   useSceneMutations,
   useLocationNeeds,
-  useGenerateTasks,
   useGenerateBudgetSuggestions,
   useScriptVersionHistory,
   useSetCurrentScriptVersion,
@@ -127,6 +125,7 @@ import ScriptBreakdownPanel from './ScriptBreakdownPanel';
 import ScriptNotesPanel from './ScriptNotesPanel';
 import ScriptTextViewer from './ScriptTextViewer';
 import { ScriptExportModal } from './ScriptExportModal';
+import { TaskGeneratePreviewModal } from './TaskGeneratePreviewModal';
 
 interface ScriptViewProps {
   projectId: string;
@@ -473,11 +472,8 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const [intExtFilter, setIntExtFilter] = useState<BacklotIntExt | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // View tab mode: PDF or live-updating Text view (Text is default - has notes/highlights)
+  // View tab mode: PDF or Text view (Text is default - has notes/highlights)
   const [pdfTextViewMode, setPdfTextViewMode] = useState<'pdf' | 'text'>('text');
-
-  // Lifted edit content state for real-time sync between editor and text viewer
-  const [liveEditContent, setLiveEditContent] = useState<string | null>(null);
 
   // Highlight and notes visibility toggles
   const [showHighlights, setShowHighlights] = useState(true);
@@ -500,12 +496,12 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   const { updateCoverage } = useSceneMutations();
   const { deleteScript } = useScriptMutations();
   const { data: locationNeeds, isLoading: locationNeedsLoading } = useLocationNeeds(projectId);
-  const generateTasks = useGenerateTasks();
   const generateBudgetSuggestions = useGenerateBudgetSuggestions();
   const { exportScript, isExporting } = useExportScriptWithHighlights();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showTipsPanel, setShowTipsPanel] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showTaskPreviewModal, setShowTaskPreviewModal] = useState(false);
 
   const handleCoverageChange = async (sceneId: string, status: BacklotSceneCoverageStatus) => {
     try {
@@ -523,20 +519,8 @@ const ScriptView: React.FC<ScriptViewProps> = ({
     }
   };
 
-  const handleGenerateTasks = async () => {
-    try {
-      const result = await generateTasks.mutateAsync({ projectId });
-      toast({
-        title: 'Tasks Generated',
-        description: `Created ${result.tasks_created} tasks from breakdown items`,
-      });
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: 'Failed to generate tasks',
-        variant: 'destructive',
-      });
-    }
+  const handleGenerateTasks = () => {
+    setShowTaskPreviewModal(true);
   };
 
   const handleGenerateBudget = async () => {
@@ -986,7 +970,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   variant={pdfTextViewMode === 'text' ? 'secondary' : 'ghost'}
                   size="sm"
                   onClick={() => setPdfTextViewMode('text')}
-                  disabled={!activeScript?.text_content && !liveEditContent}
+                  disabled={!activeScript?.text_content}
                   className={cn(
                     'h-8 rounded-none border-0',
                     pdfTextViewMode === 'text' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
@@ -996,12 +980,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   Text
                 </Button>
               </div>
-              {pdfTextViewMode === 'text' && liveEditContent !== null && (
-                <Badge variant="outline" className="text-xs text-green-400 border-green-500/30">
-                  <Zap className="w-3 h-3 mr-1" />
-                  Live Preview
-                </Badge>
-              )}
 
               {/* Separator - only show if in text mode */}
               {pdfTextViewMode === 'text' && (
@@ -1053,7 +1031,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
               )}
             </div>
             <div className="text-xs text-muted-gray">
-              {pdfTextViewMode === 'pdf' ? 'Original PDF document' : 'Formatted text view with live updates from editor'}
+              {pdfTextViewMode === 'pdf' ? 'Original PDF document' : 'Formatted text view (save in Editor to update)'}
             </div>
           </div>
 
@@ -1082,12 +1060,12 @@ const ScriptView: React.FC<ScriptViewProps> = ({
               </div>
             )
           ) : (
-            // Text View - shows live content from editor if available, otherwise saved content
+            // Text View - shows saved content only (save in Editor to update)
             <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
               <ScriptTextViewer
-                content={liveEditContent ?? activeScript?.text_content ?? ''}
+                content={activeScript?.text_content ?? ''}
                 title={activeScript?.title || 'Script'}
-                isLive={liveEditContent !== null}
+                isLive={false}
                 titlePageData={activeScript?.title_page_data}
                 highlights={scriptHighlights}
                 showHighlights={showHighlights}
@@ -1192,20 +1170,8 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                   refetchScripts();
                 }}
                 onScriptUpdated={() => {
-                  // Refresh scripts when content is saved so viewer shows updated content
+                  // Refresh scripts when content is saved so View Script shows updated content
                   refetchScripts();
-                  // Clear live content since saved content is now current
-                  setLiveEditContent(null);
-                }}
-                onContentChange={(content) => {
-                  // Update live content for real-time sync with text viewer
-                  setLiveEditContent(content);
-                }}
-                onEditingChange={(isEditing) => {
-                  // Clear live content when editing stops
-                  if (!isEditing) {
-                    setLiveEditContent(null);
-                  }
                 }}
               />
             </div>
@@ -1457,6 +1423,19 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           script={activeScript}
         />
       )}
+
+      {/* Task Generation Preview Modal */}
+      <TaskGeneratePreviewModal
+        projectId={projectId}
+        isOpen={showTaskPreviewModal}
+        onClose={() => setShowTaskPreviewModal(false)}
+        onSuccess={(count) => {
+          toast({
+            title: 'Tasks Created',
+            description: `Created ${count} tasks from breakdown items`,
+          });
+        }}
+      />
 
       {/* Tips & Tricks Panel */}
       <Dialog open={showTipsPanel} onOpenChange={setShowTipsPanel}>

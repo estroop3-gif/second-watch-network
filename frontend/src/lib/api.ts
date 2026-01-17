@@ -1561,6 +1561,27 @@ class APIClient {
     })
   }
 
+  async getProjectCollabs(projectId: string) {
+    return this.request<any[]>(`/api/v1/community/collabs/by-project/${projectId}`)
+  }
+
+  async getCollabApplications(collabId: string, status?: string) {
+    const params = status ? `?status=${status}` : ''
+    return this.request<any[]>(`/api/v1/community/collabs/${collabId}/applications${params}`)
+  }
+
+  async updateCollabApplicationStatus(
+    applicationId: string,
+    status: string,
+    internalNotes?: string,
+    rating?: number
+  ) {
+    return this.request<any>(`/api/v1/community/collab-applications/${applicationId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, internal_notes: internalNotes, rating }),
+    })
+  }
+
   async getCommunityActivity(limit: number = 20) {
     return this.request<any[]>(`/api/v1/community/activity?limit=${limit}`)
   }
@@ -2548,6 +2569,7 @@ class APIClient {
     is_featured?: boolean;
     collab_type?: string;
     search?: string;
+    approval_status?: string;
   }) {
     const query = new URLSearchParams()
     if (params?.skip !== undefined) query.append('skip', params.skip.toString())
@@ -2556,8 +2578,40 @@ class APIClient {
     if (params?.is_featured !== undefined) query.append('is_featured', params.is_featured.toString())
     if (params?.collab_type) query.append('collab_type', params.collab_type)
     if (params?.search) query.append('search', params.search)
+    if (params?.approval_status) query.append('approval_status', params.approval_status)
 
     return this.request<{ collabs: any[]; total: number }>(`/api/v1/admin/community/collabs?${query}`)
+  }
+
+  async listPendingCollabsAdmin(params?: { skip?: number; limit?: number }) {
+    const query = new URLSearchParams()
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    return this.request<{ collabs: any[]; total: number }>(`/api/v1/admin/community/collabs/pending?${query}`)
+  }
+
+  async approveCollabAdmin(collabId: string, notes?: string) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/admin/community/collabs/${collabId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    })
+  }
+
+  async rejectCollabAdmin(collabId: string, reason: string) {
+    return this.request<{ success: boolean; message: string }>(`/api/v1/admin/community/collabs/${collabId}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    })
+  }
+
+  async getCollabApprovalSetting() {
+    return this.request<{ enabled: boolean }>(`/api/v1/admin/community/settings/require_collab_approval`)
+  }
+
+  async updateCollabApprovalSetting(enabled: boolean) {
+    return this.request<{ success: boolean; enabled: boolean }>(`/api/v1/admin/community/settings/require_collab_approval?enabled=${enabled}`, {
+      method: 'PUT',
+    })
   }
 
   async featureCollabAdmin(collabId: string, isFeatured: boolean, featuredUntil?: string) {

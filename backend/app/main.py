@@ -34,7 +34,7 @@ from app.api import (
     church_services, church_people, church_content, church_planning,
     church_resources, church_readiness, cast_crew, hot_set, invoices, coms,
     application_templates, cover_letter_templates, resumes, networks, productions,
-    companies, dm_adapter, uploads, feedback,
+    companies, dm_adapter, uploads, feedback, cast_position_types,
     worlds, consumer_video, shorts, live_events,
     dashboard_settings, themes, recommendations, engagement,
     media, organizations, creator_earnings,
@@ -250,6 +250,7 @@ app.include_router(resumes.router, prefix=f"{settings.API_V1_PREFIX}/resumes", t
 app.include_router(networks.router, prefix=f"{settings.API_V1_PREFIX}/networks", tags=["TV Networks"])
 app.include_router(productions.router, prefix=f"{settings.API_V1_PREFIX}/productions", tags=["Productions"])
 app.include_router(companies.router, prefix=f"{settings.API_V1_PREFIX}/companies", tags=["Companies"])
+app.include_router(cast_position_types.router, prefix=f"{settings.API_V1_PREFIX}/cast-position-types", tags=["Cast Position Types"])
 app.include_router(greenroom.router, prefix=f"{settings.API_V1_PREFIX}/greenroom", tags=["Green Room"])
 app.include_router(order.router, prefix=f"{settings.API_V1_PREFIX}/order", tags=["Order"])
 app.include_router(billing.router, prefix=f"{settings.API_V1_PREFIX}/billing", tags=["Billing"])

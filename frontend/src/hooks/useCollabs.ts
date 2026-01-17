@@ -57,6 +57,14 @@ interface CollabInput {
   custom_questions?: Array<{ question: string; type: string; required: boolean; options?: string[] }>;
   // Featured post
   is_featured?: boolean;
+  // Cast-specific requirements
+  cast_position_type_id?: string;
+  requires_reel?: boolean;
+  requires_headshot?: boolean;
+  requires_self_tape?: boolean;
+  tape_instructions?: string;
+  tape_format_preferences?: string;
+  tape_workflow?: string;
 }
 
 export function useCollabs(options: UseCollabsOptions = {}) {
@@ -134,6 +142,14 @@ export function useCollabs(options: UseCollabsOptions = {}) {
         custom_questions: input.custom_questions || undefined,
         // Featured post
         is_featured: input.is_featured || false,
+        // Cast-specific requirements
+        cast_position_type_id: input.cast_position_type_id || undefined,
+        requires_reel: input.requires_reel || false,
+        requires_headshot: input.requires_headshot || false,
+        requires_self_tape: input.requires_self_tape || false,
+        tape_instructions: input.tape_instructions || undefined,
+        tape_format_preferences: input.tape_format_preferences || undefined,
+        tape_workflow: input.tape_workflow || undefined,
       });
       return data;
     },
@@ -187,11 +203,20 @@ export function useCollabs(options: UseCollabsOptions = {}) {
         custom_questions: input.custom_questions || undefined,
         // Featured post
         is_featured: input.is_featured || false,
+        // Cast-specific requirements
+        cast_position_type_id: input.cast_position_type_id || undefined,
+        requires_reel: input.requires_reel || false,
+        requires_headshot: input.requires_headshot || false,
+        requires_self_tape: input.requires_self_tape || false,
+        tape_instructions: input.tape_instructions || undefined,
+        tape_format_preferences: input.tape_format_preferences || undefined,
+        tape_workflow: input.tape_workflow || undefined,
       });
       return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['community-collabs'] });
+      queryClient.invalidateQueries({ queryKey: ['project-collabs'] });
     },
   });
 

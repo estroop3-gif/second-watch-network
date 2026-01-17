@@ -113,6 +113,10 @@ import {
   useRequestApproval,
   useDecideApproval,
   useUnlockEpisode,
+  useEpisodeStoryLinks,
+  useLinkEpisodeToStory,
+  useUnlinkEpisodeFromStory,
+  useStories,
   PIPELINE_STAGES,
   EDIT_STATUSES,
   DELIVERY_STATUSES,
@@ -138,6 +142,7 @@ import {
   EpisodeShootDay,
   EpisodeApproval,
   EpisodeStoryboard,
+  EpisodeStoryLink,
 } from '@/hooks/backlot';
 import LocationPickerModal from './LocationPickerModal';
 import { BacklotLocation, BacklotLocationInput, LocationWithClearance } from '@/types/backlot';
@@ -286,6 +291,12 @@ export function EpisodeDetailView({
   const decideApproval = useDecideApproval(projectId, episodeId);
   const unlockEpisode = useUnlockEpisode(projectId, episodeId);
 
+  // Episode-Story linking (Beat Sheets)
+  const { data: episodeStoryLinks, isLoading: isLoadingStoryLinks } = useEpisodeStoryLinks(projectId, episodeId);
+  const linkEpisodeToStory = useLinkEpisodeToStory(projectId, episodeId);
+  const unlinkEpisodeFromStory = useUnlinkEpisodeFromStory(projectId, episodeId);
+  const { data: projectStories } = useStories(projectId);
+
   // Per-section edit mode state - only one section can be edited at a time
   const [editingSection, setEditingSection] = useState<SectionName | null>(null);
 
@@ -335,6 +346,8 @@ export function EpisodeDetailView({
   const [showLinkStoryboardDialog, setShowLinkStoryboardDialog] = useState(false);
   const [showTagShootDayDialog, setShowTagShootDayDialog] = useState(false);
   const [showApprovalDialog, setShowApprovalDialog] = useState(false);
+  const [showLinkBeatSheetDialog, setShowLinkBeatSheetDialog] = useState(false);
+  const [selectedStoryId, setSelectedStoryId] = useState<string>('');
   const [showDecisionDialog, setShowDecisionDialog] = useState<EpisodeApproval | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string } | null>(null);
 
@@ -1137,6 +1150,78 @@ export function EpisodeDetailView({
               />
             ) : (
               <p className="text-bone-white py-2 whitespace-pre-wrap">{storyForm.notes || <span className="text-muted-gray italic">Not set</span>}</p>
+            )}
+          </div>
+
+          {/* Linked Beat Sheets Section */}
+          <div className="space-y-2 pt-4 border-t border-white/10">
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <Link2 className="w-4 h-4 text-muted-gray" />
+                Linked Beat Sheets
+              </Label>
+              {effectiveCanEdit && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setSelectedStoryId('');
+                    setShowLinkBeatSheetDialog(true);
+                  }}
+                  className="h-7 text-xs"
+                >
+                  <Plus className="w-3 h-3 mr-1" />
+                  Link Beat Sheet
+                </Button>
+              )}
+            </div>
+            {isLoadingStoryLinks ? (
+              <Skeleton className="h-10 w-full" />
+            ) : episodeStoryLinks && episodeStoryLinks.length > 0 ? (
+              <div className="space-y-2">
+                {episodeStoryLinks.map((link) => (
+                  <div
+                    key={link.id}
+                    className="flex items-center justify-between p-2 rounded bg-white/5 hover:bg-white/10 transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-bone-white truncate">
+                          {link.story?.title || 'Unknown Beat Sheet'}
+                        </span>
+                        <Badge variant="outline" className="text-xs shrink-0">
+                          {link.relationship}
+                        </Badge>
+                      </div>
+                      {link.story?.logline && (
+                        <p className="text-xs text-muted-gray truncate mt-0.5">
+                          {link.story.logline}
+                        </p>
+                      )}
+                    </div>
+                    {effectiveCanEdit && (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7 shrink-0 ml-2 text-muted-gray hover:text-red-400"
+                        onClick={() => {
+                          unlinkEpisodeFromStory.mutate(link.id, {
+                            onSuccess: () => toast.success('Beat sheet unlinked'),
+                            onError: (err: any) => toast.error(err.message || 'Failed to unlink'),
+                          });
+                        }}
+                        disabled={unlinkEpisodeFromStory.isPending}
+                      >
+                        <Unlink2 className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-gray italic py-2">
+                No beat sheets linked to this episode
+              </p>
             )}
           </div>
         </div>
@@ -2395,6 +2480,64 @@ export function EpisodeDetailView({
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowLinkStoryboardDialog(false)}>
               Cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Link Beat Sheet Dialog */}
+      <Dialog open={showLinkBeatSheetDialog} onOpenChange={setShowLinkBeatSheetDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Link Beat Sheet</DialogTitle>
+            <DialogDescription>Select a beat sheet to link to this episode.</DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-4">
+            <div className="space-y-2">
+              <Label>Beat Sheet</Label>
+              <Select value={selectedStoryId} onValueChange={setSelectedStoryId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a beat sheet..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {(projectStories?.stories || [])
+                    .filter((story) => !episodeStoryLinks?.some((link) => link.story_id === story.id))
+                    .map((story) => (
+                      <SelectItem key={story.id} value={story.id}>
+                        {story.title}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {projectStories?.stories?.filter((s) => !episodeStoryLinks?.some((l) => l.story_id === s.id)).length === 0 && (
+              <p className="text-sm text-muted-gray text-center py-2">
+                No available beat sheets to link. Create one in the Beat Sheet tab first.
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowLinkBeatSheetDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (!selectedStoryId) return;
+                linkEpisodeToStory.mutate(
+                  { story_id: selectedStoryId, relationship: 'primary' },
+                  {
+                    onSuccess: () => {
+                      toast.success('Beat sheet linked');
+                      setShowLinkBeatSheetDialog(false);
+                      setSelectedStoryId('');
+                    },
+                    onError: (err: any) => toast.error(err.message || 'Failed to link beat sheet'),
+                  }
+                );
+              }}
+              disabled={!selectedStoryId || linkEpisodeToStory.isPending}
+            >
+              {linkEpisodeToStory.isPending ? 'Linking...' : 'Link'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -19,6 +19,8 @@ interface CompanySelectorProps {
   onChange: (id: string | null, company?: Company) => void;
   disabled?: boolean;
   className?: string;
+  /** Pre-populated company for edit mode */
+  initialSelectedItem?: Company | null;
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -28,6 +30,7 @@ const CompanySelector: React.FC<CompanySelectorProps> = ({
   onChange,
   disabled = false,
   className,
+  initialSelectedItem,
 }) => {
   const { session } = useAuth();
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set());
@@ -135,7 +138,7 @@ const CompanySelector: React.FC<CompanySelectorProps> = ({
         ) : (
           <Building2 className="h-4 w-4 text-muted-gray flex-shrink-0" />
         )}
-        <span className="truncate">{company.name}</span>
+        <span className="truncate text-bone-white">{company.name}</span>
         {company.is_verified && (
           <BadgeCheck className="h-3 w-3 text-blue-400 flex-shrink-0" />
         )}
@@ -157,6 +160,7 @@ const CompanySelector: React.FC<CompanySelectorProps> = ({
       renderSelected={renderSelected}
       disabled={disabled}
       className={className}
+      initialSelectedItem={initialSelectedItem}
     />
   );
 };

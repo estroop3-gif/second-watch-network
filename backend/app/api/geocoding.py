@@ -498,6 +498,68 @@ async def reverse_geocode(
         )
 
 
+class AWSPlaceResult(BaseModel):
+    """AWS Location Service place result"""
+    place_id: str
+    label: str
+    lat: float
+    lon: float
+    street: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    postal_code: Optional[str] = None
+
+
+class AWSAutocompleteResponse(BaseModel):
+    """Response for AWS autocomplete endpoint"""
+    results: List[AWSPlaceResult]
+    service_available: bool = True
+
+
+@router.get("/aws/autocomplete", response_model=AWSAutocompleteResponse)
+async def aws_autocomplete_address(
+    q: str = Query(..., min_length=3, max_length=200, description="Search query"),
+    limit: int = Query(5, ge=1, le=10, description="Maximum number of results"),
+    authorization: str = Header(None)
+):
+    """
+    Address autocomplete using AWS Location Service.
+
+    Uses the AWS Places API for accurate US address search.
+    This is preferred for production use over Nominatim.
+    """
+    await get_current_user_from_token(authorization)
+
+    try:
+        from app.services.geocoding import search_places
+        aws_results = search_places(q, max_results=limit)
+
+        results = [
+            AWSPlaceResult(
+                place_id=r.get('place_id', ''),
+                label=r.get('label', ''),
+                lat=r.get('lat', 0),
+                lon=r.get('lon', 0),
+                street=r.get('street'),
+                city=r.get('city'),
+                state=r.get('state'),
+                postal_code=r.get('postal_code')
+            )
+            for r in aws_results
+        ]
+
+        return AWSAutocompleteResponse(
+            results=results,
+            service_available=True
+        )
+    except Exception as e:
+        print(f"[AWS Geocoding] Error: {e}")
+        return AWSAutocompleteResponse(
+            results=[],
+            service_available=False
+        )
+
+
 @router.get("/status")
 async def geocoding_status():
     """

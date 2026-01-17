@@ -609,7 +609,14 @@ const ScriptSidesExportsView: React.FC<ScriptSidesExportsViewProps> = ({
               {/* Scenes */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <Label>Scenes to Include</Label>
+                  <Label>
+                    Scenes to Include
+                    {selectedSceneIds.length > 0 && (
+                      <span className="ml-2 text-xs font-normal text-muted-gray">
+                        ({selectedSceneIds.length} selected)
+                      </span>
+                    )}
+                  </Label>
                   <div className="flex gap-2">
                     <Button
                       variant="ghost"

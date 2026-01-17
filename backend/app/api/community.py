@@ -5,8 +5,10 @@ from fastapi import APIRouter, HTTPException, Header, Body, Query
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from app.core.database import get_client
+from app.api.users import get_profile_id_from_cognito_id
 from datetime import datetime
 import os
+import json
 
 
 # =====================================================
@@ -34,6 +36,44 @@ class ApplicationStatusUpdate(BaseModel):
     status: str  # applied, viewed, shortlisted, interview, offered, booked, rejected
     internal_notes: Optional[str] = None
     rating: Optional[int] = Field(None, ge=1, le=5)
+
+
+class ApplicationMessageInput(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
+    attachments: Optional[List[Dict[str, Any]]] = None  # [{name, url, type, size}]
+
+
+class ApplicationScheduleInput(BaseModel):
+    interview_scheduled_at: Optional[str] = None  # ISO datetime
+    interview_notes: Optional[str] = None
+    callback_scheduled_at: Optional[str] = None  # ISO datetime
+    callback_notes: Optional[str] = None
+
+
+class ApplicationBookingInput(BaseModel):
+    booking_rate: Optional[str] = None  # e.g., "$500/day"
+    booking_start_date: Optional[str] = None  # YYYY-MM-DD
+    booking_end_date: Optional[str] = None  # YYYY-MM-DD
+    booking_notes: Optional[str] = None
+    booking_schedule_notes: Optional[str] = None
+    # Cast-specific
+    character_id: Optional[str] = None
+    billing_position: Optional[int] = None
+    contract_type: Optional[str] = None
+    # Document request
+    request_documents: bool = False
+    document_types: Optional[List[str]] = None  # ['deal_memo', 'w9', 'nda', 'emergency_contact', 'i9']
+    # Role assignment
+    role_title: Optional[str] = None  # If creating a new project role
+    department: Optional[str] = None
+    # Notification
+    send_notification: bool = True
+    notification_message: Optional[str] = None
+
+
+class ApplicationUnbookInput(BaseModel):
+    reason: str
+
 
 router = APIRouter()
 
@@ -606,13 +646,20 @@ async def list_collabs(
     user_id: Optional[str] = None,
     limit: int = 50,
 ):
-    """List community collabs"""
+    """List community collabs (only approved collabs are shown publicly)"""
     try:
         client = get_client()
 
         query = client.table("community_collabs").select("*").eq(
             "is_active", True
         ).order("created_at", desc=True).limit(limit)
+
+        # Only show approved collabs in public listing
+        # Note: The column might not exist yet if migration hasn't run
+        try:
+            query = query.eq("approval_status", "approved")
+        except Exception:
+            pass  # Column doesn't exist yet, skip filter
 
         if type and type != "all":
             query = query.eq("type", type)
@@ -648,6 +695,113 @@ async def list_collabs(
 
     except Exception as e:
         print(f"Error listing collabs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collabs/by-project/{project_id}")
+async def list_collabs_by_project(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """List collabs linked to a Backlot project (for CastingCrewTab)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Convert cognito ID to profile ID
+        cognito_id = user["id"]
+        profile_id = get_profile_id_from_cognito_id(cognito_id)
+
+        if not profile_id:
+            raise HTTPException(status_code=401, detail="Profile not found")
+
+        # Verify user has access to this project
+        access_check = client.table("backlot_project_members").select("id").eq(
+            "project_id", project_id
+        ).eq("user_id", profile_id).execute()
+
+        project_check = client.table("backlot_projects").select("owner_id").eq(
+            "id", project_id
+        ).execute()
+
+        is_owner = project_check.data and project_check.data[0].get("owner_id") == profile_id
+        has_access = access_check.data or is_owner
+
+        if not has_access:
+            raise HTTPException(status_code=403, detail="You don't have access to this project")
+
+        # Fetch collabs linked to this project (show all statuses to project members)
+        result = client.table("community_collabs").select("*").eq(
+            "backlot_project_id", project_id
+        ).order("created_at", desc=True).execute()
+
+        collabs = result.data or []
+
+        if not collabs:
+            return []
+
+        # Fetch profiles and application counts
+        user_ids = list(set(c["user_id"] for c in collabs if c.get("user_id")))
+        collab_ids = [c["id"] for c in collabs]
+
+        # Collect IDs for related entities
+        company_ids = list(set(c["company_id"] for c in collabs if c.get("company_id")))
+        network_ids = list(set(c["network_id"] for c in collabs if c.get("network_id")))
+        cast_position_type_ids = list(set(c["cast_position_type_id"] for c in collabs if c.get("cast_position_type_id")))
+
+        if user_ids:
+            profiles_result = client.table("profiles").select(
+                "id, username, full_name, display_name, avatar_url, role, is_order_member"
+            ).in_("id", user_ids).execute()
+            profile_map = {p["id"]: p for p in (profiles_result.data or [])}
+        else:
+            profile_map = {}
+
+        # Fetch companies
+        company_map = {}
+        if company_ids:
+            companies_result = client.table("companies").select(
+                "id, name, logo_url, is_verified"
+            ).in_("id", company_ids).execute()
+            company_map = {c["id"]: c for c in (companies_result.data or [])}
+
+        # Fetch networks (table is tv_networks)
+        network_map = {}
+        if network_ids:
+            networks_result = client.table("tv_networks").select(
+                "id, name, slug, logo_url, category"
+            ).in_("id", network_ids).execute()
+            network_map = {n["id"]: n for n in (networks_result.data or [])}
+
+        # Fetch cast position types
+        cast_position_map = {}
+        if cast_position_type_ids:
+            cast_positions_result = client.table("cast_position_types").select(
+                "id, name, slug"
+            ).in_("id", cast_position_type_ids).execute()
+            cast_position_map = {p["id"]: p for p in (cast_positions_result.data or [])}
+
+        # Get application counts
+        app_counts = {}
+        for collab_id in collab_ids:
+            count_result = client.table("community_collab_applications").select(
+                "id", count="exact"
+            ).eq("collab_id", collab_id).execute()
+            app_counts[collab_id] = count_result.count if hasattr(count_result, 'count') else len(count_result.data or [])
+
+        for c in collabs:
+            c["profile"] = profile_map.get(c.get("user_id"))
+            c["application_count"] = app_counts.get(c["id"], 0)
+            c["company_data"] = company_map.get(c.get("company_id"))
+            c["network"] = network_map.get(c.get("network_id"))
+            c["cast_position_type"] = cast_position_map.get(c.get("cast_position_type_id"))
+
+        return collabs
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error listing collabs by project: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -689,6 +843,34 @@ async def create_collab(
     client = get_client()
 
     try:
+        # Validate production_id exists if provided
+        production_id = collab.get("production_id")
+        if production_id:
+            prod_check = client.table("productions").select("id").eq("id", production_id).execute()
+            if not prod_check.data:
+                # Production doesn't exist, skip the foreign key
+                production_id = None
+
+        # Check if collab approval is required
+        approval_status = "approved"  # Default to approved
+        try:
+            setting_result = client.table("settings").select("value").eq("key", "require_collab_approval").single().execute()
+            if setting_result.data:
+                # Value is stored as JSONB, could be "true" string or true boolean
+                value = setting_result.data.get("value")
+                if value == "true" or value is True:
+                    approval_status = "pending"
+        except Exception:
+            # Setting doesn't exist yet, default to approved
+            pass
+
+        # Validate backlot_project_id if provided
+        backlot_project_id = collab.get("backlot_project_id")
+        if backlot_project_id:
+            bp_check = client.table("backlot_projects").select("id").eq("id", backlot_project_id).execute()
+            if not bp_check.data:
+                backlot_project_id = None
+
         collab_data = {
             "user_id": user["id"],
             "title": collab.get("title"),
@@ -699,12 +881,16 @@ async def create_collab(
             "compensation_type": collab.get("compensation_type"),
             "start_date": collab.get("start_date"),
             "end_date": collab.get("end_date"),
-            "tags": collab.get("tags", []),
+            "tags": json.dumps(collab.get("tags", [])),  # JSONB column
             "is_order_only": collab.get("is_order_only", False),
             # Job type (freelance/full_time)
             "job_type": collab.get("job_type", "freelance"),
+            # Backlot project link
+            "backlot_project_id": backlot_project_id,
+            # Approval status
+            "approval_status": approval_status,
             # Production info
-            "production_id": collab.get("production_id"),
+            "production_id": production_id,
             "production_title": collab.get("production_title"),
             "production_type": collab.get("production_type"),
             "company": collab.get("company"),
@@ -724,13 +910,18 @@ async def create_collab(
             "requires_reel": collab.get("requires_reel", False),
             "requires_headshot": collab.get("requires_headshot", False),
             "requires_resume": collab.get("requires_resume", False),
+            "requires_self_tape": collab.get("requires_self_tape", False),
+            "tape_instructions": collab.get("tape_instructions"),
+            "tape_format_preferences": collab.get("tape_format_preferences"),
+            "tape_workflow": collab.get("tape_workflow", "upfront"),
+            "cast_position_type_id": collab.get("cast_position_type_id"),
             "application_deadline": collab.get("application_deadline"),
             "max_applications": collab.get("max_applications"),
             # Union and Order requirements
             "union_requirements": collab.get("union_requirements", []),
             "requires_order_membership": collab.get("requires_order_membership", False),
             # Custom questions
-            "custom_questions": collab.get("custom_questions", []),
+            "custom_questions": json.dumps(collab.get("custom_questions", [])),  # JSONB column
             # Featured post
             "is_featured": collab.get("is_featured", False),
             "featured_until": collab.get("featured_until"),
@@ -760,16 +951,25 @@ async def update_collab(
             "title", "type", "description", "location", "is_remote",
             "compensation_type", "start_date", "end_date", "tags", "is_order_only",
             "requires_local_hire", "requires_order_member", "requires_reel",
-            "requires_headshot", "requires_resume", "application_deadline", "max_applications",
+            "requires_headshot", "requires_resume", "requires_self_tape",
+            "tape_instructions", "tape_format_preferences", "tape_workflow",
+            "cast_position_type_id", "application_deadline", "max_applications",
             "production_id", "production_title", "production_type", "company", "company_id", "network_id",
             "hide_production_info", "job_type",
             "day_rate_min", "day_rate_max", "salary_min", "salary_max", "benefits_info",
             "union_requirements", "requires_order_membership", "custom_questions",
             "is_featured", "featured_until"
         ]
+        # JSONB fields need explicit JSON serialization
+        jsonb_fields = {"tags", "custom_questions"}
+
         for field in allowed_fields:
             if field in collab:
-                update_data[field] = collab[field]
+                value = collab[field]
+                if field in jsonb_fields and isinstance(value, list):
+                    update_data[field] = json.dumps(value)
+                else:
+                    update_data[field] = value
 
         result = client.table("community_collabs").update(update_data).eq("id", collab_id).execute()
         return result.data[0] if result.data else None
@@ -1445,6 +1645,543 @@ async def withdraw_application(
         raise
     except Exception as e:
         print(f"Error withdrawing application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# APPLICATION MESSAGING
+# =====================================================
+
+@router.get("/collab-applications/{application_id}/messages")
+async def get_application_messages(
+    application_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    authorization: str = Header(None)
+):
+    """Get messages for an application (applicant or collab owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify access
+        app_result = client.table("community_collab_applications").select(
+            "id, applicant_user_id, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab", {})
+        applicant_id = app_data.get("applicant_user_id")
+        collab_owner_id = collab.get("user_id") if collab else None
+
+        # Only applicant or collab owner can view messages
+        if user_id not in [applicant_id, collab_owner_id]:
+            raise HTTPException(status_code=403, detail="You don't have access to these messages")
+
+        # Get messages
+        messages_result = client.table("collab_application_messages").select(
+            "*, sender:profiles(id, username, display_name, avatar_url)"
+        ).eq("application_id", application_id).order(
+            "created_at", desc=False
+        ).range(offset, offset + limit - 1).execute()
+
+        # Get total count
+        count_result = client.table("collab_application_messages").select(
+            "id", count="exact"
+        ).eq("application_id", application_id).execute()
+
+        return {
+            "messages": messages_result.data or [],
+            "total": count_result.count if hasattr(count_result, 'count') else len(messages_result.data or []),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting application messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/collab-applications/{application_id}/messages")
+async def send_application_message(
+    application_id: str,
+    message: ApplicationMessageInput,
+    authorization: str = Header(None)
+):
+    """Send a message for an application (applicant or collab owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify access
+        app_result = client.table("community_collab_applications").select(
+            "id, applicant_user_id, collab:community_collabs(id, user_id, title)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab", {})
+        applicant_id = app_data.get("applicant_user_id")
+        collab_owner_id = collab.get("user_id") if collab else None
+
+        # Only applicant or collab owner can send messages
+        if user_id not in [applicant_id, collab_owner_id]:
+            raise HTTPException(status_code=403, detail="You don't have permission to send messages for this application")
+
+        # Create message
+        message_data = {
+            "application_id": application_id,
+            "sender_id": user_id,
+            "content": message.content,
+            "attachments": message.attachments,
+        }
+
+        result = client.table("collab_application_messages").insert(message_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to send message")
+
+        # Get the message with sender info
+        message_result = client.table("collab_application_messages").select(
+            "*, sender:profiles(id, username, display_name, avatar_url)"
+        ).eq("id", result.data[0]["id"]).single().execute()
+
+        # TODO: Send notification to the other party
+        # TODO: Broadcast via WebSocket for real-time updates
+
+        return message_result.data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error sending application message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/collab-applications/{application_id}/messages/mark-read")
+async def mark_application_messages_read(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Mark all messages as read for the current user"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify access
+        app_result = client.table("community_collab_applications").select(
+            "id, applicant_user_id, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab", {})
+        applicant_id = app_data.get("applicant_user_id")
+        collab_owner_id = collab.get("user_id") if collab else None
+
+        if user_id not in [applicant_id, collab_owner_id]:
+            raise HTTPException(status_code=403, detail="You don't have access to these messages")
+
+        # Mark messages as read that weren't sent by the current user
+        from app.core.database import execute_query
+        execute_query("""
+            UPDATE collab_application_messages
+            SET is_read = true, read_at = NOW()
+            WHERE application_id = :application_id
+              AND sender_id != :user_id
+              AND is_read = false
+        """, {"application_id": application_id, "user_id": user_id})
+
+        return {"success": True, "message": "Messages marked as read"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error marking messages as read: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collab-applications/{application_id}/messages/unread-count")
+async def get_unread_message_count(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Get count of unread messages for an application"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify access
+        app_result = client.table("community_collab_applications").select(
+            "id, applicant_user_id, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab", {})
+        applicant_id = app_data.get("applicant_user_id")
+        collab_owner_id = collab.get("user_id") if collab else None
+
+        if user_id not in [applicant_id, collab_owner_id]:
+            raise HTTPException(status_code=403, detail="You don't have access to these messages")
+
+        # Count unread messages not sent by current user
+        from app.core.database import execute_single
+        result = execute_single("""
+            SELECT COUNT(*) as count
+            FROM collab_application_messages
+            WHERE application_id = :application_id
+              AND sender_id != :user_id
+              AND is_read = false
+        """, {"application_id": application_id, "user_id": user_id})
+
+        return {"unread_count": result["count"] if result else 0}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting unread count: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# APPLICATION SCHEDULING
+# =====================================================
+
+@router.put("/collab-applications/{application_id}/schedule")
+async def update_application_schedule(
+    application_id: str,
+    schedule: ApplicationScheduleInput,
+    authorization: str = Header(None)
+):
+    """Update interview/callback schedule for an application (collab owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify ownership of the collab
+        app_result = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        collab = app_result.data.get("collab")
+        if not collab or collab.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="You can only update schedules for your own collabs")
+
+        # Update schedule
+        update_data = {
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        if schedule.interview_scheduled_at is not None:
+            update_data["interview_scheduled_at"] = schedule.interview_scheduled_at or None
+        if schedule.interview_notes is not None:
+            update_data["interview_notes"] = schedule.interview_notes or None
+        if schedule.callback_scheduled_at is not None:
+            update_data["callback_scheduled_at"] = schedule.callback_scheduled_at or None
+        if schedule.callback_notes is not None:
+            update_data["callback_notes"] = schedule.callback_notes or None
+
+        result = client.table("community_collab_applications").update(update_data).eq(
+            "id", application_id
+        ).execute()
+
+        # Record in status history
+        client.table("collab_application_status_history").insert({
+            "application_id": application_id,
+            "old_status": app_result.data.get("status"),
+            "new_status": app_result.data.get("status"),  # Status doesn't change
+            "changed_by_user_id": user_id,
+            "metadata": {
+                "action": "schedule_updated",
+                "interview_scheduled_at": schedule.interview_scheduled_at,
+                "callback_scheduled_at": schedule.callback_scheduled_at,
+            }
+        }).execute()
+
+        return result.data[0] if result.data else {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating application schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# APPLICATION BOOKING
+# =====================================================
+
+@router.post("/collab-applications/{application_id}/book")
+async def book_applicant(
+    application_id: str,
+    booking: ApplicationBookingInput,
+    authorization: str = Header(None)
+):
+    """Book an applicant (collab owner only)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application with collab details
+        app_result = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, user_id, title, type, backlot_project_id), applicant:profiles(id, username, display_name, avatar_url, email)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab")
+        applicant = app_data.get("applicant")
+
+        if not collab or collab.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="You can only book applicants for your own collabs")
+
+        if app_data.get("status") == "booked":
+            raise HTTPException(status_code=400, detail="Applicant is already booked")
+
+        # Prepare booking data
+        update_data = {
+            "status": "booked",
+            "booked_at": datetime.utcnow().isoformat(),
+            "booked_by_user_id": user_id,
+            "booking_rate": booking.booking_rate,
+            "booking_start_date": booking.booking_start_date,
+            "booking_end_date": booking.booking_end_date,
+            "booking_notes": booking.booking_notes,
+            "booking_schedule_notes": booking.booking_schedule_notes,
+            "status_changed_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        # Cast-specific fields
+        if booking.character_id:
+            update_data["character_id"] = booking.character_id
+        if booking.billing_position:
+            update_data["billing_position"] = booking.billing_position
+        if booking.contract_type:
+            update_data["contract_type"] = booking.contract_type
+
+        # Create project role if backlot_project_id exists (team integration)
+        project_role_id = None
+        backlot_project_id = collab.get("backlot_project_id")
+
+        if backlot_project_id:
+            # Determine role title, department and type
+            role_title = booking.role_title or collab.get("title", "Team Member")
+            collab_type = collab.get("type", "")
+            is_cast = collab_type in ["looking_for_cast", "cast"]
+            role_type = "cast" if is_cast else "crew"
+            department = booking.department or ("cast" if is_cast else "crew")
+
+            # Create project role with proper fields for booked-people endpoint
+            role_data = {
+                "project_id": backlot_project_id,
+                "title": role_title,
+                "type": role_type,
+                "department": department,
+                "status": "booked",
+                "booked_user_id": app_data.get("applicant_user_id"),
+                "booked_at": datetime.utcnow().isoformat(),
+                "source_collab_application_id": application_id,
+                "start_date": booking.booking_start_date,
+                "end_date": booking.booking_end_date,
+            }
+
+            # Add cast-specific fields
+            if is_cast and booking.character_id:
+                role_data["character_name"] = None  # Will be fetched from character if needed
+
+            role_result = client.table("backlot_project_roles").insert(role_data).execute()
+
+            if role_result.data:
+                project_role_id = role_result.data[0]["id"]
+                update_data["project_role_id"] = project_role_id
+
+        # Update application with booking data
+        result = client.table("community_collab_applications").update(update_data).eq(
+            "id", application_id
+        ).execute()
+
+        # Record in status history with full booking details
+        client.table("collab_application_status_history").insert({
+            "application_id": application_id,
+            "old_status": app_data.get("status"),
+            "new_status": "booked",
+            "changed_by_user_id": user_id,
+            "metadata": {
+                "action": "booked",
+                "booking_rate": booking.booking_rate,
+                "booking_start_date": booking.booking_start_date,
+                "booking_end_date": booking.booking_end_date,
+                "project_role_id": project_role_id,
+                "character_id": booking.character_id,
+                "billing_position": booking.billing_position,
+                "contract_type": booking.contract_type,
+            }
+        }).execute()
+
+        # TODO: Handle document package request if booking.request_documents
+
+        # TODO: Send notification to applicant if booking.send_notification
+        # notification_message = booking.notification_message or f"Congratulations! You've been booked for {collab.get('title')}"
+
+        return {
+            "success": True,
+            "application": result.data[0] if result.data else None,
+            "project_role_id": project_role_id,
+            "message": "Applicant has been booked successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error booking applicant: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/collab-applications/{application_id}/unbook")
+async def unbook_applicant(
+    application_id: str,
+    unbook: ApplicationUnbookInput,
+    authorization: str = Header(None)
+):
+    """Unbook an applicant (collab owner only) - reverses a booking"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify ownership
+        app_result = client.table("community_collab_applications").select(
+            "*, collab:community_collabs(id, user_id, title)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab")
+
+        if not collab or collab.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="You can only unbook applicants for your own collabs")
+
+        if app_data.get("status") != "booked":
+            raise HTTPException(status_code=400, detail="Applicant is not currently booked")
+
+        # Remove project role if it exists
+        project_role_id = app_data.get("project_role_id")
+        if project_role_id:
+            client.table("backlot_project_roles").delete().eq("id", project_role_id).execute()
+
+        # Update application
+        update_data = {
+            "status": "shortlisted",  # Move back to shortlisted
+            "unbooked_at": datetime.utcnow().isoformat(),
+            "unbooked_by_user_id": user_id,
+            "unbook_reason": unbook.reason,
+            "project_role_id": None,
+            "status_changed_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        result = client.table("community_collab_applications").update(update_data).eq(
+            "id", application_id
+        ).execute()
+
+        # Record in status history
+        client.table("collab_application_status_history").insert({
+            "application_id": application_id,
+            "old_status": "booked",
+            "new_status": "shortlisted",
+            "changed_by_user_id": user_id,
+            "reason": unbook.reason,
+            "metadata": {
+                "action": "unbooked",
+                "previous_project_role_id": project_role_id,
+                "previous_booking_rate": app_data.get("booking_rate"),
+            }
+        }).execute()
+
+        return {
+            "success": True,
+            "application": result.data[0] if result.data else None,
+            "message": "Applicant has been unbooked"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error unbooking applicant: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# APPLICATION STATUS HISTORY
+# =====================================================
+
+@router.get("/collab-applications/{application_id}/history")
+async def get_application_history(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """Get status change history for an application (collab owner or applicant)"""
+    user = await get_current_user_from_token(authorization)
+    user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get application and verify access
+        app_result = client.table("community_collab_applications").select(
+            "id, applicant_user_id, collab:community_collabs(id, user_id)"
+        ).eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        collab = app_data.get("collab", {})
+        applicant_id = app_data.get("applicant_user_id")
+        collab_owner_id = collab.get("user_id") if collab else None
+
+        if user_id not in [applicant_id, collab_owner_id]:
+            raise HTTPException(status_code=403, detail="You don't have access to this application's history")
+
+        # Get history
+        history_result = client.table("collab_application_status_history").select(
+            "*, changed_by:profiles(id, username, display_name, avatar_url)"
+        ).eq("application_id", application_id).order("created_at", desc=True).execute()
+
+        return {
+            "history": history_result.data or [],
+            "total": len(history_result.data or [])
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting application history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

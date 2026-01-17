@@ -4,7 +4,8 @@
 import type { ProductionType, UnionType, TvNetwork, CustomQuestion } from './productions';
 
 // Collab types
-export type CollabType = 'looking_for_crew' | 'available_for_hire' | 'partner_opportunity';
+export type CollabType = 'looking_for_crew' | 'looking_for_cast' | 'available_for_hire' | 'partner_opportunity';
+export type TapeWorkflow = 'upfront' | 'after_shortlist';
 export type CompensationType = 'paid' | 'unpaid' | 'deferred' | 'negotiable';
 export type JobType = 'freelance' | 'full_time';
 
@@ -17,6 +18,8 @@ export interface Company {
   website?: string | null;
   is_verified?: boolean;
 }
+
+export type CollabApprovalStatus = 'pending' | 'approved' | 'rejected';
 
 export interface CommunityCollab {
   id: string;
@@ -36,6 +39,13 @@ export interface CommunityCollab {
   job_type?: JobType;
   // Backlot project link (when posted from Backlot)
   backlot_project_id?: string | null;
+  // Approval status fields
+  approval_status?: CollabApprovalStatus;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  rejection_reason?: string | null;
+  // Application count (from project collabs endpoint)
+  application_count?: number;
   // Production info
   production_id?: string | null;
   production_title?: string | null;
@@ -66,6 +76,20 @@ export interface CommunityCollab {
   is_featured?: boolean;
   featured_until?: string | null;
   stripe_payment_id?: string | null;
+  // Cast-specific fields
+  requires_reel?: boolean;
+  requires_headshot?: boolean;
+  requires_self_tape?: boolean;
+  tape_instructions?: string | null;
+  tape_format_preferences?: string | null;
+  tape_workflow?: TapeWorkflow;
+  cast_position_type_id?: string | null;
+  // Joined cast position type data
+  cast_position_type?: {
+    id: string;
+    name: string;
+    slug: string;
+  } | null;
   created_at: string;
   updated_at: string;
   // Joined data

@@ -27,6 +27,8 @@ import {
   SceneCoverageStats,
   LocationNeedsResponse,
   TaskGenerationResponse,
+  TaskPreviewResponse,
+  CreateTasksFromPreviewInput,
   BudgetSuggestionGenerationResponse,
   SceneFilters,
   ScriptPageNoteFilters,
@@ -253,6 +255,8 @@ export function useImportScript() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-scripts'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage'] });
     },
   });
 }
@@ -762,6 +766,87 @@ export function useGenerateTasks() {
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail || 'Failed to generate tasks');
+      }
+
+      return response.json() as Promise<TaskGenerationResponse>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-tasks'] });
+    },
+  });
+}
+
+export function usePreviewGeneratedTasks() {
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      sceneIds,
+      itemTypes,
+      regenerate,
+    }: {
+      projectId: string;
+      sceneIds?: string[];
+      itemTypes?: string[];
+      regenerate?: boolean;
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/preview-tasks`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            scene_ids: sceneIds,
+            item_types: itemTypes,
+            regenerate: regenerate || false,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to preview tasks');
+      }
+
+      return response.json() as Promise<TaskPreviewResponse>;
+    },
+  });
+}
+
+export function useCreateTasksFromPreview() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      tasks,
+    }: {
+      projectId: string;
+      tasks: CreateTasksFromPreviewInput['tasks'];
+    }) => {
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/script/create-tasks-from-preview`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ tasks }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create tasks');
       }
 
       return response.json() as Promise<TaskGenerationResponse>;
@@ -1694,6 +1779,9 @@ export function useScriptHighlightMutations() {
       // Also invalidate breakdown items since highlights now auto-create breakdown items
       queryClient.invalidateQueries({ queryKey: ['backlot-project-breakdown'] });
       queryClient.invalidateQueries({ queryKey: ['backlot-breakdown-summary'] });
+      // Invalidate scenes since highlights can auto-create scenes (e.g., PROLOGUE)
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-coverage'] });
     },
   });
 

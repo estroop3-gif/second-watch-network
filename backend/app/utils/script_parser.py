@@ -75,8 +75,10 @@ class ParseResult:
 
 
 # Patterns for detecting screenplay elements
+# Matches: INT. LOCATION, EXT LOCATION, INT/EXT. LOCATION, I/E LOCATION
+# Also handles scene numbers at start: "1 INT. LOCATION" or "1A EXT. LOCATION"
 SCENE_HEADING_PATTERN = re.compile(
-    r'^(INT\.?|EXT\.?|INT\.?/EXT\.?|I/E\.?)\s+.+',
+    r'^(\d+[A-Za-z]?\.?\s+)?(INT\.?|EXT\.?|INT\.?\s*/\s*EXT\.?|I\s*/\s*E\.?|INTERIOR\.?|EXTERIOR\.?)\s+.+',
     re.IGNORECASE
 )
 
@@ -427,14 +429,24 @@ def detect_element_type(line: str, prev_type: Optional[ElementType] = None) -> E
 
 def parse_scene_heading(heading: str) -> Tuple[Optional[str], Optional[str], str]:
     """Parse a scene heading to extract INT/EXT, time of day, and location"""
+    # First strip any scene number prefix like "1 " or "1A " or "42. "
+    heading = re.sub(r'^\d+[A-Za-z]?\.?\s+', '', heading.strip())
     heading_upper = heading.upper().strip()
 
     int_ext = None
     time_of_day = None
     location = heading
 
-    # Extract INT/EXT
-    if heading_upper.startswith('INT.') or heading_upper.startswith('INT '):
+    # Extract INT/EXT (handle various formats)
+    # INTERIOR/EXTERIOR (full words)
+    if heading_upper.startswith('INTERIOR'):
+        int_ext = 'INT'
+        location = re.sub(r'^INTERIOR\.?\s*', '', heading, flags=re.IGNORECASE).strip()
+    elif heading_upper.startswith('EXTERIOR'):
+        int_ext = 'EXT'
+        location = re.sub(r'^EXTERIOR\.?\s*', '', heading, flags=re.IGNORECASE).strip()
+    # INT/EXT variations
+    elif heading_upper.startswith('INT.') or heading_upper.startswith('INT '):
         int_ext = 'INT'
         location = heading[4:].strip()
     elif heading_upper.startswith('EXT.') or heading_upper.startswith('EXT '):
@@ -616,10 +628,11 @@ def strip_page_number(line: str) -> str:
 def strip_scene_number_from_line(line: str) -> str:
     """Strip scene numbers from the beginning of any line.
 
-    Scene numbers appear at the start: "1   TEXT" or "1A  TEXT" or "42  TEXT"
+    Scene numbers appear at the start: "1 TEXT" or "1A TEXT" or "42  TEXT" or "1\tTEXT"
     """
-    # Strip leading scene numbers (digits, optionally with letter, followed by spaces)
-    cleaned = re.sub(r'^\s*\d+[A-Za-z]?\s{2,}', '', line)
+    # Strip leading scene numbers (digits, optionally with letter, followed by 1+ whitespace)
+    # Also handle scene numbers followed by a period and space like "1. INT."
+    cleaned = re.sub(r'^\s*\d+[A-Za-z]?\.?\s+', '', line)
     return cleaned
 
 

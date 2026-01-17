@@ -49,7 +49,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useCallSheets, useProductionDays, useCreateCallSheetFromDay } from '@/hooks/backlot';
+import { useCallSheets, useProductionDays, useCreateCallSheetFromDay, useProductionDayScenes } from '@/hooks/backlot';
 import { BacklotCallSheet, BacklotProductionDay } from '@/types/backlot';
 import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
@@ -252,18 +252,11 @@ const ProductionDayRow: React.FC<{
   canEdit: boolean;
   onViewCallSheet: (sheet: BacklotCallSheet) => void;
 }> = ({ day, projectId, linkedCallSheet, canEdit, onViewCallSheet }) => {
-  const createCallSheet = useCreateCallSheetFromDay(day.id);
-  const [isCreating, setIsCreating] = React.useState(false);
+  const [showCreateCallSheetModal, setShowCreateCallSheetModal] = React.useState(false);
+  const { scenes } = useProductionDayScenes(day.id);
 
-  const handleCreateCallSheet = async () => {
-    setIsCreating(true);
-    try {
-      await createCallSheet.mutateAsync({ include_scenes: true });
-    } catch (err) {
-      console.error('Failed to create call sheet:', err);
-    } finally {
-      setIsCreating(false);
-    }
+  const handleCreateCallSheet = () => {
+    setShowCreateCallSheetModal(true);
   };
 
   const isPast = parseLocalDate(day.date) < new Date(new Date().toDateString());
@@ -334,20 +327,10 @@ const ProductionDayRow: React.FC<{
             variant="outline"
             size="sm"
             onClick={handleCreateCallSheet}
-            disabled={isCreating}
             className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
           >
-            {isCreating ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                Creating...
-              </>
-            ) : (
-              <>
-                <Plus className="w-4 h-4 mr-1" />
-                Create Call Sheet
-              </>
-            )}
+            <Plus className="w-4 h-4 mr-1" />
+            Create Call Sheet
           </Button>
         ) : (
           <Badge variant="outline" className="bg-muted-gray/10 text-muted-gray border-muted-gray/30">
@@ -355,6 +338,33 @@ const ProductionDayRow: React.FC<{
           </Badge>
         )}
       </div>
+
+      {/* Create Call Sheet Modal */}
+      <CallSheetCreateEditModal
+        isOpen={showCreateCallSheetModal}
+        onClose={() => setShowCreateCallSheetModal(false)}
+        projectId={projectId}
+        productionDay={{
+          id: day.id,
+          date: day.date,
+          title: day.title,
+          day_number: day.day_number,
+          general_call_time: day.general_call_time,
+          wrap_time: day.wrap_time,
+          location_name: day.location_name,
+          location_address: day.location_address,
+        }}
+        preloadedScenes={scenes.map(s => ({
+          id: s.scene_id,
+          scene_number: s.scene?.scene_number || '',
+          set_name: s.scene?.set_name,
+          slugline: s.scene?.slugline,
+          int_ext: s.scene?.int_ext,
+          time_of_day: s.scene?.time_of_day,
+          page_length: s.scene?.page_length,
+          description: s.scene?.description,
+        }))}
+      />
     </div>
   );
 };

@@ -20,6 +20,8 @@ interface ProductionTitleSelectorProps {
   onChange: (id: string | null, project?: BacklotProject) => void;
   disabled?: boolean;
   className?: string;
+  /** Pre-populated project for edit mode */
+  initialSelectedItem?: BacklotProject | null;
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -39,6 +41,7 @@ const ProductionTitleSelector: React.FC<ProductionTitleSelectorProps> = ({
   onChange,
   disabled = false,
   className,
+  initialSelectedItem,
 }) => {
   const { session } = useAuth();
 
@@ -133,7 +136,7 @@ const ProductionTitleSelector: React.FC<ProductionTitleSelectorProps> = ({
       ) : (
         <Clapperboard className="h-4 w-4 text-muted-gray flex-shrink-0" />
       )}
-      <span className="truncate">{project.name}</span>
+      <span className="truncate text-bone-white">{project.name}</span>
     </div>
   );
 
@@ -151,6 +154,7 @@ const ProductionTitleSelector: React.FC<ProductionTitleSelectorProps> = ({
       renderSelected={renderSelected}
       disabled={disabled}
       className={className}
+      initialSelectedItem={initialSelectedItem}
     />
   );
 };

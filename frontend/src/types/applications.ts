@@ -95,6 +95,11 @@ export interface UnifiedApplicationInput {
   cover_letter_template_name?: string;
   // Custom question responses
   custom_question_responses?: CustomQuestionResponses;
+  // Cast-specific fields
+  demo_reel_url?: string;
+  self_tape_url?: string;
+  headshot_url?: string;
+  special_skills?: string[];
 }
 
 // Profile snapshot captured at application time
@@ -132,6 +137,12 @@ export interface CollabApplication {
   internal_notes: string | null;
   rating: number | null;
   custom_question_responses: CustomQuestionResponses | null;
+  // Cast-specific fields
+  demo_reel_url: string | null;
+  self_tape_url: string | null;
+  special_skills: string[] | null;
+  tape_requested_at: string | null;
+  tape_submitted_at: string | null;
   created_at: string;
   updated_at: string;
   // Joined data
@@ -178,6 +189,12 @@ export interface RoleApplication {
   internal_notes: string | null;
   rating: number | null;
   custom_question_responses: CustomQuestionResponses | null;
+  // Cast-specific fields
+  demo_reel_url: string | null;
+  self_tape_url: string | null;
+  special_skills: string[] | null;
+  tape_requested_at: string | null;
+  tape_submitted_at: string | null;
   created_at: string;
   updated_at: string;
   // Joined data

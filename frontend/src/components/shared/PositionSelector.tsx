@@ -7,7 +7,7 @@ import React from 'react';
 import { Briefcase } from 'lucide-react';
 import SearchableCombobox, { SearchableItem } from './SearchableCombobox';
 
-interface Position extends SearchableItem {
+export interface Position extends SearchableItem {
   id: string;
   name: string;
   department: string;
@@ -18,10 +18,13 @@ interface PositionSelectorProps {
   onChange: (id: string | null, position?: Position) => void;
   disabled?: boolean;
   className?: string;
+  /** Pre-populated position for edit mode */
+  initialSelectedItem?: Position | null;
 }
 
 // Comprehensive list of film production positions organized by department
-const POSITIONS: Position[] = [
+// Export so other components can look up positions by title
+export const POSITIONS: Position[] = [
   // Direction
   { id: 'director', name: 'Director', department: 'Direction' },
   { id: 'first-ad', name: '1st Assistant Director', department: 'Direction' },
@@ -238,6 +241,7 @@ const PositionSelector: React.FC<PositionSelectorProps> = ({
   onChange,
   disabled = false,
   className,
+  initialSelectedItem,
 }) => {
   const searchPositions = async (query: string): Promise<Position[]> => {
     // Filter positions locally - no API call needed
@@ -298,6 +302,7 @@ const PositionSelector: React.FC<PositionSelectorProps> = ({
       renderSelected={renderSelected}
       disabled={disabled}
       className={className}
+      initialSelectedItem={initialSelectedItem}
     />
   );
 };
