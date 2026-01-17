@@ -1887,6 +1887,78 @@ export function useExportBudgetPdf() {
   });
 }
 
+/**
+ * Generate and download budget HTML
+ */
+export function useExportBudgetHtml() {
+  return useMutation({
+    mutationFn: async ({
+      projectId,
+      options,
+    }: {
+      projectId: string;
+      options?: Partial<BudgetPdfExportOptions>;
+    }): Promise<void> => {
+      const token = getAuthToken();
+
+      const params = new URLSearchParams();
+      if (options?.include_top_sheet !== undefined) {
+        params.append('include_top_sheet', String(options.include_top_sheet));
+      }
+      if (options?.include_detail !== undefined) {
+        params.append('include_detail', String(options.include_detail));
+      }
+      if (options?.include_daily_budgets !== undefined) {
+        params.append('include_daily_budgets', String(options.include_daily_budgets));
+      }
+      if (options?.include_receipts_summary !== undefined) {
+        params.append('include_receipts_summary', String(options.include_receipts_summary));
+      }
+      if (options?.show_actuals !== undefined) {
+        params.append('show_actuals', String(options.show_actuals));
+      }
+      if (options?.show_variance !== undefined) {
+        params.append('show_variance', String(options.show_variance));
+      }
+
+      const url = `${API_BASE}/backlot/projects/${projectId}/budget/export-html${params.toString() ? '?' + params.toString() : ''}`;
+
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to generate HTML' }));
+        throw new Error(error.detail || 'Failed to generate HTML');
+      }
+
+      // Download the HTML
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+
+      // Get filename from header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = 'budget-export.html';
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+?)"/);
+        if (match) {
+          filename = match[1];
+        }
+      }
+
+      const downloadLink = document.createElement('a');
+      downloadLink.href = downloadUrl;
+      downloadLink.download = filename;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+      window.URL.revokeObjectURL(downloadUrl);
+    },
+  });
+}
+
 // =====================================================
 // BUDGET BUNDLES - Intentional Budget Creation
 // =====================================================

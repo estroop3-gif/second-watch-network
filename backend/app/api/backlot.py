@@ -9380,6 +9380,116 @@ async def export_budget_pdf(
         )
 
 
+@router.get("/projects/{project_id}/budget/export-html")
+async def export_budget_html(
+    project_id: str,
+    include_top_sheet: bool = True,
+    include_detail: bool = True,
+    include_daily_budgets: bool = False,
+    include_receipts_summary: bool = False,
+    show_actuals: bool = True,
+    show_variance: bool = True,
+    authorization: str = Header(None)
+):
+    """Export budget as HTML file"""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get budget
+    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    if not budget_response.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    budget = budget_response.data[0]
+    budget_id = budget["id"]
+
+    # Get project
+    project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
+    if not project_response.data:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project = project_response.data[0]
+
+    # Get categories
+    categories_response = client.table("backlot_budget_categories").select("*").eq(
+        "budget_id", budget_id
+    ).order("sort_order").execute()
+    categories = categories_response.data or []
+
+    # Get line items
+    line_items_response = client.table("backlot_budget_line_items").select("*").eq(
+        "budget_id", budget_id
+    ).order("sort_order").execute()
+    line_items = line_items_response.data or []
+
+    # Compute top sheet dynamically
+    above_the_line_total = 0
+    production_total = 0
+    post_total = 0
+    other_total = 0
+
+    for cat in categories:
+        cat_type = cat.get("category_type", "other")
+        estimated = cat.get("estimated_subtotal", 0) or 0
+
+        if cat_type == "above_the_line":
+            above_the_line_total += estimated
+        elif cat_type == "production":
+            production_total += estimated
+        elif cat_type == "post_production":
+            post_total += estimated
+        else:
+            other_total += estimated
+
+    subtotal = above_the_line_total + production_total + post_total + other_total
+    contingency_pct = budget.get("contingency_percent", 0) or 0
+    contingency_amount = subtotal * contingency_pct / 100
+    grand_total = subtotal + contingency_amount
+
+    top_sheet = {
+        "above_the_line_total": above_the_line_total,
+        "production_total": production_total,
+        "post_total": post_total,
+        "other_total": other_total,
+        "subtotal": subtotal,
+        "contingency_amount": contingency_amount,
+        "grand_total": grand_total
+    }
+
+    # Generate PDF options
+    options = BudgetPdfExportInput(
+        include_top_sheet=include_top_sheet,
+        include_detail=include_detail,
+        include_daily_budgets=include_daily_budgets,
+        include_receipts_summary=include_receipts_summary,
+        show_actuals=show_actuals,
+        show_variance=show_variance
+    )
+
+    # Generate HTML
+    html_content = generate_budget_pdf_html(
+        project=project,
+        budget=budget,
+        categories=categories,
+        line_items=line_items,
+        top_sheet=top_sheet,
+        options=options
+    )
+
+    filename = f"{project.get('title', 'budget')}-budget-{datetime.utcnow().strftime('%Y%m%d')}.html"
+
+    return Response(
+        content=html_content,
+        media_type="text/html",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
 # =============================================================================
 # BUDGET BUNDLE ENDPOINTS - Intentional Budget Creation
 # =============================================================================

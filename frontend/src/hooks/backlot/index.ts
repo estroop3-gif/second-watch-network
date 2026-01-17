@@ -247,8 +247,9 @@ export {
   // Budget-to-Daily Sync
   useSyncBudgetToDaily,
   useSyncBudgetToDay,
-  // PDF Export
+  // PDF/HTML Export
   useExportBudgetPdf,
+  useExportBudgetHtml,
   // Department Bundles (intentional budget creation flow)
   useBudgetBundles,
   useRecommendedBundles,

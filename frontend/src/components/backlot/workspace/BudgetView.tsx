@@ -92,6 +92,7 @@ import {
   useComputeTopSheet,
   useSyncBudgetToDaily,
   useExportBudgetPdf,
+  useExportBudgetHtml,
   useGearCosts,
   useSyncGearToBudget,
   useBudgetActuals,
@@ -1091,6 +1092,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const computeTopSheet = useComputeTopSheet();
   const syncToDaily = useSyncBudgetToDaily();
   const exportPdf = useExportBudgetPdf();
+  const exportHtml = useExportBudgetHtml();
   const { createCategory, updateCategory, deleteCategory } = useBudgetCategoryMutations(
     activeBudget?.id || null,
     projectId
@@ -1272,7 +1274,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
-  // Export PDF handler
+  // Export handlers
   const handleExportPdf = async () => {
     try {
       await exportPdf.mutateAsync({
@@ -1286,6 +1288,22 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
       });
     } catch (err) {
       console.error('Failed to export PDF:', err);
+    }
+  };
+
+  const handleExportHtml = async () => {
+    try {
+      await exportHtml.mutateAsync({
+        projectId,
+        options: {
+          include_top_sheet: true,
+          include_detail: true,
+          show_actuals: true,
+          show_variance: true,
+        },
+      });
+    } catch (err) {
+      console.error('Failed to export HTML:', err);
     }
   };
 
@@ -1476,6 +1494,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           projectId={projectId}
           isOpen={showCreationModal}
           onClose={() => setShowCreationModal(false)}
+          onSuccess={() => {
+            setBudgetViewMode('estimated');
+            setShowCreationModal(false);
+          }}
         />
 
         {/* Template Selection Modal */}
@@ -1703,19 +1725,32 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
             <HelpCircle className="w-4 h-4 mr-1" />
             Tips
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExportPdf}
-            disabled={exportPdf.isPending}
-          >
-            {exportPdf.isPending ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Download className="w-4 h-4 mr-2" />
-            )}
-            Export
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exportPdf.isPending || exportHtml.isPending}
+              >
+                {(exportPdf.isPending || exportHtml.isPending) ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleExportPdf}>
+                <FileText className="w-4 h-4 mr-2" />
+                Export as PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleExportHtml}>
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Export as HTML
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {canEdit && !isLocked && (
             <>
               <Button
@@ -1875,8 +1910,8 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                     ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
                     : 'text-muted-gray hover:text-bone-white'}
                 >
-                  <DollarSign className="w-4 h-4 mr-2" />
-                  Actual
+                  <Calculator className="w-4 h-4 mr-2" />
+                  Estimated
                 </Button>
                 <Button
                   variant={budgetViewMode === 'actual' ? 'default' : 'ghost'}
@@ -1886,12 +1921,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                     ? 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
                     : 'text-muted-gray hover:text-bone-white'}
                 >
-                  <Calculator className="w-4 h-4 mr-2" />
-                  Estimated
+                  <DollarSign className="w-4 h-4 mr-2" />
+                  Actual
                 </Button>
               </div>
               <span className="text-sm text-muted-gray">
-                {budgetViewMode === 'estimated' ? 'Actual spending with line items' : 'Planned budget estimates'}
+                {budgetViewMode === 'actual' ? 'Synced expenses and spending' : 'Planned budget categories and line items'}
               </span>
             </div>
             {canEdit && !isLocked && budgetViewMode === 'estimated' && (
@@ -1906,7 +1941,7 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
             )}
           </div>
 
-          {/* Estimated Budget View */}
+          {/* Estimated Budget View - categories and line items you create */}
           {budgetViewMode === 'estimated' && (
             <>
               {categories && categories.length > 0 ? (
@@ -2260,13 +2295,13 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
       {/* Category Modal */}
       <Dialog open={showCategoryModal} onOpenChange={setShowCategoryModal}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle>
               {editingCategory ? 'Edit Category' : 'Add Category'}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
+          <div className="space-y-4 mt-4 overflow-y-auto flex-1 pr-2">
             <div className="space-y-2">
               <Label htmlFor="cat-name">Name *</Label>
               <Input
@@ -2687,6 +2722,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
         projectId={projectId}
         isOpen={showCreationModal}
         onClose={() => setShowCreationModal(false)}
+        onSuccess={() => {
+          setBudgetViewMode('estimated');
+          setShowCreationModal(false);
+        }}
       />
 
       {/* Delete Budget Confirmation Dialog - Triple confirmation */}
