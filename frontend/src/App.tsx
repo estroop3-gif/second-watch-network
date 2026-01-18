@@ -10,6 +10,7 @@ import LandingPage from "./pages/LandingPage";
 import NotFound from "./pages/NotFound";
 import Originals from "./pages/Originals";
 import SubmitContent from "./pages/SubmitContent";
+import TermsOfSubmission from "./pages/TermsOfSubmission";
 import Shop from "./pages/Shop";
 import WatchNow from "./pages/WatchNow";
 import DashboardFree from "./pages/DashboardFree";
@@ -228,6 +229,7 @@ const App = () => (
                   <Route path="/donations" element={<Donations />} />
                   <Route path="/originals" element={<Originals />} />
                   <Route path="/submit" element={<SubmitContent />} />
+                  <Route path="/terms-of-submission" element={<TermsOfSubmission />} />
                   <Route path="/partners/apply" element={<PartnerApply />} />
                   <Route path="/subscriptions" element={<SubscriptionsAndRolesPage />} />
                   <Route path="/account/membership" element={<SubscriptionsAndRolesPage />} />

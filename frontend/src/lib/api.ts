@@ -486,8 +486,8 @@ class APIClient {
     return this.request<any[]>('/api/v1/submissions/my')
   }
 
-  async createSubmission(userId: string, data: any) {
-    return this.request<any>(`/api/v1/submissions/?user_id=${userId}`, {
+  async createSubmission(data: any) {
+    return this.request<any>(`/api/v1/submissions/`, {
       method: 'POST',
       body: JSON.stringify(data),
     })
@@ -503,7 +503,7 @@ class APIClient {
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
     if (params?.status) query.append('status', params.status)
     if (params?.user_id) query.append('user_id', params.user_id)
-    
+
     return this.request<any[]>(`/api/v1/submissions/?${query}`)
   }
 
@@ -512,6 +512,17 @@ class APIClient {
       method: 'PUT',
       body: JSON.stringify(data),
     })
+  }
+
+  async updateMySubmission(submissionId: string, data: any) {
+    return this.request<any>(`/api/v1/submissions/my/${submissionId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getSubmitterProfile(submissionId: string) {
+    return this.request<any>(`/api/v1/admin/submissions/${submissionId}/submitter-profile`)
   }
 
   async deleteSubmission(submissionId: string) {

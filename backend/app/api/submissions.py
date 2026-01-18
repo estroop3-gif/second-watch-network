@@ -3,11 +3,26 @@ Submissions API Routes
 """
 from fastapi import APIRouter, HTTPException, Depends
 from typing import List, Optional
+from datetime import datetime
 from app.core.database import get_client
 from app.core.auth import get_current_user
-from app.schemas.submissions import Submission, SubmissionCreate, SubmissionUpdate
+from app.schemas.submissions import Submission, SubmissionCreate, SubmissionUpdate, SubmissionUserUpdate
 
 router = APIRouter()
+
+
+async def get_profile_id_from_user(user: dict) -> str:
+    """Get profile ID from user object (cognito_user_id or profile id)"""
+    client = get_client()
+    user_id = user.get("id")
+
+    profile = client.table("profiles").select("id").or_(
+        f"cognito_user_id.eq.{user_id},id.eq.{user_id}"
+    ).limit(1).execute()
+
+    if profile.data:
+        return profile.data[0].get("id")
+    return user_id
 
 
 @router.get("/my", response_model=List[Submission])
@@ -15,18 +30,11 @@ async def get_my_submissions(user=Depends(get_current_user)):
     """Get current user's submissions"""
     try:
         client = get_client()
-        user_id = user.get("id")
-
-        # Get profile to find profile_id for user_id matching
-        profile = client.table("profiles").select("id").or_(
-            f"cognito_user_id.eq.{user_id},id.eq.{user_id}"
-        ).limit(1).execute()
-
-        profile_id = profile.data[0].get("id") if profile.data else user_id
+        profile_id = await get_profile_id_from_user(user)
 
         response = client.table("submissions").select(
-            "id, user_id, project_title, status, project_type, created_at, name, email, logline, description, youtube_link, has_unread_user_messages"
-        ).or_(f"user_id.eq.{user_id},user_id.eq.{profile_id}").order(
+            "id, user_id, project_title, status, project_type, created_at, name, email, logline, description, youtube_link, has_unread_user_messages, company_name, submitter_role, years_experience, terms_accepted_at"
+        ).eq("user_id", profile_id).order(
             "created_at", desc=True
         ).execute()
 
@@ -36,16 +44,78 @@ async def get_my_submissions(user=Depends(get_current_user)):
 
 
 @router.post("/", response_model=Submission)
-async def create_submission(submission: SubmissionCreate, user_id: str):
-    """Create new submission"""
+async def create_submission(
+    submission: SubmissionCreate,
+    user=Depends(get_current_user)
+):
+    """Create new submission - requires authentication"""
     try:
         client = get_client()
-        data = submission.model_dump()
-        data["user_id"] = user_id
+
+        # Verify terms were accepted
+        if not submission.terms_accepted:
+            raise HTTPException(
+                status_code=400,
+                detail="You must accept the Terms and Conditions to submit content."
+            )
+
+        # Get profile ID from authenticated user
+        profile_id = await get_profile_id_from_user(user)
+
+        # Prepare submission data
+        data = submission.model_dump(exclude={"terms_accepted"})
+        data["user_id"] = profile_id
         data["status"] = "pending"
-        
+        data["terms_accepted_at"] = datetime.utcnow().isoformat()
+
         response = client.table("submissions").insert(data).execute()
         return response.data[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/my/{submission_id}", response_model=Submission)
+async def update_my_submission(
+    submission_id: str,
+    submission: SubmissionUserUpdate,
+    user=Depends(get_current_user)
+):
+    """Update user's own submission - only allowed for pending submissions"""
+    try:
+        client = get_client()
+        profile_id = await get_profile_id_from_user(user)
+
+        # First verify the submission belongs to the user and is still pending
+        existing = client.table("submissions").select("id, user_id, status").eq(
+            "id", submission_id
+        ).single().execute()
+
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Submission not found")
+
+        if existing.data.get("user_id") != profile_id:
+            raise HTTPException(status_code=403, detail="You can only edit your own submissions")
+
+        if existing.data.get("status") != "pending":
+            raise HTTPException(
+                status_code=400,
+                detail="Only pending submissions can be edited"
+            )
+
+        # Update the submission
+        update_data = submission.model_dump(exclude_unset=True)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        response = client.table("submissions").update(update_data).eq(
+            "id", submission_id
+        ).execute()
+
+        return response.data[0]
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

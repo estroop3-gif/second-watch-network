@@ -1038,15 +1038,58 @@ async def list_submissions_admin(
 class SubmissionStatusUpdate(BaseModel):
     submission_id: str
     status: str
+    send_email: bool = True
 
 
 @router.post("/submissions/status")
 async def update_submission_status(update: SubmissionStatusUpdate):
-    """Update submission status"""
+    """Update submission status and optionally send email notification"""
     try:
         client = get_client()
+
+        # Get submission details for email
+        submission = client.table("submissions").select(
+            "id, project_title, user_id, status"
+        ).eq("id", update.submission_id).single().execute()
+
+        if not submission.data:
+            raise HTTPException(status_code=404, detail="Submission not found")
+
+        old_status = submission.data.get("status")
+        user_id = submission.data.get("user_id")
+        project_title = submission.data.get("project_title")
+
+        # Update the status
         client.table("submissions").update({"status": update.status}).eq("id", update.submission_id).execute()
+
+        # Send email notification if enabled and user exists
+        if update.send_email and user_id and old_status != update.status:
+            try:
+                # Get user profile for email
+                profile = client.table("profiles").select(
+                    "email, full_name, username"
+                ).eq("id", user_id).single().execute()
+
+                if profile.data and profile.data.get("email"):
+                    from app.services.email_service import send_submission_status_email
+
+                    name = profile.data.get("full_name") or profile.data.get("username") or "Filmmaker"
+                    email = profile.data.get("email")
+
+                    await send_submission_status_email(
+                        email=email,
+                        name=name,
+                        project_title=project_title,
+                        new_status=update.status,
+                        submission_id=update.submission_id
+                    )
+            except Exception as email_error:
+                # Log but don't fail the status update
+                print(f"Warning: Failed to send status email: {email_error}")
+
         return {"message": "Status updated successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1073,6 +1116,107 @@ async def update_submission_notes(submission_id: str, update: SubmissionNotesUpd
         client = get_client()
         client.table("submissions").update({"admin_notes": update.notes}).eq("id", submission_id).execute()
         return {"message": "Notes updated"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/submissions/{submission_id}/submitter-profile")
+async def get_submitter_profile(submission_id: str):
+    """
+    Get full submitter profile for a submission.
+    Includes profile info, filmmaker profile, all submissions by this user,
+    and activity history.
+    """
+    try:
+        client = get_client()
+
+        # Get the submission to find the user_id
+        submission_result = client.table("submissions").select(
+            "user_id, email"
+        ).eq("id", submission_id).single().execute()
+
+        if not submission_result.data:
+            raise HTTPException(status_code=404, detail="Submission not found")
+
+        user_id = submission_result.data.get("user_id")
+
+        if not user_id:
+            # Orphaned submission (no user_id)
+            return {
+                "profile": None,
+                "filmmaker_profile": None,
+                "submissions": [],
+                "activity_history": [],
+                "total_submissions": 0,
+                "approved_submissions": 0,
+                "is_orphaned": True,
+                "email": submission_result.data.get("email")
+            }
+
+        # Get user profile
+        profile_result = client.table("profiles").select(
+            "id, full_name, username, email, avatar_url, bio, created_at, "
+            "is_filmmaker, is_order_member, is_partner, is_premium"
+        ).eq("id", user_id).single().execute()
+
+        if not profile_result.data:
+            return {
+                "profile": None,
+                "filmmaker_profile": None,
+                "submissions": [],
+                "activity_history": [],
+                "total_submissions": 0,
+                "approved_submissions": 0,
+                "is_orphaned": True
+            }
+
+        profile = profile_result.data
+
+        # Get filmmaker profile if exists
+        filmmaker_profile = None
+        try:
+            filmmaker_result = client.table("filmmaker_profiles").select(
+                "id, full_name, bio, skills, experience_level, department, "
+                "portfolio_url, reel_url, location, accepting_work"
+            ).eq("user_id", user_id).single().execute()
+            filmmaker_profile = filmmaker_result.data
+        except Exception:
+            pass
+
+        # Get all submissions from this user
+        submissions_result = client.table("submissions").select(
+            "id, project_title, project_type, status, created_at, "
+            "company_name, submitter_role, years_experience"
+        ).eq("user_id", user_id).order("created_at", desc=True).execute()
+
+        submissions = submissions_result.data or []
+
+        # Calculate stats
+        total_submissions = len(submissions)
+        approved_submissions = len([s for s in submissions if s.get("status") == "approved"])
+
+        # Get activity history (last 50 entries)
+        activity_history = []
+        try:
+            activity_result = client.table("user_activity_log").select(
+                "id, activity_type, activity_details, created_at"
+            ).eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+            activity_history = activity_result.data or []
+        except Exception:
+            # Table may not exist yet
+            pass
+
+        return {
+            "profile": profile,
+            "filmmaker_profile": filmmaker_profile,
+            "submissions": submissions,
+            "activity_history": activity_history,
+            "total_submissions": total_submissions,
+            "approved_submissions": approved_submissions,
+            "is_orphaned": False
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -31,9 +31,21 @@ type Submission = {
   logline: string;
   description: string;
   youtube_link: string;
+  company_name?: string;
+  submitter_role?: string;
+  years_experience?: number;
 };
 
 const projectTypes = ["Short Film", "Documentary", "Web Series", "Animation", "Music Video", "Experimental", "Other"];
+
+const submitterRoles = [
+  { value: "director", label: "Director" },
+  { value: "producer", label: "Producer" },
+  { value: "writer", label: "Writer" },
+  { value: "cinematographer", label: "Cinematographer" },
+  { value: "editor", label: "Editor" },
+  { value: "other", label: "Other" },
+];
 
 const formSchema = z.object({
   name: z.string().min(2, "Name must be at least 2 characters."),
@@ -43,6 +55,9 @@ const formSchema = z.object({
   logline: z.string().min(10, "Logline must be at least 10 characters.").max(150, "Logline must be 150 characters or less."),
   description: z.string().min(10, "Description must be at least 10 characters.").max(500, "Description must be 500 characters or less."),
   youtubeLink: z.string().url("Please enter a valid YouTube URL."),
+  companyName: z.string().optional(),
+  submitterRole: z.string().optional(),
+  yearsExperience: z.coerce.number().min(0).max(50).optional().or(z.literal("")),
 });
 
 interface EditSubmissionModalProps {
@@ -65,6 +80,9 @@ export function EditSubmissionModal({ submission, isOpen, onOpenChange, onSubmis
       logline: "",
       description: "",
       youtubeLink: "",
+      companyName: "",
+      submitterRole: "",
+      yearsExperience: "",
     },
   });
 
@@ -78,31 +96,48 @@ export function EditSubmissionModal({ submission, isOpen, onOpenChange, onSubmis
         logline: submission.logline,
         description: submission.description,
         youtubeLink: submission.youtube_link,
+        companyName: submission.company_name || "",
+        submitterRole: submission.submitter_role || "",
+        yearsExperience: submission.years_experience || "",
       });
     }
   }, [submission, form]);
 
+  const canEdit = submission?.status === "pending";
+
   async function onSubmit(values: z.infer<typeof formSchema>) {
     if (!submission) return;
 
+    if (!canEdit) {
+      toast.error("Only pending submissions can be edited.");
+      return;
+    }
+
     setIsSubmitting(true);
     const updatedData = {
-      name: values.name,
-      email: values.email,
       project_title: values.projectTitle,
       project_type: values.project_type,
       logline: values.logline,
       description: values.description,
       youtube_link: values.youtubeLink,
+      company_name: values.companyName || null,
+      submitter_role: values.submitterRole || null,
+      years_experience: values.yearsExperience ? Number(values.yearsExperience) : null,
     };
 
     try {
-      await api.updateSubmission(submission.id, updatedData);
+      await api.updateMySubmission(submission.id, updatedData);
       toast.success("Submission updated successfully!");
       onSubmissionUpdated();
       onOpenChange(false);
     } catch (error: any) {
-      toast.error(`Update failed: ${error?.message || 'Unknown error'}`);
+      if (error?.message?.includes("pending")) {
+        toast.error("Only pending submissions can be edited.");
+      } else if (error?.message?.includes("403")) {
+        toast.error("You can only edit your own submissions.");
+      } else {
+        toast.error(`Update failed: ${error?.message || 'Unknown error'}`);
+      }
     }
     setIsSubmitting(false);
   }
@@ -218,8 +253,80 @@ export function EditSubmissionModal({ submission, isOpen, onOpenChange, onSubmis
                 </FormItem>
               )}
             />
+
+            {/* Professional Info Section */}
+            <div className="border border-muted-gray/30 rounded-lg p-3 space-y-3 mt-4">
+              <p className="text-xs text-muted-gray font-medium uppercase tracking-wide">Professional Info (Optional)</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <FormField
+                  control={form.control}
+                  name="companyName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-bone-white text-xs">Company / Studio</FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="e.g. Indie Films LLC" className="bg-muted-gray/10 border-muted-gray focus:border-accent-yellow" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="submitterRole"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-bone-white text-xs">Your Role</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value}>
+                        <FormControl>
+                          <SelectTrigger className="bg-muted-gray/10 border-muted-gray focus:border-accent-yellow">
+                            <SelectValue placeholder="Select role" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent className="bg-charcoal-black border-muted-gray text-bone-white">
+                          {submitterRoles.map(role => (
+                            <SelectItem key={role.value} value={role.value}>{role.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="yearsExperience"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="text-bone-white text-xs">Years of Experience</FormLabel>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min="0"
+                          max="50"
+                          placeholder="e.g. 5"
+                          {...field}
+                          value={field.value ?? ""}
+                          className="bg-muted-gray/10 border-muted-gray focus:border-accent-yellow"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+            </div>
+
+            {!canEdit && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 mt-4">
+                <p className="text-sm text-red-400">
+                  This submission cannot be edited because it is no longer pending.
+                </p>
+              </div>
+            )}
+
             <div className="flex justify-end pt-4">
-              <Button type="submit" disabled={isSubmitting} className="bg-accent-yellow text-charcoal-black hover:bg-bone-white">
+              <Button type="submit" disabled={isSubmitting || !canEdit} className="bg-accent-yellow text-charcoal-black hover:bg-bone-white disabled:opacity-50">
                 {isSubmitting ? "Saving..." : "Save Changes"}
               </Button>
             </div>

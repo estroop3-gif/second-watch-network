@@ -1209,3 +1209,250 @@ async def send_welcome_email(
         source_service="admin",
         source_action="user_creation"
     )
+
+
+# =============================================================================
+# SUBMISSION STATUS CHANGE EMAIL TEMPLATES
+# =============================================================================
+
+STATUS_MESSAGES = {
+    "pending": {
+        "subject": "Submission Received",
+        "headline": "We've Received Your Submission",
+        "message": "Thank you for submitting your project to Second Watch Network. Your submission is now in our queue and will be reviewed by our team.",
+        "color": "#fbbf24"  # Yellow
+    },
+    "in review": {
+        "subject": "Submission Under Review",
+        "headline": "Your Submission is Being Reviewed",
+        "message": "Good news! Your submission has been picked up by our review team. We're taking a closer look at your project and will be in touch soon with our decision.",
+        "color": "#60a5fa"  # Blue
+    },
+    "considered": {
+        "subject": "Submission Being Considered",
+        "headline": "We're Considering Your Project",
+        "message": "Your submission has made it to the consideration stage. This means our team is actively discussing your project for potential inclusion in our programming.",
+        "color": "#a78bfa"  # Purple
+    },
+    "approved": {
+        "subject": "Congratulations! Submission Approved",
+        "headline": "Your Submission Has Been Approved!",
+        "message": "Congratulations! We're excited to let you know that your submission has been approved for Second Watch Network. We'll be reaching out soon with next steps for getting your content featured.",
+        "color": "#4ade80"  # Green
+    },
+    "rejected": {
+        "subject": "Submission Update",
+        "headline": "Update on Your Submission",
+        "message": "Thank you for sharing your project with us. After careful review, we've decided not to move forward with this submission at this time. We encourage you to continue creating and submit again in the future.",
+        "color": "#f87171"  # Red
+    },
+    "archived": {
+        "subject": "Submission Archived",
+        "headline": "Your Submission Has Been Archived",
+        "message": "Your submission has been archived. If you believe this was done in error, please reach out to our team.",
+        "color": "#9ca3af"  # Gray
+    }
+}
+
+
+def generate_submission_status_email_html(
+    project_title: str,
+    new_status: str,
+    submitter_name: str,
+    view_url: Optional[str] = None,
+    admin_message: Optional[str] = None
+) -> str:
+    """
+    Generate HTML email for submission status changes.
+    """
+    status_info = STATUS_MESSAGES.get(new_status, STATUS_MESSAGES["pending"])
+    accent_yellow = "#FCDC58"
+
+    # Admin message section
+    admin_section = ""
+    if admin_message:
+        admin_section = f"""
+        <div style="background-color: #2a3a2a; padding: 16px; border-radius: 8px; margin: 24px 0; border-left: 4px solid #4ade80;">
+            <p style="color: #4ade80; margin: 0 0 4px 0; font-weight: bold;">Message from our team:</p>
+            <p style="color: #a0a0a0; margin: 0; white-space: pre-wrap;">{admin_message}</p>
+        </div>
+        """
+
+    # View button
+    view_button = ""
+    if view_url:
+        view_button = f"""
+        <div style="text-align: center; margin: 32px 0;">
+            <a href="{view_url}" style="display: inline-block; background-color: {accent_yellow}; color: #121212; padding: 14px 36px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px;">
+                View Your Submission
+            </a>
+        </div>
+        """
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{status_info['subject']} - Second Watch Network</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #121212; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+    <div style="max-width: 600px; margin: 0 auto; padding: 24px;">
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%); padding: 24px; border-radius: 12px 12px 0 0; border-bottom: 3px solid {status_info['color']};">
+            <h1 style="color: {accent_yellow}; margin: 0 0 8px 0; font-size: 24px; letter-spacing: 1px;">SECOND WATCH</h1>
+            <p style="color: #F9F5EF; margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: 2px;">NETWORK</p>
+        </div>
+
+        <!-- Main Content -->
+        <div style="background-color: #1a1a1a; padding: 32px 24px; border-radius: 0 0 12px 12px;">
+            <p style="color: #a0a0a0; margin: 0 0 8px 0; font-size: 14px;">Hi {submitter_name},</p>
+
+            <h2 style="color: {status_info['color']}; margin: 16px 0; font-size: 24px;">
+                {status_info['headline']}
+            </h2>
+
+            <!-- Project Info -->
+            <div style="background-color: #2a2a2a; padding: 20px; border-radius: 8px; margin-bottom: 24px;">
+                <p style="color: #888; margin: 0 0 4px 0; font-size: 12px; text-transform: uppercase;">Project</p>
+                <h3 style="color: #F9F5EF; margin: 0; font-size: 18px;">{project_title}</h3>
+                <p style="color: {status_info['color']}; margin: 8px 0 0 0; font-size: 14px; text-transform: uppercase; font-weight: bold;">
+                    Status: {new_status.title()}
+                </p>
+            </div>
+
+            <p style="color: #a0a0a0; margin: 0; font-size: 15px; line-height: 1.7;">
+                {status_info['message']}
+            </p>
+
+            {admin_section}
+            {view_button}
+
+            <p style="color: #666; margin: 24px 0 0 0; font-size: 14px;">
+                You can view all your submissions and check their status in your dashboard.
+            </p>
+        </div>
+
+        <!-- Footer -->
+        <div style="text-align: center; padding: 24px; color: #666;">
+            <p style="margin: 0 0 8px 0;">
+                <a href="https://www.secondwatchnetwork.com" style="color: {accent_yellow}; text-decoration: none;">www.secondwatchnetwork.com</a>
+            </p>
+            <p style="margin: 0; font-size: 12px;">
+                Second Watch Network - Purpose-Driven Filmmaking
+            </p>
+        </div>
+    </div>
+</body>
+</html>
+    """
+    return html
+
+
+def generate_submission_status_email_text(
+    project_title: str,
+    new_status: str,
+    submitter_name: str,
+    view_url: Optional[str] = None,
+    admin_message: Optional[str] = None
+) -> str:
+    """Generate plain text version of submission status email"""
+    status_info = STATUS_MESSAGES.get(new_status, STATUS_MESSAGES["pending"])
+
+    lines = [
+        "=" * 50,
+        "SECOND WATCH NETWORK",
+        "=" * 50,
+        "",
+        f"Hi {submitter_name},",
+        "",
+        status_info['headline'],
+        "",
+        f"Project: {project_title}",
+        f"Status: {new_status.title()}",
+        "",
+        status_info['message'],
+        ""
+    ]
+
+    if admin_message:
+        lines.extend([
+            "-" * 50,
+            "Message from our team:",
+            admin_message,
+            ""
+        ])
+
+    if view_url:
+        lines.extend([
+            f"View your submission: {view_url}",
+            ""
+        ])
+
+    lines.extend([
+        "You can view all your submissions in your dashboard.",
+        "",
+        "=" * 50,
+        "www.secondwatchnetwork.com",
+        "Second Watch Network - Purpose-Driven Filmmaking",
+        "=" * 50
+    ])
+
+    return "\n".join(lines)
+
+
+async def send_submission_status_email(
+    email: str,
+    name: str,
+    project_title: str,
+    new_status: str,
+    submission_id: Optional[str] = None,
+    admin_message: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Send email notification when a submission status changes.
+
+    Args:
+        email: Recipient's email address
+        name: Recipient's name
+        project_title: Title of the submitted project
+        new_status: New status of the submission
+        submission_id: Optional submission ID for view URL
+        admin_message: Optional message from admin
+
+    Returns:
+        Dict with success status and details
+    """
+    status_info = STATUS_MESSAGES.get(new_status, STATUS_MESSAGES["pending"])
+
+    view_url = None
+    if submission_id:
+        view_url = f"https://www.secondwatchnetwork.com/my-submissions"
+
+    html_content = generate_submission_status_email_html(
+        project_title=project_title,
+        new_status=new_status,
+        submitter_name=name,
+        view_url=view_url,
+        admin_message=admin_message
+    )
+
+    text_content = generate_submission_status_email_text(
+        project_title=project_title,
+        new_status=new_status,
+        submitter_name=name,
+        view_url=view_url,
+        admin_message=admin_message
+    )
+
+    return await EmailService.send_email(
+        to_emails=[email],
+        subject=f"{status_info['subject']} - {project_title}",
+        html_content=html_content,
+        text_content=text_content,
+        email_type="submission_status",
+        source_service="submissions",
+        source_action="status_change",
+        source_reference_id=submission_id
+    )
