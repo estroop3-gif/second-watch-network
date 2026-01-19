@@ -305,14 +305,21 @@ export function useUpdateBudget() {
   return useMutation({
     mutationFn: async ({
       projectId,
+      budgetId,
       input,
     }: {
       projectId: string;
+      budgetId?: string;
       input: BudgetInput;
     }): Promise<BacklotBudget> => {
       const token = getAuthToken();
 
-      const response = await fetch(`${API_BASE}/backlot/projects/${projectId}/budget`, {
+      // Use budget-specific endpoint if budgetId is provided, otherwise fall back to project endpoint
+      const url = budgetId
+        ? `${API_BASE}/backlot/budgets/${budgetId}`
+        : `${API_BASE}/backlot/projects/${projectId}/budget`;
+
+      const response = await fetch(url, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -332,6 +339,7 @@ export function useUpdateBudget() {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', variables.projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', variables.projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-project-budgets', variables.projectId] });
     },
   });
 }
@@ -532,6 +540,7 @@ export function useBudgetCategoryMutations(budgetId: string | null, projectId: s
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-categories', budgetId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-budget-line-items', budgetId] }); // Tax line items may be created/updated
       queryClient.invalidateQueries({ queryKey: ['backlot-budget', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-summary', projectId] });
       queryClient.invalidateQueries({ queryKey: ['backlot-budget-stats', projectId] });
@@ -1819,14 +1828,19 @@ export function useExportBudgetPdf() {
   return useMutation({
     mutationFn: async ({
       projectId,
+      budgetId,
       options,
     }: {
       projectId: string;
+      budgetId?: string;
       options?: Partial<BudgetPdfExportOptions>;
     }): Promise<void> => {
       const token = getAuthToken();
 
       const params = new URLSearchParams();
+      if (budgetId) {
+        params.append('budget_id', budgetId);
+      }
       if (options?.include_top_sheet !== undefined) {
         params.append('include_top_sheet', String(options.include_top_sheet));
       }
@@ -1894,14 +1908,19 @@ export function useExportBudgetHtml() {
   return useMutation({
     mutationFn: async ({
       projectId,
+      budgetId,
       options,
     }: {
       projectId: string;
+      budgetId?: string;
       options?: Partial<BudgetPdfExportOptions>;
     }): Promise<void> => {
       const token = getAuthToken();
 
       const params = new URLSearchParams();
+      if (budgetId) {
+        params.append('budget_id', budgetId);
+      }
       if (options?.include_top_sheet !== undefined) {
         params.append('include_top_sheet', String(options.include_top_sheet));
       }

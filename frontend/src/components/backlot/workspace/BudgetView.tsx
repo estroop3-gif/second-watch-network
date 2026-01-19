@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Progress } from '@/components/ui/progress';
@@ -70,6 +71,7 @@ import {
   ToggleLeft,
   ToggleRight,
   Eye,
+  StickyNote,
 } from 'lucide-react';
 import { DialogFooter } from '@/components/ui/dialog';
 import {
@@ -261,6 +263,11 @@ const CategoryCard: React.FC<{
                     {CATEGORY_TYPE_LABELS[category.category_type]}
                   </Badge>
                 )}
+                {category.is_taxable && (
+                  <Badge variant="outline" className="text-xs py-0 text-accent-yellow border-accent-yellow/50">
+                    +{((category.tax_rate || 0) * 100).toFixed(2)}% tax
+                  </Badge>
+                )}
               </div>
             </div>
           </div>
@@ -379,33 +386,46 @@ const LineItemRow: React.FC<{
 }> = ({ item, currency, canEdit, onEdit, onDelete, onViewDetails }) => {
   const variance = item.actual_total - item.estimated_total;
   const isOverBudget = variance > 0;
+  const isTaxLineItem = item.is_tax_line_item;
 
   return (
-    <div className="flex items-center justify-between py-2 px-3 bg-charcoal-black/40 rounded-lg hover:bg-charcoal-black/60 transition-colors group">
+    <div className={`flex items-center justify-between py-2 px-3 bg-charcoal-black/40 rounded-lg hover:bg-charcoal-black/60 transition-colors group ${isTaxLineItem ? 'opacity-75 border-l-2 border-accent-yellow/50' : ''}`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-bone-white truncate">{item.description}</span>
-          {item.is_locked && (
-            <Lock className="w-3 h-3 text-muted-gray" />
-          )}
-          {item.account_code && (
-            <Badge variant="outline" className="text-xs">
-              {item.account_code}
-            </Badge>
-          )}
-        </div>
-        <div className="text-xs text-muted-gray flex items-center gap-2">
-          <span>
-            {formatCurrency(item.rate_amount, currency)} × {item.quantity}{' '}
-            {item.units || RATE_TYPE_LABELS[item.rate_type]}
-          </span>
-          {item.vendor_name && (
+          {isTaxLineItem ? (
+            <div className="flex items-center gap-2 italic text-muted-gray">
+              <Receipt className="w-3 h-3" />
+              <span className="truncate">{item.description}</span>
+              <span className="text-xs">(Auto-calculated)</span>
+            </div>
+          ) : (
             <>
-              <span>•</span>
-              <span>{item.vendor_name}</span>
+              <span className="font-medium text-bone-white truncate">{item.description}</span>
+              {item.is_locked && (
+                <Lock className="w-3 h-3 text-muted-gray" />
+              )}
+              {item.account_code && (
+                <Badge variant="outline" className="text-xs">
+                  {item.account_code}
+                </Badge>
+              )}
             </>
           )}
         </div>
+        {!isTaxLineItem && (
+          <div className="text-xs text-muted-gray flex items-center gap-2">
+            <span>
+              {formatCurrency(item.rate_amount, currency)} × {item.quantity}{' '}
+              {item.units || RATE_TYPE_LABELS[item.rate_type]}
+            </span>
+            {item.vendor_name && (
+              <>
+                <span>•</span>
+                <span>{item.vendor_name}</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-4">
@@ -432,7 +452,8 @@ const LineItemRow: React.FC<{
           </div>
         </div>
 
-        {canEdit && (
+        {/* Hide edit/delete menu for tax line items */}
+        {canEdit && !isTaxLineItem && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -1122,6 +1143,8 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   const [showLineItemDetailsModal, setShowLineItemDetailsModal] = useState(false);
   const [detailsLineItem, setDetailsLineItem] = useState<BacklotBudgetLineItem | null>(null);
   const [selectedActualId, setSelectedActualId] = useState<string | null>(null);
+  const [showBudgetNotesModal, setShowBudgetNotesModal] = useState(false);
+  const [budgetNotesForm, setBudgetNotesForm] = useState('');
 
   // Form states
   const [budgetForm, setBudgetForm] = useState<BudgetInput>({
@@ -1149,6 +1172,8 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     code: '',
     description: '',
     color: '#6b7280',
+    is_taxable: false,
+    tax_rate: 0,
   });
 
   const [lineItemForm, setLineItemForm] = useState<BudgetLineItemInput>({
@@ -1202,10 +1227,10 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
   // Update budget handler
   const handleUpdateBudget = async () => {
-    if (!budget) return;
+    if (!activeBudget) return;
     setIsSubmitting(true);
     try {
-      await updateBudget.mutateAsync({ projectId, input: budgetForm });
+      await updateBudget.mutateAsync({ projectId, budgetId: activeBudget.id, input: budgetForm });
       setShowBudgetModal(false);
     } catch (err) {
       console.error('Failed to update budget:', err);
@@ -1276,9 +1301,11 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
   // Export handlers
   const handleExportPdf = async () => {
+    if (!activeBudget) return;
     try {
       await exportPdf.mutateAsync({
         projectId,
+        budgetId: activeBudget.id,
         options: {
           include_top_sheet: true,
           include_detail: true,
@@ -1292,9 +1319,11 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
   };
 
   const handleExportHtml = async () => {
+    if (!activeBudget) return;
     try {
       await exportHtml.mutateAsync({
         projectId,
+        budgetId: activeBudget.id,
         options: {
           include_top_sheet: true,
           include_detail: true,
@@ -1317,10 +1346,12 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
         description: cat.description || '',
         color: cat.color || '#6b7280',
         category_type: cat.category_type,
+        is_taxable: cat.is_taxable || false,
+        tax_rate: cat.tax_rate || 0,
       });
     } else {
       setEditingCategory(null);
-      setCategoryForm({ name: '', code: '', description: '', color: '#6b7280' });
+      setCategoryForm({ name: '', code: '', description: '', color: '#6b7280', is_taxable: false, tax_rate: 0 });
     }
     setShowCategoryModal(true);
   };
@@ -1433,11 +1464,25 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
-  // Group line items by category
+  // Group line items by category, with tax line items always at the bottom
   const lineItemsByCategory = (categories || []).reduce((acc, cat) => {
-    acc[cat.id] = (lineItems || []).filter((item) => item.category_id === cat.id);
+    const categoryItems = (lineItems || []).filter((item) => item.category_id === cat.id);
+    // Sort: regular items first (by sort_order), then tax line items at the end
+    categoryItems.sort((a, b) => {
+      if (a.is_tax_line_item && !b.is_tax_line_item) return 1;
+      if (!a.is_tax_line_item && b.is_tax_line_item) return -1;
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    });
+    acc[cat.id] = categoryItems;
     return acc;
   }, {} as Record<string, BacklotBudgetLineItem[]>);
+
+  // Sort categories alphabetically by name for stable display order
+  const sortedCategories = useMemo(() => {
+    return [...(categories || [])].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '')
+    );
+  }, [categories]);
 
   // Group categories by type for Top Sheet view
   const categoriesByType = (categories || []).reduce((acc, cat) => {
@@ -1885,16 +1930,31 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
 
       {/* Tabbed Content */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="bg-charcoal-black/50 border border-muted-gray/20">
-          <TabsTrigger value="detail" className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
-            <Layers className="w-4 h-4 mr-2" />
-            Detail
-          </TabsTrigger>
-          <TabsTrigger value="top-sheet" className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
-            <FileText className="w-4 h-4 mr-2" />
-            Top Sheet
-          </TabsTrigger>
-        </TabsList>
+        <div className="flex items-center justify-between">
+          <TabsList className="bg-charcoal-black/50 border border-muted-gray/20">
+            <TabsTrigger value="detail" className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
+              <Layers className="w-4 h-4 mr-2" />
+              Detail
+            </TabsTrigger>
+            <TabsTrigger value="top-sheet" className="data-[state=active]:bg-accent-yellow data-[state=active]:text-charcoal-black">
+              <FileText className="w-4 h-4 mr-2" />
+              Top Sheet
+            </TabsTrigger>
+          </TabsList>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setBudgetNotesForm(activeBudget?.notes || '');
+              setShowBudgetNotesModal(true);
+            }}
+            className={activeBudget?.notes ? 'border-accent-yellow/50 text-accent-yellow' : ''}
+          >
+            <StickyNote className="w-4 h-4 mr-2" />
+            Budget Notes
+            {activeBudget?.notes && <span className="ml-1 text-xs">(has notes)</span>}
+          </Button>
+        </div>
 
         {/* Detail Tab */}
         <TabsContent value="detail" className="space-y-4 mt-4">
@@ -1944,9 +2004,9 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
           {/* Estimated Budget View - categories and line items you create */}
           {budgetViewMode === 'estimated' && (
             <>
-              {categories && categories.length > 0 ? (
+              {sortedCategories && sortedCategories.length > 0 ? (
                 <Accordion type="multiple" className="space-y-2">
-                  {categories.map((cat) => (
+                  {sortedCategories.map((cat) => (
                     <CategoryCard
                       key={cat.id}
                       category={cat}
@@ -2358,6 +2418,43 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                 rows={2}
               />
             </div>
+            {/* Sales Tax Section */}
+            <div className="space-y-3 pt-3 border-t border-muted-gray/20">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="cat-taxable" className="text-sm">Include Sales Tax</Label>
+                <Switch
+                  id="cat-taxable"
+                  checked={categoryForm.is_taxable || false}
+                  onCheckedChange={(checked) => setCategoryForm({
+                    ...categoryForm,
+                    is_taxable: checked,
+                    tax_rate: checked ? (categoryForm.tax_rate || 0.0825) : 0
+                  })}
+                />
+              </div>
+
+              {categoryForm.is_taxable && (
+                <div className="space-y-2">
+                  <Label htmlFor="cat-tax-rate">Tax Rate (%)</Label>
+                  <Input
+                    id="cat-tax-rate"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="100"
+                    value={((categoryForm.tax_rate || 0) * 100).toFixed(2)}
+                    onChange={(e) => setCategoryForm({
+                      ...categoryForm,
+                      tax_rate: parseFloat(e.target.value) / 100 || 0
+                    })}
+                    placeholder="e.g., 8.25"
+                  />
+                  <p className="text-xs text-muted-gray">
+                    Tax will be calculated on the sum of all line items
+                  </p>
+                </div>
+              )}
+            </div>
             <div className="flex justify-end gap-3 pt-4">
               <Button variant="ghost" onClick={() => setShowCategoryModal(false)}>
                 Cancel
@@ -2650,6 +2747,63 @@ const BudgetView: React.FC<BudgetViewProps> = ({ projectId, canEdit }) => {
                 Edit
               </Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Budget Notes Modal */}
+      <Dialog open={showBudgetNotesModal} onOpenChange={setShowBudgetNotesModal}>
+        <DialogContent className="bg-deep-black border-muted-gray/30 max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-bone-white flex items-center gap-2">
+              <StickyNote className="w-5 h-5 text-accent-yellow" />
+              Budget Notes
+            </DialogTitle>
+            <DialogDescription>
+              Add notes for this budget. These notes will appear in the Notes Addendum when exporting to PDF.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              value={budgetNotesForm}
+              onChange={(e) => setBudgetNotesForm(e.target.value)}
+              placeholder="Enter budget-level notes here..."
+              className="min-h-[200px] bg-charcoal-black/50 border-muted-gray/30 text-bone-white placeholder:text-muted-gray"
+            />
+            <p className="text-xs text-muted-gray">
+              These notes will appear at the top of the Notes Addendum section in PDF exports, before any line item notes.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBudgetNotesModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!activeBudget) return;
+                try {
+                  await updateBudget.mutateAsync({
+                    projectId,
+                    budgetId: activeBudget.id,
+                    input: { notes: budgetNotesForm }
+                  });
+                  setShowBudgetNotesModal(false);
+                } catch (err) {
+                  console.error('Failed to save budget notes:', err);
+                }
+              }}
+              disabled={updateBudget.isPending}
+              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+            >
+              {updateBudget.isPending ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                'Save Notes'
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

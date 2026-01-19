@@ -4336,6 +4336,9 @@ class BudgetCategoryInput(BaseModel):
     account_code_prefix: Optional[str] = None
     phase: Optional[str] = None
     is_above_the_line: Optional[bool] = False
+    # Sales tax fields
+    is_taxable: Optional[bool] = False
+    tax_rate: Optional[float] = 0  # Stored as decimal (e.g., 0.0825 for 8.25%)
 
 
 class BudgetLineItemInput(BaseModel):
@@ -4442,6 +4445,9 @@ class BudgetCategory(BaseModel):
     account_code_prefix: Optional[str] = None
     phase: Optional[str] = None
     is_above_the_line: Optional[bool] = False
+    # Sales tax fields
+    is_taxable: bool = False
+    tax_rate: float = 0
 
 
 class BudgetLineItem(BaseModel):
@@ -4485,6 +4491,9 @@ class BudgetLineItem(BaseModel):
     department: Optional[str] = None
     manual_total_override: Optional[float] = None
     use_manual_total: Optional[bool] = False
+    # Tax line item fields
+    is_tax_line_item: bool = False
+    tax_source_category_id: Optional[str] = None
 
 
 # Professional Budget Response Models
@@ -4843,6 +4852,43 @@ async def update_budget(
     update_data["updated_at"] = datetime.utcnow().isoformat()
 
     result = client.table("backlot_budgets").update(update_data).eq("id", budget["id"]).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to update budget")
+
+    return result.data[0]
+
+
+@router.put("/budgets/{budget_id}", response_model=Budget)
+async def update_budget_by_id(
+    budget_id: str,
+    budget_input: BudgetInput,
+    authorization: str = Header(None)
+):
+    """Update a specific budget by ID"""
+    current_user = await get_current_user_from_token(authorization)
+    user_id = current_user["id"]
+
+    client = get_client()
+
+    # Get existing budget
+    existing = client.table("backlot_budgets").select("id, project_id, status").eq("id", budget_id).execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    budget = existing.data[0]
+
+    # Verify access to the project
+    await verify_budget_access(client, budget["project_id"], user_id)
+
+    # Check if budget is locked
+    if budget["status"] == "locked":
+        raise HTTPException(status_code=400, detail="Cannot modify a locked budget")
+
+    # Update budget
+    update_data = budget_input.model_dump(exclude_unset=True)
+    update_data["updated_at"] = datetime.utcnow().isoformat()
+
+    result = client.table("backlot_budgets").update(update_data).eq("id", budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to update budget")
 
@@ -5216,6 +5262,73 @@ async def get_budget_comparison(
 
 
 # =====================================================
+# TAX CALCULATION HELPER
+# =====================================================
+
+def recalculate_category_tax(client, category_id: str, budget_id: str):
+    """Recalculate and update the tax line item for a category.
+
+    This function manages auto-generated tax line items:
+    - Creates a tax line item if category is taxable and has a tax rate
+    - Updates the tax line item when line items change
+    - Deletes the tax line item if tax is disabled
+    """
+    # Get category tax settings
+    cat = client.table("backlot_budget_categories").select("*").eq("id", category_id).single().execute()
+    if not cat.data:
+        return
+
+    category = cat.data
+    is_taxable = category.get("is_taxable", False)
+    tax_rate = category.get("tax_rate", 0) or 0
+
+    # Find existing tax line item for this category
+    existing_tax = client.table("backlot_budget_line_items").select("id").eq("tax_source_category_id", category_id).eq("is_tax_line_item", True).execute()
+    existing_tax_id = existing_tax.data[0]["id"] if existing_tax.data else None
+
+    if not is_taxable or tax_rate <= 0:
+        # Delete tax line item if exists and tax is disabled
+        if existing_tax_id:
+            client.table("backlot_budget_line_items").delete().eq("id", existing_tax_id).execute()
+        return
+
+    # Calculate taxable total (sum of non-tax line items in this category)
+    taxable_items = client.table("backlot_budget_line_items").select("estimated_total").eq("category_id", category_id).eq("is_tax_line_item", False).execute()
+    taxable_total = sum(item.get("estimated_total", 0) or 0 for item in (taxable_items.data or []))
+
+    tax_amount = round(taxable_total * tax_rate, 2)
+    tax_percent_display = f"{tax_rate * 100:.2f}%"
+
+    if existing_tax_id:
+        # Update existing tax line item (rate_amount * quantity = estimated_total via generated column)
+        client.table("backlot_budget_line_items").update({
+            "rate_amount": tax_amount,
+            "description": f"Estimated Sales Tax ({tax_percent_display})",
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", existing_tax_id).execute()
+    else:
+        # Create new tax line item
+        # Note: estimated_total, actual_total, variance are generated columns - don't insert them
+        import uuid
+        client.table("backlot_budget_line_items").insert({
+            "id": str(uuid.uuid4()),
+            "budget_id": budget_id,
+            "category_id": category_id,
+            "account_code": "TAX",
+            "description": f"Estimated Sales Tax ({tax_percent_display})",
+            "rate_type": "flat",
+            "rate_amount": tax_amount,
+            "quantity": 1,
+            "is_tax_line_item": True,
+            "tax_source_category_id": category_id,
+            "is_locked": True,  # Prevent manual editing
+            "sort_order": 99999,  # Always at end
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).execute()
+
+
+# =====================================================
 # BUDGET CATEGORIES ENDPOINTS
 # =====================================================
 
@@ -5324,6 +5437,10 @@ async def update_budget_category(
     if not result.data:
         raise HTTPException(status_code=404, detail="Category not found")
 
+    # Recalculate tax if tax settings changed
+    if "is_taxable" in category_data or "tax_rate" in category_data:
+        recalculate_category_tax(client, category_id, budget_id)
+
     return result.data[0]
 
 
@@ -5391,6 +5508,61 @@ async def get_budget_line_items(
     return response.data or []
 
 
+def generate_next_account_code(category_code: str, existing_codes: list) -> str:
+    """Generate the next account code based on category code and existing line item codes.
+
+    Format: [prefix]-[sequence]
+    - prefix starts at category_code + 1 (e.g., category 100 -> first prefix is 101)
+    - sequence is 01, 02, etc.
+    - If user set a different prefix (e.g., 102-01), continue from there (102-02)
+    """
+    import re
+
+    if not category_code:
+        return ""
+
+    # Parse category code as base number
+    try:
+        cat_num = int(re.sub(r'\D', '', category_code) or '0')
+    except ValueError:
+        cat_num = 0
+
+    if cat_num == 0:
+        return ""
+
+    # Default starting prefix is category + 1
+    default_prefix = cat_num + 1
+
+    # Parse existing codes to find the highest prefix and its sequence
+    highest_prefix = default_prefix
+    sequences_by_prefix = {}
+
+    for code in existing_codes:
+        if not code:
+            continue
+        # Match pattern like "101-01" or "101-1" or just "101"
+        match = re.match(r'^(\d+)(?:-(\d+))?$', str(code).strip())
+        if match:
+            prefix = int(match.group(1))
+            seq = int(match.group(2)) if match.group(2) else 1
+
+            if prefix not in sequences_by_prefix:
+                sequences_by_prefix[prefix] = []
+            sequences_by_prefix[prefix].append(seq)
+
+            if prefix >= highest_prefix:
+                highest_prefix = prefix
+
+    # Find the next sequence for the highest prefix
+    if highest_prefix in sequences_by_prefix:
+        max_seq = max(sequences_by_prefix[highest_prefix])
+        next_seq = max_seq + 1
+    else:
+        next_seq = 1
+
+    return f"{highest_prefix}-{next_seq:02d}"
+
+
 @router.post("/budgets/{budget_id}/line-items", response_model=BudgetLineItem)
 async def create_budget_line_item(
     budget_id: str,
@@ -5418,9 +5590,33 @@ async def create_budget_line_item(
     item_data = line_item.model_dump(exclude_unset=True)
     item_data["budget_id"] = budget_id
 
+    # Auto-generate account code if not provided and category has a code
+    if not item_data.get("account_code") and item_data.get("category_id"):
+        category_id = item_data["category_id"]
+
+        # Get category code
+        cat_response = client.table("backlot_budget_categories").select("code, account_code_prefix").eq("id", category_id).execute()
+        if cat_response.data:
+            cat = cat_response.data[0]
+            category_code = cat.get("account_code_prefix") or cat.get("code") or ""
+
+            if category_code:
+                # Get existing line item codes in this category
+                existing_response = client.table("backlot_budget_line_items").select("account_code").eq("category_id", category_id).execute()
+                existing_codes = [li.get("account_code") for li in (existing_response.data or [])]
+
+                # Generate next code
+                next_code = generate_next_account_code(category_code, existing_codes)
+                if next_code:
+                    item_data["account_code"] = next_code
+
     result = client.table("backlot_budget_line_items").insert(item_data).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create line item")
+
+    # Recalculate category tax if line item has a category
+    if item_data.get("category_id"):
+        recalculate_category_tax(client, item_data["category_id"], budget_id)
 
     return result.data[0]
 
@@ -5449,10 +5645,14 @@ async def update_budget_line_item(
 
     await verify_budget_access(client, budget["project_id"], user_id)
 
-    # Check if line item is locked
-    existing = client.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
+    # Check if line item is locked or is a tax line item
+    existing = client.table("backlot_budget_line_items").select("is_locked, is_tax_line_item, category_id").eq("id", line_item_id).execute()
     if existing.data and existing.data[0].get("is_locked"):
         raise HTTPException(status_code=400, detail="Cannot modify a locked line item")
+    if existing.data and existing.data[0].get("is_tax_line_item"):
+        raise HTTPException(status_code=400, detail="Cannot modify a tax line item - it is system-managed")
+
+    old_category_id = existing.data[0].get("category_id") if existing.data else None
 
     # Update line item
     item_data = line_item.model_dump(exclude_unset=True)
@@ -5461,6 +5661,13 @@ async def update_budget_line_item(
     result = client.table("backlot_budget_line_items").update(item_data).eq("id", line_item_id).eq("budget_id", budget_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Line item not found")
+
+    # Recalculate tax for affected categories
+    new_category_id = result.data[0].get("category_id")
+    if old_category_id:
+        recalculate_category_tax(client, old_category_id, budget_id)
+    if new_category_id and new_category_id != old_category_id:
+        recalculate_category_tax(client, new_category_id, budget_id)
 
     return result.data[0]
 
@@ -5488,13 +5695,21 @@ async def delete_budget_line_item(
 
     await verify_budget_access(client, budget["project_id"], user_id)
 
-    # Check if line item is locked
-    existing = client.table("backlot_budget_line_items").select("is_locked").eq("id", line_item_id).execute()
+    # Check if line item is locked or is a tax line item
+    existing = client.table("backlot_budget_line_items").select("is_locked, is_tax_line_item, category_id").eq("id", line_item_id).execute()
     if existing.data and existing.data[0].get("is_locked"):
         raise HTTPException(status_code=400, detail="Cannot delete a locked line item")
+    if existing.data and existing.data[0].get("is_tax_line_item"):
+        raise HTTPException(status_code=400, detail="Cannot delete a tax line item - it is system-managed")
+
+    category_id = existing.data[0].get("category_id") if existing.data else None
 
     # Delete line item (cascades to day links)
     client.table("backlot_budget_line_items").delete().eq("id", line_item_id).eq("budget_id", budget_id).execute()
+
+    # Recalculate tax for the category
+    if category_id:
+        recalculate_category_tax(client, category_id, budget_id)
 
     return {"success": True, "message": "Line item deleted"}
 
@@ -8811,6 +9026,7 @@ class BudgetPdfExportInput(BaseModel):
     include_detail: bool = True
     include_daily_budgets: bool = False
     include_receipts_summary: bool = False
+    include_notes: bool = True
     show_actuals: bool = True
     show_variance: bool = True
     category_types: Optional[List[str]] = None  # Filter to specific category types
@@ -8935,6 +9151,76 @@ def generate_budget_pdf_html(
             .top-sheet-table th {{
                 background-color: #333;
                 color: white;
+            }}
+            .tax-line-item {{
+                font-style: italic;
+                color: #666;
+                background-color: #fafafa;
+            }}
+            .tax-line-item td {{
+                border-bottom: 1px dashed #ccc;
+            }}
+            .tax-badge {{
+                display: inline-block;
+                background-color: #fcdc58;
+                color: #333;
+                font-size: 8pt;
+                padding: 2px 6px;
+                border-radius: 3px;
+                margin-left: 8px;
+                font-weight: normal;
+            }}
+            .notes-section {{
+                margin-top: 30px;
+            }}
+            .notes-header {{
+                background-color: #333;
+                color: white;
+                padding: 8px 12px;
+                font-size: 12pt;
+                font-weight: bold;
+            }}
+            .notes-subheader {{
+                background-color: #e6e6fa;
+                padding: 6px 12px;
+                font-size: 11pt;
+                font-weight: bold;
+                margin-top: 15px;
+            }}
+            .note-item {{
+                padding: 10px 12px;
+                border-bottom: 1px solid #eee;
+            }}
+            .note-item-header {{
+                font-weight: bold;
+                color: #333;
+                margin-bottom: 5px;
+            }}
+            .note-content {{
+                color: #555;
+                font-size: 9pt;
+                line-height: 1.4;
+            }}
+            .note-label {{
+                display: inline-block;
+                font-size: 8pt;
+                padding: 1px 4px;
+                border-radius: 2px;
+                margin-right: 5px;
+            }}
+            .note-label-public {{
+                background-color: #d4edda;
+                color: #155724;
+            }}
+            .note-label-internal {{
+                background-color: #fff3cd;
+                color: #856404;
+            }}
+            .budget-notes {{
+                padding: 12px;
+                background-color: #f9f9f9;
+                border-left: 3px solid #333;
+                margin: 10px 0;
             }}
             .page-break {{
                 page-break-before: always;
@@ -9103,15 +9389,22 @@ def generate_budget_pdf_html(
             cat_name = category.get("name", "Uncategorized")
             cat_code = category.get("code") or ""
             cat_items = items_by_category.get(cat_id, [])
+            is_taxable = category.get("is_taxable", False)
+            tax_rate = category.get("tax_rate", 0) or 0
 
             estimated_subtotal = category.get("estimated_subtotal", 0)
             actual_subtotal = category.get("actual_subtotal", 0)
+
+            # Tax badge for taxable categories
+            tax_badge = ""
+            if is_taxable and tax_rate > 0:
+                tax_badge = f'<span class="tax-badge">+{tax_rate * 100:.2f}% tax</span>'
 
             html += f"""
             <table>
                 <thead>
                     <tr class="category-header">
-                        <th colspan="2">{cat_code} {cat_name}</th>
+                        <th colspan="2">{cat_code} {cat_name}{tax_badge}</th>
                         <th class="amount">Rate</th>
                         <th class="amount">Qty</th>
                         <th class="amount">Estimated</th>
@@ -9134,13 +9427,18 @@ def generate_budget_pdf_html(
                 estimated = item.get("estimated_total", 0)
                 actual = item.get("actual_total", 0)
                 variance = actual - estimated
+                is_tax_line = item.get("is_tax_line_item", False)
 
                 variance_class = "variance-positive" if variance > 0 else "variance-negative" if variance < 0 else ""
+                row_class = "tax-line-item" if is_tax_line else ""
+
+                # Tax line items show "(Auto-calculated)" after description
+                display_desc = f"{description} <em>(Auto-calculated)</em>" if is_tax_line else description
 
                 html += f"""
-                    <tr>
+                    <tr class="{row_class}">
                         <td style="width: 10%">{account_code}</td>
-                        <td style="width: 35%">{description}</td>
+                        <td style="width: 35%">{display_desc}</td>
                         <td class="amount">{fmt_currency(rate, currency)}</td>
                         <td class="amount">{qty}</td>
                         <td class="amount">{fmt_currency(estimated, currency)}</td>
@@ -9172,6 +9470,97 @@ def generate_budget_pdf_html(
 
         html += "</div>"
 
+    # Notes Addendum section
+    if options.include_notes:
+        # Filter out tax line items from notes
+        non_tax_line_items = [li for li in line_items if not li.get('is_tax_line_item')]
+
+        # Helper to check if item has notes
+        def has_notes(li):
+            notes = li.get('notes', '') or ''
+            internal_notes = li.get('internal_notes', '') or ''
+            return notes.strip() or internal_notes.strip()
+
+        items_with_notes = [li for li in non_tax_line_items if has_notes(li)]
+        budget_notes = (budget.get('notes', '') or '').strip()
+
+        if items_with_notes or budget_notes:
+            # Build category lookup map
+            category_map = {cat.get('id'): cat for cat in categories}
+
+            html += """
+        <div class="section notes-section page-break">
+            """
+
+            # Header with count
+            header_text = "NOTES ADDENDUM"
+            if items_with_notes:
+                header_text += f" ({len(items_with_notes)} of {len(non_tax_line_items)} items)"
+
+            html += f'<div class="notes-header">{header_text}</div>'
+
+            # Budget-level notes first
+            if budget_notes:
+                html += '<div class="notes-subheader">BUDGET NOTES</div>'
+                html += f'<div class="budget-notes">{budget_notes.replace(chr(10), "<br>")}</div>'
+
+            # Line item notes
+            if items_with_notes:
+                html += '<div class="notes-subheader">LINE ITEM NOTES</div>'
+
+                # Group by category
+                items_by_cat = {}
+                uncategorized = []
+                for li in items_with_notes:
+                    cat_id = li.get('category_id')
+                    if cat_id and cat_id in category_map:
+                        if cat_id not in items_by_cat:
+                            items_by_cat[cat_id] = []
+                        items_by_cat[cat_id].append(li)
+                    else:
+                        uncategorized.append(li)
+
+                # Display by category
+                for cat_id, items in items_by_cat.items():
+                    cat = category_map.get(cat_id, {})
+                    cat_name = cat.get('name', 'Unknown')
+                    cat_code = cat.get('code', '')
+
+                    for item in items:
+                        account_code = item.get('account_code', '')
+                        description = item.get('description', 'Unnamed')
+                        notes = (item.get('notes', '') or '').strip()
+                        internal_notes = (item.get('internal_notes', '') or '').strip()
+
+                        html += '<div class="note-item">'
+                        html += f'<div class="note-item-header">{cat_code} {cat_name} &gt; {account_code} {description}</div>'
+
+                        if notes:
+                            html += f'<div class="note-content"><span class="note-label note-label-public">Public</span>{notes.replace(chr(10), "<br>")}</div>'
+                        if internal_notes:
+                            html += f'<div class="note-content"><span class="note-label note-label-internal">Internal</span>{internal_notes.replace(chr(10), "<br>")}</div>'
+
+                        html += '</div>'
+
+                # Uncategorized items
+                for item in uncategorized:
+                    account_code = item.get('account_code', '')
+                    description = item.get('description', 'Unnamed')
+                    notes = (item.get('notes', '') or '').strip()
+                    internal_notes = (item.get('internal_notes', '') or '').strip()
+
+                    html += '<div class="note-item">'
+                    html += f'<div class="note-item-header">{account_code} {description}</div>'
+
+                    if notes:
+                        html += f'<div class="note-content"><span class="note-label note-label-public">Public</span>{notes.replace(chr(10), "<br>")}</div>'
+                    if internal_notes:
+                        html += f'<div class="note-content"><span class="note-label note-label-internal">Internal</span>{internal_notes.replace(chr(10), "<br>")}</div>'
+
+                    html += '</div>'
+
+            html += "</div>"
+
     # Footer
     html += """
         <div class="footer">
@@ -9187,15 +9576,18 @@ def generate_budget_pdf_html(
 @router.get("/projects/{project_id}/budget/export-pdf")
 async def export_budget_pdf(
     project_id: str,
+    budget_id: str = None,
     include_top_sheet: bool = True,
     include_detail: bool = True,
     include_daily_budgets: bool = False,
     include_receipts_summary: bool = False,
+    include_notes: bool = True,
     show_actuals: bool = True,
     show_variance: bool = True,
     authorization: str = Header(None)
 ):
-    """Export budget as PDF"""
+    """Export budget as PDF. If budget_id is provided, exports that specific budget.
+    Otherwise exports the first budget found for the project."""
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -9204,8 +9596,11 @@ async def export_budget_pdf(
 
     client = get_client()
 
-    # Get budget
-    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    # Get budget - either specific one or first for project
+    if budget_id:
+        budget_response = client.table("backlot_budgets").select("*").eq("id", budget_id).eq("project_id", project_id).execute()
+    else:
+        budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
     budget = budget_response.data[0]
@@ -9256,7 +9651,7 @@ async def export_budget_pdf(
                 above_the_line_total += estimated
             elif cat_type == "production":
                 production_total += estimated
-            elif cat_type == "post_production":
+            elif cat_type == "post":
                 post_total += estimated
             else:
                 other_total += estimated
@@ -9282,6 +9677,7 @@ async def export_budget_pdf(
         include_detail=include_detail,
         include_daily_budgets=include_daily_budgets,
         include_receipts_summary=include_receipts_summary,
+        include_notes=include_notes,
         show_actuals=show_actuals,
         show_variance=show_variance
     )
@@ -9297,7 +9693,8 @@ async def export_budget_pdf(
     )
 
     # Generate PDF using fpdf2 (pure Python, no system dependencies)
-    filename = f"{project.get('title', 'budget')}-budget-{datetime.utcnow().strftime('%Y%m%d')}.pdf"
+    budget_name = budget.get('name', 'Budget')
+    filename = f"{project.get('title', 'budget')}-{budget_name}-{datetime.utcnow().strftime('%Y%m%d')}.pdf"
     project_title = project.get('title', 'Project')
     currency = budget.get('currency', 'USD')
 
@@ -9314,15 +9711,48 @@ async def export_budget_pdf(
                 return f"€{value:,.2f}"
             return f"{curr} {value:,.2f}"
 
+        def sanitize_text(text):
+            """Replace Unicode characters with ASCII equivalents for FPDF compatibility."""
+            if not text:
+                return text
+            # Common Unicode replacements
+            replacements = {
+                '\u2122': '(TM)',  # ™
+                '\u00ae': '(R)',   # ®
+                '\u00a9': '(C)',   # ©
+                '\u2019': "'",     # '
+                '\u2018': "'",     # '
+                '\u201c': '"',     # "
+                '\u201d': '"',     # "
+                '\u2013': '-',     # –
+                '\u2014': '--',    # —
+                '\u2026': '...',   # …
+                '\u00b0': ' deg',  # °
+                '\u00bd': '1/2',   # ½
+                '\u00bc': '1/4',   # ¼
+                '\u00be': '3/4',   # ¾
+                '\u00d7': 'x',     # ×
+                '\u2022': '*',     # •
+                '\u00a0': ' ',     # non-breaking space
+            }
+            for char, replacement in replacements.items():
+                text = text.replace(char, replacement)
+            # Remove any remaining non-latin1 characters
+            return text.encode('latin-1', errors='replace').decode('latin-1')
+
         # Create PDF
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
 
-        # Title
+        # Title - Project name
         pdf.set_font('Helvetica', 'B', 18)
-        pdf.cell(0, 10, f"{project_title} - Production Budget", ln=True, align='C')
-        pdf.ln(5)
+        pdf.cell(0, 10, sanitize_text(project_title), ln=True, align='C')
+
+        # Subtitle - Budget name
+        pdf.set_font('Helvetica', 'B', 14)
+        pdf.cell(0, 8, sanitize_text(budget_name), ln=True, align='C')
+        pdf.ln(3)
 
         # Budget metadata
         pdf.set_font('Helvetica', '', 10)
@@ -9340,12 +9770,21 @@ async def export_budget_pdf(
 
             pdf.set_font('Helvetica', '', 11)
 
+            # Helper to get total from either flat or nested format
+            def get_section_total(section_key, flat_key):
+                # Try nested format first (from cache)
+                section = top_sheet.get(section_key)
+                if isinstance(section, dict) and 'total' in section:
+                    return section.get('total', 0) or 0
+                # Fall back to flat format (dynamically computed)
+                return top_sheet.get(flat_key, 0) or 0
+
             # Summary rows
             summary_items = [
-                ("Above the Line", top_sheet.get('above_the_line_total', 0) or 0),
-                ("Production", top_sheet.get('production_total', 0) or 0),
-                ("Post Production", top_sheet.get('post_total', 0) or 0),
-                ("Other", top_sheet.get('other_total', 0) or 0),
+                ("Above the Line", get_section_total('above_the_line', 'above_the_line_total')),
+                ("Production", get_section_total('production', 'production_total')),
+                ("Post Production", get_section_total('post', 'post_total')),
+                ("Other", get_section_total('other', 'other_total')),
             ]
 
             for label, amount in summary_items:
@@ -9388,7 +9827,7 @@ async def export_budget_pdf(
                 pdf.set_font('Helvetica', 'B', 11)
                 pdf.set_fill_color(200, 200, 200)
                 cat_title = f"  {cat_code} - {cat_name}" if cat_code else f"  {cat_name}"
-                pdf.cell(0, 7, cat_title, ln=True, fill=True)
+                pdf.cell(0, 7, sanitize_text(cat_title), ln=True, fill=True)
 
                 # Line items for this category
                 cat_items = [li for li in line_items if li.get('category_id') == cat_id]
@@ -9420,8 +9859,8 @@ async def export_budget_pdf(
                         if len(description) > 35:
                             description = description[:32] + '...'
 
-                        pdf.cell(20, 5, str(account_code)[:10], border=1)
-                        pdf.cell(60, 5, description, border=1)
+                        pdf.cell(20, 5, sanitize_text(str(account_code)[:10]), border=1)
+                        pdf.cell(60, 5, sanitize_text(description), border=1)
                         pdf.cell(25, 5, fmt_currency(rate, currency), border=1, align='R')
                         pdf.cell(15, 5, str(qty), border=1, align='R')
                         pdf.cell(30, 5, fmt_currency(estimated, currency), border=1, align='R')
@@ -9436,6 +9875,165 @@ async def export_budget_pdf(
                 if show_actuals:
                     pdf.cell(30, 6, fmt_currency(actual_subtotal, currency), border='T', align='R')
                 pdf.ln(8)
+
+        # Notes Addendum - collect all line items with notes (check both notes and internal_notes fields)
+        if include_notes:
+            def has_notes(li):
+                notes = li.get('notes', '') or ''
+                internal_notes = li.get('internal_notes', '') or ''
+                return notes.strip() or internal_notes.strip()
+
+            # Filter out tax line items from notes display
+            non_tax_line_items = [li for li in line_items if not li.get('is_tax_line_item')]
+            items_with_notes = [li for li in non_tax_line_items if has_notes(li)]
+            budget_notes = (budget.get('notes', '') or '').strip()
+
+            if items_with_notes or budget_notes:
+                # New page for notes addendum
+                pdf.add_page()
+
+                # Header
+                pdf.set_font('Helvetica', 'B', 14)
+                pdf.set_fill_color(51, 51, 51)
+                pdf.set_text_color(255, 255, 255)
+                header_text = f"  NOTES ADDENDUM"
+                if items_with_notes:
+                    header_text += f" ({len(items_with_notes)} of {len(non_tax_line_items)} items)"
+                pdf.cell(0, 8, header_text, ln=True, fill=True)
+                pdf.set_text_color(0, 0, 0)
+                pdf.ln(8)
+
+                # Budget-level notes first (before line item notes)
+                if budget_notes:
+                    pdf.set_font('Helvetica', 'B', 12)
+                    pdf.set_fill_color(230, 230, 250)
+                    pdf.cell(0, 7, "  BUDGET NOTES", ln=True, fill=True)
+                    pdf.ln(3)
+                    pdf.set_font('Helvetica', '', 10)
+                    # Handle multi-line notes
+                    for line in budget_notes.split('\n'):
+                        pdf.multi_cell(0, 5, sanitize_text(f"  {line}"))
+                    pdf.ln(8)
+
+                # Line item notes section (only if there are items with notes)
+                if items_with_notes:
+                    pdf.set_font('Helvetica', 'B', 12)
+                    pdf.set_fill_color(230, 230, 250)
+                    pdf.cell(0, 7, "  LINE ITEM NOTES", ln=True, fill=True)
+                    pdf.ln(3)
+
+                # Build category lookup map
+                category_map = {cat.get('id'): cat for cat in categories}
+
+                # Group items by category_id
+                items_by_category = {}
+                uncategorized_items = []
+                for li in items_with_notes:
+                    cat_id = li.get('category_id')
+                    if cat_id and cat_id in category_map:
+                        if cat_id not in items_by_category:
+                            items_by_category[cat_id] = []
+                        items_by_category[cat_id].append(li)
+                    else:
+                        uncategorized_items.append(li)
+
+                # Helper to extract numeric part of account code for sorting
+                import re
+                def get_sort_key(li):
+                    code = li.get('account_code', '') or ''
+                    # Try to extract numeric portion for sorting
+                    numbers = re.findall(r'\d+', code)
+                    if numbers:
+                        return (int(numbers[0]), code, li.get('description', ''))
+                    return (999999, code, li.get('description', ''))
+
+                # Sort categories by their sort_order
+                sorted_categories = sorted(
+                    [cat for cat in categories if cat.get('id') in items_by_category],
+                    key=lambda c: c.get('sort_order', 0) or 0
+                )
+
+                # Render notes grouped by category
+                for cat in sorted_categories:
+                    cat_id = cat.get('id')
+                    cat_name = cat.get('name', 'Unnamed Category')
+                    cat_code = cat.get('account_code', '')
+                    cat_items = sorted(items_by_category[cat_id], key=get_sort_key)
+
+                    # Category header
+                    pdf.set_font('Helvetica', 'B', 11)
+                    pdf.set_fill_color(200, 200, 200)
+                    cat_title = f"  {cat_code} - {cat_name}" if cat_code else f"  {cat_name}"
+                    pdf.cell(0, 7, sanitize_text(cat_title), ln=True, fill=True)
+                    pdf.ln(3)
+
+                    for li in cat_items:
+                        account_code = li.get('account_code', '') or ''
+                        description = li.get('description', '') or 'No description'
+                        notes = li.get('notes', '') or ''
+                        internal_notes = li.get('internal_notes', '') or ''
+
+                        # Combine notes if both exist
+                        combined_notes = notes.strip()
+                        if internal_notes.strip():
+                            if combined_notes:
+                                combined_notes += f"\n\n[Internal] {internal_notes.strip()}"
+                            else:
+                                combined_notes = internal_notes.strip()
+
+                        # Item header: Code - Name
+                        pdf.set_font('Helvetica', 'B', 10)
+                        header_text = f"{account_code} - {description}" if account_code else description
+                        if len(header_text) > 90:
+                            header_text = header_text[:87] + '...'
+                        pdf.cell(0, 6, sanitize_text(header_text), ln=True)
+
+                        # Notes
+                        pdf.set_font('Helvetica', '', 9)
+                        pdf.set_x(pdf.get_x() + 5)
+                        pdf.multi_cell(180, 5, sanitize_text(combined_notes))
+                        pdf.ln(4)
+
+                        # Add page break if getting close to bottom
+                        if pdf.get_y() > 260:
+                            pdf.add_page()
+
+                    pdf.ln(4)
+
+                # Render uncategorized items at the end if any
+                if uncategorized_items:
+                    uncategorized_items = sorted(uncategorized_items, key=get_sort_key)
+                    pdf.set_font('Helvetica', 'B', 11)
+                    pdf.set_fill_color(200, 200, 200)
+                    pdf.cell(0, 7, "  Uncategorized", ln=True, fill=True)
+                    pdf.ln(3)
+
+                    for li in uncategorized_items:
+                        account_code = li.get('account_code', '') or ''
+                        description = li.get('description', '') or 'No description'
+                        notes = li.get('notes', '') or ''
+                        internal_notes = li.get('internal_notes', '') or ''
+
+                        combined_notes = notes.strip()
+                        if internal_notes.strip():
+                            if combined_notes:
+                                combined_notes += f"\n\n[Internal] {internal_notes.strip()}"
+                            else:
+                                combined_notes = internal_notes.strip()
+
+                        pdf.set_font('Helvetica', 'B', 10)
+                        header_text = f"{account_code} - {description}" if account_code else description
+                        if len(header_text) > 90:
+                            header_text = header_text[:87] + '...'
+                        pdf.cell(0, 6, sanitize_text(header_text), ln=True)
+
+                        pdf.set_font('Helvetica', '', 9)
+                        pdf.set_x(pdf.get_x() + 5)
+                        pdf.multi_cell(180, 5, sanitize_text(combined_notes))
+                        pdf.ln(4)
+
+                        if pdf.get_y() > 260:
+                            pdf.add_page()
 
         # Footer
         pdf.ln(10)
@@ -9454,14 +10052,15 @@ async def export_budget_pdf(
             }
         )
     except Exception as pdf_err:
-        print(f"PDF generation failed: {pdf_err}")
         import traceback
-        traceback.print_exc()
+        error_details = traceback.format_exc()
+        print(f"PDF generation failed: {pdf_err}")
+        print(f"Full traceback:\n{error_details}")
 
-        # Fallback to HTML download
-        filename = filename.replace('.pdf', '.html')
+        # Fallback to HTML download with error info in filename
+        filename = filename.replace('.pdf', '-pdf-failed.html')
         return Response(
-            content=html_content,
+            content=f"<!-- PDF Error: {pdf_err}\n{error_details} -->\n" + html_content,
             media_type="text/html",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"'
@@ -9472,15 +10071,18 @@ async def export_budget_pdf(
 @router.get("/projects/{project_id}/budget/export-html")
 async def export_budget_html(
     project_id: str,
+    budget_id: str = None,
     include_top_sheet: bool = True,
     include_detail: bool = True,
     include_daily_budgets: bool = False,
     include_receipts_summary: bool = False,
+    include_notes: bool = True,
     show_actuals: bool = True,
     show_variance: bool = True,
     authorization: str = Header(None)
 ):
-    """Export budget as HTML file"""
+    """Export budget as HTML file. If budget_id is provided, exports that specific budget.
+    Otherwise exports the first budget found for the project."""
     if not authorization:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -9489,8 +10091,11 @@ async def export_budget_html(
 
     client = get_client()
 
-    # Get budget
-    budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
+    # Get budget - either specific one or first for project
+    if budget_id:
+        budget_response = client.table("backlot_budgets").select("*").eq("id", budget_id).eq("project_id", project_id).execute()
+    else:
+        budget_response = client.table("backlot_budgets").select("*").eq("project_id", project_id).execute()
     if not budget_response.data:
         raise HTTPException(status_code=404, detail="Budget not found")
     budget = budget_response.data[0]
@@ -9528,7 +10133,7 @@ async def export_budget_html(
             above_the_line_total += estimated
         elif cat_type == "production":
             production_total += estimated
-        elif cat_type == "post_production":
+        elif cat_type == "post":
             post_total += estimated
         else:
             other_total += estimated
@@ -9554,6 +10159,7 @@ async def export_budget_html(
         include_detail=include_detail,
         include_daily_budgets=include_daily_budgets,
         include_receipts_summary=include_receipts_summary,
+        include_notes=include_notes,
         show_actuals=show_actuals,
         show_variance=show_variance
     )

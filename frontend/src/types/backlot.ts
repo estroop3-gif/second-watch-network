@@ -1814,6 +1814,9 @@ export interface BacklotBudgetCategory {
   account_code_prefix: string | null;
   phase: BacklotBudgetPhase | null;
   is_above_the_line: boolean;
+  // Sales tax fields
+  is_taxable: boolean;
+  tax_rate: number; // Stored as decimal (e.g., 0.0825 for 8.25%)
   // Joined data
   line_items?: BacklotBudgetLineItem[];
   // Computed
@@ -1861,6 +1864,9 @@ export interface BacklotBudgetLineItem {
   department: string | null;
   manual_total_override: number | null;
   use_manual_total: boolean;
+  // Tax line item fields
+  is_tax_line_item: boolean;
+  tax_source_category_id: string | null;
   // Joined data
   category?: BacklotBudgetCategory;
   receipts?: BacklotReceipt[];
@@ -1995,6 +2001,9 @@ export interface BudgetCategoryInput {
   account_code_prefix?: string;
   phase?: BacklotBudgetPhase;
   is_above_the_line?: boolean;
+  // Sales tax fields
+  is_taxable?: boolean;
+  tax_rate?: number; // Stored as decimal (e.g., 0.0825 for 8.25%)
 }
 
 export interface BudgetLineItemInput {

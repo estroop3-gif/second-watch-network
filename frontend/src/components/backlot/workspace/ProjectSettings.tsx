@@ -321,7 +321,7 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
     formData.target_end_date !== (project.target_end_date || '');
 
   return (
-    <div className="space-y-8 max-w-2xl">
+    <div className={cn("space-y-8 max-w-2xl", hasChanges && "pb-20")}>
       {/* Header */}
       <div>
         <h2 className="text-2xl font-heading text-bone-white flex items-center gap-2">
@@ -843,32 +843,6 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
         </section>
       )}
 
-      {/* Save Button */}
-      <div className="flex items-center gap-3">
-        <Button
-          onClick={handleSave}
-          disabled={isSaving || !hasChanges}
-          className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-        >
-          {isSaving ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Saving...
-            </>
-          ) : saved ? (
-            <>
-              <Check className="w-4 h-4 mr-2" />
-              Saved!
-            </>
-          ) : (
-            <>
-              <Save className="w-4 h-4 mr-2" />
-              Save Changes
-            </>
-          )}
-        </Button>
-        {hasChanges && <span className="text-sm text-muted-gray">You have unsaved changes</span>}
-      </div>
 
       {/* Desktop Helper */}
       <section className="space-y-4 border-t border-muted-gray/30 pt-8 mt-8">
@@ -963,6 +937,62 @@ const ProjectSettings: React.FC<ProjectSettingsProps> = ({ project, permission }
         isOpen={showDonationsModal}
         onClose={() => setShowDonationsModal(false)}
       />
+
+      {/* Sticky Save Bar */}
+      {hasChanges && (
+        <div className="fixed bottom-0 left-0 right-0 bg-charcoal-black/95 border-t border-accent-yellow/50 backdrop-blur-sm z-50 px-4 py-3">
+          <div className="max-w-2xl mx-auto flex items-center justify-between gap-4">
+            <span className="text-sm text-accent-yellow flex items-center gap-2">
+              <Save className="w-4 h-4" />
+              You have unsaved changes
+            </span>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFormData({
+                  title: project.title,
+                  logline: project.logline || '',
+                  description: project.description || '',
+                  project_type: project.project_type || 'film',
+                  genre: project.genre || '',
+                  format: project.format || '',
+                  runtime_minutes: project.runtime_minutes || undefined,
+                  status: project.status,
+                  visibility: project.visibility,
+                  target_start_date: project.target_start_date || '',
+                  target_end_date: project.target_end_date || '',
+                })}
+              >
+                Discard
+              </Button>
+              <Button
+                onClick={handleSave}
+                disabled={isSaving}
+                size="sm"
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+              >
+                {isSaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : saved ? (
+                  <>
+                    <Check className="w-4 h-4 mr-2" />
+                    Saved!
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Changes
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
