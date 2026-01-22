@@ -193,6 +193,8 @@ export function useApplyToCollab() {
       collabId: string;
       input: UnifiedApplicationInput;
     }) => {
+      console.log('[useApplyToCollab] Submitting to:', `${API_BASE}/api/v1/community/collabs/${collabId}/apply`);
+
       const response = await fetch(
         `${API_BASE}/api/v1/community/collabs/${collabId}/apply`,
         {
@@ -204,9 +206,20 @@ export function useApplyToCollab() {
           body: JSON.stringify(input),
         }
       );
+
+      console.log('[useApplyToCollab] Response status:', response.status, response.statusText);
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to submit application');
+        let errorMessage = 'Failed to submit application';
+        const responseText = await response.text();
+        console.log('[useApplyToCollab] Error response:', responseText);
+        try {
+          const error = JSON.parse(responseText);
+          errorMessage = error.detail || errorMessage;
+        } catch {
+          if (responseText) errorMessage = responseText;
+        }
+        throw new Error(errorMessage);
       }
       return response.json() as Promise<CollabApplication>;
     },
@@ -603,6 +616,9 @@ export function useUploadResume() {
       if (name) formData.append('name', name);
       formData.append('is_default', String(isDefault));
 
+      console.log('[useUploadResume] Uploading to:', `${API_BASE}/api/v1/resumes`);
+      console.log('[useUploadResume] File:', file.name, file.type, file.size);
+
       const response = await fetch(`${API_BASE}/api/v1/resumes`, {
         method: 'POST',
         headers: {
@@ -610,9 +626,20 @@ export function useUploadResume() {
         },
         body: formData,
       });
+
+      console.log('[useUploadResume] Response status:', response.status, response.statusText);
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to upload resume');
+        let errorMessage = 'Failed to upload resume';
+        const responseText = await response.text();
+        console.log('[useUploadResume] Error response:', responseText);
+        try {
+          const error = JSON.parse(responseText);
+          errorMessage = error.detail || errorMessage;
+        } catch {
+          if (responseText) errorMessage = responseText;
+        }
+        throw new Error(errorMessage);
       }
       return response.json() as Promise<UserResume>;
     },

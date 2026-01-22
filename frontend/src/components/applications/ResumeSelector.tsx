@@ -65,8 +65,13 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
 
   // Handle file selection
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    console.log('[ResumeSelector] File input changed', e.target.files);
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file) {
+      console.log('[ResumeSelector] No file selected');
+      return;
+    }
+    console.log('[ResumeSelector] File selected:', file.name, file.type, file.size);
 
     // Validate file type
     const allowedTypes = [
@@ -86,6 +91,7 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
     }
 
     setIsUploading(true);
+    console.log('[ResumeSelector] Starting upload...');
     try {
       const result = await uploadResume.mutateAsync({
         file,
@@ -93,6 +99,7 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
         isDefault: !resumes?.length, // Set as default if first resume
       });
 
+      console.log('[ResumeSelector] Upload success:', result);
       toast.success('Resume uploaded successfully');
       onChange(result.id); // Auto-select the new resume
       setUploadName('');
@@ -102,6 +109,7 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
         fileInputRef.current.value = '';
       }
     } catch (error) {
+      console.error('[ResumeSelector] Upload error:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to upload resume');
     } finally {
       setIsUploading(false);
@@ -274,7 +282,12 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => fileInputRef.current?.click()}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                console.log('[ResumeSelector] Upload button clicked, fileInputRef:', fileInputRef.current);
+                fileInputRef.current?.click();
+              }}
               disabled={isUploading}
               className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow hover:text-charcoal-black"
             >
@@ -301,7 +314,8 @@ const ResumeSelector: React.FC<ResumeSelectorProps> = ({
             type="file"
             accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             onChange={handleFileSelect}
-            className="hidden"
+            className="sr-only"
+            style={{ position: 'absolute', top: 0, left: 0, opacity: 0, pointerEvents: 'none' }}
           />
         </div>
       </div>

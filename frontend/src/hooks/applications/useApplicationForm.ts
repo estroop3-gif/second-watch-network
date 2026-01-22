@@ -247,32 +247,41 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
   // Check if can submit
   const canSubmit = () => {
     if (requirements.requires_local_hire && formState.local_hire_confirmed === null) {
+      console.log('[canSubmit] blocked: local_hire not confirmed');
       return false;
     }
     if (requirements.requires_order_member && !isOrderMember) {
+      console.log('[canSubmit] blocked: requires order member');
       return false;
     }
     if (requirements.requires_resume && !formState.resume_id) {
+      console.log('[canSubmit] blocked: resume required but missing');
       return false;
     }
     if (formState.save_as_template && !formState.template_name.trim()) {
+      console.log('[canSubmit] blocked: save_as_template but no name');
       return false;
     }
     if (formState.save_cover_letter_as_template && !formState.cover_letter_template_name.trim()) {
+      console.log('[canSubmit] blocked: save_cover_letter_as_template but no name');
       return false;
     }
     if (hasUnansweredRequiredQuestions()) {
+      console.log('[canSubmit] blocked: unanswered required questions');
       return false;
     }
     // Cast validation
     if (collab?.type === 'looking_for_cast') {
       if (collab.requires_reel && !formState.demo_reel_url) {
+        console.log('[canSubmit] blocked: demo reel required');
         return false;
       }
       if (collab.requires_self_tape && collab.tape_workflow === 'upfront' && !formState.self_tape_url) {
+        console.log('[canSubmit] blocked: self tape required');
         return false;
       }
       if (collab.requires_headshot && !formState.headshot_url) {
+        console.log('[canSubmit] blocked: headshot required');
         return false;
       }
     }
@@ -306,9 +315,55 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
     }
   };
 
+  // Get a specific error message for why submission is blocked
+  const getSubmitBlockedReason = (): string | null => {
+    if (requirements.requires_local_hire && formState.local_hire_confirmed === null) {
+      return 'Please confirm your local hire status in the Details step';
+    }
+    if (requirements.requires_order_member && !isOrderMember) {
+      return 'This opportunity requires Order membership';
+    }
+    if (requirements.requires_resume && !formState.resume_id) {
+      return 'Please select or upload a resume in the Credentials step';
+    }
+    if (formState.save_as_template && !formState.template_name.trim()) {
+      return 'Please enter a name for your application template';
+    }
+    if (formState.save_cover_letter_as_template && !formState.cover_letter_template_name.trim()) {
+      return 'Please enter a name for your cover letter template';
+    }
+    if (hasUnansweredRequiredQuestions()) {
+      return 'Please answer all required screening questions';
+    }
+    if (collab?.type === 'looking_for_cast') {
+      if (collab.requires_reel && !formState.demo_reel_url) {
+        return 'Please provide your demo reel URL in the Cast Materials step';
+      }
+      if (collab.requires_self_tape && collab.tape_workflow === 'upfront' && !formState.self_tape_url) {
+        return 'Please provide your self-tape URL in the Cast Materials step';
+      }
+      if (collab.requires_headshot && !formState.headshot_url) {
+        return 'Please provide your headshot URL in the Cast Materials step';
+      }
+    }
+    return null;
+  };
+
   // Handle submit
   const handleSubmit = async () => {
-    if (!collab) return;
+    console.log('[useApplicationForm] handleSubmit called, collab:', collab?.id);
+    if (!collab) {
+      console.log('[useApplicationForm] No collab, aborting');
+      return;
+    }
+
+    // Check if submission is allowed and show error if not
+    const blockedReason = getSubmitBlockedReason();
+    if (blockedReason) {
+      console.log('[useApplicationForm] Submit blocked:', blockedReason);
+      toast.error(blockedReason);
+      return;
+    }
 
     try {
       // Save cover letter as template if requested

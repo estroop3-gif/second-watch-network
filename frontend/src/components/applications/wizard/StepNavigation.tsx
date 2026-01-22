@@ -48,7 +48,10 @@ const StepNavigation: React.FC<StepNavigationProps> = ({
         {isLastStep ? (
           <Button
             type="button"
-            onClick={onSubmit}
+            onClick={() => {
+              console.log('[StepNavigation] Submit clicked, canSubmit:', canSubmit, 'isSubmitting:', isSubmitting);
+              onSubmit();
+            }}
             disabled={!canSubmit || isSubmitting}
             className="flex-1 bg-accent-yellow text-charcoal-black hover:bg-bone-white font-medium"
           >
