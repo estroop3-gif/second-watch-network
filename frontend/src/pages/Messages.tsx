@@ -28,6 +28,9 @@ import {
   Hash,
   ChevronLeft,
   Shield,
+  ChevronRight,
+  PanelLeftClose,
+  PanelLeft,
 } from 'lucide-react';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useSocket } from '@/hooks/useSocket';
@@ -160,6 +163,7 @@ const Messages = () => {
   const [isLoadingUserConversation, setIsLoadingUserConversation] = useState(false);
   const [pendingTemplate, setPendingTemplate] = useState<string | null>(null);
   const [showFolderSidebar, setShowFolderSidebar] = useState(true);
+  const [isFolderSidebarCollapsed, setIsFolderSidebarCollapsed] = useState(false);
   const [e2eeEnabled, setE2eeEnabled] = useState(false);
 
   // Context for quick templates (when coming from applicant page)
@@ -450,11 +454,81 @@ const Messages = () => {
 
         <Card className="flex-grow bg-charcoal-black border-muted-gray text-bone-white overflow-hidden flex">
           {/* Folder Sidebar */}
-          {showListOnMobile && (
+          {showListOnMobile && !isMobile && (
             <div className={cn(
-              "border-r border-muted-gray flex-shrink-0 flex flex-col",
-              isMobile ? "w-full" : "w-48"
+              "border-r border-muted-gray flex-shrink-0 flex flex-col transition-all duration-200",
+              isFolderSidebarCollapsed ? "w-12" : "w-48"
             )}>
+              <div className="p-3 border-b border-muted-gray flex items-center justify-between">
+                {!isFolderSidebarCollapsed && (
+                  <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                    Folders
+                  </h2>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setIsFolderSidebarCollapsed(!isFolderSidebarCollapsed)}
+                  className={cn(
+                    "h-6 w-6 text-muted-foreground hover:text-bone-white",
+                    isFolderSidebarCollapsed && "mx-auto"
+                  )}
+                  title={isFolderSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                >
+                  {isFolderSidebarCollapsed ? (
+                    <PanelLeft className="h-4 w-4" />
+                  ) : (
+                    <PanelLeftClose className="h-4 w-4" />
+                  )}
+                </Button>
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="p-2 space-y-1">
+                  {FOLDERS.map((folder) => {
+                    const Icon = folder.icon;
+                    const count = folderCounts?.[folder.id] || 0;
+                    const isActive = selectedFolder === folder.id;
+
+                    return (
+                      <button
+                        key={folder.id}
+                        onClick={() => handleSelectFolder(folder.id)}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors relative",
+                          isActive
+                            ? "bg-accent-yellow/20 text-accent-yellow"
+                            : "text-bone-white hover:bg-muted-gray/30",
+                          isFolderSidebarCollapsed && "justify-center px-2"
+                        )}
+                        title={isFolderSidebarCollapsed ? folder.label : undefined}
+                      >
+                        <Icon className="h-4 w-4 flex-shrink-0" />
+                        {!isFolderSidebarCollapsed && (
+                          <>
+                            <span className="flex-1 text-left truncate">{folder.label}</span>
+                            {count > 0 && (
+                              <Badge variant="secondary" className="bg-primary-red text-white text-xs px-1.5 py-0.5 min-w-[20px] text-center">
+                                {count > 99 ? '99+' : count}
+                              </Badge>
+                            )}
+                          </>
+                        )}
+                        {isFolderSidebarCollapsed && count > 0 && (
+                          <span className="absolute -top-1 -right-1 bg-primary-red text-white text-[10px] rounded-full h-4 w-4 flex items-center justify-center">
+                            {count > 9 ? '9+' : count}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </div>
+          )}
+
+          {/* Mobile Folder Sidebar - Full Width */}
+          {showListOnMobile && isMobile && (
+            <div className="w-full border-r border-muted-gray flex-shrink-0 flex flex-col">
               <div className="p-3 border-b border-muted-gray">
                 <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
                   Folders
