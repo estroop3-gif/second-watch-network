@@ -2,6 +2,8 @@
  * Application Components - Index
  */
 export { default as ApplicationModal } from './ApplicationModal';
+export { default as ApplicationModalDesktop } from './ApplicationModalDesktop';
+export { default as ApplicationWizardMobile } from './ApplicationWizardMobile';
 export { default as ApplicationTemplateSelector } from './ApplicationTemplateSelector';
 export { default as CreditSelector } from './CreditSelector';
 export { default as ElevatorPitchInput } from './ElevatorPitchInput';
@@ -11,6 +13,9 @@ export { default as RequirementChecklist } from './RequirementChecklist';
 export { default as SaveAsTemplateCheckbox } from './SaveAsTemplateCheckbox';
 export { default as CoverLetterSection } from './CoverLetterSection';
 export { default as ResumeSelector } from './ResumeSelector';
+
+// Wizard components
+export * from './wizard';
 
 // Application management components
 export { default as ApplicationCard } from './ApplicationCard';

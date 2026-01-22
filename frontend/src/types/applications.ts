@@ -257,6 +257,11 @@ export interface ApplicationFormState {
   cover_letter_template_name: string;
   // Custom question responses
   custom_question_responses: CustomQuestionResponses;
+  // Cast-specific fields
+  demo_reel_url: string;
+  self_tape_url: string;
+  headshot_url: string;
+  special_skills: string[];
 }
 
 // Initial form state
@@ -275,6 +280,11 @@ export const initialApplicationFormState: ApplicationFormState = {
   save_cover_letter_as_template: false,
   cover_letter_template_name: '',
   custom_question_responses: {},
+  // Cast-specific fields
+  demo_reel_url: '',
+  self_tape_url: '',
+  headshot_url: '',
+  special_skills: [],
 };
 
 // Application statistics for a collab/role owner
