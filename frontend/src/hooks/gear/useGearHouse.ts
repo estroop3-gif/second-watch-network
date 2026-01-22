@@ -111,12 +111,25 @@ export function useGearOrganizations(options?: UseGearOrganizationsOptions) {
     },
   });
 
+  const updateOrganization = useMutation({
+    mutationFn: ({ orgId, ...input }: Partial<GearOrganization> & { orgId: string }) =>
+      fetchWithAuth(`/api/v1/gear/organizations/${orgId}`, token!, {
+        method: 'PUT',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['gear-organizations'] });
+      queryClient.invalidateQueries({ queryKey: ['gear-organization', variables.orgId] });
+    },
+  });
+
   return {
     organizations: query.data ?? [],
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,
     createOrganization,
+    updateOrganization,
   };
 }
 

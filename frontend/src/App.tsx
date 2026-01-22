@@ -32,6 +32,7 @@ import { SocketProvider } from "./context/SocketContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { DashboardSettingsProvider } from "./context/DashboardSettingsContext";
 import { GearCartProvider } from "./context/GearCartContext";
+import { SetHouseCartProvider } from "./context/SetHouseCartContext";
 import Dashboard from "./pages/Dashboard";
 import Account from "./pages/Account";
 import ThemeEditorPage from "./pages/ThemeEditorPage";
@@ -170,6 +171,9 @@ import UserStrikeDetailPage from "./pages/gear/UserStrikeDetailPage";
 import { AsyncVerificationPage } from "./pages/gear/AsyncVerificationPage";
 import MyGearLite from "./pages/MyGearLite";
 
+// Set House Pages
+import { SetHousePage, SetHouseWorkspacePage } from "./pages/set-house";
+
 // Watch/Streaming Pages
 import {
   WatchHome,
@@ -213,6 +217,7 @@ const App = () => (
             <DashboardSettingsProvider>
               <SocketProvider>
                 <GearCartProvider>
+                <SetHouseCartProvider>
                 <PlatformStatusGate>
                   <TooltipProvider>
             <Toaster />
@@ -353,6 +358,12 @@ const App = () => (
                     {/* Public verification route - no auth required */}
                     <Route path="/gear/verify/:token" element={<AsyncVerificationPage />} />
 
+                    {/* Set House Routes - restricted to non-free users */}
+                    <Route element={<PermissionRoute requiredRoles={['filmmaker', 'admin', 'superadmin', 'moderator', 'partner', 'order_member', 'premium']} redirectTo="/dashboard" />}>
+                      <Route path="/set-house" element={<SetHousePage />} />
+                      <Route path="/set-house/:orgId" element={<SetHouseWorkspacePage />} />
+                    </Route>
+
                     {/* My Gear (Lite) - accessible to all authenticated users */}
                     <Route path="/my-gear" element={<MyGearLite />} />
 
@@ -430,6 +441,7 @@ const App = () => (
             </BrowserRouter>
                   </TooltipProvider>
                 </PlatformStatusGate>
+                </SetHouseCartProvider>
                 </GearCartProvider>
               </SocketProvider>
             </DashboardSettingsProvider>

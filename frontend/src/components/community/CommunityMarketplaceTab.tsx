@@ -1,6 +1,7 @@
 /**
- * CommunityMarketplaceTab - Browse gear rentals from the community
+ * CommunityMarketplaceTab - Browse gear and space rentals from the community
  * Embedded marketplace browser for the Community page with location-based search
+ * Supports toggling between Gear House and Set House listings
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -15,6 +16,8 @@ import {
   Package,
   Plus,
   Map,
+  Wrench,
+  Building2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -29,6 +32,7 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 
+// Gear House imports
 import {
   useMarketplaceSearch,
   useMarketplaceNearbySearch,
@@ -46,14 +50,25 @@ import type {
   ListerType,
   ViewMode,
   RadiusMiles,
-  MarketplaceOrganizationEnriched,
+  MarketplaceOrganizationEnriched as GearMarketplaceOrganizationEnriched,
 } from '@/types/gear';
+
+// Set House imports
+import { useSetHouses } from '@/hooks/set-house/useSetHouseMarketplace';
+import { SetHouseCard, SetHouseListItem } from '@/components/set-house/marketplace';
+import type { MarketplaceOrganizationEnriched as SetHouseMarketplaceOrganizationEnriched } from '@/types/set-house';
+
 import { useAuth } from '@/context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+
+type RentalType = 'gear' | 'sets';
 
 const CommunityMarketplaceTab: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+
+  // Rental type toggle (gear vs sets)
+  const [rentalType, setRentalType] = useState<RentalType>('gear');
 
   // Location and preferences from community hook
   const {
@@ -117,8 +132,21 @@ const CommunityMarketplaceTab: React.FC = () => {
   // Use nearby results when we have location, otherwise fallback
   const gearHouses = nearbySearch.gearHouses;
   const listings = fallbackSearch.listings;
-  const total = currentLocation ? nearbySearch.total : fallbackSearch.total;
-  const isLoading = currentLocation ? nearbySearch.isLoading : fallbackSearch.isLoading;
+  const gearTotal = currentLocation ? nearbySearch.total : fallbackSearch.total;
+  const isGearLoading = currentLocation ? nearbySearch.isLoading : fallbackSearch.isLoading;
+
+  // Set House search (uses search query and verified filter)
+  const setHouseSearch = useSetHouses({
+    search: searchQuery || undefined,
+    isVerified: verifiedOnly || undefined,
+  });
+  const setHouses = setHouseSearch.setHouses || [];
+  const setHouseTotal = setHouseSearch.total || 0;
+  const isSetHouseLoading = setHouseSearch.isLoading;
+
+  // Unified loading and data based on rental type
+  const isLoading = rentalType === 'gear' ? isGearLoading : isSetHouseLoading;
+  const total = rentalType === 'gear' ? gearTotal : setHouseTotal;
 
   // Handle view mode change
   const handleViewModeChange = (mode: ViewMode) => {
@@ -167,9 +195,14 @@ const CommunityMarketplaceTab: React.FC = () => {
     navigate('/my-gear');
   };
 
-  const handleViewGearHouse = (gearHouse: MarketplaceOrganizationEnriched) => {
+  const handleViewGearHouse = (gearHouse: GearMarketplaceOrganizationEnriched) => {
     // Navigate to gear house profile
     navigate(`/community/gear-house/${gearHouse.id}`);
+  };
+
+  const handleViewSetHouse = (setHouse: SetHouseMarketplaceOrganizationEnriched) => {
+    // Navigate to set house profile
+    navigate(`/community/set-house/${setHouse.id}`);
   };
 
   return (
@@ -177,10 +210,44 @@ const CommunityMarketplaceTab: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-bone-white">Gear Marketplace</h2>
+          <h2 className="text-2xl font-bold text-bone-white">
+            {rentalType === 'gear' ? 'Gear Marketplace' : 'Space Marketplace'}
+          </h2>
           <p className="text-muted-gray">
-            Rent professional equipment from filmmakers in your community
+            {rentalType === 'gear'
+              ? 'Rent professional equipment from filmmakers in your community'
+              : 'Book studio spaces and locations from your community'}
           </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Rental Type Toggle */}
+          <div className="flex rounded-md border border-muted-gray/30 p-0.5">
+            <Button
+              variant={rentalType === 'gear' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setRentalType('gear')}
+              className={cn(
+                'gap-1.5',
+                rentalType === 'gear' && 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
+              )}
+            >
+              <Wrench className="h-4 w-4" />
+              Gear
+            </Button>
+            <Button
+              variant={rentalType === 'sets' ? 'default' : 'ghost'}
+              size="sm"
+              onClick={() => setRentalType('sets')}
+              className={cn(
+                'gap-1.5',
+                rentalType === 'sets' && 'bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90'
+              )}
+            >
+              <Building2 className="h-4 w-4" />
+              Spaces
+            </Button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -280,93 +347,147 @@ const CommunityMarketplaceTab: React.FC = () => {
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-muted-gray" />
         </div>
-      ) : viewMode === 'map' && currentLocation ? (
-        // Map View
-        <div className="h-[500px]">
-          <MarketplaceMapView
-            gearHouses={gearHouses}
-            userLocation={currentLocation}
-            radiusMiles={radiusMiles}
-            onViewGearHouse={handleViewGearHouse}
-          />
-        </div>
-      ) : currentLocation && gearHouses.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
-          <Package className="mb-4 h-12 w-12 text-muted-gray" />
-          <h3 className="mb-2 text-lg font-medium text-bone-white">No gear houses found nearby</h3>
-          <p className="text-sm text-muted-gray mb-4">
-            Try increasing your search radius or check back later for new listings.
-          </p>
-          {user && (
-            <Button onClick={handleListYourGear} variant="outline" className="gap-2">
-              <Plus className="h-4 w-4" />
-              Be the first to list gear
-            </Button>
-          )}
-        </div>
-      ) : currentLocation ? (
-        // Grid/List View with Gear Houses (location-based)
-        <div className="space-y-4">
-          <p className="text-sm text-muted-gray">
-            Showing {gearHouses.length} gear house{gearHouses.length !== 1 ? 's' : ''} within {radiusMiles} miles
-          </p>
-
-          <div
-            className={cn(
-              viewMode === 'grid'
-                ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
-                : 'flex flex-col gap-3'
-            )}
-          >
-            {gearHouses.map((gearHouse) => (
-              <GearHouseCard
-                key={gearHouse.id}
-                gearHouse={gearHouse}
-                onView={() => handleViewGearHouse(gearHouse)}
-                viewMode={viewMode === 'list' ? 'list' : 'grid'}
+      ) : rentalType === 'gear' ? (
+        // Gear House Content
+        <>
+          {viewMode === 'map' && currentLocation ? (
+            // Map View
+            <div className="h-[500px]">
+              <MarketplaceMapView
+                gearHouses={gearHouses}
+                userLocation={currentLocation}
+                radiusMiles={radiusMiles}
+                onViewGearHouse={handleViewGearHouse}
               />
-            ))}
-          </div>
-        </div>
-      ) : listings.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
-          <Package className="mb-4 h-12 w-12 text-muted-gray" />
-          <h3 className="mb-2 text-lg font-medium text-bone-white">No rentals found</h3>
-          <p className="text-sm text-muted-gray mb-4">
-            Set your location to find gear houses near you, or try adjusting your search filters.
-          </p>
-          {user && (
-            <Button onClick={handleListYourGear} variant="outline" className="gap-2">
-              <Plus className="h-4 w-4" />
-              Be the first to list gear
-            </Button>
+            </div>
+          ) : currentLocation && gearHouses.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
+              <Package className="mb-4 h-12 w-12 text-muted-gray" />
+              <h3 className="mb-2 text-lg font-medium text-bone-white">No gear houses found nearby</h3>
+              <p className="text-sm text-muted-gray mb-4">
+                Try increasing your search radius or check back later for new listings.
+              </p>
+              {user && (
+                <Button onClick={handleListYourGear} variant="outline" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Be the first to list gear
+                </Button>
+              )}
+            </div>
+          ) : currentLocation ? (
+            // Grid/List View with Gear Houses (location-based)
+            <div className="space-y-4">
+              <p className="text-sm text-muted-gray">
+                Showing {gearHouses.length} gear house{gearHouses.length !== 1 ? 's' : ''} within {radiusMiles} miles
+              </p>
+
+              <div
+                className={cn(
+                  viewMode === 'grid'
+                    ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
+                    : 'flex flex-col gap-3'
+                )}
+              >
+                {gearHouses.map((gearHouse) => (
+                  <GearHouseCard
+                    key={gearHouse.id}
+                    gearHouse={gearHouse}
+                    onViewInventory={() => handleViewGearHouse(gearHouse)}
+                    onToggleFavorite={() => {}}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : listings.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
+              <Package className="mb-4 h-12 w-12 text-muted-gray" />
+              <h3 className="mb-2 text-lg font-medium text-bone-white">No rentals found</h3>
+              <p className="text-sm text-muted-gray mb-4">
+                Set your location to find gear houses near you, or try adjusting your search filters.
+              </p>
+              {user && (
+                <Button onClick={handleListYourGear} variant="outline" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  Be the first to list gear
+                </Button>
+              )}
+            </div>
+          ) : (
+            // Fallback to listings when no location (legacy behavior)
+            <div className="space-y-4">
+              <p className="text-sm text-muted-gray">
+                Showing {listings.length} of {total} rentals
+              </p>
+
+              <div
+                className={cn(
+                  viewMode === 'grid'
+                    ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+                    : 'flex flex-col gap-3'
+                )}
+              >
+                {listings.map((listing) => (
+                  <ListingCard
+                    key={listing.id}
+                    listing={listing}
+                    viewMode={viewMode === 'map' ? 'grid' : viewMode}
+                    onView={() => handleViewListing(listing)}
+                    useCart={true}
+                  />
+                ))}
+              </div>
+            </div>
           )}
-        </div>
+        </>
       ) : (
-        // Fallback to listings when no location (legacy behavior)
-        <div className="space-y-4">
-          <p className="text-sm text-muted-gray">
-            Showing {listings.length} of {total} rentals
-          </p>
+        // Set House Content
+        <>
+          {setHouses.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border border-white/10 bg-white/5 py-16">
+              <Building2 className="mb-4 h-12 w-12 text-muted-gray" />
+              <h3 className="mb-2 text-lg font-medium text-bone-white">No set houses found</h3>
+              <p className="text-sm text-muted-gray mb-4">
+                Try adjusting your search filters or check back later for new listings.
+              </p>
+              {user && (
+                <Button onClick={() => navigate('/set-house')} variant="outline" className="gap-2">
+                  <Plus className="h-4 w-4" />
+                  List your space
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-gray">
+                Showing {setHouses.length} set house{setHouses.length !== 1 ? 's' : ''}
+              </p>
 
-          <div
-            className={cn(
-              viewMode === 'grid'
-                ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-                : 'flex flex-col gap-3'
-            )}
-          >
-            {listings.map((listing) => (
-              <ListingCard
-                key={listing.id}
-                listing={listing}
-                viewMode={viewMode === 'map' ? 'grid' : viewMode}
-                onView={() => handleViewListing(listing)}
-                useCart={true}
-              />
-            ))}
-          </div>
-        </div>
+              <div
+                className={cn(
+                  viewMode === 'grid'
+                    ? 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3'
+                    : 'flex flex-col gap-3'
+                )}
+              >
+                {setHouses.map((setHouse) =>
+                  viewMode === 'list' ? (
+                    <SetHouseListItem
+                      key={setHouse.id}
+                      setHouse={setHouse}
+                      onViewSpaces={() => handleViewSetHouse(setHouse)}
+                    />
+                  ) : (
+                    <SetHouseCard
+                      key={setHouse.id}
+                      setHouse={setHouse}
+                      onViewSpaces={() => handleViewSetHouse(setHouse)}
+                    />
+                  )
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Listing Detail Dialog */}

@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useProfile } from '@/hooks/useProfile';
 import { usePermissions } from '@/hooks/usePermissions';
-import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package } from 'lucide-react';
+import { User, Users, LogOut, Shield, Settings, UploadCloud, Mail, Film, Bell, LayoutDashboard, Megaphone, BarChart3, Gem, MessagesSquare, CreditCard, Trophy, Crown, Handshake, Wrench, Package, Building2 } from 'lucide-react';
 import { track } from '@/utils/telemetry';
 
 interface UserNavMenuItemsProps {
@@ -112,6 +112,12 @@ export const UserNavMenuItems = ({ onLinkClick, handleLogout }: UserNavMenuItems
         <MenuItem to="/gear" onClick={onLinkClick}>
           <Wrench className="mr-3 h-5 w-5" />
           <span>Gear House</span>
+        </MenuItem>
+      )}
+      {hasFullGearHouseAccess && (
+        <MenuItem to="/set-house" onClick={onLinkClick}>
+          <Building2 className="mr-3 h-5 w-5" />
+          <span>Set House</span>
         </MenuItem>
       )}
       <MenuItem to="/my-gear" onClick={onLinkClick}>

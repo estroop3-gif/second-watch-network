@@ -64,6 +64,7 @@ from app.api import (
     downloads,  # Application downloads (Dailies Helper)
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
+from app.api.set_house import router as set_house_router  # Set House - Space/location management
 from app.api import org_messages  # Organization messaging
 from app.api import organization_backlot  # Organization Backlot seat management
 
@@ -368,6 +369,10 @@ app.include_router(client_metrics.router, prefix=f"{settings.API_V1_PREFIX}/clie
 
 # Gear House - Equipment Management
 app.include_router(gear_router, prefix=f"{settings.API_V1_PREFIX}/gear", tags=["Gear House"])
+
+# Set House - Space/Location Management
+app.include_router(set_house_router, prefix=f"{settings.API_V1_PREFIX}/set-house", tags=["Set House"])
+
 app.include_router(org_messages.router, prefix=settings.API_V1_PREFIX, tags=["Organization Messages"])
 
 # Mount Socket.IO for real-time communications

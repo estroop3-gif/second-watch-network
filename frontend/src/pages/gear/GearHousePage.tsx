@@ -15,6 +15,8 @@ import {
   MapPin,
   Eye,
   EyeOff,
+  MoreVertical,
+  Pencil,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -40,6 +42,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 import { useGearOrganizations } from '@/hooks/gear';
 import type { GearOrganization, CreateOrganizationInput, OrganizationType } from '@/types/gear';
@@ -49,11 +57,17 @@ import AddressAutocomplete from '@/components/gear/AddressAutocomplete';
 export default function GearHousePage() {
   const navigate = useNavigate();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingOrg, setEditingOrg] = useState<GearOrganization | null>(null);
 
-  const { organizations, isLoading, createOrganization } = useGearOrganizations();
+  const { organizations, isLoading, createOrganization, updateOrganization } = useGearOrganizations();
 
   const handleOrgClick = (org: GearOrganization) => {
     navigate(`/gear/${org.id}`);
+  };
+
+  const handleEditOrg = (org: GearOrganization, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingOrg(org);
   };
 
   return (
@@ -100,7 +114,12 @@ export default function GearHousePage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {organizations.map((org) => (
-              <OrganizationCard key={org.id} organization={org} onClick={() => handleOrgClick(org)} />
+              <OrganizationCard
+                key={org.id}
+                organization={org}
+                onClick={() => handleOrgClick(org)}
+                onEdit={(e) => handleEditOrg(org, e)}
+              />
             ))}
           </div>
         )}
@@ -116,6 +135,20 @@ export default function GearHousePage() {
         }}
         isSubmitting={createOrganization.isPending}
       />
+
+      {/* Edit Organization Modal */}
+      {editingOrg && (
+        <EditOrganizationModal
+          isOpen={!!editingOrg}
+          organization={editingOrg}
+          onClose={() => setEditingOrg(null)}
+          onSubmit={async (data) => {
+            await updateOrganization.mutateAsync({ orgId: editingOrg.id, ...data });
+            setEditingOrg(null);
+          }}
+          isSubmitting={updateOrganization.isPending}
+        />
+      )}
     </div>
   );
 }
@@ -127,9 +160,10 @@ export default function GearHousePage() {
 interface OrganizationCardProps {
   organization: GearOrganization;
   onClick: () => void;
+  onEdit: (e: React.MouseEvent) => void;
 }
 
-function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
+function OrganizationCard({ organization, onClick, onEdit }: OrganizationCardProps) {
   return (
     <Card
       className="bg-charcoal-black/50 border-muted-gray/30 hover:border-accent-yellow/50 transition-colors cursor-pointer group"
@@ -160,7 +194,22 @@ function OrganizationCard({ organization, onClick }: OrganizationCardProps) {
               )}
             </div>
           </div>
-          <ChevronRight className="w-5 h-5 text-muted-gray group-hover:text-accent-yellow transition-colors" />
+          <div className="flex items-center gap-1">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-gray hover:text-bone-white">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={onEdit}>
+                  <Pencil className="h-4 w-4 mr-2" />
+                  Edit Organization
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <ChevronRight className="w-5 h-5 text-muted-gray group-hover:text-accent-yellow transition-colors" />
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -453,6 +502,248 @@ function CreateOrganizationModal({ isOpen, onClose, onSubmit, isSubmitting }: Cr
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Create Organization
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
+// EDIT ORGANIZATION MODAL
+// ============================================================================
+
+interface EditOrganizationModalProps {
+  isOpen: boolean;
+  organization: GearOrganization;
+  onClose: () => void;
+  onSubmit: (data: Partial<GearOrganization>) => Promise<void>;
+  isSubmitting: boolean;
+}
+
+function EditOrganizationModal({ isOpen, organization, onClose, onSubmit, isSubmitting }: EditOrganizationModalProps) {
+  // Basic info - pre-populated
+  const [name, setName] = useState(organization.name || '');
+  const [orgType, setOrgType] = useState<OrganizationType>(organization.org_type || 'production_company');
+  const [description, setDescription] = useState(organization.description || '');
+  const [website, setWebsite] = useState(organization.website_url || '');
+
+  // Address fields - pre-populated
+  const [addressLine1, setAddressLine1] = useState(organization.address_line1 || '');
+  const [city, setCity] = useState(organization.city || '');
+  const [state, setState] = useState(organization.state || '');
+  const [postalCode, setPostalCode] = useState(organization.postal_code || '');
+
+  // Privacy toggle
+  const [hideExactAddress, setHideExactAddress] = useState(organization.hide_exact_address || false);
+
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // Validation
+    if (!name.trim()) {
+      setError('Organization name is required');
+      return;
+    }
+    if (!addressLine1.trim()) {
+      setError('Street address is required');
+      return;
+    }
+    if (!city.trim()) {
+      setError('City is required');
+      return;
+    }
+    if (!state) {
+      setError('State is required');
+      return;
+    }
+    if (!postalCode.trim()) {
+      setError('ZIP code is required');
+      return;
+    }
+
+    setError(null);
+    try {
+      await onSubmit({
+        name: name.trim(),
+        org_type: orgType,
+        description: description.trim() || undefined,
+        website_url: website.trim() || undefined,
+        address_line1: addressLine1.trim(),
+        city: city.trim(),
+        state: state,
+        postal_code: postalCode.trim(),
+        country: 'US',
+        hide_exact_address: hideExactAddress,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update organization');
+    }
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col">
+        <DialogHeader className="flex-shrink-0">
+          <DialogTitle>Edit Organization</DialogTitle>
+          <DialogDescription>
+            Update your organization details
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4 overflow-y-auto flex-1 pr-2">
+          <div>
+            <Label htmlFor="edit-name">Organization Name *</Label>
+            <Input
+              id="edit-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="My Production Company"
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="edit-org-type">Organization Type</Label>
+            <Select value={orgType} onValueChange={(v) => setOrgType(v as OrganizationType)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="production_company">Production Company</SelectItem>
+                <SelectItem value="rental_house">Rental House</SelectItem>
+                <SelectItem value="hybrid">Hybrid (Both)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Location Section */}
+          <div className="space-y-3 pt-2 border-t border-muted-gray/20">
+            <div className="flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-accent-yellow" />
+              <Label className="text-bone-white font-medium">Location *</Label>
+            </div>
+
+            <div>
+              <Label htmlFor="edit-address">Street Address *</Label>
+              <AddressAutocomplete
+                value={addressLine1}
+                onChange={setAddressLine1}
+                onSelect={(suggestion) => {
+                  if (suggestion.street) setAddressLine1(suggestion.street);
+                  if (suggestion.city) setCity(suggestion.city);
+                  if (suggestion.state) setState(suggestion.state);
+                  if (suggestion.postal_code) setPostalCode(suggestion.postal_code);
+                }}
+                placeholder="Start typing an address..."
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="edit-city">City *</Label>
+                <Input
+                  id="edit-city"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="Los Angeles"
+                />
+              </div>
+              <div>
+                <Label htmlFor="edit-state">State *</Label>
+                <Select value={state} onValueChange={setState}>
+                  <SelectTrigger id="edit-state">
+                    <SelectValue placeholder="Select state" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    {US_STATES.map((s) => (
+                      <SelectItem key={s.code} value={s.code}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label htmlFor="edit-zip">ZIP Code *</Label>
+                <Input
+                  id="edit-zip"
+                  value={postalCode}
+                  onChange={(e) => setPostalCode(e.target.value)}
+                  placeholder="90001"
+                  maxLength={10}
+                />
+              </div>
+            </div>
+
+            {/* Privacy Toggle */}
+            <div className="flex items-center justify-between py-2 px-3 bg-charcoal-black/50 rounded-lg border border-muted-gray/20">
+              <div className="flex items-center gap-2">
+                {hideExactAddress ? (
+                  <EyeOff className="w-4 h-4 text-muted-gray" />
+                ) : (
+                  <Eye className="w-4 h-4 text-accent-yellow" />
+                )}
+                <div>
+                  <p className="text-sm text-bone-white">Keep address private</p>
+                  <p className="text-xs text-muted-gray">
+                    {hideExactAddress
+                      ? `Only "${city || 'City'}, ${state || 'State'}" will be shown`
+                      : 'Full address will be visible'}
+                  </p>
+                </div>
+              </div>
+              <Switch
+                checked={hideExactAddress}
+                onCheckedChange={setHideExactAddress}
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label htmlFor="edit-description">Description (optional)</Label>
+            <Textarea
+              id="edit-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Brief description of your organization..."
+              rows={2}
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="edit-website">Website (optional)</Label>
+            <div className="relative">
+              <Globe className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-gray" />
+              <Input
+                id="edit-website"
+                type="url"
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+                placeholder="https://example.com"
+                className="pl-10"
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="max-h-24 overflow-y-auto rounded-md bg-red-500/10 border border-red-500/30 p-3">
+              <p className="text-sm text-red-500 whitespace-pre-wrap">{error}</p>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Save Changes
             </Button>
           </DialogFooter>
         </form>
