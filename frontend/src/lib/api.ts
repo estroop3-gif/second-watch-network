@@ -646,8 +646,11 @@ class APIClient {
   }
 
   // Unified inbox (DMs + Project Updates)
-  async getUnifiedInbox(userId: string) {
-    return this.request<any[]>(`/api/v1/messages/inbox?user_id=${userId}`)
+  async getUnifiedInbox(userId: string, params?: { folder?: string; contextId?: string }) {
+    const query = new URLSearchParams({ user_id: userId })
+    if (params?.folder) query.append('folder', params.folder)
+    if (params?.contextId) query.append('context_id', params.contextId)
+    return this.request<any[]>(`/api/v1/messages/inbox?${query}`)
   }
 
   async getProjectInboxUpdates(projectId: string, userId: string, params?: { skip?: number; limit?: number }) {
@@ -655,6 +658,77 @@ class APIClient {
     if (params?.skip !== undefined) query.append('skip', params.skip.toString())
     if (params?.limit !== undefined) query.append('limit', params.limit.toString())
     return this.request<any[]>(`/api/v1/messages/inbox/project/${projectId}/updates?${query}`)
+  }
+
+  // ============================================================================
+  // MESSAGE CHANNELS (Group Chats)
+  // ============================================================================
+
+  async listChannels(userId: string, params?: { channelType?: string; contextId?: string }) {
+    const query = new URLSearchParams({ user_id: userId })
+    if (params?.channelType) query.append('channel_type', params.channelType)
+    if (params?.contextId) query.append('context_id', params.contextId)
+    return this.request<any[]>(`/api/v1/channels/?${query}`)
+  }
+
+  async getChannel(channelId: string, userId: string) {
+    return this.request<any>(`/api/v1/channels/${channelId}?user_id=${userId}`)
+  }
+
+  async createChannel(userId: string, data: {
+    name: string;
+    slug: string;
+    description?: string;
+    channel_type: string;
+    context_id?: string;
+    is_private?: boolean;
+  }) {
+    return this.request<any>(`/api/v1/channels/?user_id=${userId}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async listChannelMessages(channelId: string, userId: string, params?: { skip?: number; limit?: number }) {
+    const query = new URLSearchParams({ user_id: userId })
+    if (params?.skip !== undefined) query.append('skip', params.skip.toString())
+    if (params?.limit !== undefined) query.append('limit', params.limit.toString())
+    return this.request<any[]>(`/api/v1/channels/${channelId}/messages?${query}`)
+  }
+
+  async sendChannelMessage(channelId: string, userId: string, content: string, replyToId?: string) {
+    return this.request<any>(`/api/v1/channels/${channelId}/messages?user_id=${userId}`, {
+      method: 'POST',
+      body: JSON.stringify({ content, reply_to_id: replyToId }),
+    })
+  }
+
+  async markChannelRead(channelId: string, userId: string) {
+    return this.request<any>(`/api/v1/channels/${channelId}/mark-read?user_id=${userId}`, {
+      method: 'POST',
+    })
+  }
+
+  async joinChannel(channelId: string, userId: string) {
+    return this.request<any>(`/api/v1/channels/${channelId}/join?user_id=${userId}`, {
+      method: 'POST',
+    })
+  }
+
+  async leaveChannel(channelId: string, userId: string) {
+    return this.request<any>(`/api/v1/channels/${channelId}/leave?user_id=${userId}`, {
+      method: 'POST',
+    })
+  }
+
+  async getFolderUnreadCounts(userId: string) {
+    return this.request<Record<string, number>>(`/api/v1/channels/folders/counts?user_id=${userId}`)
+  }
+
+  async autoJoinDefaultChannels(userId: string, channelType: string) {
+    return this.request<any>(`/api/v1/channels/auto-join/${channelType}?user_id=${userId}`, {
+      method: 'POST',
+    })
   }
 
   async markProjectUpdateRead(projectId: string, updateId: string, userId: string) {
@@ -699,6 +773,151 @@ class APIClient {
     return this.request<any>(`/api/v1/messages/conversations/${conversationId}/mark-read?user_id=${userId}`, {
       method: 'POST',
     })
+  }
+
+  /**
+   * Get or create a conversation with a specific user.
+   * Used when navigating from applicant page to auto-open conversation.
+   */
+  async getOrCreateConversationByUser(targetUserId: string, userId: string) {
+    return this.request<{
+      conversation_id: string;
+      target_user: {
+        id: string;
+        username: string | null;
+        full_name: string | null;
+        display_name: string | null;
+        avatar_url: string | null;
+      } | null;
+    }>(`/api/v1/messages/conversation-by-user/${targetUserId}?user_id=${userId}`)
+  }
+
+  // ============================================================================
+  // MESSAGE TEMPLATES
+  // ============================================================================
+
+  /**
+   * Get system message templates (for quick applicant replies, etc.)
+   */
+  async getSystemMessageTemplates(params?: { category?: string; contextType?: string }) {
+    const query = new URLSearchParams()
+    if (params?.category) query.append('category', params.category)
+    if (params?.contextType) query.append('context_type', params.contextType)
+    const queryStr = query.toString()
+    return this.request<Array<{
+      id: string;
+      name: string;
+      slug: string;
+      category: string;
+      body: string;
+      variables: string[];
+      context_type: string | null;
+      sort_order: number;
+    }>>(`/api/v1/message-templates/system${queryStr ? `?${queryStr}` : ''}`)
+  }
+
+  // ============================================================================
+  // E2EE (END-TO-END ENCRYPTION)
+  // ============================================================================
+
+  /**
+   * Register E2EE key bundle (identity key, signed prekey, one-time prekeys)
+   */
+  async registerE2EEKeys(userId: string, bundle: {
+    identity_key: { public_key: string; registration_id: number };
+    signed_prekey: { key_id: number; public_key: string; signature: string };
+    one_time_prekeys: Array<{ key_id: number; public_key: string }>;
+  }) {
+    return this.request<{ status: string; message: string }>(
+      `/api/v1/e2ee/keys/register?user_id=${userId}`,
+      { method: 'POST', body: JSON.stringify(bundle) }
+    )
+  }
+
+  /**
+   * Upload additional one-time prekeys
+   */
+  async uploadE2EEPrekeys(userId: string, prekeys: Array<{ key_id: number; public_key: string }>) {
+    return this.request<{ status: string; count: number }>(
+      `/api/v1/e2ee/keys/prekeys?user_id=${userId}`,
+      { method: 'POST', body: JSON.stringify(prekeys) }
+    )
+  }
+
+  /**
+   * Get count of available one-time prekeys
+   */
+  async getE2EEPrekeyCount(userId: string) {
+    return this.request<{ count: number }>(`/api/v1/e2ee/keys/prekey-count?user_id=${userId}`)
+  }
+
+  /**
+   * Get a user's prekey bundle for establishing an E2EE session
+   */
+  async getE2EEPreKeyBundle(targetUserId: string, userId: string) {
+    return this.request<{
+      user_id: string;
+      registration_id: number;
+      identity_key: string;
+      signed_prekey_id: number;
+      signed_prekey: string;
+      signed_prekey_signature: string;
+      one_time_prekey_id: number | null;
+      one_time_prekey: string | null;
+    }>(`/api/v1/e2ee/keys/bundle/${targetUserId}?user_id=${userId}`)
+  }
+
+  /**
+   * Check if a user has registered E2EE keys
+   */
+  async checkUserHasE2EEKeys(targetUserId: string) {
+    return this.request<{ has_keys: boolean }>(`/api/v1/e2ee/keys/has-keys/${targetUserId}`)
+  }
+
+  /**
+   * Upload encrypted key backup for PIN-based recovery
+   */
+  async uploadE2EEKeyBackup(userId: string, backup: {
+    encrypted_data: string;
+    salt: string;
+    iv: string;
+  }) {
+    return this.request<{ status: string; message: string }>(
+      `/api/v1/e2ee/keys/backup?user_id=${userId}`,
+      { method: 'POST', body: JSON.stringify(backup) }
+    )
+  }
+
+  /**
+   * Get encrypted key backup for PIN-based recovery
+   */
+  async getE2EEKeyBackup(userId: string) {
+    return this.request<{
+      encrypted_data: string;
+      salt: string;
+      iv: string;
+      version: number;
+    }>(`/api/v1/e2ee/keys/backup?user_id=${userId}`)
+  }
+
+  /**
+   * Delete E2EE key backup
+   */
+  async deleteE2EEKeyBackup(userId: string) {
+    return this.request<{ status: string; message: string }>(
+      `/api/v1/e2ee/keys/backup?user_id=${userId}`,
+      { method: 'DELETE' }
+    )
+  }
+
+  /**
+   * Check E2EE session status with a peer
+   */
+  async getE2EESessionStatus(peerId: string, userId: string) {
+    return this.request<{
+      has_session: boolean;
+      last_activity: string | null;
+    }>(`/api/v1/e2ee/sessions/${peerId}?user_id=${userId}`)
   }
 
   // ============================================================================

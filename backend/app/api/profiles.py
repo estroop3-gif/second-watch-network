@@ -739,9 +739,9 @@ async def get_active_projects(user_id: str):
             })
 
         # Get projects where user is a team member (cast or crew)
-        # Check crew members
-        crew_projects = client.table("backlot_crew_members").select(
-            "project_id, role_title, backlot_projects(id, title, status, is_public)"
+        # Check project members
+        crew_projects = client.table("backlot_project_members").select(
+            "project_id, production_role, backlot_projects(id, title, status, is_public)"
         ).eq("user_id", user_id).execute()
 
         for cm in (crew_projects.data or []):
@@ -752,24 +752,7 @@ async def get_active_projects(user_id: str):
                         "id": project["id"],
                         "title": project["title"],
                         "status": project["status"],
-                        "role": cm.get("role_title") or "Crew",
-                    })
-
-        # Check cast members
-        cast_projects = client.table("backlot_cast_members").select(
-            "project_id, character_name, backlot_projects(id, title, status, is_public)"
-        ).eq("user_id", user_id).execute()
-
-        seen_ids = [p["id"] for p in projects]
-        for cast in (cast_projects.data or []):
-            project = cast.get("backlot_projects")
-            if project and project.get("is_public") and project.get("id") not in seen_ids:
-                if project.get("status") in ["pre-production", "production", "post-production"]:
-                    projects.append({
-                        "id": project["id"],
-                        "title": project["title"],
-                        "status": project["status"],
-                        "role": f"Cast - {cast.get('character_name')}" if cast.get('character_name') else "Cast",
+                        "role": cm.get("production_role") or "Team Member",
                     })
 
         return projects

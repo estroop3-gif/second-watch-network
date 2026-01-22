@@ -15,7 +15,8 @@ import type {
   ApplicationStatus,
 } from '@/types/applications';
 
-const API_BASE = import.meta.env.VITE_API_URL || '';
+// API base URL - empty for local dev (uses Vite proxy), set for production
+const getApiBase = () => import.meta.env.DEV ? '' : (import.meta.env.VITE_API_URL || '');
 
 // =============================================================================
 // APPLICATION TEMPLATES HOOKS
@@ -30,13 +31,21 @@ export function useApplicationTemplates() {
   return useQuery({
     queryKey: ['application-templates'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/api/v1/application-templates`, {
+      // Note: trailing slash required to avoid redirect
+      const url = `/api/v1/application-templates/`;
+      console.log('[useApplicationTemplates] Fetching from:', url);
+      const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
         },
       });
-      if (!response.ok) throw new Error('Failed to fetch templates');
-      return response.json() as Promise<ApplicationTemplate[]>;
+      if (!response.ok) {
+        console.error('[useApplicationTemplates] Fetch failed:', response.status, response.statusText);
+        throw new Error('Failed to fetch templates');
+      }
+      const data = await response.json() as ApplicationTemplate[];
+      console.log('[useApplicationTemplates] Received templates:', data.length, data.map(t => t.name));
+      return data;
     },
     enabled: !!session?.access_token,
   });
@@ -52,7 +61,7 @@ export function useApplicationTemplate(templateId: string | undefined) {
     queryKey: ['application-template', templateId],
     queryFn: async () => {
       const response = await fetch(
-        `${API_BASE}/api/v1/application-templates/${templateId}`,
+        `/api/v1/application-templates/${templateId}`,
         {
           headers: {
             Authorization: `Bearer ${session?.access_token}`,
@@ -75,7 +84,7 @@ export function useApplicationTemplateMutations() {
 
   const createTemplate = useMutation({
     mutationFn: async (input: ApplicationTemplateInput) => {
-      const response = await fetch(`${API_BASE}/api/v1/application-templates`, {
+      const response = await fetch(`/api/v1/application-templates/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -103,7 +112,7 @@ export function useApplicationTemplateMutations() {
       input: Partial<ApplicationTemplateInput>;
     }) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/application-templates/${templateId}`,
+        `/api/v1/application-templates/${templateId}`,
         {
           method: 'PUT',
           headers: {
@@ -130,7 +139,7 @@ export function useApplicationTemplateMutations() {
   const deleteTemplate = useMutation({
     mutationFn: async (templateId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/application-templates/${templateId}`,
+        `/api/v1/application-templates/${templateId}`,
         {
           method: 'DELETE',
           headers: {
@@ -152,7 +161,7 @@ export function useApplicationTemplateMutations() {
   const setDefaultTemplate = useMutation({
     mutationFn: async (templateId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/application-templates/${templateId}/set-default`,
+        `/api/v1/application-templates/${templateId}/set-default`,
         {
           method: 'PATCH',
           headers: {
@@ -193,10 +202,13 @@ export function useApplyToCollab() {
       collabId: string;
       input: UnifiedApplicationInput;
     }) => {
-      console.log('[useApplyToCollab] Submitting to:', `${API_BASE}/api/v1/community/collabs/${collabId}/apply`);
+      console.log('[useApplyToCollab] *** MUTATION CALLED ***');
+      console.log('[useApplyToCollab] collabId:', collabId);
+      console.log('[useApplyToCollab] input:', JSON.stringify(input, null, 2));
+      console.log('[useApplyToCollab] Submitting to:', `${getApiBase()}/api/v1/community/collabs/${collabId}/apply`);
 
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collabs/${collabId}/apply`,
+        `${getApiBase()}/api/v1/community/collabs/${collabId}/apply`,
         {
           method: 'POST',
           headers: {
@@ -209,25 +221,44 @@ export function useApplyToCollab() {
 
       console.log('[useApplyToCollab] Response status:', response.status, response.statusText);
 
+      // Read response body once
+      const responseText = await response.text();
+      console.log('[useApplyToCollab] Response body:', responseText.substring(0, 500));
+
       if (!response.ok) {
         let errorMessage = 'Failed to submit application';
-        const responseText = await response.text();
-        console.log('[useApplyToCollab] Error response:', responseText);
         try {
           const error = JSON.parse(responseText);
-          errorMessage = error.detail || errorMessage;
+          errorMessage = error.detail || error.message || errorMessage;
         } catch {
           if (responseText) errorMessage = responseText;
         }
         throw new Error(errorMessage);
       }
-      return response.json() as Promise<CollabApplication>;
+
+      // Parse successful response
+      if (!responseText || responseText.trim() === '') {
+        // Empty response is OK for some endpoints
+        return {} as CollabApplication;
+      }
+
+      try {
+        return JSON.parse(responseText) as CollabApplication;
+      } catch (parseError) {
+        console.error('[useApplyToCollab] Failed to parse response as JSON:', parseError);
+        console.error('[useApplyToCollab] Raw response:', responseText);
+        throw new Error(`Server returned invalid JSON: ${responseText.substring(0, 100)}`);
+      }
     },
     onSuccess: (_, variables) => {
+      console.log('[useApplyToCollab] Success!');
       queryClient.invalidateQueries({ queryKey: ['community-collabs'] });
       queryClient.invalidateQueries({ queryKey: ['community-collab', variables.collabId] });
       queryClient.invalidateQueries({ queryKey: ['my-collab-applications'] });
       queryClient.invalidateQueries({ queryKey: ['application-templates'] });
+    },
+    onError: (error) => {
+      console.error('[useApplyToCollab] Mutation error:', error);
     },
   });
 }
@@ -248,7 +279,7 @@ export function useCollabApplications(
       if (status) params.append('status', status);
 
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collabs/${collabId}/applications?${params}`,
+        `${getApiBase()}/api/v1/community/collabs/${collabId}/applications?${params}`,
         {
           headers: {
             Authorization: `Bearer ${session?.access_token}`,
@@ -275,7 +306,7 @@ export function useMyCollabApplications(status?: ApplicationStatus) {
       if (status) params.append('status', status);
 
       const response = await fetch(
-        `${API_BASE}/api/v1/community/my-collab-applications?${params}`,
+        `${getApiBase()}/api/v1/community/my-collab-applications?${params}`,
         {
           headers: {
             Authorization: `Bearer ${session?.access_token}`,
@@ -299,7 +330,7 @@ export function useCollabApplication(applicationId: string | undefined) {
     queryKey: ['collab-application', applicationId],
     queryFn: async () => {
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collab-applications/${applicationId}`,
+        `${getApiBase()}/api/v1/community/collab-applications/${applicationId}`,
         {
           headers: {
             Authorization: `Bearer ${session?.access_token}`,
@@ -329,7 +360,7 @@ export function useUpdateCollabApplicationStatus() {
       input: ApplicationStatusUpdate;
     }) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collab-applications/${applicationId}/status`,
+        `${getApiBase()}/api/v1/community/collab-applications/${applicationId}/status`,
         {
           method: 'PUT',
           headers: {
@@ -354,6 +385,46 @@ export function useUpdateCollabApplicationStatus() {
 }
 
 /**
+ * Update backlot role application status (owner only)
+ */
+export function useUpdateRoleApplicationStatus() {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      applicationId,
+      input,
+    }: {
+      applicationId: string;
+      input: ApplicationStatusUpdate;
+    }) => {
+      const response = await fetch(
+        `${getApiBase()}/api/v1/backlot/applications/${applicationId}/status`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify(input),
+        }
+      );
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to update application');
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-role-applications'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-my-applications'] });
+      queryClient.invalidateQueries({ queryKey: ['unified-applications-received'] });
+    },
+  });
+}
+
+/**
  * Promote a collab application
  */
 export function usePromoteCollabApplication() {
@@ -363,7 +434,7 @@ export function usePromoteCollabApplication() {
   return useMutation({
     mutationFn: async (applicationId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collab-applications/${applicationId}/promote`,
+        `${getApiBase()}/api/v1/community/collab-applications/${applicationId}/promote`,
         {
           method: 'POST',
           headers: {
@@ -399,7 +470,7 @@ export function useWithdrawCollabApplication() {
   return useMutation({
     mutationFn: async (applicationId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/community/collab-applications/${applicationId}`,
+        `${getApiBase()}/api/v1/community/collab-applications/${applicationId}`,
         {
           method: 'DELETE',
           headers: {
@@ -434,7 +505,7 @@ export function usePromoteRoleApplication() {
   return useMutation({
     mutationFn: async (applicationId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/backlot/applications/${applicationId}/promote`,
+        `${getApiBase()}/api/v1/backlot/applications/${applicationId}/promote`,
         {
           method: 'POST',
           headers: {
@@ -468,7 +539,7 @@ export function useSelectableCredits() {
   return useQuery({
     queryKey: ['selectable-credits'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/api/v1/credits/my-credits`, {
+      const response = await fetch(`${getApiBase()}/api/v1/credits/my-credits`, {
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
         },
@@ -504,7 +575,7 @@ export function useCoverLetterTemplates() {
   return useQuery({
     queryKey: ['cover-letter-templates'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/api/v1/cover-letter-templates`, {
+      const response = await fetch(`${getApiBase()}/api/v1/cover-letter-templates`, {
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
         },
@@ -525,7 +596,11 @@ export function useCoverLetterTemplateMutations() {
 
   const createTemplate = useMutation({
     mutationFn: async (input: CoverLetterTemplateInput) => {
-      const response = await fetch(`${API_BASE}/api/v1/cover-letter-templates`, {
+      console.log('[createCoverLetterTemplate] Creating template:', input);
+      console.log('[createCoverLetterTemplate] URL:', `${getApiBase()}/api/v1/cover-letter-templates`);
+      console.log('[createCoverLetterTemplate] Token present:', !!session?.access_token);
+
+      const response = await fetch(`${getApiBase()}/api/v1/cover-letter-templates`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -533,11 +608,32 @@ export function useCoverLetterTemplateMutations() {
         },
         body: JSON.stringify(input),
       });
+
+      console.log('[createCoverLetterTemplate] Response status:', response.status, response.statusText);
+      const responseText = await response.text();
+      console.log('[createCoverLetterTemplate] Response body:', responseText.substring(0, 500));
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to create template');
+        let errorMessage = 'Failed to create template';
+        try {
+          const error = JSON.parse(responseText);
+          errorMessage = error.detail || errorMessage;
+        } catch {
+          if (responseText) errorMessage = responseText;
+        }
+        throw new Error(errorMessage);
       }
-      return response.json() as Promise<CoverLetterTemplate>;
+
+      if (!responseText || responseText.trim() === '') {
+        return {} as CoverLetterTemplate;
+      }
+
+      try {
+        return JSON.parse(responseText) as CoverLetterTemplate;
+      } catch {
+        console.error('[createCoverLetterTemplate] Failed to parse JSON:', responseText);
+        throw new Error('Server returned invalid response');
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cover-letter-templates'] });
@@ -547,7 +643,7 @@ export function useCoverLetterTemplateMutations() {
   const deleteTemplate = useMutation({
     mutationFn: async (templateId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/cover-letter-templates/${templateId}`,
+        `${getApiBase()}/api/v1/cover-letter-templates/${templateId}`,
         {
           method: 'DELETE',
           headers: {
@@ -582,7 +678,7 @@ export function useUserResumes() {
   return useQuery({
     queryKey: ['user-resumes'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/api/v1/resumes`, {
+      const response = await fetch(`${getApiBase()}/api/v1/resumes`, {
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
         },
@@ -616,10 +712,10 @@ export function useUploadResume() {
       if (name) formData.append('name', name);
       formData.append('is_default', String(isDefault));
 
-      console.log('[useUploadResume] Uploading to:', `${API_BASE}/api/v1/resumes`);
+      console.log('[useUploadResume] Uploading to:', `${getApiBase()}/api/v1/resumes`);
       console.log('[useUploadResume] File:', file.name, file.type, file.size);
 
-      const response = await fetch(`${API_BASE}/api/v1/resumes`, {
+      const response = await fetch(`${getApiBase()}/api/v1/resumes`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
@@ -658,7 +754,7 @@ export function useDeleteResume() {
 
   return useMutation({
     mutationFn: async (resumeId: string) => {
-      const response = await fetch(`${API_BASE}/api/v1/resumes/${resumeId}`, {
+      const response = await fetch(`${getApiBase()}/api/v1/resumes/${resumeId}`, {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
@@ -686,7 +782,7 @@ export function useSetDefaultResume() {
   return useMutation({
     mutationFn: async (resumeId: string) => {
       const response = await fetch(
-        `${API_BASE}/api/v1/resumes/${resumeId}/set-default`,
+        `${getApiBase()}/api/v1/resumes/${resumeId}/set-default`,
         {
           method: 'PATCH',
           headers: {
@@ -732,10 +828,10 @@ export function useUnifiedMyApplications(status?: ApplicationStatus) {
 
       // Fetch both sources in parallel
       const [backlotRes, communityRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/backlot/my-applications?${params}`, {
+        fetch(`${getApiBase()}/api/v1/backlot/my-applications?${params}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` },
         }),
-        fetch(`${API_BASE}/api/v1/community/my-collab-applications?${params}`, {
+        fetch(`${getApiBase()}/api/v1/community/my-collab-applications?${params}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` },
         }),
       ]);
@@ -805,10 +901,10 @@ export function useUnifiedApplicationsReceived(status?: ApplicationStatus) {
 
       // Fetch both sources in parallel
       const [backlotRes, communityRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/backlot/applications-received?${params}`, {
+        fetch(`${getApiBase()}/api/v1/backlot/applications-received?${params}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` },
         }),
-        fetch(`${API_BASE}/api/v1/community/collab-applications-received?${params}`, {
+        fetch(`${getApiBase()}/api/v1/community/collab-applications-received?${params}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` },
         }),
       ]);

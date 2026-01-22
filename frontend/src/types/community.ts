@@ -90,6 +90,9 @@ export interface CommunityCollab {
     name: string;
     slug: string;
   } | null;
+  // Crew position for scoring
+  crew_position?: string | null;
+  crew_department?: string | null;
   created_at: string;
   updated_at: string;
   // Joined data

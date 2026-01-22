@@ -55,6 +55,18 @@ async def send_message(message: MessageCreate, sender_id: str):
         data = message.model_dump(exclude_unset=True)
         data["sender_id"] = sender_id
 
+        # Handle E2EE encrypted messages
+        if data.get("is_encrypted") and data.get("encrypted_data"):
+            encrypted = data.pop("encrypted_data")
+            data["ciphertext"] = encrypted.get("ciphertext")
+            data["nonce"] = encrypted.get("nonce")
+            data["message_type"] = 2 if encrypted.get("is_prekey_message") else 1
+            data["sender_public_key"] = encrypted.get("sender_public_key")
+            data["message_number"] = encrypted.get("message_number")
+            # For encrypted messages, content field holds a placeholder
+            if not data.get("content"):
+                data["content"] = "[Encrypted message]"
+
         # If no conversation_id, create or find conversation
         if not data.get("conversation_id") and data.get("recipient_id"):
             # Find existing conversation or create new one
@@ -157,6 +169,45 @@ async def create_private_conversation(user_id: str, other_user_id: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/conversation-by-user/{target_user_id}")
+async def get_or_create_conversation_by_user(target_user_id: str, user_id: str):
+    """
+    Get existing conversation with target user or create new one.
+    Used when clicking "Message" from applicant page to auto-open the conversation.
+
+    Also returns the target user's profile info for display.
+    """
+    try:
+        client = get_client()
+
+        # Use get_or_create_conversation RPC
+        response = client.rpc("get_or_create_conversation", {
+            "user1_id": user_id,
+            "user2_id": target_user_id
+        }).execute()
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(status_code=400, detail="Could not create or find conversation")
+
+        conversation_id = response.data[0].get("id")
+
+        # Get the target user's profile for display
+        profile_response = client.table("profiles").select(
+            "id, username, full_name, display_name, avatar_url"
+        ).eq("id", target_user_id).single().execute()
+
+        target_profile = profile_response.data if profile_response.data else None
+
+        return {
+            "conversation_id": conversation_id,
+            "target_user": target_profile
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/conversations/{conversation_id}/mark-read")
 async def mark_conversation_read(conversation_id: str, user_id: str):
     """Mark all messages in a conversation as read for current user"""
@@ -190,24 +241,46 @@ async def mark_conversation_read(conversation_id: str, user_id: str):
 # =====================================================
 
 @router.get("/inbox")
-async def get_unified_inbox(user_id: str):
+async def get_unified_inbox(
+    user_id: str,
+    folder: str = None,
+    context_id: str = None
+):
     """
     Get unified inbox with DMs and project updates mixed together.
     Returns items sorted by last_message_at descending.
+
+    Args:
+        user_id: Current user's ID
+        folder: Filter by folder (personal, backlot, application, order, greenroom, gear, set)
+        context_id: Filter by specific context (project_id, collab_id, etc.)
     """
     try:
         from app.core.database import execute_query
         client = get_client()
         inbox_items = []
 
+        # Build folder filter clause
+        folder_filter = ""
+        query_params = {"user_id": user_id}
+
+        if folder and folder != "all":
+            folder_filter = "AND COALESCE(context_type, 'personal') = :folder"
+            query_params["folder"] = folder
+
+        if context_id:
+            folder_filter += " AND context_id = :context_id"
+            query_params["context_id"] = context_id
+
         # 1. Get DM conversations using direct SQL query
         # Get unique conversation partners from backlot_direct_messages
-        dm_query = """
+        dm_query = f"""
             WITH dm_partners AS (
                 SELECT DISTINCT
                     CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END as partner_id
                 FROM backlot_direct_messages
-                WHERE sender_id = :user_id OR recipient_id = :user_id
+                WHERE (sender_id = :user_id OR recipient_id = :user_id)
+                {folder_filter}
             ),
             last_messages AS (
                 SELECT DISTINCT ON (
@@ -217,9 +290,13 @@ async def get_unified_inbox(user_id: str):
                     id as message_id,
                     content as last_message,
                     created_at as last_message_at,
-                    read_at
+                    read_at,
+                    COALESCE(context_type, 'personal') as context_type,
+                    context_id,
+                    context_metadata
                 FROM backlot_direct_messages
-                WHERE sender_id = :user_id OR recipient_id = :user_id
+                WHERE (sender_id = :user_id OR recipient_id = :user_id)
+                {folder_filter}
                 ORDER BY
                     CASE WHEN sender_id = :user_id THEN recipient_id ELSE sender_id END,
                     created_at DESC
@@ -230,6 +307,7 @@ async def get_unified_inbox(user_id: str):
                     COUNT(*) as unread_count
                 FROM backlot_direct_messages
                 WHERE recipient_id = :user_id AND read_at IS NULL
+                {folder_filter}
                 GROUP BY sender_id
             )
             SELECT
@@ -239,14 +317,17 @@ async def get_unified_inbox(user_id: str):
                 p.avatar_url,
                 lm.last_message,
                 lm.last_message_at,
-                COALESCE(uc.unread_count, 0) as unread_count
+                COALESCE(uc.unread_count, 0) as unread_count,
+                lm.context_type,
+                lm.context_id,
+                lm.context_metadata
             FROM last_messages lm
             JOIN profiles p ON p.id = lm.partner_id
             LEFT JOIN unread_counts uc ON uc.partner_id = lm.partner_id
             ORDER BY lm.last_message_at DESC
         """
         try:
-            dm_conversations = execute_query(dm_query, {"user_id": user_id})
+            dm_conversations = execute_query(dm_query, query_params)
         except Exception as dm_err:
             logger.warning(f"Error fetching DM conversations: {dm_err}")
             dm_conversations = []
@@ -256,6 +337,9 @@ async def get_unified_inbox(user_id: str):
                 inbox_items.append({
                     "id": str(conv.get("id", "")),
                     "type": "dm",
+                    "folder": conv.get("context_type", "personal"),
+                    "context_id": str(conv.get("context_id")) if conv.get("context_id") else None,
+                    "context_metadata": conv.get("context_metadata") or {},
                     "project_id": None,
                     "project_title": None,
                     "project_thumbnail": None,

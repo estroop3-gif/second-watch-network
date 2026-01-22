@@ -19898,8 +19898,16 @@ async def update_application_status(
     authorization: str = Header(None)
 ):
     """Update application status (project admin) or withdraw (applicant)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:

@@ -382,9 +382,7 @@ class LiveProductionService:
             )
             OR project_id IN (
                 -- Projects user is involved in
-                SELECT project_id FROM backlot_cast_members WHERE profile_id = :user_id
-                UNION
-                SELECT project_id FROM backlot_crew_members WHERE profile_id = :user_id
+                SELECT project_id FROM backlot_project_members WHERE user_id = :user_id
             )
             ORDER BY published_at DESC
             LIMIT :limit

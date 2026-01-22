@@ -34,17 +34,27 @@ class CoverLetterTemplateUpdate(BaseModel):
 # ============================================================================
 
 async def get_user_id_from_token(authorization: str) -> str:
-    """Extract user_id from JWT token"""
+    """Extract user_id from JWT token and convert to profile UUID"""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     from app.core.auth import verify_token
+    from app.api.users import get_profile_id_from_cognito_id
+
     token = authorization.replace("Bearer ", "")
     payload = verify_token(token)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    return payload.get("sub")
+    # verify_token returns 'id' key, but some paths may return 'sub'
+    cognito_id = payload.get("id") or payload.get("sub")
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    return profile_id
 
 
 # ============================================================================

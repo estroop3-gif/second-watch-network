@@ -122,7 +122,7 @@ import Analytics from "./pages/partner/Analytics";
 import PartnerPromotions from "./pages/partner/Promotions";
 
 // Backlot Production Hub Pages
-import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage, CollabApplicantsPage } from "./pages/backlot";
+import { BacklotHome, ProjectWorkspace, PublicProjectPage, PublicCallSheetPage, CollabApplicantsPage, ApplicantDetailPage } from "./pages/backlot";
 import React, { Suspense } from "react";
 
 // Lazy load the external reviewer view since it's a public route
@@ -318,6 +318,7 @@ const App = () => (
                     <Route path="/backlot" element={<BacklotHome />} />
                     <Route path="/backlot/projects/:projectId" element={<ProjectWorkspace />} />
                     <Route path="/backlot/projects/:projectId/postings/:collabId/applicants" element={<CollabApplicantsPage />} />
+                    <Route path="/backlot/projects/:projectId/postings/:collabId/applicants/:applicationId" element={<ApplicantDetailPage />} />
                     <Route path="/backlot/:projectId/moodboards/:moodboardId/print" element={
                       <Suspense fallback={<div className="min-h-screen bg-white p-8">Loading...</div>}>
                         <MoodboardPrintPage />

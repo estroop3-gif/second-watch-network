@@ -109,10 +109,10 @@ async def verify_project_access(project_id: str, profile_id: str) -> bool:
           AND (
               bp.created_by = :profile_id
               OR EXISTS (
-                  SELECT 1 FROM backlot_crew_members bcm
-                  WHERE bcm.project_id = bp.id
-                    AND bcm.profile_id = :profile_id
-                    AND bcm.department IN ('Production', 'Directing')
+                  SELECT 1 FROM backlot_project_members bpm
+                  WHERE bpm.project_id = bp.id
+                    AND bpm.user_id = :profile_id
+                    AND bpm.department IN ('Production', 'Directing')
               )
           )
     """, {"project_id": project_id, "profile_id": profile_id})

@@ -54,8 +54,17 @@ async def list_templates(
     authorization: str = Header(None)
 ):
     """List user's application templates"""
+    from app.api.users import get_profile_id_from_cognito_id
+
+    print(f"[application_templates] Authorization header: {authorization[:50] if authorization else 'None'}...")
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -76,8 +85,12 @@ async def create_template(
     authorization: str = Header(None)
 ):
     """Create a new application template"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -122,8 +135,12 @@ async def get_template(
     authorization: str = Header(None)
 ):
     """Get a single template"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -150,8 +167,12 @@ async def update_template(
     authorization: str = Header(None)
 ):
     """Update an application template"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -214,8 +235,12 @@ async def delete_template(
     authorization: str = Header(None)
 ):
     """Delete an application template"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -244,8 +269,12 @@ async def set_default_template(
     authorization: str = Header(None)
 ):
     """Set a template as the default"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:
@@ -283,8 +312,12 @@ async def record_template_use(
     authorization: str = Header(None)
 ):
     """Record that a template was used (increments use_count)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(user["id"])
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
     client = get_client()
 
     try:

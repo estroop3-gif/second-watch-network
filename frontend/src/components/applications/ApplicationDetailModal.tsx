@@ -36,22 +36,30 @@ import {
   MessageSquare,
   Check,
   Loader2,
+  Video,
+  Image,
+  Clapperboard,
+  HelpCircle,
+  ListChecks,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
-import { useUpdateCollabApplicationStatus } from '@/hooks/applications';
+import { useUpdateCollabApplicationStatus, useUpdateRoleApplicationStatus } from '@/hooks/applications';
 import type {
   CollabApplication,
+  RoleApplication,
   ApplicationStatus,
+  ApplicationSource,
   applicationStatusConfig,
 } from '@/types/applications';
 
 interface ApplicationDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
-  application: CollabApplication | null;
+  application: CollabApplication | RoleApplication | null;
+  source?: ApplicationSource;
   onStatusUpdate?: () => void;
 }
 
@@ -80,6 +88,7 @@ const ApplicationDetailModal: React.FC<ApplicationDetailModalProps> = ({
   isOpen,
   onClose,
   application,
+  source = 'community',
   onStatusUpdate,
 }) => {
   const [status, setStatus] = useState<ApplicationStatus>('applied');
@@ -87,7 +96,11 @@ const ApplicationDetailModal: React.FC<ApplicationDetailModalProps> = ({
   const [internalNotes, setInternalNotes] = useState('');
   const [hasChanges, setHasChanges] = useState(false);
 
-  const updateStatusMutation = useUpdateCollabApplicationStatus();
+  const updateCollabStatusMutation = useUpdateCollabApplicationStatus();
+  const updateRoleStatusMutation = useUpdateRoleApplicationStatus();
+
+  // Select the appropriate mutation based on source
+  const updateStatusMutation = source === 'community' ? updateCollabStatusMutation : updateRoleStatusMutation;
 
   // Sync state with application
   useEffect(() => {
@@ -229,6 +242,45 @@ const ApplicationDetailModal: React.FC<ApplicationDetailModalProps> = ({
                   <ExternalLink className="w-3 h-3 text-green-400 ml-auto" />
                 </a>
               )}
+
+              {application.reel_url && (
+                <a
+                  href={application.reel_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 p-3 bg-purple-600/10 border border-purple-400/30 rounded-lg hover:bg-purple-600/20 transition-colors"
+                >
+                  <Video className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-purple-400">View Demo Reel</span>
+                  <ExternalLink className="w-3 h-3 text-purple-400 ml-auto" />
+                </a>
+              )}
+
+              {application.self_tape_url && (
+                <a
+                  href={application.self_tape_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 p-3 bg-blue-600/10 border border-blue-400/30 rounded-lg hover:bg-blue-600/20 transition-colors"
+                >
+                  <Clapperboard className="w-4 h-4 text-blue-400" />
+                  <span className="text-sm text-blue-400">View Self-Tape</span>
+                  <ExternalLink className="w-3 h-3 text-blue-400 ml-auto" />
+                </a>
+              )}
+
+              {application.headshot_url && (
+                <a
+                  href={application.headshot_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 p-3 bg-amber-600/10 border border-amber-400/30 rounded-lg hover:bg-amber-600/20 transition-colors"
+                >
+                  <Image className="w-4 h-4 text-amber-400" />
+                  <span className="text-sm text-amber-400">View Headshot</span>
+                  <ExternalLink className="w-3 h-3 text-amber-400 ml-auto" />
+                </a>
+              )}
             </div>
 
             {/* Right Column */}
@@ -252,8 +304,42 @@ const ApplicationDetailModal: React.FC<ApplicationDetailModalProps> = ({
                   <span className="text-sm text-muted-gray">{application.availability_notes}</span>
                 </div>
               )}
+
+              {/* Special Skills */}
+              {application.special_skills && application.special_skills.length > 0 && (
+                <div className="p-3 bg-charcoal-black/50 border border-muted-gray/20 rounded-lg">
+                  <h5 className="text-xs font-medium text-muted-gray mb-2 flex items-center gap-1">
+                    <ListChecks className="w-3 h-3" />
+                    Special Skills
+                  </h5>
+                  <div className="flex flex-wrap gap-1">
+                    {application.special_skills.map((skill, index) => (
+                      <Badge key={index} variant="outline" className="text-xs border-muted-gray/30 text-muted-gray">
+                        {skill}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Custom Question Responses */}
+          {application.custom_question_responses && Object.keys(application.custom_question_responses).length > 0 && (
+            <div>
+              <h4 className="text-sm font-medium text-bone-white mb-2 flex items-center gap-2">
+                <HelpCircle className="w-4 h-4 text-accent-yellow" />
+                Screening Questions
+              </h4>
+              <div className="space-y-3">
+                {Object.entries(application.custom_question_responses).map(([questionId, answer]) => (
+                  <div key={questionId} className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3">
+                    <p className="text-muted-gray whitespace-pre-wrap">{answer}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Selected Credits */}
           {application.selected_credits && application.selected_credits.length > 0 && (

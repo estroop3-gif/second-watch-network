@@ -1201,12 +1201,12 @@ async def list_character_cast_links(
     # Enrich with role/cast data
     result = []
     for link in (links.data or []):
-        role = client.table("backlot_project_roles").select("id, name, description, cast_member_id").eq("id", link["role_id"]).execute()
+        role = client.table("backlot_project_roles").select("id, title, description, user_id").eq("id", link["role_id"]).execute()
         if role.data:
             link["role"] = role.data[0]
             # Get cast member info if assigned
-            if role.data[0].get("cast_member_id"):
-                cast = client.table("backlot_cast_members").select("id, user_id, role").eq("id", role.data[0]["cast_member_id"]).execute()
+            if role.data[0].get("user_id"):
+                cast = client.table("profiles").select("id, full_name, avatar_url").eq("id", role.data[0]["user_id"]).execute()
                 if cast.data:
                     link["cast_member"] = cast.data[0]
             result.append(link)

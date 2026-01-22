@@ -15,6 +15,47 @@ export type ApplicationStatus =
   | 'rejected'
   | 'withdrawn';
 
+// Score breakdown for applicant matching
+export interface RoleCreditsScore {
+  score: number;
+  exact_matches: number;
+  department_matches: number;
+  transferable_matches: number;
+  exact_match_credits?: Array<{
+    role: string;
+    project: string;
+  }>;
+  dept_match_credits?: Array<{
+    role: string;
+    department: string;
+    project: string;
+  }>;
+  transferable_credits?: Array<{
+    role: string;
+    category: string;
+    project: string;
+  }>;
+}
+
+export interface ExperienceScore {
+  score: number;
+  total_credits: number;
+}
+
+export interface NetworkScore {
+  score: number;
+  direct_connections: number;
+  shared_projects: number;
+  connected_to?: string[];
+}
+
+export interface ScoreBreakdown {
+  role_credits: RoleCreditsScore;
+  experience: ExperienceScore;
+  network: NetworkScore;
+  total: number;
+}
+
 // Application Template - saved reusable application data
 export interface ApplicationTemplate {
   id: string;
@@ -24,7 +65,11 @@ export interface ApplicationTemplate {
   is_default: boolean;
   cover_letter: string | null;
   elevator_pitch: string | null;
+  rate_expectation: string | null;
   availability_notes: string | null;
+  default_reel_url: string | null;
+  default_headshot_url: string | null;
+  default_resume_url: string | null;
   default_resume_id: string | null;
   default_credit_ids: string[];
   use_count: number;
@@ -137,6 +182,10 @@ export interface CollabApplication {
   internal_notes: string | null;
   rating: number | null;
   custom_question_responses: CustomQuestionResponses | null;
+  // Match score fields
+  match_score: number | null;
+  score_breakdown: ScoreBreakdown | null;
+  score_calculated_at: string | null;
   // Cast-specific fields
   demo_reel_url: string | null;
   self_tape_url: string | null;

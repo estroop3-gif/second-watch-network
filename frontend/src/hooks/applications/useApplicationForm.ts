@@ -46,12 +46,17 @@ export const APPLICATION_STEPS: WizardStep[] = [
     isConditional: true,
     condition: (collab) => {
       if (!collab.custom_questions) return false;
-      const questions = Array.isArray(collab.custom_questions)
-        ? collab.custom_questions
-        : typeof collab.custom_questions === 'string'
-          ? JSON.parse(collab.custom_questions)
-          : [];
-      return questions && questions.length > 0;
+      try {
+        const questions = Array.isArray(collab.custom_questions)
+          ? collab.custom_questions
+          : typeof collab.custom_questions === 'string'
+            ? JSON.parse(collab.custom_questions)
+            : [];
+        return questions && questions.length > 0;
+      } catch {
+        console.warn('[useApplicationForm] Failed to parse custom_questions:', collab.custom_questions);
+        return false;
+      }
     },
   },
   { id: 'details', title: 'Availability & Details', shortTitle: 'Details', isConditional: false },
@@ -141,6 +146,9 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
       availability_notes: template.availability_notes || '',
       resume_id: template.default_resume_id || null,
       selected_credit_ids: template.default_credit_ids || [],
+      // Cast-specific fields from template
+      demo_reel_url: template.default_reel_url || '',
+      headshot_url: template.default_headshot_url || '',
     }));
   };
 
@@ -183,18 +191,23 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
     if (!collab?.custom_questions) {
       return false;
     }
-    const questions = Array.isArray(collab.custom_questions)
-      ? collab.custom_questions
-      : typeof collab.custom_questions === 'string'
-        ? JSON.parse(collab.custom_questions)
-        : [];
-    if (!questions || questions.length === 0) {
+    try {
+      const questions = Array.isArray(collab.custom_questions)
+        ? collab.custom_questions
+        : typeof collab.custom_questions === 'string'
+          ? JSON.parse(collab.custom_questions)
+          : [];
+      if (!questions || questions.length === 0) {
+        return false;
+      }
+      return questions.some(
+        (q: { id: string; required?: boolean }) =>
+          q.required && !formState.custom_question_responses[q.id]?.trim()
+      );
+    } catch {
+      console.warn('[useApplicationForm] Failed to parse custom_questions in hasUnansweredRequiredQuestions');
       return false;
     }
-    return questions.some(
-      (q: { id: string; required?: boolean }) =>
-        q.required && !formState.custom_question_responses[q.id]?.trim()
-    );
   };
 
   // Validate current step
@@ -247,41 +260,32 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
   // Check if can submit
   const canSubmit = () => {
     if (requirements.requires_local_hire && formState.local_hire_confirmed === null) {
-      console.log('[canSubmit] blocked: local_hire not confirmed');
       return false;
     }
     if (requirements.requires_order_member && !isOrderMember) {
-      console.log('[canSubmit] blocked: requires order member');
       return false;
     }
     if (requirements.requires_resume && !formState.resume_id) {
-      console.log('[canSubmit] blocked: resume required but missing');
       return false;
     }
     if (formState.save_as_template && !formState.template_name.trim()) {
-      console.log('[canSubmit] blocked: save_as_template but no name');
       return false;
     }
     if (formState.save_cover_letter_as_template && !formState.cover_letter_template_name.trim()) {
-      console.log('[canSubmit] blocked: save_cover_letter_as_template but no name');
       return false;
     }
     if (hasUnansweredRequiredQuestions()) {
-      console.log('[canSubmit] blocked: unanswered required questions');
       return false;
     }
     // Cast validation
     if (collab?.type === 'looking_for_cast') {
       if (collab.requires_reel && !formState.demo_reel_url) {
-        console.log('[canSubmit] blocked: demo reel required');
         return false;
       }
       if (collab.requires_self_tape && collab.tape_workflow === 'upfront' && !formState.self_tape_url) {
-        console.log('[canSubmit] blocked: self tape required');
         return false;
       }
       if (collab.requires_headshot && !formState.headshot_url) {
-        console.log('[canSubmit] blocked: headshot required');
         return false;
       }
     }
@@ -351,7 +355,10 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
 
   // Handle submit
   const handleSubmit = async () => {
-    console.log('[useApplicationForm] handleSubmit called, collab:', collab?.id);
+    console.log('[useApplicationForm] *** SUBMIT BUTTON CLICKED ***');
+    console.log('[useApplicationForm] collab:', collab?.id);
+    console.log('[useApplicationForm] canSubmit():', canSubmit());
+    console.log('[useApplicationForm] formState:', JSON.stringify(formState, null, 2));
     if (!collab) {
       console.log('[useApplicationForm] No collab, aborting');
       return;
@@ -365,44 +372,63 @@ export function useApplicationForm({ collab, isOpen, onClose, onSuccess }: UseAp
       return;
     }
 
+    console.log('[useApplicationForm] Proceeding with submission...');
+    console.log('[useApplicationForm] save_cover_letter_as_template:', formState.save_cover_letter_as_template);
+    console.log('[useApplicationForm] cover_note length:', formState.cover_note?.length);
+    console.log('[useApplicationForm] cover_letter_template_name:', formState.cover_letter_template_name);
+
     try {
       // Save cover letter as template if requested
       if (formState.save_cover_letter_as_template && formState.cover_note && formState.cover_letter_template_name) {
-        await createCoverLetterTemplate.mutateAsync({
-          name: formState.cover_letter_template_name,
-          content: formState.cover_note,
-        });
+        console.log('[useApplicationForm] Creating cover letter template...');
+        try {
+          const templateResult = await createCoverLetterTemplate.mutateAsync({
+            name: formState.cover_letter_template_name,
+            content: formState.cover_note,
+          });
+          console.log('[useApplicationForm] Cover letter template created:', templateResult);
+        } catch (templateError) {
+          console.error('[useApplicationForm] Failed to create cover letter template:', templateError);
+          // Continue with application submission even if template save fails
+          toast.error('Failed to save cover letter template, but continuing with application...');
+        }
       }
 
-      await applyMutation.mutateAsync({
+      console.log('[useApplicationForm] Submitting application to collab:', collab.id);
+      const applicationInput = {
+        elevator_pitch: formState.elevator_pitch || undefined,
+        cover_note: formState.cover_note || undefined,
+        availability_notes: formState.availability_notes || undefined,
+        resume_id: formState.resume_id || undefined,
+        selected_credit_ids: formState.selected_credit_ids.length > 0 ? formState.selected_credit_ids : undefined,
+        template_id: formState.template_id || undefined,
+        local_hire_confirmed: formState.local_hire_confirmed ?? undefined,
+        is_promoted: formState.is_promoted,
+        save_as_template: formState.save_as_template,
+        template_name: formState.template_name || undefined,
+        custom_question_responses:
+          Object.keys(formState.custom_question_responses).length > 0
+            ? formState.custom_question_responses
+            : undefined,
+        // Cast-specific fields
+        demo_reel_url: formState.demo_reel_url || undefined,
+        self_tape_url: formState.self_tape_url || undefined,
+        headshot_url: formState.headshot_url || undefined,
+        special_skills: formState.special_skills.length > 0 ? formState.special_skills : undefined,
+      };
+      console.log('[useApplicationForm] Application input:', JSON.stringify(applicationInput, null, 2));
+
+      const result = await applyMutation.mutateAsync({
         collabId: collab.id,
-        input: {
-          elevator_pitch: formState.elevator_pitch || undefined,
-          cover_note: formState.cover_note || undefined,
-          availability_notes: formState.availability_notes || undefined,
-          resume_id: formState.resume_id || undefined,
-          selected_credit_ids: formState.selected_credit_ids.length > 0 ? formState.selected_credit_ids : undefined,
-          template_id: formState.template_id || undefined,
-          local_hire_confirmed: formState.local_hire_confirmed ?? undefined,
-          is_promoted: formState.is_promoted,
-          save_as_template: formState.save_as_template,
-          template_name: formState.template_name || undefined,
-          custom_question_responses:
-            Object.keys(formState.custom_question_responses).length > 0
-              ? formState.custom_question_responses
-              : undefined,
-          // Cast-specific fields
-          demo_reel_url: formState.demo_reel_url || undefined,
-          self_tape_url: formState.self_tape_url || undefined,
-          headshot_url: formState.headshot_url || undefined,
-          special_skills: formState.special_skills.length > 0 ? formState.special_skills : undefined,
-        },
+        input: applicationInput,
       });
+      console.log('[useApplicationForm] Application submitted successfully:', result);
 
       toast.success('Application submitted successfully!');
       onClose();
       onSuccess?.();
     } catch (error) {
+      console.error('[useApplicationForm] Application submission failed:', error);
       toast.error(error instanceof Error ? error.message : 'Failed to submit application');
     }
   };

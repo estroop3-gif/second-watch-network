@@ -1,13 +1,77 @@
 """
 Credits API Routes
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from typing import List, Optional
 from app.core.database import get_client
+from app.api.community import get_current_user_from_token
 from pydantic import BaseModel
 from datetime import date
 
 router = APIRouter()
+
+
+@router.get("/my-credits")
+async def get_my_credits(authorization: str = Header(None)):
+    """Get current user's credits for application selection"""
+    from app.api.users import get_profile_id_from_cognito_id
+    from app.core.database import execute_query
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    try:
+        credits = []
+
+        # Get project credits with project titles using raw SQL (more reliable)
+        project_credits = execute_query("""
+            SELECT pc.id, pc.credit_role, pc.department, pc.is_primary, bp.title as project_title
+            FROM backlot_project_credits pc
+            LEFT JOIN backlot_projects bp ON bp.id = pc.project_id
+            WHERE pc.user_id = :user_id AND pc.is_public = true
+            ORDER BY pc.is_primary DESC
+        """, {"user_id": profile_id})
+
+        for c in (project_credits or []):
+            credits.append({
+                "id": str(c["id"]),
+                "project_title": c.get("project_title") or "Unknown Project",
+                "role": c.get("credit_role"),
+                "department": c.get("department"),
+                "is_primary": c.get("is_primary", False),
+                "source": "project",
+            })
+
+        # Get manual credits with production titles
+        manual_credits = execute_query("""
+            SELECT c.id, c.position, p.title as project_title
+            FROM credits c
+            LEFT JOIN productions p ON p.id = c.production_id
+            WHERE c.user_id = :user_id
+            ORDER BY c.created_at DESC
+        """, {"user_id": profile_id})
+
+        for c in (manual_credits or []):
+            credits.append({
+                "id": str(c["id"]),
+                "project_title": c.get("project_title") or "Unknown Production",
+                "role": c.get("position"),
+                "department": None,
+                "is_primary": False,
+                "source": "manual",
+            })
+
+        return {"credits": credits}
+    except Exception as e:
+        print(f"Error in get_my_credits: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 class CreditCreate(BaseModel):

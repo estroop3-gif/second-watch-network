@@ -62,6 +62,9 @@ from app.api import (
     stripboard,  # Stripboard schedule planning
     project_files,  # Project file management
     downloads,  # Application downloads (Dailies Helper)
+    message_templates,  # Message templates for quick replies
+    e2ee,  # End-to-end encryption key management
+    channels,  # Group chat channels
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
 from app.api.set_house import router as set_house_router  # Set House - Space/location management
@@ -227,6 +230,9 @@ app.include_router(submissions.router, prefix=f"{settings.API_V1_PREFIX}/submiss
 app.include_router(content.router, prefix=f"{settings.API_V1_PREFIX}/content", tags=["Content"])
 app.include_router(filmmakers.router, prefix=f"{settings.API_V1_PREFIX}/filmmakers", tags=["Filmmakers"])
 app.include_router(messages.router, prefix=f"{settings.API_V1_PREFIX}/messages", tags=["Messages"])
+app.include_router(message_templates.router, prefix=f"{settings.API_V1_PREFIX}/message-templates", tags=["Message Templates"])
+app.include_router(e2ee.router, prefix=f"{settings.API_V1_PREFIX}/e2ee", tags=["E2EE Encryption"])
+app.include_router(channels.router, prefix=f"{settings.API_V1_PREFIX}/channels", tags=["Message Channels"])
 app.include_router(forum.router, prefix=f"{settings.API_V1_PREFIX}/forum", tags=["Forum"])
 app.include_router(notifications.router, prefix=f"{settings.API_V1_PREFIX}/notifications", tags=["Notifications"])
 app.include_router(connections.router, prefix=f"{settings.API_V1_PREFIX}/connections", tags=["Connections"])

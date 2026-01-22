@@ -94,14 +94,19 @@ const ReviewStep: React.FC<ReviewStepProps> = ({
   // Get selected credits info
   const selectedCredits = credits.filter((c) => formState.selected_credit_ids.includes(c.id));
 
-  // Parse custom questions
-  const customQuestions = collab.custom_questions
-    ? Array.isArray(collab.custom_questions)
-      ? collab.custom_questions
-      : typeof collab.custom_questions === 'string'
-        ? JSON.parse(collab.custom_questions)
-        : []
-    : [];
+  // Parse custom questions safely
+  let customQuestions: Array<{ id: string; question: string; required?: boolean }> = [];
+  if (collab.custom_questions) {
+    try {
+      customQuestions = Array.isArray(collab.custom_questions)
+        ? collab.custom_questions
+        : typeof collab.custom_questions === 'string'
+          ? JSON.parse(collab.custom_questions)
+          : [];
+    } catch {
+      console.warn('[ReviewStep] Failed to parse custom_questions');
+    }
+  }
 
   const isCastRole = collab.type === 'looking_for_cast';
   const hasQuestions = customQuestions.length > 0;

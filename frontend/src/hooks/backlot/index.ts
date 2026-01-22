@@ -398,6 +398,11 @@ export {
   useUpdateCollabApplicationStatus,
 } from './useProjectCollabs';
 
+// Applicant Detail Page Hooks
+export { useApplicantNavigation } from './useApplicantNavigation';
+export { useApplicantProfile } from './useApplicantProfile';
+export type { ApplicantFullProfile, ApplicantCredit } from './useApplicantProfile';
+
 // Crew Rates (Day Rate Schedules)
 export {
   useCrewRates,

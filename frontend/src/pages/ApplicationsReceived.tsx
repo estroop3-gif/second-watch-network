@@ -20,9 +20,9 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import { Inbox, ChevronDown, ChevronRight, Film, Users } from 'lucide-react';
-import { useUnifiedApplicationsReceived, useUpdateCollabApplicationStatus } from '@/hooks/applications';
-import { ApplicationsReceivedCard } from '@/components/applications';
-import type { ApplicationStatus, ApplicationReceivedItem, ApplicationGroup } from '@/types/applications';
+import { useUnifiedApplicationsReceived, useUpdateCollabApplicationStatus, useUpdateRoleApplicationStatus } from '@/hooks/applications';
+import { ApplicationsReceivedCard, ApplicationDetailModal } from '@/components/applications';
+import type { ApplicationStatus, ApplicationReceivedItem, ApplicationGroup, CollabApplication, RoleApplication } from '@/types/applications';
 import { applicationStatusConfig } from '@/types/applications';
 import { toast } from 'sonner';
 
@@ -35,9 +35,11 @@ const ApplicationsReceived = () => {
   const statusFilter = (searchParams.get('status') as ApplicationStatus | 'all') || 'all';
   const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [selectedApplication, setSelectedApplication] = useState<ApplicationReceivedItem | null>(null);
 
   const { data, isLoading, error, refetch } = useUnifiedApplicationsReceived();
-  const updateStatusMutation = useUpdateCollabApplicationStatus();
+  const updateCollabStatusMutation = useUpdateCollabApplicationStatus();
+  const updateRoleStatusMutation = useUpdateRoleApplicationStatus();
 
   const handleSourceChange = (value: SourceFilter) => {
     const params = new URLSearchParams(searchParams);
@@ -117,45 +119,53 @@ const ApplicationsReceived = () => {
 
   // Handle view details
   const handleViewDetails = (application: ApplicationReceivedItem) => {
-    // TODO: Open ApplicationDetailModal
-    console.log('View details:', application);
+    setSelectedApplication(application);
+  };
+
+  // Handle modal close
+  const handleCloseModal = () => {
+    setSelectedApplication(null);
   };
 
   // Handle shortlist
   const handleShortlist = async (application: ApplicationReceivedItem) => {
-    if (application.source === 'community') {
-      try {
-        await updateStatusMutation.mutateAsync({
+    try {
+      if (application.source === 'community') {
+        await updateCollabStatusMutation.mutateAsync({
           applicationId: application.id,
           input: { status: 'shortlisted' },
         });
-        toast.success('Application shortlisted');
-        refetch();
-      } catch (error) {
-        toast.error('Failed to update status');
+      } else {
+        await updateRoleStatusMutation.mutateAsync({
+          applicationId: application.id,
+          input: { status: 'shortlisted' },
+        });
       }
-    } else {
-      // TODO: Handle backlot status update
-      toast.info('Backlot status update coming soon');
+      toast.success('Application shortlisted');
+      refetch();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update status');
     }
   };
 
   // Handle reject
   const handleReject = async (application: ApplicationReceivedItem) => {
-    if (application.source === 'community') {
-      try {
-        await updateStatusMutation.mutateAsync({
+    try {
+      if (application.source === 'community') {
+        await updateCollabStatusMutation.mutateAsync({
           applicationId: application.id,
           input: { status: 'rejected' },
         });
-        toast.success('Application rejected');
-        refetch();
-      } catch (error) {
-        toast.error('Failed to update status');
+      } else {
+        await updateRoleStatusMutation.mutateAsync({
+          applicationId: application.id,
+          input: { status: 'rejected' },
+        });
       }
-    } else {
-      // TODO: Handle backlot status update
-      toast.info('Backlot status update coming soon');
+      toast.success('Application rejected');
+      refetch();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update status');
     }
   };
 
@@ -326,6 +336,18 @@ const ApplicationsReceived = () => {
           ))}
         </div>
       )}
+
+      {/* Application Detail Modal */}
+      <ApplicationDetailModal
+        isOpen={!!selectedApplication}
+        onClose={handleCloseModal}
+        application={selectedApplication?.original || null}
+        source={selectedApplication?.source}
+        onStatusUpdate={() => {
+          refetch();
+          handleCloseModal();
+        }}
+      />
     </div>
   );
 };

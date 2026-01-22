@@ -20,9 +20,14 @@ class CollabApplicationInput(BaseModel):
     cover_note: Optional[str] = None
     availability_notes: Optional[str] = None
     rate_expectation: Optional[str] = None
+    # Support both field names for reel URL
     reel_url: Optional[str] = None
+    demo_reel_url: Optional[str] = None  # Alias for reel_url from frontend
     headshot_url: Optional[str] = None
     resume_url: Optional[str] = None
+    resume_id: Optional[str] = None  # Frontend sends resume_id
+    self_tape_url: Optional[str] = None  # Cast self-tape URL
+    special_skills: Optional[List[str]] = None  # Cast special skills
     selected_credit_ids: Optional[List[str]] = None
     template_id: Optional[str] = None
     local_hire_confirmed: Optional[bool] = None
@@ -73,6 +78,23 @@ class ApplicationBookingInput(BaseModel):
 
 class ApplicationUnbookInput(BaseModel):
     reason: str
+
+
+class CollabPermissionInput(BaseModel):
+    """Grant permission to view/manage collab applications"""
+    user_id: str  # User to grant permission to
+    permission_level: str = "view"  # view, manage, admin
+    can_update_status: bool = False
+    can_message_applicants: bool = False
+    can_book_applicants: bool = False
+
+
+class CollabPermissionUpdate(BaseModel):
+    """Update existing permission"""
+    permission_level: Optional[str] = None
+    can_update_status: Optional[bool] = None
+    can_message_applicants: Optional[bool] = None
+    can_book_applicants: Optional[bool] = None
 
 
 router = APIRouter()
@@ -151,6 +173,88 @@ async def require_permission(user_id: str, permission: str) -> None:
             status_code=403,
             detail=f"You don't have permission to perform this action"
         )
+
+
+def check_collab_application_access(user_id: str, collab_id: str, required_permission: str = "view") -> Dict[str, Any]:
+    """
+    Check if a user has permission to access applications for a collab.
+    Returns permission details or raises HTTPException if no access.
+
+    Access is granted if:
+    1. User is the collab owner
+    2. User has explicit permission in collab_application_permissions
+    3. User is a team member on the linked production (if production_id or backlot_project_id is set)
+    """
+    client = get_client()
+
+    # First, get the collab to check ownership and production link
+    # Check both production_id and backlot_project_id for backward compatibility
+    collab = client.table("community_collabs").select("user_id, production_id, backlot_project_id").eq("id", collab_id).single().execute()
+
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+
+    # Check 1: Is user the owner?
+    if collab.data["user_id"] == user_id:
+        return {
+            "is_owner": True,
+            "permission_level": "admin",
+            "can_update_status": True,
+            "can_message_applicants": True,
+            "can_book_applicants": True
+        }
+
+    # Check 2: Does user have explicit permission?
+    permission = client.table("collab_application_permissions").select("*").eq("collab_id", collab_id).eq("granted_to_user_id", user_id).single().execute()
+
+    if permission.data:
+        perm = permission.data
+        # Check if permission level is sufficient
+        permission_levels = {"view": 1, "manage": 2, "admin": 3}
+        required_level = permission_levels.get(required_permission, 1)
+        user_level = permission_levels.get(perm.get("permission_level", "view"), 1)
+
+        if user_level >= required_level:
+            return {
+                "is_owner": False,
+                "permission_level": perm.get("permission_level", "view"),
+                "can_update_status": perm.get("can_update_status", False),
+                "can_message_applicants": perm.get("can_message_applicants", False),
+                "can_book_applicants": perm.get("can_book_applicants", False)
+            }
+
+    # Check 3: Is user a team member on linked production?
+    # Check both production_id and backlot_project_id for backward compatibility
+    production_id = collab.data.get("production_id") or collab.data.get("backlot_project_id")
+    if production_id:
+        # Check if user is project owner or team member
+        project = client.table("backlot_projects").select("owner_id").eq("id", production_id).single().execute()
+        if project.data and project.data["owner_id"] == user_id:
+            return {
+                "is_owner": False,
+                "is_production_owner": True,
+                "permission_level": "admin",
+                "can_update_status": True,
+                "can_message_applicants": True,
+                "can_book_applicants": True
+            }
+
+        # Check crew membership
+        crew_member = client.table("backlot_project_members").select("id, department").eq("project_id", production_id).eq("user_id", user_id).single().execute()
+        if crew_member.data:
+            # Crew members can view applications
+            return {
+                "is_owner": False,
+                "is_crew_member": True,
+                "department": crew_member.data.get("department"),
+                "permission_level": "view",
+                "can_update_status": False,
+                "can_message_applicants": False,
+                "can_book_applicants": False
+            }
+
+    # No access
+    raise HTTPException(status_code=403, detail="You don't have permission to view applications for this collab")
 
 
 @router.get("/filmmakers")
@@ -925,6 +1029,9 @@ async def create_collab(
             # Featured post
             "is_featured": collab.get("is_featured", False),
             "featured_until": collab.get("featured_until"),
+            # Crew position for scoring
+            "crew_position": collab.get("crew_position"),
+            "crew_department": collab.get("crew_department"),
         }
 
         result = client.table("community_collabs").insert(collab_data).execute()
@@ -958,7 +1065,8 @@ async def update_collab(
             "hide_production_info", "job_type",
             "day_rate_min", "day_rate_max", "salary_min", "salary_max", "benefits_info",
             "union_requirements", "requires_order_membership", "custom_questions",
-            "is_featured", "featured_until"
+            "is_featured", "featured_until",
+            "crew_position", "crew_department"
         ]
         # JSONB fields need explicit JSON serialization
         jsonb_fields = {"tags", "custom_questions"}
@@ -1166,8 +1274,16 @@ async def apply_to_collab(
     authorization: str = Header(None)
 ):
     """Apply to a community collab"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -1200,13 +1316,35 @@ async def apply_to_collab(
         if collab.get("requires_local_hire") and application.local_hire_confirmed is None:
             raise HTTPException(status_code=400, detail="Please confirm if you can work as a local hire")
 
-        if collab.get("requires_reel") and not application.reel_url:
+        # Accept either reel_url or demo_reel_url
+        effective_reel_url = application.reel_url or application.demo_reel_url
+        if collab.get("requires_reel") and not effective_reel_url:
             raise HTTPException(status_code=400, detail="A reel URL is required for this opportunity")
 
         if collab.get("requires_headshot") and not application.headshot_url:
             raise HTTPException(status_code=400, detail="A headshot is required for this opportunity")
 
-        if collab.get("requires_resume") and not application.resume_url:
+        # Resolve resume_id to resume_url if needed
+        resolved_resume_url = application.resume_url
+        if not resolved_resume_url and application.resume_id:
+            # Look up the resume to get its file_url
+            resume_result = client.table("user_resumes").select("file_url, file_key").eq(
+                "id", application.resume_id
+            ).single().execute()
+            if resume_result.data:
+                # Use file_url if available, otherwise generate signed URL from file_key
+                if resume_result.data.get("file_url"):
+                    resolved_resume_url = resume_result.data["file_url"]
+                elif resume_result.data.get("file_key"):
+                    from app.core.storage import storage_client
+                    signed_result = storage_client.from_("backlot-files").create_signed_url(
+                        resume_result.data["file_key"],
+                        expires_in=86400 * 7  # 7 days
+                    )
+                    if signed_result.get("signedUrl"):
+                        resolved_resume_url = signed_result["signedUrl"]
+
+        if collab.get("requires_resume") and not resolved_resume_url and not application.resume_id:
             raise HTTPException(status_code=400, detail="A resume is required for this opportunity")
 
         # Get applicant profile snapshot
@@ -1224,9 +1362,12 @@ async def apply_to_collab(
             "cover_note": application.cover_note,
             "availability_notes": application.availability_notes,
             "rate_expectation": application.rate_expectation,
-            "reel_url": application.reel_url,
+            "reel_url": effective_reel_url,
             "headshot_url": application.headshot_url,
-            "resume_url": application.resume_url,
+            "resume_url": resolved_resume_url,
+            "resume_id": application.resume_id,
+            "self_tape_url": application.self_tape_url,
+            "special_skills": application.special_skills or [],
             "selected_credit_ids": application.selected_credit_ids or [],
             "template_id": application.template_id,
             "local_hire_confirmed": application.local_hire_confirmed,
@@ -1240,21 +1381,37 @@ async def apply_to_collab(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to submit application")
 
+        # Calculate match score for the application (async, non-blocking)
+        try:
+            from app.jobs.score_applications import ApplicationScoringJob
+            application_id = result.data[0]["id"]
+            await ApplicationScoringJob.score_single_application(str(application_id))
+        except Exception as score_error:
+            # Log but don't fail the application submission
+            print(f"Error calculating match score: {score_error}")
+
         # If save_as_template is True, create a template
         if application.save_as_template and application.template_name:
-            template_data = {
-                "user_id": user_id,
-                "name": application.template_name,
-                "cover_letter": application.cover_note,
-                "elevator_pitch": application.elevator_pitch,
-                "rate_expectation": application.rate_expectation,
-                "availability_notes": application.availability_notes,
-                "default_reel_url": application.reel_url,
-                "default_headshot_url": application.headshot_url,
-                "default_resume_url": application.resume_url,
-                "default_credit_ids": application.selected_credit_ids or [],
-            }
-            client.table("application_templates").insert(template_data).execute()
+            try:
+                template_data = {
+                    "user_id": user_id,
+                    "name": application.template_name,
+                    "cover_letter": application.cover_note,
+                    "elevator_pitch": application.elevator_pitch,
+                    "rate_expectation": application.rate_expectation,
+                    "availability_notes": application.availability_notes,
+                    "default_reel_url": effective_reel_url,
+                    "default_headshot_url": application.headshot_url,
+                    "default_resume_url": resolved_resume_url,
+                    "default_resume_id": application.resume_id,
+                    "default_credit_ids": application.selected_credit_ids or [],
+                }
+                print(f"[apply_to_collab] Creating application template: {application.template_name}")
+                print(f"[apply_to_collab] Template data: {template_data}")
+                template_result = client.table("application_templates").insert(template_data).execute()
+                print(f"[apply_to_collab] Template created: {template_result.data}")
+            except Exception as template_error:
+                print(f"[apply_to_collab] ERROR creating template: {template_error}")
 
         # If template_id was provided, record usage
         if application.template_id:
@@ -1282,29 +1439,52 @@ async def apply_to_collab(
 async def list_collab_applications(
     collab_id: str,
     status: Optional[str] = None,
+    sort: Optional[str] = Query(None, description="Sort by: score, date, name"),
     authorization: str = Header(None)
 ):
-    """List applications for a collab (owner only)"""
+    """
+    List applications for a collab.
+    Access is granted to:
+    - Collab owner
+    - Users with explicit permission
+    - Production team members (if collab is linked to a production)
+
+    Supports sorting by:
+    - score: Match score (highest first)
+    - date: Application date (newest first, default)
+    - name: Applicant name (alphabetical)
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Verify user owns this collab
-        collab = client.table("community_collabs").select("id, user_id").eq(
-            "id", collab_id
-        ).single().execute()
+        # Check if user has permission to view applications
+        permission = check_collab_application_access(user_id, collab_id, "view")
 
-        if not collab.data:
-            raise HTTPException(status_code=404, detail="Collab not found")
-
-        if collab.data.get("user_id") != user_id:
-            raise HTTPException(status_code=403, detail="You can only view applications for your own collabs")
-
-        # Get applications
+        # Get applications with sorting
         query = client.table("community_collab_applications").select("*").eq(
             "collab_id", collab_id
-        ).order("is_promoted", desc=True).order("created_at", desc=True)
+        ).order("is_promoted", desc=True)
+
+        # Apply secondary sort based on sort parameter
+        if sort == "score":
+            # Sort by match_score descending (highest score first), nulls last
+            query = query.order("match_score", desc=True, nullsfirst=False)
+        elif sort == "name":
+            # For name sorting, we'll sort in Python after fetching profiles
+            query = query.order("created_at", desc=True)
+        else:
+            # Default: sort by date
+            query = query.order("created_at", desc=True)
 
         if status:
             query = query.eq("status", status)
@@ -1320,8 +1500,38 @@ async def list_collab_applications(
             ).in_("id", applicant_ids).execute()
             profile_map = {p["id"]: p for p in (profiles_result.data or [])}
 
+            # Collect all resume_ids that need URL resolution
+            resume_ids_to_resolve = [
+                app["resume_id"] for app in applications
+                if app.get("resume_id") and not app.get("resume_url")
+            ]
+
+            # Batch fetch resume URLs if needed
+            resume_url_map = {}
+            if resume_ids_to_resolve:
+                from app.core.storage import storage_client
+                resumes_result = client.table("user_resumes").select(
+                    "id, file_url, file_key"
+                ).in_("id", resume_ids_to_resolve).execute()
+
+                for resume in (resumes_result.data or []):
+                    if resume.get("file_url"):
+                        resume_url_map[resume["id"]] = resume["file_url"]
+                    elif resume.get("file_key"):
+                        # Generate signed URL for private files
+                        signed_result = storage_client.from_("backlot-files").create_signed_url(
+                            resume["file_key"],
+                            expires_in=3600  # 1 hour
+                        )
+                        if signed_result.get("signedUrl"):
+                            resume_url_map[resume["id"]] = signed_result["signedUrl"]
+
             for app in applications:
                 app["current_profile"] = profile_map.get(app.get("applicant_user_id"))
+
+                # Resolve resume_url from resume_id if needed
+                if app.get("resume_id") and not app.get("resume_url"):
+                    app["resume_url"] = resume_url_map.get(app["resume_id"])
 
                 # Fetch selected credits if any
                 if app.get("selected_credit_ids"):
@@ -1329,6 +1539,14 @@ async def list_collab_applications(
                         "id, project_title, role, year"
                     ).in_("id", app["selected_credit_ids"]).execute()
                     app["selected_credits"] = credits_result.data or []
+
+            # Apply name sorting if requested (after profiles are loaded)
+            if sort == "name":
+                def get_sort_name(app):
+                    profile = app.get("current_profile") or {}
+                    name = profile.get("display_name") or profile.get("full_name") or profile.get("username") or "zzz"
+                    return (not app.get("is_promoted", False), name.lower())
+                applications.sort(key=get_sort_name)
 
         return applications
 
@@ -1345,8 +1563,16 @@ async def list_my_collab_applications(
     authorization: str = Header(None)
 ):
     """List current user's collab applications"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -1390,19 +1616,72 @@ async def list_collab_applications_received(
     collab_id: Optional[str] = None,
     authorization: str = Header(None)
 ):
-    """List all applications received for collabs posted by the current user"""
+    """
+    List all applications received for collabs where the user has access.
+    Access is granted if user is:
+    - The collab owner
+    - Has explicit permission in collab_application_permissions
+    - A team member on the linked production
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Get all collabs posted by this user
-        collabs_query = client.table("community_collabs").select("id, title, type").eq("user_id", user_id)
+        # Get all collabs where user has access:
+        # 1. Collabs owned by user
+        owned_collabs = client.table("community_collabs").select("id, title, type, production_id").eq("user_id", user_id).execute()
+        owned_collab_ids = [c["id"] for c in (owned_collabs.data or [])]
 
+        # 2. Collabs with explicit permissions
+        permissions = client.table("collab_application_permissions").select("collab_id").eq("granted_to_user_id", user_id).execute()
+        permitted_collab_ids = [p["collab_id"] for p in (permissions.data or [])]
+
+        # 3. Collabs linked to productions where user is owner or crew
+        # Get productions where user is owner
+        user_projects = client.table("backlot_projects").select("id").eq("owner_id", user_id).execute()
+        user_project_ids = [p["id"] for p in (user_projects.data or [])]
+
+        # Get productions where user is crew
+        crew_memberships = client.table("backlot_project_members").select("project_id").eq("user_id", user_id).execute()
+        crew_project_ids = [c["project_id"] for c in (crew_memberships.data or [])]
+
+        all_project_ids = list(set(user_project_ids + crew_project_ids))
+
+        # Get collabs linked to these productions (check both production_id and backlot_project_id)
+        production_linked_collab_ids = []
+        if all_project_ids:
+            # Check production_id
+            linked_collabs_1 = client.table("community_collabs").select("id").in_("production_id", all_project_ids).execute()
+            production_linked_collab_ids.extend([c["id"] for c in (linked_collabs_1.data or [])])
+            # Check backlot_project_id
+            linked_collabs_2 = client.table("community_collabs").select("id").in_("backlot_project_id", all_project_ids).execute()
+            production_linked_collab_ids.extend([c["id"] for c in (linked_collabs_2.data or [])])
+            # Deduplicate
+            production_linked_collab_ids = list(set(production_linked_collab_ids))
+
+        # Combine all accessible collab IDs
+        all_accessible_collab_ids = list(set(owned_collab_ids + permitted_collab_ids + production_linked_collab_ids))
+
+        # If specific collab_id requested, verify access
         if collab_id:
-            collabs_query = collabs_query.eq("id", collab_id)
+            if collab_id not in all_accessible_collab_ids:
+                raise HTTPException(status_code=403, detail="You don't have permission to view applications for this collab")
+            all_accessible_collab_ids = [collab_id]
 
-        collabs_result = collabs_query.execute()
+        if not all_accessible_collab_ids:
+            return {"applications": [], "by_collab": {}, "count": 0}
+
+        # Get collab details for all accessible collabs
+        collabs_result = client.table("community_collabs").select("id, title, type, user_id, production_id").in_("id", all_accessible_collab_ids).execute()
         user_collabs = collabs_result.data or []
         collab_ids = [c["id"] for c in user_collabs]
 
@@ -1468,21 +1747,31 @@ async def update_application_status(
     authorization: str = Header(None)
 ):
     """Update application status (collab owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Get application and verify ownership of the collab
-        app_result = client.table("community_collab_applications").select(
-            "*, collab:community_collabs(id, user_id)"
-        ).eq("id", application_id).single().execute()
+        # Get application first
+        app_result = client.table("community_collab_applications").select("*").eq("id", application_id).single().execute()
 
         if not app_result.data:
             raise HTTPException(status_code=404, detail="Application not found")
 
-        collab = app_result.data.get("collab")
-        if not collab or collab.get("user_id") != user_id:
+        # Get collab separately (Supabase-style client doesn't support nested joins)
+        collab_id = app_result.data.get("collab_id")
+        collab_result = client.table("community_collabs").select("id, user_id").eq("id", collab_id).single().execute()
+        collab = collab_result.data if collab_result else None
+
+        if not collab or collab.get("user_id") != profile_id:
             raise HTTPException(status_code=403, detail="You can only update applications for your own collabs")
 
         # Valid status transitions
@@ -1624,8 +1913,16 @@ async def withdraw_application(
     authorization: str = Header(None)
 ):
     """Withdraw/delete a collab application (applicant only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
@@ -1870,21 +2167,31 @@ async def update_application_schedule(
     authorization: str = Header(None)
 ):
     """Update interview/callback schedule for an application (collab owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Get application and verify ownership of the collab
-        app_result = client.table("community_collab_applications").select(
-            "*, collab:community_collabs(id, user_id)"
-        ).eq("id", application_id).single().execute()
+        # Get application first
+        app_result = client.table("community_collab_applications").select("*").eq("id", application_id).single().execute()
 
         if not app_result.data:
             raise HTTPException(status_code=404, detail="Application not found")
 
-        collab = app_result.data.get("collab")
-        if not collab or collab.get("user_id") != user_id:
+        # Get collab separately (Supabase-style client doesn't support nested joins)
+        collab_id = app_result.data.get("collab_id")
+        collab_result = client.table("community_collabs").select("id, user_id").eq("id", collab_id).single().execute()
+        collab = collab_result.data if collab_result else None
+
+        if not collab or collab.get("user_id") != profile_id:
             raise HTTPException(status_code=403, detail="You can only update schedules for your own collabs")
 
         # Update schedule
@@ -1910,7 +2217,7 @@ async def update_application_schedule(
             "application_id": application_id,
             "old_status": app_result.data.get("status"),
             "new_status": app_result.data.get("status"),  # Status doesn't change
-            "changed_by_user_id": user_id,
+            "changed_by_user_id": profile_id,
             "metadata": {
                 "action": "schedule_updated",
                 "interview_scheduled_at": schedule.interview_scheduled_at,
@@ -1938,24 +2245,38 @@ async def book_applicant(
     authorization: str = Header(None)
 ):
     """Book an applicant (collab owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Get application with collab details
-        app_result = client.table("community_collab_applications").select(
-            "*, collab:community_collabs(id, user_id, title, type, backlot_project_id), applicant:profiles(id, username, display_name, avatar_url, email)"
-        ).eq("id", application_id).single().execute()
+        # Get application first
+        app_result = client.table("community_collab_applications").select("*").eq("id", application_id).single().execute()
 
         if not app_result.data:
             raise HTTPException(status_code=404, detail="Application not found")
 
         app_data = app_result.data
-        collab = app_data.get("collab")
-        applicant = app_data.get("applicant")
 
-        if not collab or collab.get("user_id") != user_id:
+        # Get collab separately (Supabase-style client doesn't support nested joins)
+        collab_id = app_data.get("collab_id")
+        collab_result = client.table("community_collabs").select("id, user_id, title, type, backlot_project_id").eq("id", collab_id).single().execute()
+        collab = collab_result.data if collab_result else None
+
+        # Get applicant profile separately
+        applicant_user_id = app_data.get("applicant_user_id")
+        applicant_result = client.table("profiles").select("id, username, display_name, avatar_url, email").eq("id", applicant_user_id).single().execute()
+        applicant = applicant_result.data if applicant_result else None
+
+        if not collab or collab.get("user_id") != profile_id:
             raise HTTPException(status_code=403, detail="You can only book applicants for your own collabs")
 
         if app_data.get("status") == "booked":
@@ -1965,7 +2286,7 @@ async def book_applicant(
         update_data = {
             "status": "booked",
             "booked_at": datetime.utcnow().isoformat(),
-            "booked_by_user_id": user_id,
+            "booked_by_user_id": profile_id,
             "booking_rate": booking.booking_rate,
             "booking_start_date": booking.booking_start_date,
             "booking_end_date": booking.booking_end_date,
@@ -2029,7 +2350,7 @@ async def book_applicant(
             "application_id": application_id,
             "old_status": app_data.get("status"),
             "new_status": "booked",
-            "changed_by_user_id": user_id,
+            "changed_by_user_id": profile_id,
             "metadata": {
                 "action": "booked",
                 "booking_rate": booking.booking_rate,
@@ -2068,23 +2389,33 @@ async def unbook_applicant(
     authorization: str = Header(None)
 ):
     """Unbook an applicant (collab owner only) - reverses a booking"""
+    from app.api.users import get_profile_id_from_cognito_id
+
     user = await get_current_user_from_token(authorization)
-    user_id = user["id"]
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
     client = get_client()
 
     try:
-        # Get application and verify ownership
-        app_result = client.table("community_collab_applications").select(
-            "*, collab:community_collabs(id, user_id, title)"
-        ).eq("id", application_id).single().execute()
+        # Get application first
+        app_result = client.table("community_collab_applications").select("*").eq("id", application_id).single().execute()
 
         if not app_result.data:
             raise HTTPException(status_code=404, detail="Application not found")
 
         app_data = app_result.data
-        collab = app_data.get("collab")
 
-        if not collab or collab.get("user_id") != user_id:
+        # Get collab separately (Supabase-style client doesn't support nested joins)
+        collab_id = app_data.get("collab_id")
+        collab_result = client.table("community_collabs").select("id, user_id, title").eq("id", collab_id).single().execute()
+        collab = collab_result.data if collab_result else None
+
+        if not collab or collab.get("user_id") != profile_id:
             raise HTTPException(status_code=403, detail="You can only unbook applicants for your own collabs")
 
         if app_data.get("status") != "booked":
@@ -2099,7 +2430,7 @@ async def unbook_applicant(
         update_data = {
             "status": "shortlisted",  # Move back to shortlisted
             "unbooked_at": datetime.utcnow().isoformat(),
-            "unbooked_by_user_id": user_id,
+            "unbooked_by_user_id": profile_id,
             "unbook_reason": unbook.reason,
             "project_role_id": None,
             "status_changed_at": datetime.utcnow().isoformat(),
@@ -2115,7 +2446,7 @@ async def unbook_applicant(
             "application_id": application_id,
             "old_status": "booked",
             "new_status": "shortlisted",
-            "changed_by_user_id": user_id,
+            "changed_by_user_id": profile_id,
             "reason": unbook.reason,
             "metadata": {
                 "action": "unbooked",
@@ -2183,6 +2514,248 @@ async def get_application_history(
     except Exception as e:
         print(f"Error getting application history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# COLLAB APPLICATION PERMISSIONS
+# =====================================================
+
+@router.get("/collabs/{collab_id}/permissions")
+async def list_collab_permissions(
+    collab_id: str,
+    authorization: str = Header(None)
+):
+    """List all users who have permission to view applications for a collab (owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is the collab owner
+    collab = client.table("community_collabs").select("user_id").eq("id", collab_id).single().execute()
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if collab.data["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only the collab owner can manage permissions")
+
+    # Get all permissions with user details
+    permissions = client.table("collab_application_permissions").select(
+        "*, granted_to:profiles!granted_to_user_id(id, username, full_name, display_name, avatar_url), granted_by:profiles!granted_by_user_id(id, username, display_name)"
+    ).eq("collab_id", collab_id).order("created_at", desc=True).execute()
+
+    return {
+        "permissions": permissions.data or [],
+        "count": len(permissions.data or [])
+    }
+
+
+@router.post("/collabs/{collab_id}/permissions")
+async def grant_collab_permission(
+    collab_id: str,
+    input: CollabPermissionInput,
+    authorization: str = Header(None)
+):
+    """Grant a user permission to view/manage applications for a collab (owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is the collab owner
+    collab = client.table("community_collabs").select("user_id, title").eq("id", collab_id).single().execute()
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if collab.data["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only the collab owner can manage permissions")
+
+    # Verify target user exists
+    target_user = client.table("profiles").select("id, username").eq("id", input.user_id).single().execute()
+    if not target_user.data:
+        raise HTTPException(status_code=404, detail="Target user not found")
+
+    # Check if permission already exists
+    existing = client.table("collab_application_permissions").select("id").eq("collab_id", collab_id).eq("granted_to_user_id", input.user_id).single().execute()
+    if existing.data:
+        raise HTTPException(status_code=400, detail="User already has permission for this collab")
+
+    # Create permission
+    result = client.table("collab_application_permissions").insert({
+        "collab_id": collab_id,
+        "granted_to_user_id": input.user_id,
+        "granted_by_user_id": user_id,
+        "permission_level": input.permission_level,
+        "can_update_status": input.can_update_status,
+        "can_message_applicants": input.can_message_applicants,
+        "can_book_applicants": input.can_book_applicants,
+    }).execute()
+
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to grant permission")
+
+    return {
+        "success": True,
+        "permission": result.data[0],
+        "message": f"Permission granted to {target_user.data['username']} for '{collab.data['title']}'"
+    }
+
+
+@router.put("/collabs/{collab_id}/permissions/{permission_id}")
+async def update_collab_permission(
+    collab_id: str,
+    permission_id: str,
+    input: CollabPermissionUpdate,
+    authorization: str = Header(None)
+):
+    """Update an existing permission (owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is the collab owner
+    collab = client.table("community_collabs").select("user_id").eq("id", collab_id).single().execute()
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if collab.data["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only the collab owner can manage permissions")
+
+    # Verify permission exists and belongs to this collab
+    existing = client.table("collab_application_permissions").select("id").eq("id", permission_id).eq("collab_id", collab_id).single().execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Permission not found")
+
+    # Build update data
+    update_data = {"updated_at": datetime.utcnow().isoformat()}
+    if input.permission_level is not None:
+        update_data["permission_level"] = input.permission_level
+    if input.can_update_status is not None:
+        update_data["can_update_status"] = input.can_update_status
+    if input.can_message_applicants is not None:
+        update_data["can_message_applicants"] = input.can_message_applicants
+    if input.can_book_applicants is not None:
+        update_data["can_book_applicants"] = input.can_book_applicants
+
+    result = client.table("collab_application_permissions").update(update_data).eq("id", permission_id).execute()
+
+    return {
+        "success": True,
+        "permission": result.data[0] if result.data else None
+    }
+
+
+@router.delete("/collabs/{collab_id}/permissions/{permission_id}")
+async def revoke_collab_permission(
+    collab_id: str,
+    permission_id: str,
+    authorization: str = Header(None)
+):
+    """Revoke a user's permission to view applications (owner only)"""
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is the collab owner
+    collab = client.table("community_collabs").select("user_id").eq("id", collab_id).single().execute()
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if collab.data["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only the collab owner can manage permissions")
+
+    # Verify permission exists
+    existing = client.table("collab_application_permissions").select("id").eq("id", permission_id).eq("collab_id", collab_id).single().execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Permission not found")
+
+    # Delete permission
+    client.table("collab_application_permissions").delete().eq("id", permission_id).execute()
+
+    return {"success": True, "message": "Permission revoked"}
+
+
+@router.post("/collabs/{collab_id}/permissions/grant-team")
+async def grant_team_permissions(
+    collab_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Grant view permissions to all crew members of the linked production.
+    Only works if the collab has a production_id set.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    # Verify user is the collab owner
+    collab = client.table("community_collabs").select("user_id, production_id, title").eq("id", collab_id).single().execute()
+    if not collab.data:
+        raise HTTPException(status_code=404, detail="Collab not found")
+    if collab.data["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Only the collab owner can manage permissions")
+
+    production_id = collab.data.get("production_id")
+    if not production_id:
+        raise HTTPException(status_code=400, detail="This collab is not linked to a production. Set production_id first.")
+
+    # Get all crew members for this production
+    crew = client.table("backlot_project_members").select("user_id").eq("project_id", production_id).execute()
+    crew_user_ids = [c["user_id"] for c in (crew.data or []) if c.get("user_id")]
+
+    if not crew_user_ids:
+        return {"success": True, "granted_count": 0, "message": "No crew members found for this production"}
+
+    # Grant permissions to crew members who don't already have them
+    granted_count = 0
+    for crew_user_id in crew_user_ids:
+        if crew_user_id == user_id:
+            continue  # Skip the owner
+
+        # Check if permission already exists
+        existing = client.table("collab_application_permissions").select("id").eq("collab_id", collab_id).eq("granted_to_user_id", crew_user_id).single().execute()
+        if not existing.data:
+            client.table("collab_application_permissions").insert({
+                "collab_id": collab_id,
+                "granted_to_user_id": crew_user_id,
+                "granted_by_user_id": user_id,
+                "permission_level": "view",
+                "can_update_status": False,
+                "can_message_applicants": False,
+                "can_book_applicants": False,
+            }).execute()
+            granted_count += 1
+
+    return {
+        "success": True,
+        "granted_count": granted_count,
+        "total_crew": len(crew_user_ids),
+        "message": f"Granted view permissions to {granted_count} team members for '{collab.data['title']}'"
+    }
 
 
 # =====================================================
@@ -3246,4 +3819,137 @@ async def get_user_directory(
         raise
     except Exception as e:
         print(f"Error fetching user directory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# APPLICATION SCORING ENDPOINTS
+# =====================================================
+
+@router.post("/collabs/{collab_id}/applications/score-all")
+async def score_all_collab_applications(
+    collab_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Calculate match scores for all applications to a collab.
+    Requires owner or admin permission.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    from app.jobs.score_applications import ApplicationScoringJob
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    # Check permission (must be collab owner or have admin permission)
+    try:
+        check_collab_application_access(user_id, collab_id, "manage")
+    except HTTPException:
+        raise HTTPException(status_code=403, detail="Not authorized to manage this collab")
+
+    try:
+        result = await ApplicationScoringJob.score_collab_applications(collab_id)
+        return result
+    except Exception as e:
+        print(f"Error scoring collab applications: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/collabs/{collab_id}/applications/{application_id}/score")
+async def score_single_application(
+    collab_id: str,
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Calculate or recalculate match score for a single application.
+    Requires owner or admin permission.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    from app.jobs.score_applications import ApplicationScoringJob
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    # Check permission
+    try:
+        check_collab_application_access(user_id, collab_id, "view")
+    except HTTPException:
+        raise HTTPException(status_code=403, detail="Not authorized to view this collab")
+
+    try:
+        result = await ApplicationScoringJob.score_single_application(application_id)
+        return result
+    except Exception as e:
+        print(f"Error scoring application: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collabs/{collab_id}/applications/{application_id}/score-details")
+async def get_application_score_details(
+    collab_id: str,
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get detailed score breakdown for an application.
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+    from app.services.applicant_scoring import ApplicantScoringService
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+
+    user_id = get_profile_id_from_cognito_id(cognito_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    # Check permission
+    try:
+        check_collab_application_access(user_id, collab_id, "view")
+    except HTTPException:
+        raise HTTPException(status_code=403, detail="Not authorized to view this collab")
+
+    client = get_client()
+
+    try:
+        # Get stored score breakdown
+        app_result = client.table("community_collab_applications").select(
+            "id, match_score, score_breakdown, score_calculated_at"
+        ).eq("id", application_id).eq("collab_id", collab_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        # If no score yet, calculate it
+        if app_result.data.get("match_score") is None:
+            breakdown = await ApplicantScoringService.calculate_score(application_id)
+            return {
+                "application_id": application_id,
+                "score": breakdown["total"],
+                "breakdown": breakdown,
+                "calculated_at": None,
+                "freshly_calculated": True
+            }
+
+        return {
+            "application_id": application_id,
+            "score": app_result.data.get("match_score"),
+            "breakdown": app_result.data.get("score_breakdown"),
+            "calculated_at": app_result.data.get("score_calculated_at"),
+            "freshly_calculated": False
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting score details: {e}")
         raise HTTPException(status_code=500, detail=str(e))
