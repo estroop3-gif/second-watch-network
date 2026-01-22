@@ -69,7 +69,18 @@ async def list_resumes(authorization: str = Header(None)):
         .order("created_at", desc=True) \
         .execute()
 
-    return result.data or []
+    # Generate fresh signed URLs for each resume (bucket is not public)
+    resumes = result.data or []
+    for resume in resumes:
+        if resume.get("file_key"):
+            signed_result = storage_client.from_("backlot-files").create_signed_url(
+                resume["file_key"],
+                expires_in=3600  # 1 hour
+            )
+            if signed_result.get("signedUrl"):
+                resume["file_url"] = signed_result["signedUrl"]
+
+    return resumes
 
 
 @router.post("")
