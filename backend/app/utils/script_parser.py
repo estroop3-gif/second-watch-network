@@ -50,6 +50,7 @@ class ParsedScene:
     time_of_day: Optional[str]
     location_hint: str
     page_start: Optional[int] = None
+    page_length: Optional[float] = None
     sequence: int = 0
 
 

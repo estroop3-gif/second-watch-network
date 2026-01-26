@@ -11964,8 +11964,25 @@ async def import_script(
                 # Remove None values for cleaner JSON
                 title_page_data = {k: v for k, v in title_page_data.items() if v is not None}
 
+            # Calculate page_length from sequential page_start values
+            scenes_list = parse_result.scenes
+            scenes_list = sorted(scenes_list, key=lambda s: (s.page_start or 0, s.sequence or 0))
+
+            for i, scene in enumerate(scenes_list):
+                if scene.page_start is not None:
+                    # Get next scene's page_start to calculate length
+                    if i + 1 < len(scenes_list) and scenes_list[i + 1].page_start is not None:
+                        next_page_start = scenes_list[i + 1].page_start
+                        calculated_length = float(next_page_start - scene.page_start)
+                        scene.page_length = max(0.125, calculated_length)  # Minimum 1/8 page
+                    else:
+                        # Last scene - estimate 1 page if no next scene info
+                        scene.page_length = 1.0
+                else:
+                    scene.page_length = 1.0  # Default if no page info
+
             # Convert parsed scenes to dict format for database
-            for scene in parse_result.scenes:
+            for scene in scenes_list:
                 parsed_scenes.append({
                     "scene_number": scene.scene_number,
                     "slugline": scene.slugline,
@@ -11973,6 +11990,7 @@ async def import_script(
                     "time_of_day": scene.time_of_day,
                     "set_name": scene.location_hint,
                     "page_start": scene.page_start,
+                    "page_length": scene.page_length,
                     "sequence": scene.sequence
                 })
 
@@ -20596,10 +20614,22 @@ async def get_booked_people(
             for p in (profiles_result.data or []):
                 profiles_map[str(p["id"])] = p
 
+        # Fetch booking rates from collab applications if source_collab_application_id exists
+        application_ids = [r.get("source_collab_application_id") for r in booked_roles if r.get("source_collab_application_id")]
+        applications_map = {}
+        if application_ids:
+            apps_result = client.table("community_collab_applications").select(
+                "id, booking_rate"
+            ).in_("id", application_ids).execute()
+            for app in (apps_result.data or []):
+                applications_map[str(app["id"])] = app
+
         # Format for call sheet use
         booked_people = []
         for role in booked_roles:
             profile = profiles_map.get(str(role["booked_user_id"]), {})
+            application = applications_map.get(str(role.get("source_collab_application_id")), {}) if role.get("source_collab_application_id") else {}
+
             booked_people.append({
                 "role_id": role["id"],
                 "role_title": role["title"],
@@ -20612,6 +20642,7 @@ async def get_booked_people(
                 "email": profile.get("email"),
                 "start_date": role.get("start_date"),
                 "end_date": role.get("end_date"),
+                "booking_rate": application.get("booking_rate"),  # e.g., "$500/daily"
             })
 
         return {"success": True, "booked_people": booked_people, "count": len(booked_people)}
@@ -37447,6 +37478,38 @@ async def create_call_sheet_from_production_day(
             "created_by": user["id"],
         }
 
+        # If production day has hour_schedule, convert to schedule_blocks for call sheet
+        hour_schedule = day.get("hour_schedule") or []
+        if hour_schedule:
+            schedule_blocks = []
+            for block in hour_schedule:
+                # Skip scene blocks (scenes are shown separately on call sheets)
+                if block.get("type") == "scene":
+                    continue
+                # Format time as "7:00 AM"
+                start_time = block.get("start_time", "")
+                try:
+                    hour, minute = start_time.split(":")
+                    hour_int = int(hour)
+                    period = "AM" if hour_int < 12 else "PM"
+                    display_hour = hour_int if hour_int <= 12 else hour_int - 12
+                    if display_hour == 0:
+                        display_hour = 12
+                    formatted_time = f"{display_hour}:{minute} {period}"
+                except:
+                    formatted_time = start_time
+
+                # Get activity name based on block type
+                activity = block.get("activity_name") or block.get("type", "").replace("_", " ").title()
+                if block.get("activity_notes"):
+                    activity = f"{activity} - {block['activity_notes']}"
+
+                schedule_blocks.append({
+                    "time": formatted_time,
+                    "activity": activity
+                })
+            call_sheet_data["schedule_blocks"] = schedule_blocks
+
         result = client.table("backlot_call_sheets").insert(call_sheet_data).execute()
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create call sheet")
@@ -37478,10 +37541,17 @@ async def create_call_sheet_from_production_day(
                     client.table("backlot_call_sheet_scenes").insert(scene_data).execute()
                     scenes_added += 1
 
+        synced_fields = ["date", "call_time", "wrap_time", "location"]
+        if hour_schedule:
+            synced_fields.append("schedule_blocks")
+        if scenes_added > 0:
+            synced_fields.append("scenes")
+
         return {
             "call_sheet": call_sheet,
-            "synced_fields": ["date", "call_time", "wrap_time", "location", "scenes"] if scenes_added > 0 else ["date", "call_time", "wrap_time", "location"],
-            "scenes_added": scenes_added
+            "synced_fields": synced_fields,
+            "scenes_added": scenes_added,
+            "schedule_blocks_imported": len(hour_schedule) > 0
         }
 
     except HTTPException:
@@ -37938,6 +38008,203 @@ async def get_linked_call_sheet(
         raise
     except Exception as e:
         print(f"Error getting linked call sheet: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# HOUR SCHEDULE
+# =====================================================
+
+@router.put("/production-days/{day_id}/hour-schedule")
+async def save_hour_schedule(
+    day_id: str,
+    data: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """Save hour-by-hour schedule for a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
+
+        # Update hour schedule
+        update_data = {
+            "hour_schedule": data.get("hour_schedule", []),
+            "schedule_config": data.get("schedule_config"),
+        }
+
+        result = client.table("backlot_production_days").update(update_data).eq("id", day_id).execute()
+
+        return {
+            "success": True,
+            "day": result.data[0] if result.data else None,
+            "message": "Hour schedule saved successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving hour schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/sync-hour-schedule")
+async def sync_hour_schedule(
+    day_id: str,
+    data: dict = Body(...),
+    authorization: str = Header(None)
+):
+    """
+    Sync hour schedule between production day and linked call sheet.
+    direction: "to_callsheet" | "from_callsheet"
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        direction = data.get("direction", "to_callsheet")
+
+        # Get the production day
+        day_result = client.table("backlot_production_days").select("*").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        day = day_result.data[0]
+        await verify_project_access(client, day["project_id"], user["id"])
+
+        # Find linked call sheet
+        cs_result = client.table("backlot_call_sheets").select("*").eq(
+            "production_day_id", day_id
+        ).execute()
+
+        if not cs_result.data:
+            raise HTTPException(status_code=404, detail="No linked call sheet found")
+
+        call_sheet = cs_result.data[0]
+
+        if direction == "to_callsheet":
+            # Convert hour schedule to call sheet schedule_blocks
+            hour_schedule = day.get("hour_schedule") or []
+
+            # Filter out scene blocks and format for call sheet
+            schedule_blocks = []
+            for block in hour_schedule:
+                if block.get("type") != "scene":
+                    # Format time as "7:00 AM"
+                    start_time = block.get("start_time", "00:00")
+                    try:
+                        hours, minutes = start_time.split(":")
+                        hours = int(hours)
+                        minutes = int(minutes)
+                        ampm = "AM" if hours < 12 else "PM"
+                        display_hours = hours % 12 or 12
+                        formatted_time = f"{display_hours}:{minutes:02d} {ampm}"
+                    except:
+                        formatted_time = start_time
+
+                    schedule_blocks.append({
+                        "time": formatted_time,
+                        "activity": block.get("activity_name", "Activity"),
+                        "notes": block.get("activity_notes")
+                    })
+
+            # Update call sheet
+            client.table("backlot_call_sheets").update({
+                "schedule_blocks": schedule_blocks
+            }).eq("id", call_sheet["id"]).execute()
+
+            return {
+                "success": True,
+                "direction": direction,
+                "blocks_synced": len(schedule_blocks),
+                "message": f"Synced {len(schedule_blocks)} blocks to call sheet"
+            }
+
+        else:  # from_callsheet
+            # Convert call sheet schedule_blocks to hour schedule format
+            schedule_blocks = call_sheet.get("schedule_blocks") or []
+
+            # Parse schedule blocks into hour schedule format
+            hour_schedule = []
+            for i, block in enumerate(schedule_blocks):
+                time_str = block.get("time", "")
+                activity = block.get("activity", "Activity")
+
+                # Parse time string like "7:00 AM"
+                try:
+                    import re
+                    match = re.match(r"(\d{1,2}):(\d{2})\s*(AM|PM)?", time_str, re.I)
+                    if match:
+                        hours = int(match.group(1))
+                        minutes = match.group(2)
+                        period = match.group(3)
+                        if period and period.upper() == "PM" and hours != 12:
+                            hours += 12
+                        elif period and period.upper() == "AM" and hours == 12:
+                            hours = 0
+                        start_time = f"{hours:02d}:{minutes}"
+                    else:
+                        start_time = "00:00"
+                except:
+                    start_time = "00:00"
+
+                # Infer block type from activity name
+                activity_lower = activity.lower()
+                if "crew call" in activity_lower or "call time" in activity_lower:
+                    block_type = "crew_call"
+                elif "first shot" in activity_lower:
+                    block_type = "first_shot"
+                elif "lunch" in activity_lower or "meal" in activity_lower or "breakfast" in activity_lower:
+                    block_type = "meal"
+                elif "wrap" in activity_lower:
+                    block_type = "wrap"
+                elif "move" in activity_lower or "travel" in activity_lower:
+                    block_type = "company_move"
+                else:
+                    block_type = "activity"
+
+                # Estimate duration based on type
+                duration = 0
+                if block_type == "meal":
+                    duration = 30
+                elif block_type == "activity":
+                    duration = 30
+                elif block_type == "company_move":
+                    duration = 30
+
+                hour_schedule.append({
+                    "id": f"block_{i}_{start_time.replace(':', '')}",
+                    "type": block_type,
+                    "start_time": start_time,
+                    "end_time": start_time,  # Will need recalculation
+                    "duration_minutes": duration,
+                    "activity_name": activity,
+                    "activity_notes": block.get("notes"),
+                    "sort_order": i
+                })
+
+            # Update production day
+            client.table("backlot_production_days").update({
+                "hour_schedule": hour_schedule
+            }).eq("id", day_id).execute()
+
+            return {
+                "success": True,
+                "direction": direction,
+                "blocks_synced": len(hour_schedule),
+                "message": f"Synced {len(hour_schedule)} blocks from call sheet"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error syncing hour schedule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
