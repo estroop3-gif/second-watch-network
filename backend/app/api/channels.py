@@ -480,8 +480,43 @@ async def get_folder_unread_counts(user_id: str):
                 folder_counts[folder] = 0
             folder_counts[folder] += unread
 
-        # Calculate total
-        folder_counts["all"] = sum(folder_counts.values())
+        # Get custom folder counts
+        custom_folder_query = """
+            SELECT
+                'custom:' || f.id::text as folder,
+                f.name as folder_name,
+                f.color,
+                f.icon,
+                COALESCE(v.unread_count, 0) as unread_count
+            FROM user_message_folders f
+            LEFT JOIN v_custom_folder_unread_counts v ON v.folder_id = f.id
+            WHERE f.user_id = :user_id
+            ORDER BY f.position ASC
+        """
+        custom_rows = execute_query(custom_folder_query, {"user_id": user_id})
+
+        # Add custom folders to counts
+        custom_folders = []
+        for row in custom_rows:
+            folder_key = row["folder"]
+            folder_counts[folder_key] = row["unread_count"]
+            custom_folders.append({
+                "id": folder_key,
+                "name": row["folder_name"],
+                "color": row.get("color"),
+                "icon": row.get("icon"),
+                "unread_count": row["unread_count"],
+            })
+
+        # Calculate total (excluding custom folder counts from "all" to avoid double-counting)
+        # Custom folders contain DMs that are already counted in system folders
+        folder_counts["all"] = sum(
+            count for key, count in folder_counts.items()
+            if not key.startswith("custom:")
+        )
+
+        # Include custom folders metadata in response
+        folder_counts["_custom_folders"] = custom_folders
 
         return folder_counts
 

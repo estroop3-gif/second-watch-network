@@ -2634,3 +2634,129 @@ export function useWeatherForecast(
     staleTime: 1000 * 60 * 30, // Cache for 30 minutes
   });
 }
+
+// =====================================================
+// Hour Schedule
+// =====================================================
+
+import {
+  HourScheduleBlock,
+  HourScheduleConfig,
+} from '@/types/backlot';
+
+/**
+ * Hook for fetching a production day's hour schedule
+ */
+export function useHourSchedule(dayId: string | null) {
+  return useQuery({
+    queryKey: ['backlot-hour-schedule', dayId],
+    queryFn: async () => {
+      if (!dayId) return null;
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch day' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+      const day = result.day || result;
+      return {
+        schedule: (day.hour_schedule || []) as HourScheduleBlock[],
+        config: day.schedule_config as HourScheduleConfig | null,
+        updatedAt: day.hour_schedule_updated_at as string | null,
+      };
+    },
+    enabled: !!dayId,
+  });
+}
+
+/**
+ * Hook for saving a production day's hour schedule
+ */
+export function useSaveHourSchedule(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      schedule,
+      config,
+    }: {
+      schedule: HourScheduleBlock[];
+      config: HourScheduleConfig;
+    }) => {
+      if (!dayId) throw new Error('Day ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}/hour-schedule`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ hour_schedule: schedule, schedule_config: config }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to save hour schedule' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-hour-schedule', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-days'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day', dayId] });
+    },
+  });
+}
+
+/**
+ * Hook for syncing hour schedule with linked call sheet
+ */
+export function useSyncHourSchedule(dayId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      direction,
+    }: {
+      direction: 'to_callsheet' | 'from_callsheet';
+    }) => {
+      if (!dayId) throw new Error('Day ID is required');
+
+      const token = getAuthToken();
+
+      const response = await fetch(`${API_BASE}/api/v1/backlot/production-days/${dayId}/sync-hour-schedule`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ direction }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to sync hour schedule' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-hour-schedule', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-days'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-linked-call-sheet', dayId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-call-sheets'] });
+    },
+  });
+}

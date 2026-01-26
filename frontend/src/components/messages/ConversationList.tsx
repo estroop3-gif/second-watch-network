@@ -4,7 +4,17 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 import { Skeleton } from '../ui/skeleton';
-import { User, Film, Megaphone, Flag, Calendar, Bell } from 'lucide-react';
+import { User, Film, Megaphone, Flag, Calendar, Bell, MoreVertical, FolderInput } from 'lucide-react';
+import { MoveToFolderMenu, FolderBadge } from './MoveToFolderMenu';
+import { useUserPresence } from '@/hooks/useUserPresence';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+  ContextMenuSeparator,
+} from '@/components/ui/context-menu';
+import { Button } from '@/components/ui/button';
 
 // Icons for project update types
 const UPDATE_TYPE_ICONS = {
@@ -77,38 +87,82 @@ const DMItem = ({
   onSelect: () => void;
 }) => {
   const name = item.other_participant.full_name || item.other_participant.username || 'User';
+  const partnerId = item.other_participant.id;
+  const { isOnline } = useUserPresence({ userId: partnerId });
 
   return (
-    <button
-      onClick={onSelect}
-      className={cn(
-        'flex items-center gap-3 p-2 rounded-md text-left transition-colors w-full overflow-hidden',
-        isSelected ? 'bg-muted-gray' : 'hover:bg-muted-gray/50'
-      )}
-    >
-      <Avatar className="h-10 w-10 flex-shrink-0">
-        <AvatarImage src={item.other_participant.avatar_url || undefined} alt={name} />
-        <AvatarFallback>{name?.[0] || <User />}</AvatarFallback>
-      </Avatar>
-      <div className="flex-1 overflow-hidden">
-        <div className="flex justify-between items-center">
-          <p className="font-semibold truncate text-sm">{name}</p>
-          <p className="text-xs text-muted-foreground flex-shrink-0 ml-2">
-            {item.last_message_at && formatDistanceToNow(new Date(item.last_message_at), { addSuffix: true })}
-          </p>
-        </div>
-        <div className="flex justify-between items-start mt-1">
-          <p className="text-xs text-muted-foreground truncate">
-            {item.last_message || 'No messages yet'}
-          </p>
-          {item.unread_count > 0 && (
-            <span className="bg-accent-yellow text-charcoal-black text-xs font-bold rounded-full px-1.5 py-0.5 ml-2">
-              {item.unread_count}
-            </span>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          className={cn(
+            'flex items-center gap-3 p-2 rounded-md text-left transition-colors w-full overflow-hidden cursor-pointer group',
+            isSelected ? 'bg-muted-gray' : 'hover:bg-muted-gray/50'
           )}
+          onClick={onSelect}
+        >
+          <div className="relative flex-shrink-0">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={item.other_participant.avatar_url || undefined} alt={name} />
+              <AvatarFallback>{name?.[0] || <User />}</AvatarFallback>
+            </Avatar>
+            {/* Online status indicator */}
+            {isOnline && (
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 border-2 border-charcoal-black rounded-full" />
+            )}
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2 min-w-0">
+                <p className="font-semibold truncate text-sm">{name}</p>
+                <FolderBadge partnerId={partnerId} />
+              </div>
+              <div className="flex items-center gap-1 flex-shrink-0 ml-2">
+                <p className="text-xs text-muted-foreground">
+                  {item.last_message_at && formatDistanceToNow(new Date(item.last_message_at), { addSuffix: true })}
+                </p>
+                <MoveToFolderMenu
+                  partnerId={partnerId}
+                  trigger={
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MoreVertical className="h-3 w-3" />
+                    </Button>
+                  }
+                />
+              </div>
+            </div>
+            <div className="flex justify-between items-start mt-1">
+              <p className="text-xs text-muted-foreground truncate">
+                {item.last_message || 'No messages yet'}
+              </p>
+              {item.unread_count > 0 && (
+                <span className="bg-accent-yellow text-charcoal-black text-xs font-bold rounded-full px-1.5 py-0.5 ml-2">
+                  {item.unread_count}
+                </span>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
-    </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-48 bg-charcoal-black border-muted-gray text-bone-white">
+        <MoveToFolderMenu
+          partnerId={partnerId}
+          trigger={
+            <ContextMenuItem
+              onSelect={(e) => e.preventDefault()}
+              className="cursor-pointer"
+            >
+              <FolderInput className="h-4 w-4 mr-2" />
+              Move to folder
+            </ContextMenuItem>
+          }
+        />
+      </ContextMenuContent>
+    </ContextMenu>
   );
 };
 

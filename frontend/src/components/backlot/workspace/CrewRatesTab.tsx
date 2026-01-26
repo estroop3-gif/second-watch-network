@@ -1,5 +1,5 @@
 /**
- * CrewRatesTab - Manage day rates for cast and crew
+ * CrewRatesTab - Integrated crew rates with booked people
  */
 
 import { useState, useMemo } from 'react';
@@ -43,6 +43,7 @@ import {
   useCrewRateMutations,
   useBookedPeople,
   useProjectRoles,
+  useAutoCreateRateFromBooking,
 } from '@/hooks/backlot';
 import type {
   CrewRate,
@@ -70,8 +71,10 @@ import {
   FileSignature,
   Upload,
   PenLine,
+  AlertCircle,
 } from 'lucide-react';
 import { formatDate } from '@/lib/dateUtils';
+import { parseBookingRate, formatRate } from '@/lib/rateUtils';
 
 interface CrewRatesTabProps {
   projectId: string;
@@ -91,6 +94,15 @@ const RATE_TYPE_SUFFIXES: Record<CrewRateType, string> = {
   flat: '',
 };
 
+// Merged person + rate data
+interface PersonWithRate {
+  person: BacklotBookedPerson;
+  rate: CrewRate | null;
+  parsedBookingRate: ReturnType<typeof parseBookingRate>;
+  hasRate: boolean;
+  needsRateCreation: boolean;
+}
+
 export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
   const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
@@ -99,23 +111,47 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
   const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set(['Camera', 'Grip & Electric', 'Production']));
 
   // Queries
-  const { data: rates, isLoading } = useCrewRates(projectId);
-  const { data: bookedPeople } = useBookedPeople(projectId);
+  const { data: bookedPeople, isLoading: loadingPeople } = useBookedPeople(projectId);
+  const { data: existingRates, isLoading: loadingRates } = useCrewRates(projectId);
   const { data: projectRoles } = useProjectRoles(projectId, { includeApplications: false });
   const { createRate, updateRate, deleteRate } = useCrewRateMutations(projectId);
+  const autoCreateRate = useAutoCreateRateFromBooking(projectId);
 
-  // Group rates by department
-  const ratesByDepartment = useMemo(() => {
-    if (!rates) return {};
+  const isLoading = loadingPeople || loadingRates;
 
-    const grouped: Record<string, CrewRate[]> = {};
+  // Merge booked people with their rates
+  const peopleWithRates = useMemo((): PersonWithRate[] => {
+    if (!bookedPeople) return [];
 
-    rates.forEach((rate) => {
-      const dept = rate.role?.department || 'Other';
+    return bookedPeople.map((person) => {
+      // Find existing rate for this person
+      const rate = existingRates?.find(r => r.user_id === person.user_id) || null;
+
+      // If no rate but has booking_rate, parse it
+      const parsedBookingRate = !rate && person.booking_rate
+        ? parseBookingRate(person.booking_rate)
+        : null;
+
+      return {
+        person,
+        rate,
+        parsedBookingRate,
+        hasRate: !!rate,
+        needsRateCreation: !rate && !!parsedBookingRate,
+      };
+    });
+  }, [bookedPeople, existingRates]);
+
+  // Group by department
+  const peopleByDepartment = useMemo(() => {
+    const grouped: Record<string, PersonWithRate[]> = {};
+
+    peopleWithRates.forEach((item) => {
+      const dept = item.person.department || 'Other';
       if (!grouped[dept]) {
         grouped[dept] = [];
       }
-      grouped[dept].push(rate);
+      grouped[dept].push(item);
     });
 
     // Sort departments
@@ -125,31 +161,29 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
       return a.localeCompare(b);
     });
 
-    const sorted: Record<string, CrewRate[]> = {};
+    const sorted: Record<string, PersonWithRate[]> = {};
     sortedDepartments.forEach((dept) => {
       sorted[dept] = grouped[dept].sort((a, b) => {
-        const nameA = a.user?.full_name || a.role?.title || '';
-        const nameB = b.user?.full_name || b.role?.title || '';
-        return nameA.localeCompare(nameB);
+        return a.person.name.localeCompare(b.person.name);
       });
     });
 
     return sorted;
-  }, [rates]);
+  }, [peopleWithRates]);
 
-  // Filter rates by search
-  const filteredRates = useMemo(() => {
-    if (!searchQuery.trim()) return ratesByDepartment;
+  // Filter by search
+  const filteredPeople = useMemo(() => {
+    if (!searchQuery.trim()) return peopleByDepartment;
 
     const query = searchQuery.toLowerCase();
-    const filtered: Record<string, CrewRate[]> = {};
+    const filtered: Record<string, PersonWithRate[]> = {};
 
-    Object.entries(ratesByDepartment).forEach(([dept, deptRates]) => {
-      const matches = deptRates.filter((rate) => {
-        const userName = rate.user?.full_name?.toLowerCase() || '';
-        const roleTitle = rate.role?.title?.toLowerCase() || '';
+    Object.entries(peopleByDepartment).forEach(([dept, deptPeople]) => {
+      const matches = deptPeople.filter((item) => {
+        const name = item.person.name.toLowerCase();
+        const role = item.person.role_title?.toLowerCase() || '';
         const deptName = dept.toLowerCase();
-        return userName.includes(query) || roleTitle.includes(query) || deptName.includes(query);
+        return name.includes(query) || role.includes(query) || deptName.includes(query);
       });
       if (matches.length > 0) {
         filtered[dept] = matches;
@@ -157,7 +191,7 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
     });
 
     return filtered;
-  }, [ratesByDepartment, searchQuery]);
+  }, [peopleByDepartment, searchQuery]);
 
   const toggleDepartment = (dept: string) => {
     const newExpanded = new Set(expandedDepartments);
@@ -167,6 +201,22 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
       newExpanded.add(dept);
     }
     setExpandedDepartments(newExpanded);
+  };
+
+  const handleAutoCreateRate = async (person: BacklotBookedPerson) => {
+    try {
+      await autoCreateRate.mutateAsync(person);
+      toast({
+        title: 'Rate created',
+        description: `Created rate for ${person.name} from booking data.`,
+      });
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to create rate',
+        variant: 'destructive',
+      });
+    }
   };
 
   const handleDelete = async (rateId: string) => {
@@ -204,17 +254,18 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
   };
 
   // Stats
-  const totalRates = rates?.length || 0;
-  const uniquePeople = new Set(rates?.map(r => r.user_id).filter(Boolean)).size;
+  const totalPeople = peopleWithRates.length;
+  const peopleWithRateEntries = peopleWithRates.filter(p => p.hasRate).length;
+  const needingRateCreation = peopleWithRates.filter(p => p.needsRateCreation).length;
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-lg font-semibold">Day Rates</h3>
+          <h3 className="text-lg font-semibold">Crew Rates</h3>
           <p className="text-sm text-muted-foreground">
-            Set compensation rates for your cast and crew
+            Manage compensation rates for booked cast and crew
           </p>
         </div>
         <Button onClick={() => setShowAddDialog(true)}>
@@ -225,46 +276,46 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2">
-              <DollarSign className="w-5 h-5 text-green-500" />
-              <div>
-                <p className="text-2xl font-bold">{totalRates}</p>
-                <p className="text-xs text-muted-foreground">Total Rates</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
+        <Card className="border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
               <Users className="w-5 h-5 text-blue-500" />
               <div>
-                <p className="text-2xl font-bold">{uniquePeople}</p>
-                <p className="text-xs text-muted-foreground">People with Rates</p>
+                <p className="text-2xl font-bold">{totalPeople}</p>
+                <p className="text-xs text-muted-foreground">Booked People</p>
               </div>
             </div>
           </CardContent>
         </Card>
-        <Card>
+        <Card className="border-muted-gray/30">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-green-500" />
+              <div>
+                <p className="text-2xl font-bold">{peopleWithRateEntries}</p>
+                <p className="text-xs text-muted-foreground">With Rates</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-muted-gray/30">
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 text-orange-500" />
+              <div>
+                <p className="text-2xl font-bold">{needingRateCreation}</p>
+                <p className="text-xs text-muted-foreground">Need Rate Entry</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-muted-gray/30">
           <CardContent className="pt-4">
             <div className="flex items-center gap-2">
               <Briefcase className="w-5 h-5 text-purple-500" />
               <div>
-                <p className="text-2xl font-bold">{Object.keys(ratesByDepartment).length}</p>
+                <p className="text-2xl font-bold">{Object.keys(peopleByDepartment).length}</p>
                 <p className="text-xs text-muted-foreground">Departments</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-orange-500" />
-              <div>
-                <p className="text-2xl font-bold">{bookedPeople?.length || 0}</p>
-                <p className="text-xs text-muted-foreground">Booked People</p>
               </div>
             </div>
           </CardContent>
@@ -282,29 +333,25 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
         />
       </div>
 
-      {/* Rates List by Department */}
+      {/* People List by Department */}
       {isLoading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
         </div>
-      ) : Object.keys(filteredRates).length === 0 ? (
-        <Card>
+      ) : Object.keys(filteredPeople).length === 0 ? (
+        <Card className="border-muted-gray/30">
           <CardContent className="py-12 text-center">
-            <DollarSign className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-            <h3 className="text-lg font-semibold mb-2">No rates configured</h3>
+            <Users className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+            <h3 className="text-lg font-semibold mb-2">No booked people</h3>
             <p className="text-muted-foreground mb-4">
-              Add day rates for your booked cast and crew members.
+              Book cast and crew members to manage their rates here.
             </p>
-            <Button onClick={() => setShowAddDialog(true)}>
-              <Plus className="w-4 h-4 mr-2" />
-              Add Rate
-            </Button>
           </CardContent>
         </Card>
       ) : (
         <div className="space-y-4">
-          {Object.entries(filteredRates).map(([department, deptRates]) => (
-            <Card key={department}>
+          {Object.entries(filteredPeople).map(([department, deptPeople]) => (
+            <Card key={department} className="border-muted-gray/30">
               <CardHeader
                 className="cursor-pointer hover:bg-muted/50 transition-colors py-3"
                 onClick={() => toggleDepartment(department)}
@@ -318,22 +365,24 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
                     )}
                     <CardTitle className="text-base">{department}</CardTitle>
                     <Badge variant="secondary" className="text-xs">
-                      {deptRates.length}
+                      {deptPeople.length}
                     </Badge>
                   </div>
                 </div>
               </CardHeader>
               {expandedDepartments.has(department) && (
                 <CardContent className="pt-0">
-                  <div className="divide-y">
-                    {deptRates.map((rate) => (
-                      <RateRow
-                        key={rate.id}
-                        rate={rate}
-                        onEdit={() => setEditingRate(rate)}
-                        onDelete={() => handleDelete(rate.id)}
+                  <div className="divide-y divide-muted-gray/20">
+                    {deptPeople.map((item) => (
+                      <PersonRateRow
+                        key={item.person.user_id}
+                        item={item}
+                        onEdit={() => item.rate && setEditingRate(item.rate)}
+                        onDelete={() => item.rate && handleDelete(item.rate.id)}
+                        onAutoCreate={() => handleAutoCreateRate(item.person)}
                         formatCurrency={formatCurrency}
                         formatDateRange={formatDateRange}
+                        isCreating={autoCreateRate.isPending}
                       />
                     ))}
                   </div>
@@ -388,126 +437,181 @@ export function CrewRatesTab({ projectId }: CrewRatesTabProps) {
   );
 }
 
-// Rate Row Component
-interface RateRowProps {
-  rate: CrewRate;
+// Person Rate Row Component
+interface PersonRateRowProps {
+  item: PersonWithRate;
   onEdit: () => void;
   onDelete: () => void;
+  onAutoCreate: () => void;
   formatCurrency: (amount: number) => string;
   formatDateRange: (start: string | null, end: string | null) => string;
+  isCreating: boolean;
 }
 
-function RateRow({ rate, onEdit, onDelete, formatCurrency, formatDateRange }: RateRowProps) {
+function PersonRateRow({
+  item,
+  onEdit,
+  onDelete,
+  onAutoCreate,
+  formatCurrency,
+  formatDateRange,
+  isCreating,
+}: PersonRateRowProps) {
+  const { person, rate, parsedBookingRate, hasRate, needsRateCreation } = item;
+
   return (
     <div className="flex items-center justify-between py-3 group">
       <div className="flex items-center gap-3">
         <Avatar className="h-10 w-10">
-          <AvatarImage src={rate.user?.avatar_url || undefined} />
+          <AvatarImage src={person.avatar_url || undefined} />
           <AvatarFallback>
-            {rate.user?.full_name?.charAt(0) || rate.role?.title?.charAt(0) || '?'}
+            {person.name?.charAt(0) || '?'}
           </AvatarFallback>
         </Avatar>
         <div>
           <div className="flex items-center gap-2">
-            <p className="font-medium">
-              {rate.user?.full_name || 'Unassigned'}
-            </p>
-            {/* Source indicator */}
-            {rate.source === 'deal_memo' && (
+            <p className="font-medium">{person.name}</p>
+            {/* Status badges */}
+            {rate?.source === 'deal_memo' && (
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0 gap-1">
                 <FileSignature className="w-3 h-3" />
                 Deal Memo
               </Badge>
             )}
-            {rate.source === 'imported' && (
+            {rate?.source === 'imported' && (
               <Badge variant="outline" className="text-[10px] px-1.5 py-0 gap-1">
                 <Upload className="w-3 h-3" />
                 Imported
               </Badge>
             )}
+            {!hasRate && person.booking_rate && (
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0 gap-1 border-orange-500 text-orange-600">
+                <AlertCircle className="w-3 h-3" />
+                From Booking
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-muted-foreground">
-            {rate.role?.title || 'No role specified'}
+            {person.role_title || 'No role specified'}
           </p>
         </div>
       </div>
 
       <div className="flex items-center gap-6">
         {/* Rate Info */}
-        <div className="text-right">
-          <p className="font-semibold text-green-600">
-            {formatCurrency(rate.rate_amount)}
-            <span className="text-muted-foreground font-normal">
-              {RATE_TYPE_SUFFIXES[rate.rate_type]}
-            </span>
-          </p>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {rate.rate_type !== 'flat' && (
-              <>
-                <span>OT {rate.overtime_multiplier}x</span>
-                <span>|</span>
-                <span>DT {rate.double_time_multiplier}x</span>
-              </>
-            )}
+        {hasRate && rate ? (
+          <>
+            <div className="text-right">
+              <p className="font-semibold text-green-600">
+                {formatCurrency(rate.rate_amount)}
+                <span className="text-muted-foreground font-normal">
+                  {RATE_TYPE_SUFFIXES[rate.rate_type]}
+                </span>
+              </p>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {rate.rate_type !== 'flat' && (
+                  <>
+                    <span>OT {rate.overtime_multiplier}x</span>
+                    <span>|</span>
+                    <span>DT {rate.double_time_multiplier}x</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Allowances */}
+            <div className="flex items-center gap-2 min-w-[140px]">
+              {rate.kit_rental_rate && (
+                <Badge variant="outline" className="text-xs">
+                  <Briefcase className="w-3 h-3 mr-1" />
+                  Kit {formatCurrency(rate.kit_rental_rate)}
+                </Badge>
+              )}
+              {rate.car_allowance && (
+                <Badge variant="outline" className="text-xs">
+                  <Car className="w-3 h-3 mr-1" />
+                  {formatCurrency(rate.car_allowance)}
+                </Badge>
+              )}
+              {rate.phone_allowance && (
+                <Badge variant="outline" className="text-xs">
+                  <Phone className="w-3 h-3 mr-1" />
+                  {formatCurrency(rate.phone_allowance)}
+                </Badge>
+              )}
+            </div>
+
+            {/* Effective Dates */}
+            <div className="text-xs text-muted-foreground min-w-[150px] text-right">
+              <Calendar className="w-3 h-3 inline mr-1" />
+              {formatDateRange(rate.effective_start, rate.effective_end)}
+            </div>
+          </>
+        ) : needsRateCreation && parsedBookingRate ? (
+          <>
+            {/* Show booking rate info */}
+            <div className="text-right">
+              <p className="font-medium text-orange-600">
+                {formatRate(parsedBookingRate.amount, parsedBookingRate.period)}
+              </p>
+              <p className="text-xs text-muted-foreground">Booking Rate</p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onAutoCreate}
+              disabled={isCreating}
+              className="border-orange-500 text-orange-600 hover:bg-orange-50"
+            >
+              {isCreating ? (
+                <>
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-3 h-3 mr-1" />
+                  Create Rate
+                </>
+              )}
+            </Button>
+          </>
+        ) : (
+          <div className="text-sm text-muted-foreground">
+            No rate set
           </div>
-        </div>
-
-        {/* Allowances */}
-        <div className="flex items-center gap-2 min-w-[140px]">
-          {rate.kit_rental_rate && (
-            <Badge variant="outline" className="text-xs">
-              <Briefcase className="w-3 h-3 mr-1" />
-              Kit {formatCurrency(rate.kit_rental_rate)}
-            </Badge>
-          )}
-          {rate.car_allowance && (
-            <Badge variant="outline" className="text-xs">
-              <Car className="w-3 h-3 mr-1" />
-              {formatCurrency(rate.car_allowance)}
-            </Badge>
-          )}
-          {rate.phone_allowance && (
-            <Badge variant="outline" className="text-xs">
-              <Phone className="w-3 h-3 mr-1" />
-              {formatCurrency(rate.phone_allowance)}
-            </Badge>
-          )}
-        </div>
-
-        {/* Effective Dates */}
-        <div className="text-xs text-muted-foreground min-w-[150px] text-right">
-          <Calendar className="w-3 h-3 inline mr-1" />
-          {formatDateRange(rate.effective_start, rate.effective_end)}
-        </div>
+        )}
 
         {/* Actions */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="opacity-0 group-hover:opacity-100 transition-opacity"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onEdit}>
-              <Edit className="w-4 h-4 mr-2" />
-              Edit Rate
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onDelete} className="text-destructive">
-              <Trash className="w-4 h-4 mr-2" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {hasRate && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <MoreVertical className="w-4 h-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={onEdit}>
+                <Edit className="w-4 h-4 mr-2" />
+                Edit Rate
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onDelete} className="text-destructive">
+                <Trash className="w-4 h-4 mr-2" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
     </div>
   );
 }
 
-// Rate Dialog Component
+// Rate Dialog Component (mostly unchanged from original)
 interface RateDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -617,6 +721,14 @@ function RateDialog({
                 const person = bookedPeople?.find(p => p.user_id === v);
                 if (person?.role_id) {
                   setRoleId(person.role_id);
+                }
+                // Try to auto-fill from booking_rate
+                if (person?.booking_rate) {
+                  const parsed = parseBookingRate(person.booking_rate);
+                  if (parsed) {
+                    setRateAmount(parsed.amount.toString());
+                    setRateType(parsed.period);
+                  }
                 }
               }}
             >

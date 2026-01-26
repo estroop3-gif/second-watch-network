@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { useToast } from '@/hooks/use-toast';
 import { ConversationList } from '@/components/messages/ConversationList';
 import { MessageView } from '@/components/messages/MessageView';
 import { ProjectUpdateView } from '@/components/messages/ProjectUpdateView';
@@ -12,6 +13,7 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { useSearchParams } from 'react-router-dom';
 import { NewMessageModal } from '@/components/messages/NewMessageModal';
 import {
@@ -27,11 +29,16 @@ import {
   Building2,
   Hash,
   ChevronLeft,
-  Shield,
   ChevronRight,
   PanelLeftClose,
   PanelLeft,
+  Settings,
+  Menu,
 } from 'lucide-react';
+import { CustomFolderList } from '@/components/messages/CustomFolderList';
+import { FolderManagementModal } from '@/components/messages/FolderManagementModal';
+import { FolderSettingsPanel } from '@/components/messages/FolderSettingsPanel';
+import { useCustomFolders, useFolderConversations } from '@/hooks/useCustomFolders';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { useSocket } from '@/hooks/useSocket';
 import { cn } from '@/lib/utils';
@@ -121,7 +128,7 @@ const FOLDERS = [
   { id: 'set', label: 'Set House', icon: Building2 },
 ] as const;
 
-type FolderId = typeof FOLDERS[number]['id'];
+type FolderId = typeof FOLDERS[number]['id'] | `custom:${string}`;
 
 // ============================================================================
 // HELPERS
@@ -145,6 +152,7 @@ const parseSelectionId = (id: string | null): { type: 'dm' | 'project' | 'channe
 
 const Messages = () => {
   const { user } = useAuth();
+  const { toast } = useToast();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -162,9 +170,14 @@ const Messages = () => {
   const [isE2EESetupOpen, setIsE2EESetupOpen] = useState(false);
   const [isLoadingUserConversation, setIsLoadingUserConversation] = useState(false);
   const [pendingTemplate, setPendingTemplate] = useState<string | null>(null);
-  const [showFolderSidebar, setShowFolderSidebar] = useState(true);
   const [isFolderSidebarCollapsed, setIsFolderSidebarCollapsed] = useState(false);
   const [e2eeEnabled, setE2eeEnabled] = useState(false);
+  const [showFolderCreateModal, setShowFolderCreateModal] = useState(false);
+
+  // Store conversation data for conversations not yet in inbox (no messages yet)
+  const [syntheticConversation, setSyntheticConversation] = useState<{ id: string; other_participant: any } | null>(null);
+  const [showFolderSettings, setShowFolderSettings] = useState(false);
+  const [showMobileFolderDrawer, setShowMobileFolderDrawer] = useState(false);
 
   // Context for quick templates (when coming from applicant page)
   const [applicantContext, setApplicantContext] = useState<{
@@ -194,16 +207,28 @@ const Messages = () => {
     refetchInterval: 30000, // Refresh every 30 seconds
   });
 
+  // Fetch custom folders
+  const { data: customFolders } = useCustomFolders();
+
+  // Check if selected folder is a custom folder
+  const isCustomFolder = selectedFolder.startsWith('custom:');
+  const customFolderId = isCustomFolder ? selectedFolder.replace('custom:', '') : null;
+
+  // Fetch conversations in custom folder (if selected)
+  const { data: customFolderConversations } = useFolderConversations(customFolderId);
+
   // Fetch unified inbox (DMs + Project Updates) filtered by folder
   const { data: inboxItems, isLoading } = useQuery<InboxItem[]>({
     queryKey: ['inbox', user?.id, selectedFolder],
     queryFn: async () => {
       if (!user?.id) return [];
+      // Don't fetch inbox for custom folders (we use useFolderConversations instead)
+      if (selectedFolder.startsWith('custom:')) return [];
       const folder = selectedFolder === 'all' ? undefined : selectedFolder;
       const data = await api.getUnifiedInbox(user.id, { folder });
       return data || [];
     },
-    enabled: !!user?.id,
+    enabled: !!user?.id && !selectedFolder.startsWith('custom:'),
   });
 
   // Fetch channels for current folder
@@ -224,8 +249,27 @@ const Messages = () => {
     enabled: !!user?.id,
   });
 
-  // Combine inbox items with channels
+  // Combine inbox items with channels and custom folder conversations
   const combinedItems = useMemo(() => {
+    // If viewing a custom folder, use custom folder conversations
+    if (isCustomFolder && customFolderConversations) {
+      return customFolderConversations.map((conv) => ({
+        id: conv.id,
+        type: 'dm' as const,
+        folder: conv.folder,
+        context_id: null,
+        context_metadata: {},
+        project_id: null,
+        project_title: null,
+        project_thumbnail: null,
+        other_participant: conv.other_participant,
+        last_message: conv.last_message,
+        last_message_at: conv.last_message_at || '',
+        update_type: null,
+        unread_count: conv.unread_count,
+      })) as DMInboxItem[];
+    }
+
     const items: InboxItem[] = [...(inboxItems || [])];
 
     // Add channels as inbox items
@@ -253,7 +297,7 @@ const Messages = () => {
     });
 
     return items;
-  }, [inboxItems, channels]);
+  }, [inboxItems, channels, isCustomFolder, customFolderConversations]);
 
   // Handle ?user= URL parameter to auto-open conversation
   useEffect(() => {
@@ -262,10 +306,26 @@ const Messages = () => {
     const loadConversation = async () => {
       setIsLoadingUserConversation(true);
       try {
+        console.log('[Messages] Getting or creating conversation with user:', targetUserIdFromUrl);
         const result = await api.getOrCreateConversationByUser(targetUserIdFromUrl, user.id);
+        console.log('[Messages] Conversation result:', result);
 
         if (result.conversation_id) {
           setSelectedId(result.conversation_id);
+
+          // Store synthetic conversation data for conversations not yet in inbox
+          if (result.target_user) {
+            setSyntheticConversation({
+              id: result.conversation_id,
+              other_participant: {
+                id: result.target_user.id,
+                username: result.target_user.username,
+                full_name: result.target_user.full_name,
+                display_name: result.target_user.display_name,
+                avatar_url: result.target_user.avatar_url,
+              },
+            });
+          }
 
           const newParams = new URLSearchParams();
           newParams.set('id', result.conversation_id);
@@ -281,9 +341,29 @@ const Messages = () => {
 
           setSearchParams(newParams, { replace: true });
           queryClient.invalidateQueries({ queryKey: ['inbox'] });
+        } else {
+          console.warn('[Messages] No conversation_id returned, opening new message modal');
+          toast({
+            title: 'Unable to open conversation',
+            description: 'Opening new message dialog instead.',
+            variant: 'default',
+          });
+          // If no conversation ID returned, open new message modal instead
+          setIsNewMessageModalOpen(true);
+          // Clear the user param from URL
+          setSearchParams({}, { replace: true });
         }
-      } catch (error) {
-        console.error('Failed to load conversation:', error);
+      } catch (error: any) {
+        console.error('[Messages] Failed to load conversation:', error);
+        toast({
+          title: 'Error loading conversation',
+          description: error?.message || 'Could not load the conversation. Opening new message dialog.',
+          variant: 'destructive',
+        });
+        // On error, fall back to opening new message modal
+        setIsNewMessageModalOpen(true);
+        // Clear the user param from URL to prevent retry loop
+        setSearchParams({}, { replace: true });
       } finally {
         setIsLoadingUserConversation(false);
       }
@@ -327,10 +407,23 @@ const Messages = () => {
     }
   }, [selectionIdFromUrl, targetUserIdFromUrl]);
 
+  // Clear synthetic conversation once it appears in the inbox (after first message sent)
+  useEffect(() => {
+    if (syntheticConversation && combinedItems) {
+      const existsInInbox = combinedItems.some(
+        item => item.type === 'dm' && item.id === syntheticConversation.id
+      );
+      if (existsInInbox) {
+        console.log('[Messages] Conversation now in inbox, clearing synthetic data');
+        setSyntheticConversation(null);
+      }
+    }
+  }, [syntheticConversation, combinedItems]);
+
   const handleSelectFolder = useCallback((folder: FolderId) => {
     setSelectedFolder(folder);
     if (isMobile) {
-      setShowFolderSidebar(false);
+      setShowMobileFolderDrawer(false);
     }
   }, [isMobile]);
 
@@ -338,6 +431,8 @@ const Messages = () => {
     setSelectedId(id);
     setSearchParams({ id, folder: selectedFolder });
     setApplicantContext(null);
+    // Clear synthetic conversation when manually selecting an item
+    setSyntheticConversation(null);
   }, [setSearchParams, selectedFolder]);
 
   const handleBackToList = useCallback(() => {
@@ -364,19 +459,36 @@ const Messages = () => {
     const dmItem = combinedItems.find(
       (item): item is DMInboxItem => item.type === 'dm' && item.id === selection.id
     );
-    if (!dmItem) return null;
-    return {
-      id: dmItem.id,
-      last_message_at: dmItem.last_message_at,
-      other_participant: dmItem.other_participant,
-      last_message: dmItem.last_message ? {
-        content: dmItem.last_message,
-        created_at: dmItem.last_message_at,
-        sender_id: '',
-      } : null,
-      unread_count: dmItem.unread_count,
-    } as Conversation;
-  }, [combinedItems, selection]);
+
+    // If found in inbox, use that data
+    if (dmItem) {
+      return {
+        id: dmItem.id,
+        last_message_at: dmItem.last_message_at,
+        other_participant: dmItem.other_participant,
+        last_message: dmItem.last_message ? {
+          content: dmItem.last_message,
+          created_at: dmItem.last_message_at,
+          sender_id: '',
+        } : null,
+        unread_count: dmItem.unread_count,
+      } as Conversation;
+    }
+
+    // If not in inbox but we have synthetic conversation data (new conversation with no messages)
+    if (syntheticConversation && syntheticConversation.id === selection.id) {
+      console.log('[Messages] Using synthetic conversation for:', selection.id);
+      return {
+        id: syntheticConversation.id,
+        last_message_at: new Date().toISOString(),
+        other_participant: syntheticConversation.other_participant,
+        last_message: null,
+        unread_count: 0,
+      } as Conversation;
+    }
+
+    return null;
+  }, [combinedItems, selection, syntheticConversation]);
 
   // Find selected project for ProjectUpdateView
   const selectedProject = useMemo(() => {
@@ -400,16 +512,18 @@ const Messages = () => {
   // Loading state
   if (isLoadingUserConversation) {
     return (
-      <div className="container mx-auto py-6 px-4 md:px-6 lg:px-8 flex flex-col flex-grow">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-3xl font-bold text-bone-white">Messages</h1>
-        </div>
-        <Card className="flex-grow bg-charcoal-black border-muted-gray text-bone-white overflow-hidden flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 className="h-8 w-8 animate-spin text-accent-yellow" />
-            <p className="text-muted-foreground">Opening conversation...</p>
+      <div className="fixed inset-0 top-20 flex flex-col bg-charcoal-black overflow-hidden">
+        <div className="container mx-auto px-4 md:px-6 lg:px-8 py-6 flex flex-col h-full overflow-hidden">
+          <div className="flex justify-between items-center mb-4 flex-shrink-0">
+            <h1 className="text-3xl font-bold text-bone-white">Messages</h1>
           </div>
-        </Card>
+          <Card className="flex-1 min-h-0 bg-charcoal-black border-muted-gray text-bone-white overflow-hidden flex items-center justify-center">
+            <div className="flex flex-col items-center gap-3">
+              <Loader2 className="h-8 w-8 animate-spin text-accent-yellow" />
+              <p className="text-muted-foreground">Opening conversation...</p>
+            </div>
+          </Card>
+        </div>
       </div>
     );
   }
@@ -429,34 +543,45 @@ const Messages = () => {
         onClose={() => setIsE2EESetupOpen(false)}
         onSetupComplete={() => setE2eeEnabled(true)}
       />
+      <FolderManagementModal
+        isOpen={showFolderCreateModal}
+        onClose={() => setShowFolderCreateModal(false)}
+      />
+      <FolderSettingsPanel
+        isOpen={showFolderSettings}
+        onClose={() => setShowFolderSettings(false)}
+        e2eeEnabled={e2eeEnabled}
+        onEnableE2EE={() => {
+          setShowFolderSettings(false);
+          setIsE2EESetupOpen(true);
+        }}
+      />
 
-      <div className="container mx-auto py-6 px-4 md:px-6 lg:px-8 flex flex-col flex-grow">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-3xl font-bold text-bone-white">Messages</h1>
-          <div className="flex items-center gap-2">
-            {!e2eeEnabled && (
+      <div className="fixed inset-0 top-20 flex flex-col bg-charcoal-black overflow-hidden">
+        <div className="container mx-auto px-4 md:px-6 lg:px-8 py-6 flex flex-col h-full overflow-hidden">
+          <div className="flex justify-between items-center mb-4 flex-shrink-0">
+            <h1 className="text-3xl font-bold text-bone-white">Messages</h1>
+            <div className="flex items-center gap-2">
               <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsE2EESetupOpen(true)}
-                className="gap-2"
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowFolderSettings(true)}
+                title="Message Settings"
               >
-                <Shield className="h-4 w-4" />
-                Enable E2EE
+                <Settings className="h-5 w-5" />
               </Button>
-            )}
-            <Button onClick={() => setIsNewMessageModalOpen(true)}>
-              <MessageSquarePlus className="mr-2 h-4 w-4" />
-              New Message
-            </Button>
+              <Button onClick={() => setIsNewMessageModalOpen(true)}>
+                <MessageSquarePlus className="mr-2 h-4 w-4" />
+                New Message
+              </Button>
+            </div>
           </div>
-        </div>
 
-        <Card className="flex-grow bg-charcoal-black border-muted-gray text-bone-white overflow-hidden flex">
+          <Card className="flex-1 min-h-0 bg-charcoal-black border-muted-gray text-bone-white overflow-hidden flex">
           {/* Folder Sidebar */}
           {showListOnMobile && !isMobile && (
             <div className={cn(
-              "border-r border-muted-gray flex-shrink-0 flex flex-col transition-all duration-200",
+              "border-r border-muted-gray flex-shrink-0 flex flex-col transition-all duration-200 overflow-hidden",
               isFolderSidebarCollapsed ? "w-12" : "w-48"
             )}>
               <div className="p-3 border-b border-muted-gray flex items-center justify-between">
@@ -522,52 +647,21 @@ const Messages = () => {
                     );
                   })}
                 </div>
+
+                {/* Custom Folders */}
+                <CustomFolderList
+                  folders={customFolders || []}
+                  selectedFolderId={selectedFolder}
+                  onSelectFolder={(id) => handleSelectFolder(id as FolderId)}
+                  onCreateFolder={() => setShowFolderCreateModal(true)}
+                  onManageFolders={() => setShowFolderSettings(true)}
+                  isCollapsed={isFolderSidebarCollapsed}
+                />
               </ScrollArea>
             </div>
           )}
 
-          {/* Mobile Folder Sidebar - Full Width */}
-          {showListOnMobile && isMobile && (
-            <div className="w-full border-r border-muted-gray flex-shrink-0 flex flex-col">
-              <div className="p-3 border-b border-muted-gray">
-                <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                  Folders
-                </h2>
-              </div>
-              <ScrollArea className="flex-1">
-                <div className="p-2 space-y-1">
-                  {FOLDERS.map((folder) => {
-                    const Icon = folder.icon;
-                    const count = folderCounts?.[folder.id] || 0;
-                    const isActive = selectedFolder === folder.id;
-
-                    return (
-                      <button
-                        key={folder.id}
-                        onClick={() => handleSelectFolder(folder.id)}
-                        className={cn(
-                          "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
-                          isActive
-                            ? "bg-accent-yellow/20 text-accent-yellow"
-                            : "text-bone-white hover:bg-muted-gray/30"
-                        )}
-                      >
-                        <Icon className="h-4 w-4 flex-shrink-0" />
-                        <span className="flex-1 text-left truncate">{folder.label}</span>
-                        {count > 0 && (
-                          <Badge variant="secondary" className="bg-primary-red text-white text-xs px-1.5 py-0.5 min-w-[20px] text-center">
-                            {count > 99 ? '99+' : count}
-                          </Badge>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </ScrollArea>
-            </div>
-          )}
-
-          {/* Conversation List */}
+          {/* Conversation List (Desktop) */}
           {showListOnMobile && !isMobile && (
             <div className="w-72 flex-shrink-0 border-r border-muted-gray flex flex-col overflow-hidden">
               <ConversationList
@@ -579,9 +673,64 @@ const Messages = () => {
             </div>
           )}
 
-          {/* Mobile: Show conversation list when no selection */}
-          {showListOnMobile && isMobile && selectedFolder && (
+          {/* Mobile: Conversation list with folder drawer */}
+          {isMobile && showListOnMobile && (
             <div className="flex-1 flex flex-col overflow-hidden">
+              {/* Mobile Folder Header */}
+              <div className="flex items-center justify-between p-3 border-b border-muted-gray">
+                <Sheet open={showMobileFolderDrawer} onOpenChange={setShowMobileFolderDrawer}>
+                  <SheetTrigger asChild>
+                    <Button variant="ghost" size="sm" className="gap-2">
+                      <Menu className="h-4 w-4" />
+                      <span className="text-sm font-medium">
+                        {FOLDERS.find(f => f.id === selectedFolder)?.label || 'All'}
+                      </span>
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="left" className="bg-charcoal-black border-r-muted-gray w-[280px] p-0">
+                    <SheetHeader className="p-4 border-b border-muted-gray">
+                      <SheetTitle className="text-bone-white">Folders</SheetTitle>
+                    </SheetHeader>
+                    <ScrollArea className="h-[calc(100vh-60px)]">
+                      <div className="p-2 space-y-1">
+                        {FOLDERS.map((folder) => {
+                          const Icon = folder.icon;
+                          const count = folderCounts?.[folder.id] || 0;
+                          const isActive = selectedFolder === folder.id;
+                          return (
+                            <button
+                              key={folder.id}
+                              onClick={() => handleSelectFolder(folder.id)}
+                              className={cn(
+                                "w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                                isActive
+                                  ? "bg-accent-yellow/20 text-accent-yellow"
+                                  : "text-bone-white hover:bg-muted-gray/30"
+                              )}
+                            >
+                              <Icon className="h-4 w-4 flex-shrink-0" />
+                              <span className="flex-1 text-left truncate">{folder.label}</span>
+                              {count > 0 && (
+                                <Badge variant="secondary" className="bg-primary-red text-white text-xs px-1.5 py-0.5">
+                                  {count > 99 ? '99+' : count}
+                                </Badge>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <CustomFolderList
+                        folders={customFolders || []}
+                        selectedFolderId={selectedFolder}
+                        onSelectFolder={(id) => handleSelectFolder(id as FolderId)}
+                        onCreateFolder={() => setShowFolderCreateModal(true)}
+                        onManageFolders={() => setShowFolderSettings(true)}
+                      />
+                    </ScrollArea>
+                  </SheetContent>
+                </Sheet>
+              </div>
+              {/* Conversation List */}
               <ConversationList
                 items={combinedItems}
                 selectedId={selectedId}
@@ -640,7 +789,8 @@ const Messages = () => {
               )}
             </div>
           )}
-        </Card>
+          </Card>
+        </div>
       </div>
     </>
   );

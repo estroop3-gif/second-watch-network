@@ -35,14 +35,21 @@ interface ApplicantMainContentProps {
   application: CollabApplication;
   collab: CommunityCollab | undefined;
   profile: ApplicantFullProfile | undefined;
-  profileCredits: ApplicantCredit[];
+  credits: ApplicantCredit[];
+  // Quick action handlers
+  onQuickShortlist?: () => void;
+  onQuickReject?: () => void;
+  onQuickBook?: () => void;
 }
 
 export function ApplicantMainContent({
   application,
   collab,
   profile,
-  profileCredits,
+  credits,
+  onQuickShortlist,
+  onQuickReject,
+  onQuickBook,
 }: ApplicantMainContentProps) {
   const hasApplicationSummary =
     application.elevator_pitch ||
@@ -362,7 +369,7 @@ export function ApplicantMainContent({
       <CreditsSection
         highlightedCreditIds={application.selected_credit_ids || []}
         applicationCredits={application.selected_credits || []}
-        profileCredits={profileCredits}
+        profileCredits={credits}
       />
 
       {/* Skills */}
@@ -511,6 +518,70 @@ export function ApplicantMainContent({
               </Badge>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Quick Actions */}
+      <Card className="bg-charcoal-black border-muted-gray/30">
+        <CardContent className="p-4">
+          <h3 className="text-sm font-medium text-muted-gray mb-3">Quick Actions</h3>
+          <div className="flex flex-col lg:flex-row gap-2 lg:gap-3">
+            {/* Shortlist Button */}
+            {onQuickShortlist && (
+              <Button
+                onClick={onQuickShortlist}
+                variant={application.status === 'rejected' ? 'default' : 'outline'}
+                className="w-full lg:flex-1"
+                disabled={application.status === 'shortlisted' || application.status === 'booked'}
+              >
+                {application.status === 'shortlisted'
+                  ? 'Currently Shortlisted'
+                  : application.status === 'booked'
+                  ? 'Already Booked'
+                  : application.status === 'rejected'
+                  ? 'Un-Reject & Shortlist'
+                  : 'Shortlist'}
+              </Button>
+            )}
+
+            {/* Reject Button */}
+            {onQuickReject && (
+              <Button
+                onClick={onQuickReject}
+                variant="destructive"
+                className="w-full lg:flex-1"
+                disabled={application.status === 'rejected' || application.status === 'booked'}
+              >
+                {application.status === 'rejected'
+                  ? 'Currently Rejected'
+                  : application.status === 'booked'
+                  ? 'Already Booked'
+                  : 'Reject'}
+              </Button>
+            )}
+
+            {/* Book Button */}
+            {onQuickBook && (
+              <Button
+                onClick={onQuickBook}
+                className="w-full lg:flex-1 bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={application.status === 'booked'}
+              >
+                {application.status === 'booked' ? 'Already Booked' : 'Book Applicant'}
+              </Button>
+            )}
+          </div>
+
+          {/* Helper text */}
+          <p className="text-xs text-muted-gray mt-3">
+            {application.status === 'booked'
+              ? 'This applicant has been booked. No further actions available.'
+              : application.status === 'shortlisted'
+              ? 'Applicant is shortlisted. Book to finalize, or reject if no longer interested.'
+              : application.status === 'rejected'
+              ? 'Applicant was rejected. You can un-reject by shortlisting again.'
+              : 'Use quick actions to shortlist, reject, or book this applicant.'}
+          </p>
         </CardContent>
       </Card>
     </div>

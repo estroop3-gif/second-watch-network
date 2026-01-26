@@ -17,9 +17,35 @@ import {
   HotSetCrew,
   HotSetDashboard,
   HotSetDayType,
+  HotSetScheduleBlock,
+  HotSetScheduleImportSource,
+  HotSetScheduleTrackingMode,
+  HotSetDayPreview,
+  HotSetOTConfig,
 } from '@/types/backlot';
 
+// =============================================================================
+// OT THRESHOLDS CONFIGURATION
+// =============================================================================
+
+export const OT_THRESHOLDS: Record<HotSetDayType, HotSetOTConfig> = {
+  '4hr':     { ot1_after: 4,  ot2_after: 6,  label: '4 Hour Day',  desc: 'OT after 4hr, DT after 6hr' },
+  '8hr':     { ot1_after: 8,  ot2_after: 10, label: '8 Hour Day',  desc: 'OT after 8hr, DT after 10hr' },
+  '10hr':    { ot1_after: 10, ot2_after: 12, label: '10 Hour Day', desc: 'OT after 10hr, DT after 12hr' },
+  '12hr':    { ot1_after: 12, ot2_after: 14, label: '12 Hour Day', desc: 'OT after 12hr, DT after 14hr' },
+  '6th_day': { ot1_after: 8,  ot2_after: 12, label: '6th Day (Saturday)', desc: 'OT after 8hr (Saturday rules)' },
+  '7th_day': { ot1_after: 0,  ot2_after: 0,  label: '7th Day (Sunday)',   desc: 'All hours at Double Time' },
+};
+
 const API_BASE = import.meta.env.VITE_API_URL || '';
+
+/**
+ * Helper to build URL with query params (handles both relative and absolute API_BASE)
+ */
+function buildUrl(path: string): URL {
+  const base = API_BASE || window.location.origin;
+  return new URL(path, base);
+}
 
 /**
  * Helper to get auth token
@@ -44,6 +70,9 @@ export const HOT_SET_KEYS = {
   markers: (sessionId: string) => ['backlot', 'hot-set', 'markers', sessionId],
   crew: (sessionId: string) => ['backlot', 'hot-set', 'crew', sessionId],
   costProjection: (sessionId: string) => ['backlot', 'hot-set', 'cost', sessionId],
+  scheduleBlocks: (sessionId: string) => ['backlot', 'hot-set', 'schedule-blocks', sessionId],
+  dayPreview: (projectId: string, productionDayId: string, dayType: string) =>
+    ['backlot', 'hot-set', 'day-preview', projectId, productionDayId, dayType],
 };
 
 // =============================================================================
@@ -107,6 +136,40 @@ export function useHotSetSession(projectId: string | null, sessionId: string | n
 }
 
 /**
+ * Get day preview for Hot Set session creation
+ * Returns crew from DOOD/Call Sheet, their rates, and OT projections
+ */
+export function useHotSetDayPreview(
+  projectId: string | null,
+  productionDayId: string | null,
+  dayType: HotSetDayType
+) {
+  return useQuery({
+    queryKey: HOT_SET_KEYS.dayPreview(projectId || '', productionDayId || '', dayType),
+    queryFn: async (): Promise<HotSetDayPreview | null> => {
+      if (!projectId || !productionDayId) return null;
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/hot-set/day-preview?` +
+        `production_day_id=${productionDayId}&day_type=${dayType}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch day preview' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId && !!productionDayId,
+  });
+}
+
+/**
  * Create a new Hot Set session
  */
 export function useCreateHotSetSession(projectId: string | null) {
@@ -118,9 +181,16 @@ export function useCreateHotSetSession(projectId: string | null) {
       call_sheet_id?: string;
       day_type?: HotSetDayType;
       import_from_call_sheet?: boolean;
+      // New: Checkbox-based import options
+      import_hour_schedule?: boolean;
+      import_scenes?: boolean;
+      // Legacy (for backwards compat)
+      import_source?: HotSetScheduleImportSource;
+      schedule_tracking_mode?: HotSetScheduleTrackingMode;
     }) => {
       if (!projectId) throw new Error('Project ID required');
 
+      console.log('[HotSet] Creating session with:', input);
       const token = getAuthToken();
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/projects/${projectId}/hot-set/sessions`,
@@ -136,7 +206,8 @@ export function useCreateHotSetSession(projectId: string | null) {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: 'Failed to create session' }));
-        throw new Error(error.detail);
+        console.error('[HotSet] Create session failed:', response.status, error);
+        throw new Error(error.detail || `Request failed with status ${response.status}`);
       }
 
       return response.json() as Promise<HotSetSession>;
@@ -290,6 +361,103 @@ export function useWrapHotSetSession() {
 }
 
 /**
+ * Resume a wrapped Hot Set session (in case of accidental wrap)
+ * Sets status back to in_progress and clears wrap time
+ */
+export function useResumeHotSetSession() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/resume`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to resume session' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json() as Promise<HotSetSession>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(data.id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(data.id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.markers(data.id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(data.id) });
+    },
+  });
+}
+
+/**
+ * Confirm crew call (1st AD manually confirms crew arrival)
+ */
+export function useConfirmCrewCall() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/confirm-crew-call`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to confirm crew call' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(data.session_id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(data.session_id) });
+    },
+  });
+}
+
+/**
+ * Confirm first shot (1st AD manually confirms cameras rolling)
+ */
+export function useConfirmFirstShot() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/confirm-first-shot`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to confirm first shot' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(data.session_id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(data.session_id) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.markers(data.session_id) });
+    },
+  });
+}
+
+/**
  * Import scenes from a call sheet
  */
 export function useImportFromCallSheet() {
@@ -312,6 +480,72 @@ export function useImportFromCallSheet() {
       }
 
       return { sessionId };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Import scenes from the production day's assigned scenes
+ */
+export function useImportFromProductionDay() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId }: { sessionId: string }): Promise<{ sessionId: string; scenesImported: number }> => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/import-from-production-day`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to import' }));
+        throw new Error(error.detail);
+      }
+
+      const data = await response.json();
+      return { sessionId, scenesImported: data.scenes_imported || 0 };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Import hour schedule from the production day
+ */
+export function useImportFromHourSchedule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId }: { sessionId: string }): Promise<{ sessionId: string; scenesImported: number; blocksImported: number }> => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/import-from-hour-schedule`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to import' }));
+        throw new Error(error.detail);
+      }
+
+      const data = await response.json();
+      return { sessionId, scenesImported: data.scenes_imported || 0, blocksImported: data.blocks_imported || 0 };
     },
     onSuccess: ({ sessionId }) => {
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(sessionId) });
@@ -402,9 +636,7 @@ export function useCompleteScene() {
       notes?: string;
     }) => {
       const token = getAuthToken();
-      const url = new URL(
-        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/${sceneId}/complete`
-      );
+      const url = buildUrl(`${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/${sceneId}/complete`);
       if (notes) url.searchParams.set('notes', notes);
 
       const response = await fetch(url.toString(), {
@@ -451,9 +683,7 @@ export function useSkipScene() {
       reason?: string;
     }) => {
       const token = getAuthToken();
-      const url = new URL(
-        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/${sceneId}/skip`
-      );
+      const url = buildUrl(`${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/${sceneId}/skip`);
       if (reason) url.searchParams.set('reason', reason);
 
       const response = await fetch(url.toString(), {
@@ -688,6 +918,345 @@ export function useHotSetCrew(sessionId: string | null) {
 }
 
 // =============================================================================
+// SCHEDULE BLOCKS
+// =============================================================================
+
+/**
+ * Get schedule blocks for a session
+ */
+export function useScheduleBlocks(sessionId: string | null) {
+  return useQuery({
+    queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId || ''),
+    queryFn: async (): Promise<HotSetScheduleBlock[]> => {
+      if (!sessionId) return [];
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule-blocks`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch schedule blocks' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!sessionId,
+  });
+}
+
+/**
+ * Update a schedule block's expected times
+ */
+export function useUpdateScheduleBlock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      blockId,
+      expected_start_time,
+      expected_end_time,
+      notes,
+    }: {
+      sessionId: string;
+      blockId: string;
+      expected_start_time?: string;
+      expected_end_time?: string;
+      notes?: string;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule-blocks/${blockId}`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expected_start_time, expected_end_time, notes }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update schedule block' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, block: await response.json() };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Start a schedule block (e.g., start meal break)
+ */
+export function useStartScheduleBlock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId, blockId }: { sessionId: string; blockId: string }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule-blocks/${blockId}/start`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to start schedule block' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, block: await response.json() };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Complete a schedule block and auto-create marker
+ */
+export function useCompleteScheduleBlock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId, blockId }: { sessionId: string; blockId: string }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule-blocks/${blockId}/complete`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to complete schedule block' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, block: await response.json() };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.markers(sessionId) });
+    },
+  });
+}
+
+/**
+ * Skip a schedule block
+ */
+export function useSkipScheduleBlock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      blockId,
+      reason,
+    }: {
+      sessionId: string;
+      blockId: string;
+      reason?: string;
+    }) => {
+      const token = getAuthToken();
+      const url = buildUrl(`${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule-blocks/${blockId}/skip`);
+      if (reason) url.searchParams.set('reason', reason);
+
+      const response = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to skip schedule block' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, block: await response.json() };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+// =============================================================================
+// AD NOTES & WRAP REPORT
+// =============================================================================
+
+/**
+ * Update session notes (optimized for auto-save)
+ */
+export function useUpdateSessionNotes() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId, notes }: { sessionId: string; notes: string }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/notes`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ notes }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update notes' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, notes };
+    },
+    onSuccess: ({ sessionId }) => {
+      // Don't invalidate dashboard on every keystroke - notes are local
+      // Only invalidate if we need fresh data elsewhere
+    },
+  });
+}
+
+/**
+ * Wrap report data structure
+ */
+export interface WrapReportData {
+  day_number: number;
+  date: string;
+  call_time: string | null;
+  wrap_time: string | null;
+  total_shooting_minutes: number;
+  scenes_completed: { scene_number: string; actual_minutes: number; status: string }[];
+  scenes_skipped: { scene_number: string; actual_minutes: number; status: string }[];
+  scheduled_minutes: number;
+  variance_minutes: number;
+  ad_notes: string | null;
+  markers: { type: string; time: string; label: string }[];
+}
+
+/**
+ * Get wrap report data for a session
+ */
+export function useWrapReport(sessionId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'hot-set', 'wrap-report', sessionId],
+    queryFn: async (): Promise<WrapReportData | null> => {
+      if (!sessionId) return null;
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/wrap-report`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch wrap report' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!sessionId,
+  });
+}
+
+// =============================================================================
+// HOT SET SETTINGS
+// =============================================================================
+
+import { HotSetSettings, HotSetSettingsUpdate } from '@/types/backlot';
+
+/**
+ * Get Hot Set settings for a project
+ */
+export function useHotSetSettings(projectId: string | null) {
+  return useQuery({
+    queryKey: ['backlot', 'hot-set', 'settings', projectId],
+    queryFn: async (): Promise<HotSetSettings | null> => {
+      if (!projectId) return null;
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/hot-set/settings`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch settings' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Update Hot Set settings for a project
+ */
+export function useUpdateHotSetSettings(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (settings: HotSetSettingsUpdate) => {
+      if (!projectId) {
+        throw new Error('Project ID is required');
+      }
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/hot-set/settings`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(settings),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to update settings' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json() as Promise<HotSetSettings>;
+    },
+    onSuccess: () => {
+      if (projectId) {
+        queryClient.invalidateQueries({ queryKey: ['backlot', 'hot-set', 'settings', projectId] });
+      }
+    },
+  });
+}
+
+// =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
 
@@ -705,14 +1274,61 @@ export function formatElapsedTime(minutes: number): string {
 
 /**
  * Format time as HH:MM
+ * @param isoString - ISO timestamp string
+ * @param timezone - Optional IANA timezone string (e.g., 'America/Los_Angeles')
+ *                   If not provided, uses the user's local timezone
  */
-export function formatTime(isoString: string | null): string {
+export function formatTime(isoString: string | null, timezone?: string | null): string {
   if (!isoString) return '--:--';
   try {
     const date = new Date(isoString);
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+    if (timezone) {
+      options.timeZone = timezone;
+    }
+    return date.toLocaleTimeString([], options);
   } catch {
     return '--:--';
+  }
+}
+
+/**
+ * Get the current time formatted in a specific timezone
+ * @param timezone - Optional IANA timezone string (e.g., 'America/Los_Angeles')
+ *                   If not provided, uses the user's local timezone
+ */
+export function getCurrentTimeFormatted(timezone?: string | null): string {
+  try {
+    const now = new Date();
+    const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+    if (timezone) {
+      options.timeZone = timezone;
+    }
+    return now.toLocaleTimeString([], options);
+  } catch {
+    return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+}
+
+/**
+ * Get the current date formatted in a specific timezone
+ * @param timezone - Optional IANA timezone string (e.g., 'America/Los_Angeles')
+ *                   If not provided, uses the user's local timezone
+ */
+export function getCurrentDateFormatted(timezone?: string | null): string {
+  try {
+    const now = new Date();
+    const options: Intl.DateTimeFormatOptions = {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric'
+    };
+    if (timezone) {
+      options.timeZone = timezone;
+    }
+    return now.toLocaleDateString('en-US', options);
+  } catch {
+    return new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   }
 }
 
@@ -781,4 +1397,118 @@ export function formatCurrency(amount: number): string {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(amount);
+}
+
+/**
+ * Format schedule time (HH:MM or ISO timestamp) for display
+ * @param time - Time string in HH:MM format or ISO timestamp
+ * @param timezone - Optional IANA timezone for ISO timestamps
+ */
+export function formatScheduleTime(time: string | null | undefined, timezone?: string | null): string {
+  if (!time) return '--:--';
+  try {
+    // Check if it's an ISO timestamp (contains T or Z)
+    if (time.includes('T') || time.includes('Z')) {
+      const date = new Date(time);
+      const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' };
+      if (timezone) {
+        options.timeZone = timezone;
+      }
+      return date.toLocaleTimeString('en-US', options);
+    }
+
+    // Handle HH:MM format
+    const [hours, minutes] = time.split(':').map(Number);
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    return `${displayHours}:${minutes.toString().padStart(2, '0')} ${period}`;
+  } catch {
+    return time;
+  }
+}
+
+/**
+ * Format deviation minutes as readable string
+ */
+export function formatDeviation(minutes: number): string {
+  if (minutes === 0) return 'On time';
+  const absMinutes = Math.abs(minutes);
+  const hours = Math.floor(absMinutes / 60);
+  const mins = absMinutes % 60;
+
+  let timeStr = '';
+  if (hours > 0) {
+    timeStr = mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+  } else {
+    timeStr = `${mins}m`;
+  }
+
+  return minutes > 0 ? `${timeStr} behind` : `${timeStr} ahead`;
+}
+
+/**
+ * Get deviation color class
+ */
+export function getDeviationColor(minutes: number): string {
+  if (minutes > 15) return 'text-red-400';
+  if (minutes > 0) return 'text-yellow-400';
+  if (minutes < -15) return 'text-green-400';
+  return 'text-bone-white';
+}
+
+/**
+ * Get deviation background color class
+ */
+export function getDeviationBgColor(minutes: number): string {
+  if (minutes > 15) return 'bg-red-500/20 border-red-500/30';
+  if (minutes > 0) return 'bg-yellow-500/20 border-yellow-500/30';
+  if (minutes < -15) return 'bg-green-500/20 border-green-500/30';
+  return 'bg-soft-black border-muted-gray/30';
+}
+
+// =============================================================================
+// PROJECTED SCHEDULE HELPERS
+// =============================================================================
+
+import { ProjectedScheduleItem } from '@/types/backlot';
+
+/**
+ * Find the current activity from projected schedule (non-scene item in progress)
+ */
+export function findCurrentActivity(
+  projectedSchedule: ProjectedScheduleItem[] | undefined
+): ProjectedScheduleItem | null {
+  if (!projectedSchedule) return null;
+  return projectedSchedule.find(
+    item => item.status === 'in_progress' && item.type !== 'scene'
+  ) || null;
+}
+
+/**
+ * Find the next pending activity from projected schedule (non-scene item)
+ */
+export function findNextActivity(
+  projectedSchedule: ProjectedScheduleItem[] | undefined
+): ProjectedScheduleItem | null {
+  if (!projectedSchedule) return null;
+  return projectedSchedule.find(
+    item => item.status === 'pending' && item.type !== 'scene' && item.source_type === 'schedule_block'
+  ) || null;
+}
+
+/**
+ * Get overall schedule variance from projected schedule
+ * Returns minutes: positive = ahead, negative = behind
+ */
+export function getScheduleVariance(
+  projectedSchedule: ProjectedScheduleItem[] | undefined
+): number {
+  if (!projectedSchedule || projectedSchedule.length === 0) return 0;
+
+  // Find the current or last completed item
+  const currentOrLastCompleted = [...projectedSchedule]
+    .reverse()
+    .find(item => item.status === 'in_progress' || item.status === 'completed');
+
+  return currentOrLastCompleted?.variance_from_plan ?? 0;
 }

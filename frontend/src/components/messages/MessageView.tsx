@@ -11,11 +11,18 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Send, User, ArrowLeft, Lock, ShieldAlert } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { format } from 'date-fns';
+import { format, isToday, isYesterday, isSameDay } from 'date-fns';
 import { Skeleton } from '../ui/skeleton';
 import { AttachmentUploader, AttachmentFile } from './AttachmentUploader';
 import { MessageAttachments, MessageAttachmentData } from './MessageAttachment';
 import * as e2ee from '@/lib/e2ee';
+
+// Helper to format date separator labels
+const formatDateSeparator = (date: Date): string => {
+  if (isToday(date)) return 'Today';
+  if (isYesterday(date)) return 'Yesterday';
+  return format(date, 'MMMM d, yyyy');
+};
 
 interface MessageViewProps {
   conversation: Conversation;
@@ -375,53 +382,71 @@ export const MessageView = ({
               {i % 2 !== 0 && <Skeleton className="h-8 w-8 rounded-full" />}
             </div>
           ))}
-          {messages?.map((message) => (
-            <div
-              key={message.id}
-              className={cn('flex items-end gap-2', message.sender_id === user?.id ? 'justify-end' : 'justify-start')}
-            >
-              {message.sender_id !== user?.id && (
-                <Avatar className="h-8 w-8">
-                  <AvatarImage src={conversation.other_participant.avatar_url || undefined} />
-                  <AvatarFallback>{name?.[0] || <User />}</AvatarFallback>
-                </Avatar>
-              )}
-              <div
-                className={cn(
-                  'p-3 rounded-lg max-w-xs lg:max-w-md break-words',
-                  message.sender_id === user?.id
-                    ? 'bg-accent-yellow text-charcoal-black'
-                    : 'bg-muted-gray'
+          {messages?.map((message, index) => {
+            // Check if we need a date separator (first message or different day from previous)
+            const showDateSeparator = index === 0 || !isSameDay(
+              new Date(message.created_at),
+              new Date(messages[index - 1].created_at)
+            );
+
+            return (
+              <div key={message.id}>
+                {showDateSeparator && (
+                  <div className="flex items-center justify-center my-4">
+                    <div className="flex-1 border-t border-muted-gray/30"></div>
+                    <div className="px-3 py-1 bg-muted-gray/20 rounded-full">
+                      <span className="text-xs text-muted-gray font-medium">
+                        {formatDateSeparator(new Date(message.created_at))}
+                      </span>
+                    </div>
+                    <div className="flex-1 border-t border-muted-gray/30"></div>
+                  </div>
                 )}
-              >
-                {/* Message content - use decrypted content for encrypted messages */}
-                {(message.content || message.is_encrypted) && (
-                  <div className="flex items-start gap-1">
-                    {message.is_encrypted && (
-                      <Lock className={cn(
-                        "h-3 w-3 mt-0.5 flex-shrink-0",
-                        message.sender_id === user?.id ? "text-charcoal-black/70" : "text-bone-white/70"
-                      )} />
+                <div className={cn('flex items-end gap-2', message.sender_id === user?.id ? 'justify-end' : 'justify-start')}>
+                  {message.sender_id !== user?.id && (
+                    <Avatar className="h-8 w-8">
+                      <AvatarImage src={conversation.other_participant.avatar_url || undefined} />
+                      <AvatarFallback>{name?.[0] || <User />}</AvatarFallback>
+                    </Avatar>
+                  )}
+                  <div
+                    className={cn(
+                      'p-3 rounded-lg max-w-xs lg:max-w-md break-words',
+                      message.sender_id === user?.id
+                        ? 'bg-accent-yellow text-charcoal-black'
+                        : 'bg-muted-gray'
                     )}
-                    <p className={cn(
-                      "text-sm",
-                      decryptionErrors.has(message.id) && "italic text-red-400"
-                    )}>
-                      {getMessageContent(message)}
+                  >
+                    {/* Message content - use decrypted content for encrypted messages */}
+                    {(message.content || message.is_encrypted) && (
+                      <div className="flex items-start gap-1">
+                        {message.is_encrypted && (
+                          <Lock className={cn(
+                            "h-3 w-3 mt-0.5 flex-shrink-0",
+                            message.sender_id === user?.id ? "text-charcoal-black/70" : "text-bone-white/70"
+                          )} />
+                        )}
+                        <p className={cn(
+                          "text-sm",
+                          decryptionErrors.has(message.id) && "italic text-red-400"
+                        )}>
+                          {getMessageContent(message)}
+                        </p>
+                      </div>
+                    )}
+                    {message.attachments && message.attachments.length > 0 && (
+                      <div className={cn((message.content || message.is_encrypted) && 'mt-2')}>
+                        <MessageAttachments attachments={message.attachments} />
+                      </div>
+                    )}
+                    <p className="text-xs text-right mt-1 opacity-70">
+                      {format(new Date(message.created_at), 'p')}
                     </p>
                   </div>
-                )}
-                {message.attachments && message.attachments.length > 0 && (
-                  <div className={cn((message.content || message.is_encrypted) && 'mt-2')}>
-                    <MessageAttachments attachments={message.attachments} />
-                  </div>
-                )}
-                <p className="text-xs text-right mt-1 opacity-70">
-                  {format(new Date(message.created_at), 'p')}
-                </p>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {/* Seen indicator below last outgoing */}
           {lastOutgoing && lastOutgoing.is_read && (
             <div className="text-[11px] text-muted-foreground text-right pr-2">Seen</div>

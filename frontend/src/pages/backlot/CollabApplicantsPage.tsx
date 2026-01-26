@@ -3,13 +3,14 @@
  */
 
 import { useParams, useNavigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   Card,
   CardContent,
 } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Select,
   SelectContent,
@@ -41,9 +42,10 @@ import {
   List,
   ArrowUpDown,
 } from 'lucide-react';
-import { ApplicantScore, ApplicantScoreInline } from '@/components/backlot/applicants';
+import { ApplicantScore, ApplicantScoreInline, BookApplicantModal } from '@/components/backlot/applicants';
 import { format } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
+import { CollabApplication } from '@/types/applications';
 
 type SortOption = 'score' | 'date' | 'name';
 
@@ -53,10 +55,19 @@ export default function CollabApplicantsPage() {
   const { toast } = useToast();
   const [viewMode, setViewMode] = useState<'board' | 'list'>('list');
   const [sortBy, setSortBy] = useState<SortOption>('score');
+  const [selectedStatus, setSelectedStatus] = useState<string>('all');
+  const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
+  const [bookingApplicant, setBookingApplicant] = useState<CollabApplication | null>(null);
 
   // Navigate to applicant detail page
   const handleApplicantClick = (applicationId: string) => {
     navigate(`/backlot/projects/${projectId}/postings/${collabId}/applicants/${applicationId}`);
+  };
+
+  // Book applicant handler
+  const handleBookApplicant = (app: CollabApplication) => {
+    setBookingApplicant(app);
+    setIsBookingModalOpen(true);
   };
 
   // Fetch project info
@@ -102,29 +113,67 @@ export default function CollabApplicantsPage() {
     }
   };
 
-  // Sort applications based on sortBy
-  const sortedApplications = [...(applications || [])].sort((a: any, b: any) => {
-    // Promoted always first
-    if (a.is_promoted !== b.is_promoted) {
-      return a.is_promoted ? -1 : 1;
+  // Filter and sort applications based on selectedStatus and sortBy
+  const filteredAndSortedApplications = useMemo(() => {
+    let apps = [...(applications || [])];
+
+    // Filter by status
+    if (selectedStatus !== 'all') {
+      apps = apps.filter(app => app.status === selectedStatus);
     }
 
-    switch (sortBy) {
-      case 'score':
-        // Higher score first, nulls last
-        const scoreA = a.match_score ?? -1;
-        const scoreB = b.match_score ?? -1;
-        return scoreB - scoreA;
-      case 'name':
-        const nameA = (a.current_profile?.display_name || a.current_profile?.full_name || a.current_profile?.username || 'zzz').toLowerCase();
-        const nameB = (b.current_profile?.display_name || b.current_profile?.full_name || b.current_profile?.username || 'zzz').toLowerCase();
-        return nameA.localeCompare(nameB);
-      case 'date':
-      default:
-        // Newest first
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    }
-  });
+    // Sort applications
+    apps.sort((a: any, b: any) => {
+      // Promoted always first
+      if (a.is_promoted !== b.is_promoted) {
+        return a.is_promoted ? -1 : 1;
+      }
+
+      switch (sortBy) {
+        case 'score':
+          // Higher score first, nulls last
+          const scoreA = a.match_score ?? -1;
+          const scoreB = b.match_score ?? -1;
+          return scoreB - scoreA;
+        case 'name':
+          const nameA = (a.current_profile?.display_name || a.current_profile?.full_name || a.current_profile?.username || 'zzz').toLowerCase();
+          const nameB = (b.current_profile?.display_name || b.current_profile?.full_name || b.current_profile?.username || 'zzz').toLowerCase();
+          return nameA.localeCompare(nameB);
+        case 'date':
+        default:
+          // Newest first
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+    });
+
+    return apps;
+  }, [applications, selectedStatus, sortBy]);
+
+  // Keep sortedApplications for board view compatibility
+  const sortedApplications = useMemo(() => {
+    return [...(applications || [])].sort((a: any, b: any) => {
+      // Promoted always first
+      if (a.is_promoted !== b.is_promoted) {
+        return a.is_promoted ? -1 : 1;
+      }
+
+      switch (sortBy) {
+        case 'score':
+          // Higher score first, nulls last
+          const scoreA = a.match_score ?? -1;
+          const scoreB = b.match_score ?? -1;
+          return scoreB - scoreA;
+        case 'name':
+          const nameA = (a.current_profile?.display_name || a.current_profile?.full_name || a.current_profile?.username || 'zzz').toLowerCase();
+          const nameB = (b.current_profile?.display_name || b.current_profile?.full_name || b.current_profile?.username || 'zzz').toLowerCase();
+          return nameA.localeCompare(nameB);
+        case 'date':
+        default:
+          // Newest first
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      }
+    });
+  }, [applications, sortBy]);
 
   // Group sorted applications by status (for board view)
   const applicationsByStatus = statusColumns.reduce((acc, col) => {
@@ -383,6 +432,33 @@ export default function CollabApplicantsPage() {
           </Card>
         )}
 
+        {/* Status Tabs (List View Only) */}
+        {viewMode === 'list' && applications && applications.length > 0 && (
+          <div className="mb-6">
+            <Tabs value={selectedStatus} onValueChange={setSelectedStatus}>
+              <TabsList className="w-full justify-start bg-charcoal-black border border-muted-gray/30 p-2 flex-wrap h-auto">
+                <TabsTrigger value="all" className="gap-2">
+                  All
+                  <Badge variant="secondary" className="bg-muted-gray/20">
+                    {applications?.length || 0}
+                  </Badge>
+                </TabsTrigger>
+                {statusColumns.map((col) => {
+                  const count = applicationsByStatus[col.id]?.length || 0;
+                  return (
+                    <TabsTrigger key={col.id} value={col.id} className="gap-2">
+                      {col.label}
+                      <Badge variant="secondary" className="bg-muted-gray/20">
+                        {count}
+                      </Badge>
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
+
         {/* Applications Board/List */}
         {!applications || applications.length === 0 ? (
           <Card className="bg-charcoal-black border-muted-gray/30">
@@ -488,10 +564,11 @@ export default function CollabApplicantsPage() {
                             <th className="p-3 text-xs font-medium text-muted-gray">Status</th>
                             <th className="p-3 text-xs font-medium text-muted-gray">Applied</th>
                             <th className="p-3 text-xs font-medium text-muted-gray">Rating</th>
+                            <th className="p-3 text-xs font-medium text-muted-gray text-right">Actions</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {sortedApplications.map((app: any) => {
+                          {filteredAndSortedApplications.map((app: any) => {
                             const statusCol = statusColumns.find((c) => c.id === app.status);
                             return (
                               <tr
@@ -563,6 +640,20 @@ export default function CollabApplicantsPage() {
                                     <span className="text-sm text-muted-gray">—</span>
                                   )}
                                 </td>
+                                <td className="p-3 text-right">
+                                  {app.status === 'offered' && (
+                                    <Button
+                                      size="sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleBookApplicant(app);
+                                      }}
+                                      className="bg-accent-yellow text-charcoal-black hover:bg-accent-yellow/90"
+                                    >
+                                      Book
+                                    </Button>
+                                  )}
+                                </td>
                               </tr>
                             );
                           })}
@@ -577,6 +668,21 @@ export default function CollabApplicantsPage() {
           </div>
         )}
       </div>
+
+      {/* Booking Modal */}
+      {bookingApplicant && (
+        <BookApplicantModal
+          application={bookingApplicant}
+          collabId={collabId || ''}
+          collabTitle={collab?.title || ''}
+          isCastRole={collab?.type === 'looking_for_cast'}
+          isOpen={isBookingModalOpen}
+          onClose={() => {
+            setIsBookingModalOpen(false);
+            setBookingApplicant(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -8,3 +8,5 @@ export { ApplicantMainContent } from './ApplicantMainContent';
 export { CreditsSection } from './CreditsSection';
 export { ResumePDFViewer } from './ResumePDFViewer';
 export { ApplicantScore, ApplicantScoreInline } from './ApplicantScore';
+export { EmailTemplateModal } from './EmailTemplateModal';
+export { BookApplicantModal } from './BookApplicantModal';

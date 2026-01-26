@@ -7,7 +7,8 @@
  * - Real-time schedule tracking
  * - OT countdown and cost projections
  */
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,6 +50,9 @@ import {
   HelpCircle,
   Film,
   Target,
+  Settings,
+  RotateCcw,
+  FileDown,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
@@ -58,25 +62,59 @@ import {
   useCreateHotSetSession,
   useStartHotSetSession,
   useWrapHotSetSession,
+  useResumeHotSetSession,
   useHotSetDashboard,
   useStartScene,
   useCompleteScene,
   useSkipScene,
   useAddMarker,
+  useStartScheduleBlock,
+  useCompleteScheduleBlock,
+  useSkipScheduleBlock,
+  useUpdateScheduleBlock,
+  useImportFromProductionDay,
+  useImportFromHourSchedule,
+  useConfirmCrewCall,
+  useConfirmFirstShot,
+  useHotSetSettings,
+  useUpdateHotSetSettings,
   formatElapsedTime,
   formatTime,
+  getCurrentTimeFormatted,
+  getCurrentDateFormatted,
   calculateElapsedSeconds,
   formatSeconds,
   getScheduleStatusColor,
   getScheduleStatusBgColor,
   formatCurrency,
+  formatScheduleTime,
 } from '@/hooks/backlot';
 import {
   HotSetSession,
   HotSetSceneLog,
   HotSetDayType,
   HotSetMarkerType,
+  HotSetScheduleTrackingMode,
+  HourScheduleBlock,
 } from '@/types/backlot';
+import {
+  CreateHotSetSessionModal,
+  HotSetTimeline,
+  ScheduleDeviationCard,
+  CatchUpSuggestionsPanel,
+  ScheduleBlockCard,
+  ADNotesPanel,
+  CallSheetQuickLink,
+  DayStatsCard,
+  WrapDayModal,
+  OTProjectionCard,
+  CurrentActivityCard,
+  LiveScheduleView,
+  PreCrewCallCountdown,
+  TabbedScheduleView,
+  HotSetSettingsPanel,
+  HotSetDayReportView,
+} from './hot-set';
 import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -114,6 +152,44 @@ const LiveTimer: React.FC<{ startTime: string | null }> = ({ startTime }) => {
   return <span className="font-mono text-4xl">{formatSeconds(seconds)}</span>;
 };
 
+// Live clock component that updates every second, supports timezone
+const LiveClock: React.FC<{ timezone?: string | null; className?: string }> = ({ timezone, className }) => {
+  const [time, setTime] = useState(getCurrentTimeFormatted(timezone));
+
+  useEffect(() => {
+    // Update immediately
+    setTime(getCurrentTimeFormatted(timezone));
+
+    // Update every second for accuracy
+    const interval = setInterval(() => {
+      setTime(getCurrentTimeFormatted(timezone));
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timezone]);
+
+  return <span className={className}>{time}</span>;
+};
+
+// Live date component that updates every minute, supports timezone
+const LiveDate: React.FC<{ timezone?: string | null; className?: string }> = ({ timezone, className }) => {
+  const [date, setDate] = useState(getCurrentDateFormatted(timezone));
+
+  useEffect(() => {
+    // Update immediately
+    setDate(getCurrentDateFormatted(timezone));
+
+    // Update every minute (date doesn't change often)
+    const interval = setInterval(() => {
+      setDate(getCurrentDateFormatted(timezone));
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [timezone]);
+
+  return <span className={className}>{date}</span>;
+};
+
 // Scene card component
 const SceneCard: React.FC<{
   scene: HotSetSceneLog;
@@ -123,7 +199,8 @@ const SceneCard: React.FC<{
   onSkip?: () => void;
   canEdit: boolean;
   isPending?: boolean;
-}> = ({ scene, isActive, onStart, onComplete, onSkip, canEdit, isPending }) => {
+  timezone?: string | null;
+}> = ({ scene, isActive, onStart, onComplete, onSkip, canEdit, isPending, timezone }) => {
   const statusColors = {
     pending: 'border-muted-gray/30',
     in_progress: 'border-accent-yellow/50 bg-accent-yellow/5',
@@ -154,16 +231,33 @@ const SceneCard: React.FC<{
               {scene.set_name || scene.description || 'No description'}
             </p>
             <div className="flex items-center gap-4 mt-2 text-xs text-muted-gray">
-              <span>Est: {scene.estimated_minutes || 30}m</span>
+              {/* Expected time from schedule */}
+              {scene.expected_start_time && (
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3 h-3" />
+                  {formatScheduleTime(scene.expected_start_time, timezone)}
+                </span>
+              )}
+              <span>Est: {scene.expected_duration_minutes || scene.estimated_minutes || 30}m</span>
               {scene.actual_duration_minutes && (
                 <span
                   className={cn(
-                    scene.actual_duration_minutes > (scene.estimated_minutes || 30)
+                    scene.actual_duration_minutes > (scene.expected_duration_minutes || scene.estimated_minutes || 30)
                       ? 'text-red-400'
                       : 'text-green-400'
                   )}
                 >
                   Actual: {scene.actual_duration_minutes}m
+                </span>
+              )}
+              {/* Deviation indicator */}
+              {scene.start_deviation_minutes !== undefined && scene.start_deviation_minutes !== 0 && (
+                <span
+                  className={cn(
+                    scene.start_deviation_minutes > 0 ? 'text-red-400' : 'text-green-400'
+                  )}
+                >
+                  ({scene.start_deviation_minutes > 0 ? '+' : ''}{scene.start_deviation_minutes}m)
                 </span>
               )}
             </div>
@@ -214,6 +308,8 @@ const SceneCard: React.FC<{
 };
 
 const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
+  const navigate = useNavigate();
+
   // State
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -231,22 +327,55 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   // Tips panel state
   const [showTipsPanel, setShowTipsPanel] = useState(false);
 
+  // Schedule integration state
+  const [showSuggestionsPanel, setShowSuggestionsPanel] = useState(true);
+
+  // Wrap modal state
+  const [showWrapModal, setShowWrapModal] = useState(false);
+
+  // Resume modal state (for accidentally wrapped sessions)
+  const [showResumeModal, setShowResumeModal] = useState(false);
+
+  // Report view state (for wrapped sessions)
+  const [showReportView, setShowReportView] = useState(false);
+
+  // Settings panel state
+  const [showSettingsPanel, setShowSettingsPanel] = useState(false);
+
   // Queries
   const { days: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
   const { data: callSheets } = useCallSheets(projectId);
   const { data: sessions, isLoading: sessionsLoading } = useHotSetSessions(projectId);
-  const { data: dashboard, isLoading: dashboardLoading } = useHotSetDashboard(selectedSessionId, {
-    pollingInterval: selectedSessionId ? 30000 : undefined, // Poll every 30s when active
+  const { data: dashboard, isLoading: dashboardLoading, refetch } = useHotSetDashboard(selectedSessionId, {
+    // Poll every 5s when session is in_progress for live updates, 30s otherwise
+    pollingInterval: selectedSessionId ? (sessions?.find(s => s.id === selectedSessionId)?.status === 'in_progress' ? 5000 : 30000) : undefined,
   });
+
+  // Settings and confirmation hooks
+  const { data: hotSetSettings } = useHotSetSettings(projectId);
+  const updateSettings = useUpdateHotSetSettings(projectId);
+  const confirmCrewCall = useConfirmCrewCall();
+  const confirmFirstShot = useConfirmFirstShot();
 
   // Mutations
   const createSession = useCreateHotSetSession(projectId);
   const startSession = useStartHotSetSession();
   const wrapSession = useWrapHotSetSession();
+  const resumeSession = useResumeHotSetSession();
   const startScene = useStartScene();
   const completeScene = useCompleteScene();
   const skipScene = useSkipScene();
   const addMarker = useAddMarker();
+
+  // Schedule block mutations
+  const startScheduleBlock = useStartScheduleBlock();
+  const completeScheduleBlock = useCompleteScheduleBlock();
+  const skipScheduleBlock = useSkipScheduleBlock();
+  const updateScheduleBlock = useUpdateScheduleBlock();
+
+  // Import mutations
+  const importFromProductionDay = useImportFromProductionDay();
+  const importFromHourSchedule = useImportFromHourSchedule();
 
   // Task hooks
   const { taskLists } = useTaskLists({ projectId });
@@ -297,15 +426,100 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
     setNewSessionDayType('10hr');
   };
 
+  // Enhanced session creation with schedule import
+  const handleCreateSessionWithSchedule = async (data: {
+    production_day_id: string;
+    call_sheet_id?: string;
+    day_type: HotSetDayType;
+    import_hour_schedule: boolean;
+    import_scenes: boolean;
+    schedule_tracking_mode: HotSetScheduleTrackingMode;
+  }) => {
+    try {
+      const result = await createSession.mutateAsync({
+        production_day_id: data.production_day_id,
+        call_sheet_id: data.call_sheet_id,
+        day_type: data.day_type,
+        import_hour_schedule: data.import_hour_schedule,
+        import_scenes: data.import_scenes,
+        schedule_tracking_mode: data.schedule_tracking_mode,
+      });
+
+      setShowCreateModal(false);
+      if (result?.id) {
+        setSelectedSessionId(result.id);
+      }
+    } catch (error) {
+      console.error('Failed to create Hot Set session:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to create session');
+    }
+  };
+
+  // Schedule block handlers
+  const handleStartScheduleBlock = async (blockId: string) => {
+    if (!selectedSessionId) return;
+    await startScheduleBlock.mutateAsync({ sessionId: selectedSessionId, blockId });
+  };
+
+  const handleCompleteScheduleBlock = async (blockId: string) => {
+    if (!selectedSessionId) return;
+
+    // Check if this is a wrap block (match by id or original_schedule_block_id)
+    const block = scheduleBlocks.find(b =>
+      b.id === blockId || b.original_schedule_block_id === blockId
+    );
+
+    await completeScheduleBlock.mutateAsync({ sessionId: selectedSessionId, blockId });
+
+    // If it's a wrap block, trigger the wrap process to finalize the day
+    if (block?.block_type === 'wrap') {
+      await wrapSession.mutateAsync(selectedSessionId);
+      toast.success('Day wrapped!');
+    }
+  };
+
+  const handleSkipScheduleBlock = async (blockId: string, reason?: string) => {
+    if (!selectedSessionId) return;
+    await skipScheduleBlock.mutateAsync({ sessionId: selectedSessionId, blockId, reason });
+  };
+
+  const handleAdjustScheduleBlockTime = async (blockId: string, startTime: string, endTime: string) => {
+    if (!selectedSessionId) return;
+    await updateScheduleBlock.mutateAsync({
+      sessionId: selectedSessionId,
+      blockId,
+      expected_start_time: startTime,
+      expected_end_time: endTime,
+    });
+  };
+
   const handleStartSession = async () => {
     if (!selectedSessionId) return;
     await startSession.mutateAsync(selectedSessionId);
   };
 
-  const handleWrapSession = async () => {
+  const handleOpenWrapModal = () => {
+    setShowWrapModal(true);
+  };
+
+  const handleConfirmWrap = async () => {
     if (!selectedSessionId) return;
-    if (window.confirm('Are you sure you want to wrap the day?')) {
-      await wrapSession.mutateAsync(selectedSessionId);
+    await wrapSession.mutateAsync(selectedSessionId);
+    setShowWrapModal(false);
+  };
+
+  const handleOpenResumeModal = () => {
+    setShowResumeModal(true);
+  };
+
+  const handleConfirmResume = async () => {
+    if (!selectedSessionId) return;
+    try {
+      await resumeSession.mutateAsync(selectedSessionId);
+      setShowResumeModal(false);
+      toast.success('Day resumed - tracking is now active');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to resume day');
     }
   };
 
@@ -370,6 +584,43 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
     }
   };
 
+  // Derived state (must be before early return to maintain hook order)
+  const session = dashboard?.session;
+  const isActive = session?.status === 'in_progress';
+  const isWrapped = session?.status === 'wrapped';
+
+  // Get production day info for current session
+  const currentProductionDay = useMemo(() => {
+    if (!session?.production_day_id || !productionDays) return null;
+    return productionDays.find((d) => d.id === session.production_day_id) || null;
+  }, [session?.production_day_id, productionDays]);
+
+  // Handle clicking on a scene to view its details
+  const handleSceneClick = useCallback((sceneNumber: string) => {
+    // Navigate to the scene detail page
+    navigate(`/backlot/${projectId}/scenes/${encodeURIComponent(sceneNumber)}`);
+  }, [navigate, projectId]);
+
+  // Schedule integration data
+  const scheduleStatus = dashboard?.schedule_status;
+  const timeStats = dashboard?.time_stats;
+  const importedSchedule = (session?.imported_schedule || []) as HourScheduleBlock[];
+  const hasImportedSchedule = importedSchedule.length > 0;
+  const scheduleBlocks = dashboard?.schedule_blocks || [];
+  const scheduleDeviationMinutes = dashboard?.schedule_deviation_minutes || 0;
+  const currentExpectedBlock = dashboard?.current_expected_block || null;
+  const catchUpSuggestions = dashboard?.catch_up_suggestions || [];
+  const timelineData = dashboard?.timeline || null;
+
+  // Pre-crew call phase detection
+  const isPreCrewCallPhase =
+    session &&
+    session.status === 'in_progress' &&
+    session.auto_started &&
+    !session.crew_call_confirmed_at;
+
+  const showCountdown = isPreCrewCallPhase && currentProductionDay?.general_call_time;
+
   // Loading state
   if (daysLoading || sessionsLoading) {
     return (
@@ -379,12 +630,6 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       </div>
     );
   }
-
-  const session = dashboard?.session;
-  const isActive = session?.status === 'in_progress';
-  const isWrapped = session?.status === 'wrapped';
-  const scheduleStatus = dashboard?.schedule_status;
-  const timeStats = dashboard?.time_stats;
 
   return (
     <div className="space-y-6">
@@ -399,6 +644,18 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Settings Button */}
+          {canEdit && selectedSessionId && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowSettingsPanel(!showSettingsPanel)}
+              className="border-muted-gray/30"
+            >
+              <Settings className="w-4 h-4 mr-2" />
+              {showSettingsPanel ? 'Hide Settings' : 'Settings'}
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -412,7 +669,10 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           {selectedSessionId && (
             <Button
               variant="outline"
-              onClick={() => setSelectedSessionId(null)}
+              onClick={() => {
+                setSelectedSessionId(null);
+                setShowReportView(false);
+              }}
               className="border-muted-gray/30"
             >
               <Calendar className="w-4 h-4 mr-2" />
@@ -428,10 +688,16 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               </SelectTrigger>
               <SelectContent>
                 {sessions.map((s) => {
-                  const day = s.backlot_production_days;
+                  const day = (s as any).production_day;
+                  const statusLabels: Record<string, string> = {
+                    not_started: 'Not Started',
+                    in_progress: 'In Progress',
+                    wrapped: 'Wrapped',
+                    completed: 'Completed',
+                  };
                   return (
                     <SelectItem key={s.id} value={s.id}>
-                      Day {day?.day_number || '?'} - {s.status}
+                      Day {day?.day_number || '?'} - {statusLabels[s.status] || s.status}
                     </SelectItem>
                   );
                 })}
@@ -451,6 +717,19 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           )}
         </div>
       </div>
+
+      {/* Settings Panel (collapsible) */}
+      {showSettingsPanel && selectedSessionId && hotSetSettings && (
+        <HotSetSettingsPanel
+          settings={hotSetSettings}
+          onSave={(settings) => {
+            updateSettings.mutate(settings, {
+              onSuccess: () => toast.success('Settings saved'),
+            });
+          }}
+          isSaving={updateSettings.isPending}
+        />
+      )}
 
       {/* No Session Selected - Show Production Days */}
       {!selectedSessionId && (
@@ -489,6 +768,12 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         onClick={() => {
                           if (hasSession && existingSession) {
                             setSelectedSessionId(existingSession.id);
+                            // Auto-show report view for wrapped sessions
+                            if (existingSession.status === 'wrapped') {
+                              setShowReportView(true);
+                            } else {
+                              setShowReportView(false);
+                            }
                           } else if (!day.is_completed && canEdit) {
                             setNewSessionDayId(day.id);
                             setShowCreateModal(true);
@@ -606,6 +891,125 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       {/* Dashboard */}
       {selectedSessionId && dashboard && (
         <>
+          {/* Report View - Full day report for wrapped sessions */}
+          {showReportView && session && (
+            <HotSetDayReportView
+              session={session}
+              projectId={projectId}
+              onBack={() => {
+                setShowReportView(false);
+                setSelectedSessionId(null);
+              }}
+              onResume={() => {
+                setShowReportView(false);
+                setShowResumeModal(true);
+              }}
+              isResuming={resumeSession.isPending}
+            />
+          )}
+
+          {/* Normal Dashboard View */}
+          {!showReportView && (
+            <>
+              {/* Day Header Banner */}
+              <Card className="bg-gradient-to-r from-accent-yellow/10 via-soft-black to-soft-black border-accent-yellow/30">
+            <CardContent className="py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-6">
+                  {/* Day Number */}
+                  <div>
+                    <span className="text-3xl font-bold text-accent-yellow">
+                      Day {currentProductionDay?.day_number || '?'}
+                    </span>
+                  </div>
+
+                  {/* Schedule Date */}
+                  <div className="hidden sm:block">
+                    <p className="text-xs text-muted-gray uppercase">Schedule Date</p>
+                    <p className="text-lg text-bone-white">
+                      {currentProductionDay?.date
+                        ? new Date(currentProductionDay.date + 'T00:00:00').toLocaleDateString('en-US', {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                          })
+                        : '--'}
+                    </p>
+                  </div>
+
+                  {/* Call Time */}
+                  <div className="hidden md:block">
+                    <p className="text-xs text-muted-gray uppercase">Call</p>
+                    <p className="text-lg text-bone-white">
+                      {formatTime(session?.actual_call_time || null, session?.timezone)}
+                    </p>
+                  </div>
+
+                  {/* Current Date & Time */}
+                  <div className="hidden md:block">
+                    <p className="text-xs text-muted-gray uppercase">
+                      Now{session?.location_name && ` (${session.location_name})`}
+                      {!session?.location_name && session?.timezone && ` (${session.timezone.split('/').pop()?.replace(/_/g, ' ')})`}
+                    </p>
+                    <p className="text-lg text-bone-white">
+                      <LiveDate timezone={session?.timezone} />{' '}
+                      <LiveClock timezone={session?.timezone} />
+                    </p>
+                  </div>
+                </div>
+
+                {/* Status Badge */}
+                <Badge
+                  className={cn(
+                    'text-sm py-1.5 px-3',
+                    session?.status === 'in_progress' && 'bg-green-500/20 text-green-400 border-green-500/30',
+                    session?.status === 'not_started' && 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+                    session?.status === 'wrapped' && 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                  )}
+                >
+                  {session?.status === 'in_progress' && 'LIVE'}
+                  {session?.status === 'not_started' && 'NOT STARTED'}
+                  {session?.status === 'wrapped' && 'WRAPPED'}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* PRE-CREW CALL PHASE: Show countdown & checklist */}
+          {isPreCrewCallPhase && showCountdown && (
+            <PreCrewCallCountdown
+              session={session}
+              crewCallTime={new Date(
+                `${currentProductionDay.date}T${currentProductionDay.general_call_time}`
+              )}
+              onConfirmCrewCall={() => {
+                // Find the crew_call schedule block to start it
+                const crewCallBlock = scheduleBlocks.find(b => b.block_type === 'crew_call');
+
+                confirmCrewCall.mutate(session.id, {
+                  onSuccess: async () => {
+                    // Also start the crew_call schedule block so it shows as in_progress with timer
+                    if (crewCallBlock) {
+                      await handleStartScheduleBlock(crewCallBlock.id);
+                    }
+                    toast.success('Crew call confirmed');
+                    refetch();
+                  },
+                });
+              }}
+              onConfirmFirstShot={() => {
+                confirmFirstShot.mutate(session.id, {
+                  onSuccess: () => {
+                    toast.success('First shot confirmed - day tracking active');
+                    refetch();
+                  },
+                });
+              }}
+              isConfirmingCrewCall={confirmCrewCall.isPending}
+              isConfirmingFirstShot={confirmFirstShot.isPending}
+            />
+          )}
+
           {/* Status Bar */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             {/* Schedule Status */}
@@ -679,68 +1083,139 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
             </Card>
           </div>
 
-          {/* Main Content Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Current Scene - Large */}
-            <div className="lg:col-span-2">
-              <Card className="bg-soft-black border-accent-yellow/30">
-                <CardHeader className="border-b border-muted-gray/20">
-                  <CardTitle className="flex items-center gap-2">
-                    <Clapperboard className="w-5 h-5 text-accent-yellow" />
-                    {dashboard.current_scene ? 'Now Shooting' : 'Ready to Start'}
+          {/* Schedule Integration: Timeline & Deviation */}
+          {hasImportedSchedule && (
+            <div className="space-y-4">
+              {/* Schedule Deviation Card - Only show when active */}
+              {isActive && dashboard.projected_schedule && dashboard.projected_schedule.length > 0 && (
+                <ScheduleDeviationCard
+                  cumulativeVariance={
+                    dashboard.projected_schedule.find(i => i.is_current)?.variance_from_plan ?? 0
+                  }
+                  realtimeDeviation={
+                    dashboard.projected_schedule.find(i => i.is_current)?.realtime_deviation_minutes
+                  }
+                  currentItem={
+                    dashboard.projected_schedule.find(i => i.is_current)
+                  }
+                  currentExpectedBlock={currentExpectedBlock}
+                  currentScene={dashboard?.current_scene || null}
+                  onViewSuggestions={() => setShowSuggestionsPanel(true)}
+                  hasSuggestions={catchUpSuggestions.length > 0}
+                  timezone={session?.timezone}
+                />
+              )}
+
+              {/* Catch-Up Suggestions (when behind) */}
+              {isActive && scheduleDeviationMinutes > 0 && catchUpSuggestions.length > 0 && (
+                <CatchUpSuggestionsPanel
+                  suggestions={catchUpSuggestions}
+                  deviationMinutes={scheduleDeviationMinutes}
+                  isExpanded={showSuggestionsPanel}
+                  onToggleExpanded={() => setShowSuggestionsPanel(!showSuggestionsPanel)}
+                  onApplySuggestion={(suggestion) => {
+                    // Handle applying suggestion
+                    if (suggestion.type === 'shorten_meal' && suggestion.action_data?.block_id) {
+                      handleAdjustScheduleBlockTime(
+                        suggestion.action_data.block_id as string,
+                        '', // keep start time
+                        '' // need to calculate new end time
+                      );
+                    } else if (suggestion.type === 'skip_activity' && suggestion.action_data?.block_id) {
+                      handleSkipScheduleBlock(
+                        suggestion.action_data.block_id as string,
+                        'Skipped to catch up on schedule'
+                      );
+                    }
+                    toast.success('Suggestion applied');
+                  }}
+                />
+              )}
+
+              {/* Visual Timeline - Show always when schedule is imported */}
+              <Card className="bg-soft-black border-muted-gray/20">
+                <CardHeader className="py-3 border-b border-muted-gray/20">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-accent-yellow" />
+                    Day Schedule
+                    {!isActive && !isWrapped && (
+                      <Badge variant="outline" className="ml-2 text-xs">
+                        Preview
+                      </Badge>
+                    )}
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="p-6">
-                  {dashboard.current_scene ? (
-                    <div className="text-center space-y-4">
-                      <div>
-                        <span className="text-6xl font-bold text-accent-yellow">
-                          {dashboard.current_scene.scene_number || 'Scene'}
-                        </span>
-                        {dashboard.current_scene.int_ext && (
-                          <Badge variant="outline" className="ml-3 text-lg">
-                            {dashboard.current_scene.int_ext}
-                          </Badge>
-                        )}
-                      </div>
-                      <p className="text-xl text-bone-white">
-                        {dashboard.current_scene.set_name || dashboard.current_scene.description}
-                      </p>
+                <CardContent className="p-0">
+                  <HotSetTimeline
+                    importedSchedule={importedSchedule}
+                    completedScenes={dashboard?.completed_scenes || []}
+                    currentScene={dashboard?.current_scene || null}
+                    scheduleBlocks={scheduleBlocks}
+                    timeline={timelineData}
+                    deviationMinutes={scheduleDeviationMinutes}
+                    onSceneClick={handleSceneClick}
+                    projectId={projectId}
+                    timezone={session?.timezone}
+                  />
+                </CardContent>
+              </Card>
+            </div>
+          )}
 
-                      {/* Timer */}
-                      <div className="py-6">
-                        <LiveTimer startTime={dashboard.current_scene.actual_start_time} />
-                        <p className="text-sm text-muted-gray mt-2">
-                          Est: {dashboard.current_scene.estimated_minutes || 30} min
-                        </p>
-                      </div>
-
-                      {/* Controls */}
-                      {canEdit && (
-                        <div className="flex justify-center gap-4">
-                          <Button
-                            size="lg"
-                            onClick={() => handleCompleteScene(dashboard.current_scene!.id)}
-                            disabled={completeScene.isPending}
-                            className="bg-green-600 hover:bg-green-500 text-white"
-                          >
-                            <CheckCircle2 className="w-5 h-5 mr-2" />
-                            Complete Scene
-                          </Button>
-                          <Button
-                            size="lg"
-                            variant="outline"
-                            onClick={() => handleSkipScene(dashboard.current_scene!.id)}
-                            disabled={skipScene.isPending}
-                            className="border-red-500/30 text-red-400 hover:bg-red-500/10"
-                          >
-                            <SkipForward className="w-5 h-5 mr-2" />
-                            Skip
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
+          {/* Main Content Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Schedule View - Primary */}
+            <div className="lg:col-span-2">
+              {/* Tabbed Schedule View - Primary display for current activity and schedule */}
+              {dashboard.projected_schedule && dashboard.projected_schedule.length > 0 ? (
+                <TabbedScheduleView
+                    items={dashboard.projected_schedule}
+                    currentScene={dashboard?.current_scene || null}
+                    nextScenes={dashboard?.next_scenes || []}
+                    isActive={session.status === 'in_progress'}
+                    isWrapped={session.status === 'wrapped'}
+                    canEdit={canEdit}
+                    defaultTab={hotSetSettings?.default_schedule_view || 'current'}
+                    onStartScene={(sceneId) => startScene.mutate({ sessionId: session.id, sceneId })}
+                    onCompleteScene={(sceneId) => completeScene.mutate({ sessionId: session.id, sceneId })}
+                    onSkipScene={(sceneId) => skipScene.mutate({ sessionId: session.id, sceneId })}
+                    onStartActivity={(blockId) => {
+                      console.log('[HotSet] Starting activity with blockId:', blockId);
+                      startScheduleBlock.mutate(
+                        { sessionId: session.id, blockId },
+                        {
+                          onSuccess: () => {
+                            console.log('[HotSet] Activity started successfully');
+                            toast.success('Activity started');
+                          },
+                          onError: (error) => {
+                            console.error('[HotSet] Failed to start activity:', error);
+                            toast.error(`Failed to start: ${error.message}`);
+                          },
+                        }
+                      );
+                    }}
+                    onCompleteActivity={(blockId) => completeScheduleBlock.mutate({ sessionId: session.id, blockId })}
+                    onSkipActivity={(blockId) => skipScheduleBlock.mutate({ sessionId: session.id, blockId })}
+                    onStartDay={() => startSession.mutate(session.id)}
+                    isStartingScene={startScene.isPending}
+                    isCompletingScene={completeScene.isPending}
+                    isSkippingScene={skipScene.isPending}
+                    isStartingActivity={startScheduleBlock.isPending}
+                    isCompletingActivity={completeScheduleBlock.isPending}
+                    isSkippingActivity={skipScheduleBlock.isPending}
+                    timezone={session?.timezone}
+                  />
+              ) : (
+                /* Fallback when no schedule - show import options */
+                <Card className="bg-soft-black border-muted-gray/20">
+                  <CardHeader className="border-b border-muted-gray/20">
+                    <CardTitle className="flex items-center gap-2">
+                      <Clapperboard className="w-5 h-5 text-accent-yellow" />
+                      {!isActive && !isWrapped ? 'Ready to Start' : isWrapped ? 'Day Wrapped' : 'Schedule'}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-6">
                     <div className="text-center py-8">
                       {!isActive && !isWrapped ? (
                         <>
@@ -762,66 +1237,192 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                           <CheckCircle2 className="w-12 h-12 mx-auto mb-4" />
                           <p className="text-xl font-medium">Day Wrapped</p>
                           <p className="text-sm text-muted-gray mt-2">
-                            Wrapped at {formatTime(session?.actual_wrap_time || null)}
+                            Wrapped at {formatTime(session?.actual_wrap_time || null, session?.timezone)}
                           </p>
                         </div>
-                      ) : dashboard.next_scenes.length > 0 ? (
-                        <>
-                          <p className="text-muted-gray mb-4">No scene in progress</p>
-                          {canEdit && (
-                            <Button
-                              size="lg"
-                              onClick={() => handleStartScene(dashboard.next_scenes[0].id)}
-                              disabled={startScene.isPending}
-                              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-                            >
-                              <Play className="w-5 h-5 mr-2" />
-                              Start Next Scene
-                            </Button>
-                          )}
-                        </>
                       ) : (
-                        <p className="text-muted-gray">All scenes completed</p>
+                        <div className="text-muted-gray">
+                          <Film className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                          <p className="text-lg font-medium mb-2">No scenes imported</p>
+                          <p className="text-sm mb-4">Import scenes to start tracking your shooting day</p>
+                          {canEdit && session && (
+                            <div className="flex flex-col gap-2 max-w-xs mx-auto">
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  importFromProductionDay.mutate(
+                                    { sessionId: session.id },
+                                    {
+                                      onSuccess: ({ scenesImported }) => {
+                                        if (scenesImported === 0) {
+                                          alert('No scenes are assigned to this production day. Go to the Schedule tab to assign scenes first.');
+                                        }
+                                      },
+                                    }
+                                  );
+                                }}
+                                disabled={importFromProductionDay.isPending || importFromHourSchedule.isPending}
+                                className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+                              >
+                                {importFromProductionDay.isPending ? (
+                                  <>Importing...</>
+                                ) : (
+                                  <>
+                                    <Film className="w-4 h-4 mr-2" />
+                                    Import from Schedule Tab
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                onClick={() => {
+                                  importFromHourSchedule.mutate(
+                                    { sessionId: session.id },
+                                    {
+                                      onSuccess: ({ scenesImported, blocksImported }) => {
+                                        if (scenesImported === 0 && blocksImported === 0) {
+                                          alert('No hour schedule found for this day. Go to the Schedule tab and create an hour-by-hour schedule first.');
+                                        }
+                                      },
+                                    }
+                                  );
+                                }}
+                                disabled={importFromProductionDay.isPending || importFromHourSchedule.isPending}
+                                className="border-muted-gray/50 hover:bg-muted-gray/10"
+                              >
+                                {importFromHourSchedule.isPending ? (
+                                  <>Importing...</>
+                                ) : (
+                                  <>
+                                    <Clock className="w-4 h-4 mr-2" />
+                                    Import Hour Schedule
+                                  </>
+                                )}
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                  </CardContent>
+                </Card>
+              )}
 
-              {/* Action Buttons */}
+              {/* Task Creation - Quick Access */}
               {canEdit && isActive && (
-                <div className="flex gap-3 mt-4">
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowMarkerModal(true)}
-                    className="flex-1"
-                  >
-                    <Flag className="w-4 h-4 mr-2" />
-                    Add Marker
-                  </Button>
+                <div className="mt-4">
                   <Button
                     variant="outline"
                     onClick={handleOpenTaskModal}
-                    className="flex-1"
+                    className="w-full"
                   >
                     <ListTodo className="w-4 h-4 mr-2" />
                     Create Task
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleWrapSession}
-                    disabled={wrapSession.isPending}
-                    className="border-red-500/30 text-red-400 hover:bg-red-500/10"
-                  >
-                    <Square className="w-4 h-4 mr-2" />
-                    Wrap Day
                   </Button>
                 </div>
               )}
             </div>
 
-            {/* Scene Queue */}
+            {/* Right Panel - AD Command Hub */}
             <div className="space-y-4">
+              {/* Call Sheet Quick Link */}
+              {session && (
+                <CallSheetQuickLink
+                  projectId={projectId}
+                  callSheetId={session.call_sheet_id}
+                  productionDayId={session.production_day_id}
+                  dayNumber={currentProductionDay?.day_number || 1}
+                  date={currentProductionDay?.date}
+                />
+              )}
+
+              {/* AD Notes */}
+              {session && (
+                <ADNotesPanel
+                  sessionId={session.id}
+                  initialNotes={session.notes}
+                  canEdit={canEdit}
+                />
+              )}
+
+              {/* Day Stats */}
+              <DayStatsCard
+                elapsedMinutes={timeStats?.elapsed_minutes || 0}
+                scenesCompleted={scheduleStatus?.scenes_completed || 0}
+                scenesTotal={scheduleStatus?.scenes_total || 0}
+                scheduleStatus={scheduleStatus?.status || 'on_time'}
+                varianceMinutes={scheduleStatus?.variance_minutes || 0}
+              />
+
+              {/* OT Projection */}
+              {session && (
+                <OTProjectionCard
+                  projection={dashboard?.ot_projection}
+                  dayType={session.day_type}
+                  timezone={session?.timezone}
+                />
+              )}
+
+              {/* Quick Actions */}
+              {canEdit && isActive && (
+                <Card className="bg-soft-black border-muted-gray/20">
+                  <CardContent className="p-4 space-y-3">
+                    <Button
+                      variant="outline"
+                      onClick={() => setShowMarkerModal(true)}
+                      className="w-full justify-start"
+                    >
+                      <Flag className="w-4 h-4 mr-2" />
+                      Add Time Marker
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleOpenWrapModal}
+                      disabled={wrapSession.isPending}
+                      className="w-full justify-start border-red-500/30 text-red-400 hover:bg-red-500/10"
+                    >
+                      <Square className="w-4 h-4 mr-2" />
+                      Wrap Day
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Wrapped Day Actions - View report and resume option */}
+              {isWrapped && (
+                <Card className="bg-soft-black border-green-500/20">
+                  <CardContent className="p-4 space-y-3">
+                    <div className="text-center mb-3">
+                      <CheckCircle2 className="w-8 h-8 mx-auto text-green-400 mb-2" />
+                      <p className="text-sm text-muted-gray">Day has been wrapped</p>
+                    </div>
+                    <Button
+                      onClick={() => setShowReportView(true)}
+                      className="w-full bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                    >
+                      <FileDown className="w-4 h-4 mr-2" />
+                      View Day Report
+                    </Button>
+                    {canEdit && (
+                      <>
+                        <Button
+                          variant="outline"
+                          onClick={handleOpenResumeModal}
+                          disabled={resumeSession.isPending}
+                          className="w-full justify-start border-blue-500/30 text-blue-400 hover:bg-blue-500/10"
+                        >
+                          <RotateCcw className="w-4 h-4 mr-2" />
+                          Resume Day
+                        </Button>
+                        <p className="text-xs text-muted-gray text-center">
+                          Accidentally wrapped? Resume to continue tracking.
+                        </p>
+                      </>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Up Next */}
               <Card className="bg-soft-black border-muted-gray/20">
                 <CardHeader className="py-3 border-b border-muted-gray/20">
@@ -830,36 +1431,69 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                     Up Next ({dashboard.next_scenes.length})
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="p-3 space-y-2 max-h-64 overflow-y-auto">
+                <CardContent className="p-3 space-y-2 max-h-48 overflow-y-auto">
                   {dashboard.next_scenes.length === 0 ? (
                     <p className="text-sm text-muted-gray text-center py-4">No scenes queued</p>
                   ) : (
-                    dashboard.next_scenes.slice(0, 5).map((scene, idx) => (
+                    dashboard.next_scenes.slice(0, 3).map((scene, idx) => (
                       <SceneCard
                         key={scene.id}
                         scene={scene}
                         canEdit={canEdit && isActive && idx === 0}
                         onStart={idx === 0 ? () => handleStartScene(scene.id) : undefined}
                         isPending={startScene.isPending}
+                        timezone={session?.timezone}
                       />
                     ))
                   )}
                 </CardContent>
               </Card>
 
-              {/* Completed */}
-              <Card className="bg-soft-black border-muted-gray/20">
-                <CardHeader className="py-3 border-b border-muted-gray/20">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-green-400" />
-                    Completed ({dashboard.completed_scenes.length})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-3 space-y-2 max-h-48 overflow-y-auto">
-                  {dashboard.completed_scenes.length === 0 ? (
-                    <p className="text-sm text-muted-gray text-center py-4">No scenes completed yet</p>
-                  ) : (
-                    dashboard.completed_scenes.slice(-5).reverse().map((scene) => (
+              {/* Schedule Blocks (Meals, Moves, Activities) */}
+              {scheduleBlocks.length > 0 && (
+                <Card className="bg-soft-black border-muted-gray/20">
+                  <CardHeader className="py-3 border-b border-muted-gray/20">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Coffee className="w-4 h-4 text-green-400" />
+                      Schedule Blocks
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-3 space-y-2 max-h-48 overflow-y-auto">
+                    {scheduleBlocks
+                      .filter((block) => block.status !== 'completed' && block.status !== 'skipped')
+                      .slice(0, 3)
+                      .map((block) => (
+                        <ScheduleBlockCard
+                          key={block.id}
+                          block={block}
+                          canEdit={canEdit && isActive}
+                          onStart={() => handleStartScheduleBlock(block.id)}
+                          onComplete={() => handleCompleteScheduleBlock(block.id)}
+                          onSkip={(reason) => handleSkipScheduleBlock(block.id, reason)}
+                          onAdjustTime={(start, end) => handleAdjustScheduleBlockTime(block.id, start, end)}
+                          isPending={
+                            startScheduleBlock.isPending ||
+                            completeScheduleBlock.isPending ||
+                            skipScheduleBlock.isPending
+                          }
+                          timezone={session?.timezone}
+                        />
+                      ))}
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Completed Scenes (collapsed) */}
+              {dashboard.completed_scenes.length > 0 && (
+                <Card className="bg-soft-black border-muted-gray/20">
+                  <CardHeader className="py-3 border-b border-muted-gray/20">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-green-400" />
+                      Completed ({dashboard.completed_scenes.length})
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-3 space-y-2 max-h-32 overflow-y-auto">
+                    {dashboard.completed_scenes.slice(-3).reverse().map((scene) => (
                       <div
                         key={scene.id}
                         className="flex items-center justify-between py-2 px-3 bg-green-500/5 rounded border border-green-500/20"
@@ -871,97 +1505,29 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                           {scene.actual_duration_minutes}m
                         </span>
                       </div>
-                    ))
-                  )}
-                </CardContent>
-              </Card>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </div>
+            </>
+          )}
         </>
       )}
 
-      {/* Create Session Modal */}
-      <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
-        <DialogContent className="bg-soft-black border-muted-gray/30">
-          <DialogHeader>
-            <DialogTitle>Create Production Day Session</DialogTitle>
-            <DialogDescription>
-              Set up a new session to track your shoot day in real-time.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div>
-              <Label>Production Day</Label>
-              <Select value={newSessionDayId} onValueChange={setNewSessionDayId}>
-                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
-                  <SelectValue placeholder="Select day" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableDays.map((day) => (
-                    <SelectItem key={day.id} value={day.id}>
-                      Day {day.day_number} - {parseLocalDate(day.date).toLocaleDateString()}
-                      {day.title && ` - ${day.title}`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label>Day Type</Label>
-              <Select
-                value={newSessionDayType}
-                onValueChange={(v) => setNewSessionDayType(v as HotSetDayType)}
-              >
-                <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="4hr">Half Day (4hr)</SelectItem>
-                  <SelectItem value="8hr">8 Hour Day</SelectItem>
-                  <SelectItem value="10hr">10 Hour Day</SelectItem>
-                  <SelectItem value="12hr">12 Hour Day</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-gray mt-1">Used for OT threshold calculations</p>
-            </div>
-
-            {dayCallSheets.length > 0 && (
-              <div>
-                <Label>Import from Call Sheet (optional)</Label>
-                <Select value={newSessionCallSheetId} onValueChange={setNewSessionCallSheetId}>
-                  <SelectTrigger className="bg-charcoal-black border-muted-gray/30">
-                    <SelectValue placeholder="Select call sheet" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Don't import</SelectItem>
-                    {dayCallSheets.map((cs) => (
-                      <SelectItem key={cs.id} value={cs.id}>
-                        {cs.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-gray mt-1">Import scenes from call sheet</p>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateModal(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreateSession}
-              disabled={!newSessionDayId || createSession.isPending}
-              className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
-            >
-              Create Session
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create Session Modal - Enhanced with Schedule Import and OT Preview */}
+      <CreateHotSetSessionModal
+        open={showCreateModal}
+        onOpenChange={setShowCreateModal}
+        productionDays={availableDays}
+        callSheets={callSheets || []}
+        projectId={projectId}
+        onSubmit={handleCreateSessionWithSchedule}
+        defaultAutoStart={hotSetSettings?.auto_start_enabled ?? true}
+        autoStartMinutes={hotSetSettings?.auto_start_minutes_before_call ?? 30}
+        isLoading={createSession.isPending}
+      />
 
       {/* Add Marker Modal */}
       <Dialog open={showMarkerModal} onOpenChange={setShowMarkerModal}>
@@ -1164,6 +1730,80 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           <DialogFooter>
             <Button variant="ghost" onClick={() => setShowTipsPanel(false)}>
               Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Wrap Day Modal */}
+      {selectedSessionId && (
+        <WrapDayModal
+          open={showWrapModal}
+          onOpenChange={setShowWrapModal}
+          sessionId={selectedSessionId}
+          onConfirmWrap={handleConfirmWrap}
+          isWrapping={wrapSession.isPending}
+        />
+      )}
+
+      {/* Resume Day Modal */}
+      <Dialog open={showResumeModal} onOpenChange={setShowResumeModal}>
+        <DialogContent className="sm:max-w-md bg-soft-black border-muted-gray/30">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-bone-white">
+              <RotateCcw className="w-5 h-5 text-blue-400" />
+              Resume Day {currentProductionDay?.day_number}
+            </DialogTitle>
+            <DialogDescription className="text-muted-gray">
+              Resume tracking for this production day.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4 space-y-4">
+            <div className="flex items-start gap-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <AlertTriangle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-blue-400">Are you sure?</p>
+                <p className="text-xs text-blue-400/80 mt-1">
+                  This will set the day status back to "In Progress" and resume tracking.
+                  The wrap time will be cleared.
+                </p>
+              </div>
+            </div>
+
+            <div className="text-sm text-muted-gray">
+              <p>This is useful if:</p>
+              <ul className="list-disc list-inside mt-1 space-y-1">
+                <li>You accidentally wrapped the day too early</li>
+                <li>You need to continue shooting after wrap was called</li>
+              </ul>
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowResumeModal(false)}
+              disabled={resumeSession.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmResume}
+              disabled={resumeSession.isPending}
+              className="bg-blue-600 hover:bg-blue-500 text-white"
+            >
+              {resumeSession.isPending ? (
+                <>
+                  <Clock className="w-4 h-4 mr-2 animate-spin" />
+                  Resuming...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Resume Day
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

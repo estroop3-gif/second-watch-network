@@ -63,6 +63,8 @@ import { RefreshCw } from 'lucide-react';
 interface CallSheetsViewProps {
   projectId: string;
   canEdit: boolean;
+  initialCallSheetId?: string;
+  onInitialCallSheetViewed?: () => void;
 }
 
 const CallSheetCard: React.FC<{
@@ -369,7 +371,7 @@ const ProductionDayRow: React.FC<{
   );
 };
 
-const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) => {
+const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit, initialCallSheetId, onInitialCallSheetViewed }) => {
   const { callSheets, isLoading, publishCallSheet, deleteCallSheet, cloneCallSheet } = useCallSheets(projectId);
   const { days, isLoading: loadingDays } = useProductionDays(projectId);
   const { toast } = useToast();
@@ -388,6 +390,18 @@ const CallSheetsView: React.FC<CallSheetsViewProps> = ({ projectId, canEdit }) =
     keep_schedule_blocks: true,
     keep_department_notes: true,
   });
+
+  // Auto-open initial call sheet if provided (e.g., from Schedule view navigation)
+  React.useEffect(() => {
+    if (initialCallSheetId && callSheets && callSheets.length > 0) {
+      const targetSheet = callSheets.find(s => s.id === initialCallSheetId);
+      if (targetSheet) {
+        setViewSheet(targetSheet);
+        // Clear the initial call sheet ID so it doesn't re-open on subsequent renders
+        onInitialCallSheetViewed?.();
+      }
+    }
+  }, [initialCallSheetId, callSheets, onInitialCallSheetViewed]);
 
   const handlePublish = async (id: string, publish: boolean) => {
     try {

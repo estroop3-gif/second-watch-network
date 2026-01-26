@@ -108,6 +108,10 @@ export interface BacklotProductionDay {
   // Scene assignments from schedule
   assigned_scenes?: ProductionDayScene[];
   scene_count?: number;
+  // Hour-by-hour schedule
+  hour_schedule?: HourScheduleBlock[];
+  schedule_config?: HourScheduleConfig;
+  hour_schedule_updated_at?: string;
 }
 
 // Production Day Scene Assignment (for schedule scene assignment)
@@ -311,6 +315,9 @@ export interface BacklotCallSheet {
   // Custom Contacts (JSONB array)
   custom_contacts: CallSheetCustomContact[];
 
+  // Schedule blocks sync tracking
+  schedule_blocks_updated_at?: string;
+
   // Joined data
   people?: BacklotCallSheetPerson[];
   production_day?: BacklotProductionDay;
@@ -324,6 +331,145 @@ export interface ScheduleBlock {
   activity: string;
   notes?: string;
 }
+
+// Hour Schedule Block Types for production day hour-by-hour scheduling
+export type HourScheduleBlockType =
+  | 'scene'           // Scene shooting
+  | 'activity'        // Generic activity (blocking, rehearsal)
+  | 'meal'            // Meal breaks
+  | 'crew_call'       // Crew call time
+  | 'first_shot'      // First shot marker
+  | 'company_move'    // Travel between locations
+  | 'wrap'            // End of day
+  | 'custom'          // User-defined
+  | 'segment'         // Non-scripted segment
+  | 'camera_reset'    // Camera/lighting reset between scenes
+  | 'lighting_reset'; // Major lighting reset (day/night changes)
+
+// Schedule mode for wizard
+export type HourScheduleMode = 'scripted' | 'non_scripted' | 'mixed';
+
+// Non-scripted segment categories
+export type NonScriptedSegmentCategory =
+  | 'interview'
+  | 'broll'
+  | 'technical'
+  | 'talent'
+  | 'presentation'
+  | 'performance'
+  | 'location'
+  | 'custom';
+
+// Segment preset definition (from library or user-created)
+export interface NonScriptedSegmentPreset {
+  id: string;
+  category: NonScriptedSegmentCategory;
+  name: string;
+  description?: string;
+  duration_min_minutes: number;
+  duration_max_minutes: number;
+  duration_default_minutes: number;
+  icon?: string;
+  color?: string;
+  is_system_preset: boolean;
+}
+
+// Segment instance in a schedule
+export interface NonScriptedSegment {
+  id: string;
+  preset_id?: string;
+  category: NonScriptedSegmentCategory;
+  name: string;
+  duration_minutes: number;
+  description?: string;
+  location_id?: string;
+  location_name?: string;
+  notes?: string;
+  sort_order: number;
+}
+
+// User's custom presets (stored in user profile)
+export interface UserSegmentPresets {
+  presets: NonScriptedSegmentPreset[];
+}
+
+export interface HourScheduleBlock {
+  id: string;
+  type: HourScheduleBlockType;
+  start_time: string;              // HH:MM format
+  end_time: string;                // HH:MM format
+  duration_minutes: number;
+
+  // Scene-specific (when type === 'scene')
+  scene_id?: string;
+  scene_number?: string;
+  scene_slugline?: string;
+  page_count?: number;
+
+  // Activity fields
+  activity_name?: string;
+  activity_notes?: string;
+
+  // Location (for company moves and segments)
+  location_id?: string;
+  location_name?: string;
+
+  // Segment-specific (when type === 'segment')
+  segment_category?: NonScriptedSegmentCategory;
+  segment_preset_id?: string;
+  segment_description?: string;
+
+  sort_order: number;
+}
+
+export interface HourScheduleConfig {
+  pages_per_hour: number;              // 0.5 drama, 1.0 comedy
+  crew_call_time: string;              // HH:MM
+  first_shot_offset_minutes: number;   // Time after crew call
+  meal_1_after_hours: number;          // Default: 6
+  meal_1_duration_minutes: number;     // Default: 30-60
+  meal_2_enabled: boolean;
+  meal_2_after_hours: number;
+  meal_2_duration_minutes: number;
+  default_move_duration_minutes: number;
+  scene_buffer_minutes: number;
+  // Mode and segment settings
+  mode?: HourScheduleMode;
+  segment_buffer_minutes?: number;     // Buffer between segments
+  group_by_location?: boolean;         // Auto-group segments by location
+  // Reset time settings
+  camera_reset_minutes?: number;       // Default: 10 - between all scenes
+  lighting_reset_minutes?: number;     // Default: 20 - day/night changes
+  major_setup_minutes?: number;        // Default: 30 - INT/EXT changes
+  enable_auto_resets?: boolean;        // Default: true - auto-insert resets
+}
+
+export const PAGES_PER_HOUR_PRESETS = {
+  drama_slow: 0.25,
+  drama_standard: 0.5,
+  comedy_sitcom: 1.0,
+  action_heavy: 0.33,
+} as const;
+
+export const DEFAULT_HOUR_SCHEDULE_CONFIG: HourScheduleConfig = {
+  pages_per_hour: 0.5,
+  crew_call_time: '06:00',
+  first_shot_offset_minutes: 60,
+  meal_1_after_hours: 6,
+  meal_1_duration_minutes: 30,
+  meal_2_enabled: false,
+  meal_2_after_hours: 12,
+  meal_2_duration_minutes: 30,
+  default_move_duration_minutes: 30,
+  scene_buffer_minutes: 5,
+  mode: 'scripted',
+  segment_buffer_minutes: 5,
+  group_by_location: true,
+  camera_reset_minutes: 10,
+  lighting_reset_minutes: 20,
+  major_setup_minutes: 30,
+  enable_auto_resets: true,
+};
 
 // Custom Contact for call sheets (stored as JSONB array)
 export interface CallSheetCustomContact {
@@ -1426,7 +1572,7 @@ export type BacklotWorkspaceView =
 // HOT SET (Production Day) TYPES
 // =============================================================================
 
-export type HotSetDayType = '4hr' | '8hr' | '10hr' | '12hr';
+export type HotSetDayType = '4hr' | '8hr' | '10hr' | '12hr' | '6th_day' | '7th_day';
 export type HotSetSessionStatus = 'not_started' | 'in_progress' | 'wrapped';
 export type HotSetSceneStatus = 'pending' | 'in_progress' | 'completed' | 'skipped' | 'moved';
 export type HotSetScheduleStatus = 'ahead' | 'on_time' | 'behind';
@@ -1442,6 +1588,12 @@ export type HotSetMarkerType =
   | 'ot_threshold_1'
   | 'ot_threshold_2'
   | 'custom';
+
+// Schedule import source for session creation
+export type HotSetScheduleImportSource = 'hour_schedule' | 'call_sheet' | 'none';
+
+// Schedule tracking mode
+export type HotSetScheduleTrackingMode = 'auto_reorder' | 'track_deviation';
 
 export interface HotSetSession {
   id: string;
@@ -1463,6 +1615,17 @@ export interface HotSetSession {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // NEW: Auto-start and confirmation fields
+  crew_call_confirmed_at?: string | null;
+  crew_call_confirmed_by?: string | null;
+  first_shot_confirmed_at?: string | null;
+  first_shot_confirmed_by?: string | null;
+  auto_started?: boolean;
+  // Timezone and location fields (imported from call sheet)
+  timezone?: string | null;
+  timezone_offset?: string | null;
+  location_name?: string | null;
+  location_address?: string | null;
   // Joined data
   backlot_production_days?: {
     day_number: number;
@@ -1470,6 +1633,11 @@ export interface HotSetSession {
     title: string | null;
     general_call_time: string | null;
   };
+  // Hour Schedule Integration
+  imported_schedule?: HourScheduleBlock[];
+  imported_schedule_config?: HourScheduleConfig;
+  schedule_import_source?: HotSetScheduleImportSource;
+  schedule_tracking_mode?: HotSetScheduleTrackingMode;
 }
 
 export interface HotSetSceneLog {
@@ -1489,6 +1657,17 @@ export interface HotSetSceneLog {
   sort_order: number;
   notes: string | null;
   skip_reason: string | null;
+  // From imported schedule
+  expected_start_time?: string;
+  expected_end_time?: string;
+  expected_duration_minutes?: number;
+  // Deviation tracking (calculated)
+  start_deviation_minutes?: number;
+  end_deviation_minutes?: number;
+  duration_deviation_minutes?: number;
+  // NEW: Dual variance tracking
+  cumulative_variance_minutes?: number;  // Total variance accumulated
+  realtime_deviation_minutes?: number;   // Real-time comparison to schedule
 }
 
 export interface HotSetMarker {
@@ -1548,6 +1727,57 @@ export interface HotSetScheduleInfo {
   percent_complete: number;
 }
 
+// Unified schedule item with projected times
+export type ProjectedScheduleItemType = 'scene' | 'meal' | 'company_move' | 'activity' | 'crew_call' | 'first_shot' | 'wrap';
+export type ProjectedScheduleItemStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
+export type ProjectedScheduleSourceType = 'scene_log' | 'schedule_block' | 'imported';
+
+export interface ProjectedScheduleItem {
+  id: string;
+  type: ProjectedScheduleItemType;
+  name: string;  // Scene number or activity name
+  description?: string;  // Slugline or location
+
+  // Planned times (from imported schedule)
+  planned_start_time: string;  // HH:MM
+  planned_end_time: string;
+  planned_duration_minutes: number;
+
+  // Projected times (after cascading variance)
+  projected_start_time?: string;
+  projected_end_time?: string;
+  variance_from_plan?: number;  // Cumulative variance: negative = late, positive = ahead
+
+  // Actual times (when completed)
+  actual_start_time?: string;
+  actual_end_time?: string;
+  actual_duration_minutes?: number;
+
+  status: ProjectedScheduleItemStatus;
+  is_current?: boolean;
+
+  // NEW: Real-time deviation - compares current time to where we should be
+  realtime_deviation_minutes?: number;  // Negative = behind schedule, Positive = ahead of schedule
+
+  // Source reference (to link back to scene or schedule block)
+  source_type: ProjectedScheduleSourceType;
+  source_id?: string;
+}
+
+// Real-time OT projection based on current progress
+export interface OTProjectionData {
+  projected_wrap_time: string;  // HH:MM
+  call_time: string;  // HH:MM
+  total_hours: number;
+  regular_hours: number;
+  ot1_hours: number;
+  ot2_hours: number;
+  projected_ot_cost: number;
+  // Breakdown by crew if available
+  crew_count: number;
+  crew_with_rates: number;
+}
+
 export interface HotSetDashboard {
   session: HotSetSession;
   current_scene: HotSetSceneLog | null;
@@ -1557,6 +1787,212 @@ export interface HotSetDashboard {
   time_stats: HotSetTimeStats;
   cost_projection: HotSetCostProjection;
   schedule_status: HotSetScheduleInfo;
+  // Schedule integration (optional for backward compatibility)
+  schedule_blocks?: HotSetScheduleBlock[];
+  schedule_deviation_minutes?: number;
+  current_expected_block?: HourScheduleBlock | null;
+  next_expected_block?: HourScheduleBlock | null;
+  catch_up_suggestions?: HotSetCatchUpSuggestion[];
+  timeline?: HotSetTimeline;
+  // New: Full projected schedule with live updates
+  projected_schedule?: ProjectedScheduleItem[];
+  ot_projection?: OTProjectionData;
+}
+
+// =============================================================================
+// HOT SET SCHEDULE INTEGRATION TYPES
+// =============================================================================
+
+// Schedule block status for non-scene items
+export type HotSetScheduleBlockStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
+
+// Schedule block type for non-scene items
+export type HotSetScheduleBlockType = 'meal' | 'company_move' | 'activity' | 'crew_call' | 'first_shot' | 'wrap';
+
+// Track non-scene schedule items (meals, moves, activities)
+export interface HotSetScheduleBlock {
+  id: string;
+  session_id: string;
+  block_type: HotSetScheduleBlockType;
+  // From imported schedule
+  expected_start_time: string;
+  expected_end_time: string;
+  expected_duration_minutes: number;
+  // Actual tracking
+  actual_start_time?: string;
+  actual_end_time?: string;
+  status: HotSetScheduleBlockStatus;
+  // Display
+  name: string;
+  location_name?: string;
+  notes?: string;
+  // Linked marker (created when block completes)
+  linked_marker_id?: string;
+  // Original schedule block reference
+  original_schedule_block_id?: string;
+  sort_order: number;
+}
+
+// Catch-up suggestion types
+export type HotSetCatchUpSuggestionType =
+  | 'break_shortening'      // Reduce meal/break duration (compliance warning)
+  | 'walking_lunch'         // Take lunch while working (compliance warning)
+  | 'skip_activity'         // Skip non-essential activities
+  | 'scene_consolidation'   // Combine similar scenes (same location/setup)
+  | 'schedule_reordering'   // Shoot scenes out of order to optimize
+  | 'scene_cut'             // Cut non-essential scenes
+  | 'scene_move'            // Move scenes to another day
+  | 'extend_day'            // Work into overtime (cost impact warning)
+  | 'meal_penalty_warning'  // Warning: approaching meal penalty
+  | 'wrap_extension_warning' // Warning: projected wrap significantly over
+  // Legacy types (for backward compatibility)
+  | 'shorten_meal'
+  | 'combine_setups'
+  | 'cut_scene';
+
+// Impact level for suggestions
+export type HotSetCatchUpImpact = 'low' | 'medium' | 'high';
+
+// Catch-up suggestion when behind schedule
+export interface HotSetCatchUpSuggestion {
+  id: string;
+  type: HotSetCatchUpSuggestionType;
+  description: string;
+  time_saved_minutes: number;
+  impact: HotSetCatchUpImpact;
+  action_data?: Record<string, unknown>;
+}
+
+// Timeline data for visual display
+export interface HotSetTimeline {
+  day_start: string;
+  day_end: string;
+  current_time: string;
+  expected_position_minutes: number;
+  actual_position_minutes: number;
+}
+
+// =============================================================================
+// HOT SET DAY PREVIEW TYPES (for session creation with OT projection)
+// =============================================================================
+
+export interface HotSetDayPreviewProductionDay {
+  id: string;
+  day_number: number;
+  date: string;
+  title: string | null;
+  general_call_time: string | null;
+  location_name: string | null;
+}
+
+export interface HotSetDayPreviewExpectedHours {
+  call_time: string | null;
+  wrap_time: string | null;
+  total_hours: number;
+}
+
+export interface HotSetCrewPreviewPerson {
+  id: string;
+  name: string;
+  role: string | null;
+  department: string | null;
+  source: 'dood' | 'call_sheet' | 'both';
+  user_id: string | null;
+  has_rate: boolean;
+  rate_type: 'hourly' | 'daily' | 'weekly' | 'flat' | null;
+  rate_amount: number | null;
+  rate_source: 'user' | 'role' | 'booking' | null;
+  projected_cost: number | null;
+}
+
+export interface HotSetOTProjection {
+  day_type: string;
+  ot1_threshold: number;
+  ot2_threshold: number;
+  regular_hours: number;
+  ot1_hours: number;
+  ot2_hours: number;
+  total_regular_cost: number;
+  total_ot1_cost: number;
+  total_ot2_cost: number;
+  total_cost: number;
+  crew_with_rates: number;
+  crew_without_rates: number;
+}
+
+export interface HotSetDayPreview {
+  production_day: HotSetDayPreviewProductionDay;
+  expected_hours: HotSetDayPreviewExpectedHours;
+  crew: HotSetCrewPreviewPerson[];
+  ot_projection: HotSetOTProjection;
+}
+
+// OT Threshold configuration
+export interface HotSetOTConfig {
+  ot1_after: number;
+  ot2_after: number;
+  label: string;
+  desc: string;
+}
+
+// =============================================================================
+// HOT SET SETTINGS & NOTIFICATIONS (NEW)
+// =============================================================================
+
+// Hot Set settings for auto-start and notifications
+export interface HotSetSettings {
+  id: string;
+  project_id: string;
+  auto_start_enabled: boolean;
+  auto_start_minutes_before_call: number;
+  notifications_enabled: boolean;
+  notify_minutes_before_call: number;
+  notify_crew_on_auto_start: boolean;
+  suggestion_trigger_minutes_behind: number;
+  suggestion_trigger_meal_penalty_minutes: number;
+  suggestion_trigger_wrap_extension_minutes: number;
+  default_schedule_view: 'current' | 'full' | 'completed';
+  created_at: string;
+  updated_at: string;
+}
+
+// Hot Set settings update payload
+export interface HotSetSettingsUpdate {
+  auto_start_enabled?: boolean;
+  auto_start_minutes_before_call?: number;
+  notifications_enabled?: boolean;
+  notify_minutes_before_call?: number;
+  notify_crew_on_auto_start?: boolean;
+  suggestion_trigger_minutes_behind?: number;
+  suggestion_trigger_meal_penalty_minutes?: number;
+  suggestion_trigger_wrap_extension_minutes?: number;
+  default_schedule_view?: 'current' | 'full' | 'completed';
+}
+
+// Hot Set notification types
+export type HotSetNotificationType =
+  | 'pre_crew_call'
+  | 'auto_start'
+  | 'crew_call_confirmed'
+  | 'first_shot_confirmed'
+  | 'meal_penalty_warning'
+  | 'wrap_extension_warning'
+  | 'catch_up_suggestion'
+  | 'custom';
+
+// Hot Set notification
+export interface HotSetNotification {
+  id: string;
+  session_id: string;
+  notification_type: HotSetNotificationType;
+  recipient_profile_ids: string[];
+  recipient_count: number;
+  title: string;
+  message: string;
+  sent_at: string;
+  delivery_method: 'in_app' | 'email' | 'sms' | 'push';
+  metadata?: Record<string, unknown>;
+  created_at: string;
 }
 
 // Project stats for dashboard
@@ -3425,6 +3861,7 @@ export interface BacklotBookedPerson {
   email: string | null;
   start_date: string | null;
   end_date: string | null;
+  booking_rate: string | null;  // e.g., "$500/daily", "$2000/weekly"
 }
 
 // =============================================================================

@@ -27,7 +27,7 @@ from app.api import (
     profiles, submissions, notifications, connections,
     admin, admin_community, admin_content, admin_backlot, admin_profiles,
     admin_roles, admin_storage, admin_users, admin_emails, admin_organizations, ses_webhook,
-    organization_usage,
+    organization_usage, message_settings, admin_messages,
     availability, credits, community, greenroom, order, backlot,
     scene_view, day_view, person_view, timecards, project_access, directory,
     camera_continuity, continuity, utilities, billing, expenses, camera_log,
@@ -65,6 +65,7 @@ from app.api import (
     message_templates,  # Message templates for quick replies
     e2ee,  # End-to-end encryption key management
     channels,  # Group chat channels
+    message_folders,  # Custom message folders for DM organization
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
 from app.api.set_house import router as set_house_router  # Set House - Space/location management
@@ -233,6 +234,8 @@ app.include_router(messages.router, prefix=f"{settings.API_V1_PREFIX}/messages",
 app.include_router(message_templates.router, prefix=f"{settings.API_V1_PREFIX}/message-templates", tags=["Message Templates"])
 app.include_router(e2ee.router, prefix=f"{settings.API_V1_PREFIX}/e2ee", tags=["E2EE Encryption"])
 app.include_router(channels.router, prefix=f"{settings.API_V1_PREFIX}/channels", tags=["Message Channels"])
+app.include_router(message_folders.router, prefix=f"{settings.API_V1_PREFIX}/message-folders", tags=["Message Folders"])
+app.include_router(message_settings.router, prefix=f"{settings.API_V1_PREFIX}/message-settings", tags=["Message Settings"])
 app.include_router(forum.router, prefix=f"{settings.API_V1_PREFIX}/forum", tags=["Forum"])
 app.include_router(notifications.router, prefix=f"{settings.API_V1_PREFIX}/notifications", tags=["Notifications"])
 app.include_router(connections.router, prefix=f"{settings.API_V1_PREFIX}/connections", tags=["Connections"])
@@ -245,6 +248,7 @@ app.include_router(admin_roles.router, prefix=f"{settings.API_V1_PREFIX}/admin",
 app.include_router(admin_storage.router, prefix=f"{settings.API_V1_PREFIX}/admin/storage", tags=["Admin Storage"])
 app.include_router(admin_users.router, prefix=f"{settings.API_V1_PREFIX}/admin/users", tags=["Admin Users"])
 app.include_router(admin_emails.router, prefix=f"{settings.API_V1_PREFIX}/admin", tags=["Admin Emails"])
+app.include_router(admin_messages.router, prefix=f"{settings.API_V1_PREFIX}/admin/messages", tags=["Admin Messages"])
 app.include_router(admin_organizations.router, prefix=f"{settings.API_V1_PREFIX}/admin/organizations", tags=["Admin Organizations"])
 app.include_router(organization_usage.router, prefix=f"{settings.API_V1_PREFIX}/organizations", tags=["Organization Usage"])
 app.include_router(ses_webhook.router, prefix=f"{settings.API_V1_PREFIX}", tags=["SES Webhook"])

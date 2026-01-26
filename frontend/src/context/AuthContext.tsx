@@ -137,7 +137,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return false;
       } else {
         // For auth errors (401/403/invalid), clear the token
-        console.warn('[Auth] Auth error, clearing session:', error.message);
+        // This is normal when tokens expire - log as info, not warning
+        console.log('[Auth] Token expired or invalid, clearing session');
         safeStorage.removeItem('access_token');
         safeStorage.removeItem('refresh_token');
         safeStorage.removeItem('profile_id');

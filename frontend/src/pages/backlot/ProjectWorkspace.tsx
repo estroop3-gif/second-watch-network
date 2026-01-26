@@ -4,7 +4,7 @@
  * Uses lazy loading for view components to improve initial page load performance
  */
 import React, { useState, useEffect, Suspense, lazy, startTransition } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { VoiceProvider } from '@/context/VoiceContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -330,7 +330,24 @@ const getInitialSidebarState = (): boolean => {
 const ProjectWorkspace: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  const [activeView, setActiveView] = useState<BacklotWorkspaceView>('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Initialize activeView from URL or default to 'overview'
+  const initialView = (searchParams.get('view') as BacklotWorkspaceView) || 'overview';
+  const [activeView, setActiveViewState] = useState<BacklotWorkspaceView>(initialView);
+
+  // Wrapper to update both state and URL
+  const setActiveView = (view: BacklotWorkspaceView) => {
+    setActiveViewState(view);
+    setSearchParams((prev) => {
+      if (view === 'overview') {
+        prev.delete('view');
+      } else {
+        prev.set('view', view);
+      }
+      return prev;
+    }, { replace: true });
+  };
   const [sidebarOpen, setSidebarOpen] = useState(false); // Mobile drawer state
   const [sidebarExpanded, setSidebarExpanded] = useState(getInitialSidebarState); // Desktop collapse state
   const [copilotOpen, setCopilotOpen] = useState(false);
@@ -348,6 +365,8 @@ const ProjectWorkspace: React.FC = () => {
   // Clearances person filter state (from Casting & Crew navigation)
   const [clearancePersonFilter, setClearancePersonFilter] = useState<string | null>(null);
   const [clearancePersonFilterName, setClearancePersonFilterName] = useState<string | undefined>(undefined);
+  // Call sheet navigation state (from Schedule view)
+  const [initialCallSheetId, setInitialCallSheetId] = useState<string | null>(null);
   // Episode management state
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
 
@@ -752,10 +771,24 @@ const ProjectWorkspace: React.FC = () => {
             )
           )}
           {activeView === 'schedule' && (
-            <ScheduleView projectId={project.id} canEdit={permission?.canEdit || false} />
+            <ScheduleView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              onViewCallSheet={(callSheetId) => {
+                setInitialCallSheetId(callSheetId);
+                startTransition(() => {
+                  setActiveView('call-sheets');
+                });
+              }}
+            />
           )}
           {activeView === 'call-sheets' && (
-            <CallSheetsView projectId={project.id} canEdit={permission?.canEdit || false} />
+            <CallSheetsView
+              projectId={project.id}
+              canEdit={permission?.canEdit || false}
+              initialCallSheetId={initialCallSheetId}
+              onInitialCallSheetViewed={() => setInitialCallSheetId(null)}
+            />
           )}
           {activeView === 'casting' && (
             <CastingCrewTab

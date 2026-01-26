@@ -80,9 +80,17 @@ async def connect(sid: str, environ: dict, auth: dict):
     }
 
     # Track user's sockets
+    was_offline = user_id not in connected_users or len(connected_users[user_id]) == 0
     if user_id not in connected_users:
         connected_users[user_id] = set()
     connected_users[user_id].add(sid)
+
+    # Broadcast online status if this is user's first connection and they have it enabled
+    if was_offline and get_user_online_status_preference(user_id):
+        await sio.emit('user_presence_changed', {
+            'user_id': user_id,
+            'status': 'online',
+        })
 
     logger.info(f"[Socket] User {user_id} connected with sid {sid}")
     return True
@@ -100,11 +108,12 @@ async def disconnect(sid: str):
         connected_users[user_id].discard(sid)
         if not connected_users[user_id]:
             del connected_users[user_id]
-            # Broadcast offline status
-            await sio.emit('user_presence_changed', {
-                'user_id': user_id,
-                'status': 'offline',
-            })
+            # Only broadcast offline status if user has online status enabled
+            if get_user_online_status_preference(user_id):
+                await sio.emit('user_presence_changed', {
+                    'user_id': user_id,
+                    'status': 'offline',
+                })
 
     # Remove from voice channels
     for channel_id, participants in list(voice_channels.items()):
@@ -457,13 +466,14 @@ async def update_presence(sid: str, data: dict):
 
     user_id = session['user_id']
 
-    # Broadcast presence update
-    await sio.emit('user_presence_changed', {
-        'user_id': user_id,
-        'status': status,
-        'current_channel_id': current_channel_id,
-        'current_project_id': current_project_id,
-    })
+    # Only broadcast presence update if user has online status enabled
+    if get_user_online_status_preference(user_id):
+        await sio.emit('user_presence_changed', {
+            'user_id': user_id,
+            'status': status,
+            'current_channel_id': current_channel_id,
+            'current_project_id': current_project_id,
+        })
 
 
 # ============================================================================
@@ -546,3 +556,19 @@ def get_online_users() -> list:
 def is_user_online(user_id: str) -> bool:
     """Check if a user is currently online."""
     return user_id in connected_users and len(connected_users[user_id]) > 0
+
+
+def get_user_online_status_preference(user_id: str) -> bool:
+    """Check if user has online status visibility enabled."""
+    try:
+        from app.core.database import get_client
+        client = get_client()
+        response = client.table("user_message_preferences").select(
+            "show_online_status"
+        ).eq("user_id", user_id).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("show_online_status", True)
+        return True  # Default to showing online status
+    except Exception as e:
+        logger.warning(f"Could not fetch online status preference for {user_id}: {e}")
+        return True  # Default to showing on error

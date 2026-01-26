@@ -2,6 +2,7 @@
  * ApplicantDetailPage - Full-page view for reviewing a single applicant
  */
 
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
@@ -20,6 +21,8 @@ import {
   ApplicantHeader,
   ApplicantSidebar,
   ApplicantMainContent,
+  EmailTemplateModal,
+  BookApplicantModal,
 } from '@/components/backlot/applicants';
 
 export default function ApplicantDetailPage() {
@@ -70,6 +73,15 @@ export default function ApplicantDetailPage() {
 
   // Update status mutation
   const updateStatus = useUpdateCollabApplicationStatus(collabId || '');
+
+  // Email modal state
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [applicantEmail, setApplicantEmail] = useState('');
+  const [applicantEmailName, setApplicantEmailName] = useState('');
+
+  // Booking modal state
+  const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
+  const [bookingApplicant, setBookingApplicant] = useState<CollabApplication | null>(null);
 
   // Handle status change
   const handleStatusChange = async (newStatus: ApplicationStatus) => {
@@ -140,6 +152,40 @@ export default function ApplicantDetailPage() {
     }
   };
 
+  /**
+   * Quick action: Shortlist applicant
+   */
+  const handleQuickShortlist = async () => {
+    try {
+      await handleStatusChange('shortlisted');
+      // handleStatusChange already shows toast
+      // TODO: Backend notification for shortlist
+    } catch (error) {
+      // Error already handled by handleStatusChange
+    }
+  };
+
+  /**
+   * Quick action: Reject applicant
+   */
+  const handleQuickReject = async () => {
+    try {
+      await handleStatusChange('rejected');
+    } catch (error) {
+      // Error already handled by handleStatusChange
+    }
+  };
+
+  /**
+   * Quick action: Open booking modal
+   */
+  const handleQuickBook = () => {
+    if (application) {
+      setBookingApplicant(application);
+      setIsBookingModalOpen(true);
+    }
+  };
+
   // Handle message action
   const handleMessage = () => {
     const userId = application?.current_profile?.id || application?.applicant_user_id;
@@ -165,13 +211,30 @@ export default function ApplicantDetailPage() {
   };
 
   // Handle email action
-  const handleEmail = () => {
-    // Email would come from the profile - check if available
-    // For now, we just show a message if not available
-    toast({
-      title: 'Email not available',
-      description: 'Use the Message button to contact this applicant',
-    });
+  const handleEmail = async () => {
+    if (!applicationId) return;
+
+    try {
+      const result = await api.getApplicantEmail(applicationId);
+
+      // Store email and name, then open modal
+      setApplicantEmail(result.email);
+      setApplicantEmailName(result.name);
+      setIsEmailModalOpen(true);
+    } catch (error: any) {
+      // Handle privacy restrictions or permission errors
+      const errorMessage = error?.message || 'Unable to get email address';
+
+      toast({
+        title: 'Email not available',
+        description: errorMessage.includes('restricted') || errorMessage.includes('privacy')
+          ? 'This applicant has restricted email contact. Use the Message button instead.'
+          : errorMessage.includes('permission')
+          ? "You don't have permission to contact this applicant"
+          : 'Use the Message button to contact this applicant',
+        variant: 'destructive',
+      });
+    }
   };
 
   const isLoading = collabLoading || applicationsLoading;
@@ -242,9 +305,37 @@ export default function ApplicantDetailPage() {
           application={application}
           collab={collab}
           profile={profile}
-          profileCredits={profileCredits}
+          credits={profileCredits}
+          onQuickShortlist={handleQuickShortlist}
+          onQuickReject={handleQuickReject}
+          onQuickBook={handleQuickBook}
         />
       </div>
+
+      {/* Email Template Modal */}
+      <EmailTemplateModal
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        applicantName={applicantEmailName || application.current_profile?.display_name || 'Applicant'}
+        applicantEmail={applicantEmail}
+        jobTitle={collab?.title || 'Position'}
+        projectName={project?.title}
+      />
+
+      {/* Booking Modal */}
+      {bookingApplicant && collab && (
+        <BookApplicantModal
+          application={bookingApplicant}
+          collabId={collabId || ''}
+          collabTitle={collab.title || ''}
+          isCastRole={collab.type === 'looking_for_cast'}
+          isOpen={isBookingModalOpen}
+          onClose={() => {
+            setIsBookingModalOpen(false);
+            setBookingApplicant(null);
+          }}
+        />
+      )}
     </div>
   );
 }

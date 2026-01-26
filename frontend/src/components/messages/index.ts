@@ -27,3 +27,11 @@ export { MessageAttachments } from './MessageAttachment';
 
 // Specialized views
 export { ProjectUpdateView } from './ProjectUpdateView';
+
+// Custom Folders
+export { CustomFolderList, FOLDER_ICON_OPTIONS, FOLDER_COLOR_OPTIONS } from './CustomFolderList';
+export { FolderManagementModal } from './FolderManagementModal';
+export { MoveToFolderMenu, FolderBadge } from './MoveToFolderMenu';
+export { FolderRulesManager } from './FolderRulesManager';
+export { RuleConditionBuilder } from './RuleConditionBuilder';
+export { FolderSettingsPanel } from './FolderSettingsPanel';

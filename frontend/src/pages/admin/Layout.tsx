@@ -41,6 +41,7 @@ const AdminLayout = () => {
     { name: 'Partners', href: '/admin/partners', icon: Handshake },
     { name: 'Community', href: '/admin/community', icon: Users2 },
     { name: 'Moderation', href: '/admin/moderation', icon: Flag },
+    { name: 'Messages', href: '/admin/message-moderation', icon: MessageSquare },
     { name: 'Audit Log', href: '/admin/audit-log', icon: Shield },
     { name: 'Donations', href: '/admin/donations', icon: Heart },
     { name: 'Alpha Testing', href: '/admin/alpha-testing', icon: FlaskConical },

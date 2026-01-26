@@ -476,7 +476,7 @@ export async function encryptKeyBackup(
     oneTimePreKeys: Uint8Array[];
   },
   pin: string
-): Promise<{ encryptedData: string; salt: string; iv: string }> {
+): Promise<{ encrypted_data: string; salt: string; iv: string }> {
   // Generate salt
   const salt = crypto.getRandomValues(new Uint8Array(32));
 
@@ -500,7 +500,7 @@ export async function encryptKeyBackup(
   );
 
   return {
-    encryptedData: encodeBase64(ciphertext),
+    encrypted_data: encodeBase64(ciphertext),
     salt: encodeBase64(salt),
     iv: encodeBase64(nonce),
   };

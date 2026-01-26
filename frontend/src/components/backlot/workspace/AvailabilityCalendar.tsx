@@ -203,9 +203,9 @@ export function AvailabilityCalendar({
                     <TooltipTrigger asChild>
                       <div
                         className={`
-                          aspect-square p-1 rounded-lg border
+                          aspect-square p-1 rounded-lg border border-muted-gray/30
                           ${isToday(day) ? 'ring-2 ring-primary' : ''}
-                          ${isProductionDay ? 'bg-purple-50 border-purple-200' : 'bg-background'}
+                          ${isProductionDay ? 'bg-purple-50' : 'bg-background'}
                         `}
                       >
                         <div className="text-xs font-medium mb-1">
@@ -221,12 +221,13 @@ export function AvailabilityCalendar({
                               day >= parseLocalDate(person.start_date) &&
                               day <= parseLocalDate(person.end_date);
 
+                            // Only show dot if person is booked for this date
+                            if (!isRoleDate) return null;
+
                             return (
                               <div
                                 key={person.user_id}
-                                className={`w-2 h-2 rounded-full ${
-                                  isRoleDate ? 'bg-blue-500' : 'bg-gray-300'
-                                }`}
+                                className="w-2 h-2 rounded-full bg-blue-500"
                                 title={person.name}
                               />
                             );

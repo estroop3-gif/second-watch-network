@@ -1812,6 +1812,41 @@ class APIClient {
     })
   }
 
+  async getApplicantEmail(applicationId: string) {
+    return this.request<{ email: string; name: string }>(
+      `/api/v1/community/collab-applications/${applicationId}/email`
+    )
+  }
+
+  async bookApplicant(applicationId: string, booking: {
+    booking_rate?: string;
+    booking_start_date?: string; // YYYY-MM-DD
+    booking_end_date?: string;
+    booking_notes?: string;
+    booking_schedule_notes?: string;
+    character_id?: string;
+    billing_position?: number;
+    contract_type?: string;
+    role_title?: string;
+    department?: string;
+    request_documents?: boolean;
+    document_types?: string[];
+    send_notification?: boolean;
+    notification_message?: string;
+  }) {
+    return this.request(`/api/v1/community/collab-applications/${applicationId}/book`, {
+      method: 'POST',
+      body: JSON.stringify(booking),
+    })
+  }
+
+  async unbookApplicant(applicationId: string, reason: string) {
+    return this.request(`/api/v1/community/collab-applications/${applicationId}/unbook`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    })
+  }
+
   async getCommunityActivity(limit: number = 20) {
     return this.request<any[]>(`/api/v1/community/activity?limit=${limit}`)
   }

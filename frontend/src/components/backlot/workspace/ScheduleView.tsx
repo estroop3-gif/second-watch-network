@@ -53,7 +53,11 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AutoSchedulerWizard } from './schedule/AutoSchedulerWizard';
+import { HourScheduleWizard } from './schedule/HourScheduleWizard';
+import { HourSchedulePreview } from './schedule/HourSchedulePreview';
+import { HourScheduleEditor } from './schedule/HourScheduleEditor';
 import { SyncStatusBadge } from './SyncStatusBadge';
+import { getScheduleSummary } from '@/lib/backlot/hourScheduleUtils';
 import { BidirectionalSyncModal } from './BidirectionalSyncModal';
 import CallSheetCreateEditModal from './CallSheetCreateEditModal';
 import { RefreshCw } from 'lucide-react';
@@ -75,8 +79,16 @@ import {
   useScriptSidesForDay,
   useGenerateScriptSides,
   useCheckOutdatedSides,
+  useSaveHourSchedule,
 } from '@/hooks/backlot';
-import { BacklotProductionDay, ProductionDayInput, ProductionDayScene } from '@/types/backlot';
+import {
+  BacklotProductionDay,
+  ProductionDayInput,
+  ProductionDayScene,
+  HourScheduleBlock,
+  HourScheduleConfig,
+  DEFAULT_HOUR_SCHEDULE_CONFIG,
+} from '@/types/backlot';
 import { format, isBefore, startOfMonth, endOfMonth, eachDayOfInterval, isSameMonth, isSameDay, addMonths, subMonths } from 'date-fns';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
@@ -84,6 +96,7 @@ import { parseLocalDate } from '@/lib/dateUtils';
 interface ScheduleViewProps {
   projectId: string;
   canEdit: boolean;
+  onViewCallSheet?: (callSheetId: string) => void;
 }
 
 type ViewMode = 'list' | 'calendar';
@@ -257,7 +270,8 @@ const DayDetailModal: React.FC<{
   onEdit: () => void;
   onDelete: () => void;
   canEdit: boolean;
-}> = ({ day, projectId, isOpen, onClose, onEdit, onDelete, canEdit }) => {
+  onViewCallSheet?: (callSheetId: string) => void;
+}> = ({ day, projectId, isOpen, onClose, onEdit, onDelete, canEdit, onViewCallSheet }) => {
   const { scenes, isLoading: scenesLoading, error: scenesError } = useProductionDayScenes(day?.id || '');
   const { data: linkedData } = useLinkedCallSheet(day?.id || '');
 
@@ -268,7 +282,7 @@ const DayDetailModal: React.FC<{
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             <span className="text-2xl font-bold text-accent-yellow">Day {day.day_number}</span>
@@ -379,17 +393,43 @@ const DayDetailModal: React.FC<{
             )}
           </div>
 
-          {/* Call Sheet Link */}
-          {linkedData?.hasCallSheet && (
+          {/* Hour Schedule */}
+          {day.hour_schedule && day.hour_schedule.length > 0 && (
             <div className="border-t border-muted-gray/20 pt-4">
-              <a
-                href={`/backlot/${projectId}/call-sheets/${linkedData.callSheet?.id}`}
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="font-medium text-bone-white flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-cyan-400" />
+                  Hour Schedule
+                </h4>
+                <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                  {getScheduleSummary(day.hour_schedule).totalDurationFormatted}
+                </Badge>
+              </div>
+              <HourSchedulePreview
+                schedule={day.hour_schedule}
+                compact={false}
+                maxItems={12}
+                showSummary={false}
+              />
+            </div>
+          )}
+
+          {/* Call Sheet Link */}
+          {linkedData?.hasCallSheet && linkedData.callSheet?.id && (
+            <div className="border-t border-muted-gray/20 pt-4">
+              <button
+                onClick={() => {
+                  if (onViewCallSheet && linkedData.callSheet?.id) {
+                    onViewCallSheet(linkedData.callSheet.id);
+                    onClose();
+                  }
+                }}
                 className="flex items-center gap-2 text-emerald-400 hover:text-emerald-300"
               >
                 <FileSpreadsheet className="w-4 h-4" />
                 <span>View Linked Call Sheet</span>
                 <ExternalLink className="w-3 h-3" />
-              </a>
+              </button>
             </div>
           )}
         </div>
@@ -436,18 +476,22 @@ const DayCard: React.FC<{
   onToggleComplete: (id: string, completed: boolean) => void;
   onDelete: (id: string) => void;
   onViewDetail: (day: BacklotProductionDay) => void;
-}> = ({ day, projectId, canEdit, onEdit, onToggleComplete, onDelete, onViewDetail }) => {
+  onViewCallSheet?: (callSheetId: string) => void;
+}> = ({ day, projectId, canEdit, onEdit, onToggleComplete, onDelete, onViewDetail, onViewCallSheet }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showScenePanel, setShowScenePanel] = useState(false);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [showCreateCallSheetModal, setShowCreateCallSheetModal] = useState(false);
   const [generatingSides, setGeneratingSides] = useState(false);
+  const [showHourScheduleWizard, setShowHourScheduleWizard] = useState(false);
+  const [showHourScheduleEditor, setShowHourScheduleEditor] = useState(false);
   const { scenes, isLoading: loadingScenes } = useProductionDayScenes(day.id);
   const { data: linkedData } = useLinkedCallSheet(day.id);
   const createCallSheet = useCreateCallSheetFromDay(day.id);
   const { data: scriptSides } = useScriptSidesForDay(projectId, day.id);
   const { data: outdatedSides } = useCheckOutdatedSides(projectId);
   const generateSides = useGenerateScriptSides(projectId);
+  const saveHourSchedule = useSaveHourSchedule(day.id);
 
   const today = new Date();
   const dayDate = parseLocalDate(day.date);
@@ -482,6 +526,20 @@ const DayCard: React.FC<{
       toast.error(err.message || 'Failed to generate script sides');
     } finally {
       setGeneratingSides(false);
+    }
+  };
+
+  // Handler for saving hour schedule
+  const handleSaveHourSchedule = async (
+    schedule: HourScheduleBlock[],
+    config: HourScheduleConfig
+  ) => {
+    try {
+      await saveHourSchedule.mutateAsync({ schedule, config });
+      toast.success('Hour schedule saved');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to save hour schedule');
+      throw err;
     }
   };
 
@@ -565,6 +623,14 @@ const DayCard: React.FC<{
                   </Badge>
                 )}
 
+                {/* Hour Schedule Badge */}
+                {day.hour_schedule && day.hour_schedule.length > 0 && (
+                  <Badge variant="outline" className="text-xs bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+                    <Clock className="w-3 h-3 mr-1" />
+                    Schedule
+                  </Badge>
+                )}
+
                 {/* Sync Status Badge */}
                 <SyncStatusBadge
                   dayId={day.id}
@@ -635,6 +701,16 @@ const DayCard: React.FC<{
                   )}
                 </div>
               )}
+
+              {/* Hour Schedule Mini Indicator (collapsed view) */}
+              {!isExpanded && day.hour_schedule && day.hour_schedule.length > 0 && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-muted-gray">
+                  <Clock className="w-3 h-3" />
+                  <span>{getScheduleSummary(day.hour_schedule).totalDurationFormatted} day</span>
+                  <span>•</span>
+                  <span>{getScheduleSummary(day.hour_schedule).sceneCount} scenes</span>
+                </div>
+              )}
             </div>
 
             {/* Actions */}
@@ -653,17 +729,18 @@ const DayCard: React.FC<{
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     {/* Call Sheet Integration */}
-                    {linkedData?.hasCallSheet ? (
+                    {linkedData?.hasCallSheet && linkedData.callSheet?.id ? (
                       <>
-                        <DropdownMenuItem asChild>
-                          <a
-                            href={`/backlot/${projectId}/call-sheets/${linkedData.callSheet?.id}`}
-                            className="flex items-center"
-                          >
-                            <FileSpreadsheet className="w-4 h-4 mr-2" />
-                            View Call Sheet
-                            <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
-                          </a>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (onViewCallSheet && linkedData.callSheet?.id) {
+                              onViewCallSheet(linkedData.callSheet.id);
+                            }
+                          }}
+                        >
+                          <FileSpreadsheet className="w-4 h-4 mr-2" />
+                          View Call Sheet
+                          <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setShowSyncModal(true)}>
                           <RefreshCw className="w-4 h-4 mr-2" />
@@ -695,6 +772,25 @@ const DayCard: React.FC<{
                         : 'Generate Script Sides'}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
+                    {/* Hour Schedule */}
+                    {day.hour_schedule?.length > 0 ? (
+                      <>
+                        <DropdownMenuItem onClick={() => setShowHourScheduleEditor(true)}>
+                          <Edit className="w-4 h-4 mr-2" />
+                          Edit Hour Schedule
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setShowHourScheduleWizard(true)}>
+                          <RefreshCw className="w-4 h-4 mr-2" />
+                          Regenerate Schedule
+                        </DropdownMenuItem>
+                      </>
+                    ) : (
+                      <DropdownMenuItem onClick={() => setShowHourScheduleWizard(true)}>
+                        <Clock className="w-4 h-4 mr-2" />
+                        Generate Hour Schedule
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={() => onEdit(day)}>
                       <Edit className="w-4 h-4 mr-2" />
                       Edit Day
@@ -716,18 +812,19 @@ const DayCard: React.FC<{
                       <Film className="w-4 h-4 mr-2" />
                       View Scenes
                     </DropdownMenuItem>
-                    {linkedData?.hasCallSheet && (
+                    {linkedData?.hasCallSheet && linkedData.callSheet?.id && (
                       <>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <a
-                            href={`/backlot/${projectId}/call-sheets/${linkedData.callSheet?.id}`}
-                            className="flex items-center"
-                          >
-                            <FileSpreadsheet className="w-4 h-4 mr-2" />
-                            View Call Sheet
-                            <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
-                          </a>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            if (onViewCallSheet && linkedData.callSheet?.id) {
+                              onViewCallSheet(linkedData.callSheet.id);
+                            }
+                          }}
+                        >
+                          <FileSpreadsheet className="w-4 h-4 mr-2" />
+                          View Call Sheet
+                          <ExternalLink className="w-3 h-3 ml-auto opacity-50" />
                         </DropdownMenuItem>
                       </>
                     )}
@@ -744,6 +841,34 @@ const DayCard: React.FC<{
             {/* Description */}
             {day.description && (
               <p className="text-sm text-muted-gray mb-4">{day.description}</p>
+            )}
+
+            {/* Hour Schedule Preview */}
+            {day.hour_schedule && day.hour_schedule.length > 0 && (
+              <div className="mb-4 p-3 border border-muted-gray/20 rounded-lg bg-charcoal-black/30">
+                <div className="flex items-center justify-between mb-2">
+                  <h5 className="text-sm font-medium text-bone-white flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    Hour Schedule
+                  </h5>
+                  {canEdit && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowHourScheduleEditor(true)}
+                    >
+                      <Edit className="w-3 h-3 mr-1" />
+                      Edit
+                    </Button>
+                  )}
+                </div>
+                <HourSchedulePreview
+                  schedule={day.hour_schedule}
+                  compact={false}
+                  maxItems={6}
+                  showSummary={true}
+                />
+              </div>
             )}
 
             {/* Full Scene List */}
@@ -842,6 +967,28 @@ const DayCard: React.FC<{
           description: s.scene?.description,
         }))}
       />
+
+      {/* Hour Schedule Wizard */}
+      <HourScheduleWizard
+        projectId={projectId}
+        day={day}
+        scenes={scenes}
+        isOpen={showHourScheduleWizard}
+        onClose={() => setShowHourScheduleWizard(false)}
+        onSave={handleSaveHourSchedule}
+      />
+
+      {/* Hour Schedule Editor */}
+      {day.hour_schedule && day.hour_schedule.length > 0 && (
+        <HourScheduleEditor
+          day={day}
+          schedule={day.hour_schedule}
+          config={day.schedule_config || DEFAULT_HOUR_SCHEDULE_CONFIG}
+          isOpen={showHourScheduleEditor}
+          onClose={() => setShowHourScheduleEditor(false)}
+          onSave={handleSaveHourSchedule}
+        />
+      )}
     </div>
   );
 };
@@ -978,7 +1125,7 @@ const CalendarView: React.FC<{
 // Main Schedule View
 // =====================================================
 
-const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
+const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit, onViewCallSheet }) => {
   const { days, isLoading, createDay, updateDay, markCompleted, deleteDay, refetch } =
     useProductionDays(projectId);
 
@@ -1443,6 +1590,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
                 onToggleComplete={handleToggleComplete}
                 onDelete={handleDelete}
                 onViewDetail={setViewingDay}
+                onViewCallSheet={onViewCallSheet}
               />
             ))}
           </div>
@@ -1826,6 +1974,7 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
           }
         }}
         canEdit={canEdit}
+        onViewCallSheet={onViewCallSheet}
       />
 
       {/* Tips Panel Dialog */}
@@ -1899,6 +2048,19 @@ const ScheduleView: React.FC<ScheduleViewProps> = ({ projectId, canEdit }) => {
                 <p className="text-sm text-muted-gray">
                   Mark days as complete after wrap to track your progress.
                   Past due days are highlighted in orange.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-cyan-500/10 rounded-lg">
+                <Clock className="w-5 h-5 text-cyan-400" />
+              </div>
+              <div>
+                <h4 className="font-medium text-bone-white">Hour-by-Hour Schedule</h4>
+                <p className="text-sm text-muted-gray">
+                  Generate detailed schedules with scene timing based on page counts.
+                  Automatically inserts meal breaks and company moves.
                 </p>
               </div>
             </div>

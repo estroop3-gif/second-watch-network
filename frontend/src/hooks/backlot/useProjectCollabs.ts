@@ -5,6 +5,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { CommunityCollab } from '@/types/community';
+import { ApplicationBookingInput } from '@/types/applications';
 
 /**
  * Fetch all collabs linked to a specific Backlot project
@@ -80,6 +81,46 @@ export function useUpdateCollabApplicationStatus(collabId: string) {
       internalNotes?: string;
       rating?: number;
     }) => api.updateCollabApplicationStatus(applicationId, status, internalNotes, rating),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collab-applications', collabId] });
+    },
+  });
+}
+
+/**
+ * Book an applicant
+ */
+export function useBookApplicant(collabId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      applicationId,
+      booking,
+    }: {
+      applicationId: string;
+      booking: ApplicationBookingInput;
+    }) => api.bookApplicant(applicationId, booking),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['collab-applications', collabId] });
+    },
+  });
+}
+
+/**
+ * Unbook an applicant
+ */
+export function useUnbookApplicant(collabId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      applicationId,
+      reason,
+    }: {
+      applicationId: string;
+      reason: string;
+    }) => api.unbookApplicant(applicationId, reason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['collab-applications', collabId] });
     },

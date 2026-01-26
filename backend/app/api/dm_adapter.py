@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from datetime import datetime
 from app.core.database import get_client
 from app.core.websocket_client import broadcast_to_dm
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -221,6 +223,21 @@ async def send_unified_message(request: SendMessageRequest, sender_id: str):
             },
             exclude_user_id=sender_id
         )
+
+        # Evaluate folder rules for the recipient (auto-assign conversation to folder)
+        # This runs for the recipient, not the sender
+        if request.recipient_id:
+            try:
+                from app.api.message_folders import evaluate_and_assign_folder
+                await evaluate_and_assign_folder(
+                    user_id=request.recipient_id,
+                    partner_id=sender_id,
+                    message_content=request.content,
+                    context_type=None  # Could be enhanced to pass context_type
+                )
+            except Exception as e:
+                logger.warning(f"Failed to evaluate folder rules: {e}")
+                # Don't fail the message send if rule evaluation fails
 
         return {
             "id": message_id,

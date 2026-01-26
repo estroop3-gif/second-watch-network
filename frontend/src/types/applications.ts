@@ -403,3 +403,25 @@ export interface ApplicationGroup {
   name: string;  // project or collab title
   applications: ApplicationReceivedItem[];
 }
+
+// Application booking input for booking an applicant
+export interface ApplicationBookingInput {
+  booking_rate?: string;
+  booking_start_date?: string; // YYYY-MM-DD
+  booking_end_date?: string;
+  booking_notes?: string;
+  booking_schedule_notes?: string;
+  // Cast-specific
+  character_id?: string;
+  billing_position?: number;
+  contract_type?: 'series_regular' | 'recurring' | 'guest_star' | 'day_player';
+  // Crew-specific
+  role_title?: string;
+  department?: string;
+  // Document requests
+  request_documents?: boolean;
+  document_types?: string[];
+  // Notification
+  send_notification?: boolean;
+  notification_message?: string;
+}

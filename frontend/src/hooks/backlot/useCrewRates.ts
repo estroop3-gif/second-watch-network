@@ -10,7 +10,9 @@ import type {
   CrewRateInput,
   CrewRatesResponse,
   CrewRateResponse,
+  BacklotBookedPerson,
 } from '@/types/backlot';
+import { parseBookingRate } from '@/lib/rateUtils';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -380,4 +382,74 @@ export function calculateDailyCompensation(
     phoneAllowance,
     totalPay,
   };
+}
+
+/**
+ * Automatically create a crew rate from a booked person's booking_rate field
+ * This is used when someone is booked via the BookApplicantModal with a rate specified
+ */
+export function useAutoCreateRateFromBooking(projectId: string | undefined) {
+  const { session } = useAuth();
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (person: BacklotBookedPerson) => {
+      if (!person.booking_rate) {
+        throw new Error('No booking rate available for this person');
+      }
+
+      const parsed = parseBookingRate(person.booking_rate);
+      if (!parsed) {
+        throw new Error(`Invalid booking rate format: ${person.booking_rate}`);
+      }
+
+      const rateInput: CrewRateInput = {
+        user_id: person.user_id,
+        role_id: person.role_id,
+        rate_type: parsed.period,
+        rate_amount: parsed.amount,
+        overtime_multiplier: 1.5,
+        double_time_multiplier: 2.0,
+        effective_start: person.start_date,
+        effective_end: person.end_date,
+        notes: `Auto-created from booking rate: ${person.booking_rate}`,
+        source: 'imported',
+      };
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/crew-rates`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify(rateInput),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to create rate from booking');
+      }
+
+      const result: CrewRateResponse = await response.json();
+      return result.rate;
+    },
+    onSuccess: (rate) => {
+      // Invalidate all relevant queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-crew-rates', projectId] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-booked-people', projectId] });
+      if (rate.user_id) {
+        queryClient.invalidateQueries({
+          queryKey: ['backlot-crew-rates-by-user', projectId, rate.user_id]
+        });
+      }
+      if (rate.role_id) {
+        queryClient.invalidateQueries({
+          queryKey: ['backlot-crew-rates-by-role', projectId, rate.role_id]
+        });
+      }
+    },
+  });
 }

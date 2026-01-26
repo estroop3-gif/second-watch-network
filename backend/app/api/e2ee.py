@@ -96,17 +96,23 @@ async def register_key_bundle(bundle: PreKeyBundleUpload, user_id: str):
             "is_active": False
         }).eq("user_id", user_id).execute()
 
-        # Insert new signed prekey
-        client.table("e2ee_signed_prekeys").insert({
+        # Upsert new signed prekey (in case key_id is reused)
+        client.table("e2ee_signed_prekeys").upsert({
             "user_id": user_id,
             "key_id": bundle.signed_prekey.key_id,
             "public_key": bundle.signed_prekey.public_key,
             "signature": bundle.signed_prekey.signature,
             "is_active": True
-        }).execute()
+        }, on_conflict="user_id,key_id").execute()
 
-        # Insert one-time prekeys
+        # Delete existing unused one-time prekeys and insert new ones
         if bundle.one_time_prekeys:
+            # Remove old unused prekeys for this user to avoid conflicts
+            key_ids = [pk.key_id for pk in bundle.one_time_prekeys]
+            client.table("e2ee_one_time_prekeys").delete().eq(
+                "user_id", user_id
+            ).in_("key_id", key_ids).execute()
+
             prekeys_data = [{
                 "user_id": user_id,
                 "key_id": pk.key_id,
@@ -130,6 +136,12 @@ async def upload_prekeys(prekeys: List[OneTimePreKeyUpload], user_id: str):
     """
     try:
         client = get_client()
+
+        # Remove any existing prekeys with same key_ids to avoid conflicts
+        key_ids = [pk.key_id for pk in prekeys]
+        client.table("e2ee_one_time_prekeys").delete().eq(
+            "user_id", user_id
+        ).in_("key_id", key_ids).execute()
 
         prekeys_data = [{
             "user_id": user_id,

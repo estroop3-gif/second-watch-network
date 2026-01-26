@@ -55,6 +55,28 @@ async def send_message(message: MessageCreate, sender_id: str):
         data = message.model_dump(exclude_unset=True)
         data["sender_id"] = sender_id
 
+        # Check if sender can message recipient (block and privacy checks)
+        recipient_id = data.get("recipient_id")
+        if recipient_id:
+            try:
+                can_message_resp = client.rpc("can_user_message", {
+                    "sender_id": sender_id,
+                    "recipient_id": recipient_id
+                }).execute()
+
+                if can_message_resp.data and len(can_message_resp.data) > 0:
+                    result = can_message_resp.data[0]
+                    if not result.get("allowed", True):
+                        raise HTTPException(
+                            status_code=403,
+                            detail=result.get("reason", "You cannot message this user")
+                        )
+            except HTTPException:
+                raise
+            except Exception as check_err:
+                # Log but don't block on check failure
+                logger.warning(f"Message permission check failed: {check_err}")
+
         # Handle E2EE encrypted messages
         if data.get("is_encrypted") and data.get("encrypted_data"):
             encrypted = data.pop("encrypted_data")
@@ -219,17 +241,29 @@ async def mark_conversation_read(conversation_id: str, user_id: str):
             "conversation_id", conversation_id
         ).neq("sender_id", user_id).eq("is_read", False).execute()
 
-        # Broadcast read receipt via WebSocket
-        broadcast_to_dm(
-            conversation_id=conversation_id,
-            message={
-                "event": "dm_read",
-                "conversation_id": conversation_id,
-                "user_id": user_id,
-                "read_at": datetime.now(timezone.utc).isoformat()
-            },
-            exclude_user_id=user_id
-        )
+        # Check if user has read receipts enabled before broadcasting
+        show_read_receipts = True  # Default
+        try:
+            prefs_response = client.table("user_message_preferences").select(
+                "show_read_receipts"
+            ).eq("user_id", user_id).execute()
+            if prefs_response.data and len(prefs_response.data) > 0:
+                show_read_receipts = prefs_response.data[0].get("show_read_receipts", True)
+        except Exception as pref_err:
+            logger.warning(f"Could not fetch read receipt preference: {pref_err}")
+
+        # Only broadcast read receipt if user has it enabled
+        if show_read_receipts:
+            broadcast_to_dm(
+                conversation_id=conversation_id,
+                message={
+                    "event": "dm_read",
+                    "conversation_id": conversation_id,
+                    "user_id": user_id,
+                    "read_at": datetime.now(timezone.utc).isoformat()
+                },
+                exclude_user_id=user_id
+            )
 
         return {"message": "Messages marked as read"}
     except Exception as e:
@@ -259,6 +293,7 @@ async def get_unified_inbox(
         from app.core.database import execute_query
         client = get_client()
         inbox_items = []
+        logger.info(f"[INBOX DEBUG] Starting inbox query for user {user_id}, folder={folder}")
 
         # Build folder filter clause
         folder_filter = ""
@@ -355,24 +390,118 @@ async def get_unified_inbox(
                     "unread_count": conv.get("unread_count", 0),
                 })
 
+        # 1b. Get E2EE conversations from messages/conversations table
+        # These are newer encrypted conversations that use conversation_id
+        e2ee_query = """
+            WITH conversation_partners AS (
+                SELECT
+                    c.id as conversation_id,
+                    c.participant_ids,
+                    CASE
+                        WHEN c.participant_ids[1] = CAST(:user_id AS uuid) THEN c.participant_ids[2]
+                        ELSE c.participant_ids[1]
+                    END as partner_id
+                FROM conversations c
+                WHERE CAST(:user_id AS uuid) = ANY(c.participant_ids)
+            ),
+            last_messages AS (
+                SELECT DISTINCT ON (m.conversation_id)
+                    m.conversation_id,
+                    m.content as last_message,
+                    m.created_at as last_message_at,
+                    m.sender_id
+                FROM messages m
+                WHERE m.conversation_id IN (SELECT conversation_id FROM conversation_partners)
+                ORDER BY m.conversation_id, m.created_at DESC
+            ),
+            unread_counts AS (
+                -- TODO: Implement proper unread tracking with message_reads table
+                -- For now, return 0 unread count for all E2EE conversations
+                SELECT
+                    conversation_id,
+                    0 as unread_count
+                FROM conversation_partners
+                WHERE FALSE  -- Empty result set
+            )
+            SELECT
+                cp.conversation_id,
+                cp.partner_id as id,
+                p.username,
+                p.full_name,
+                p.avatar_url,
+                lm.last_message,
+                lm.last_message_at,
+                COALESCE(uc.unread_count, 0) as unread_count
+            FROM conversation_partners cp
+            LEFT JOIN last_messages lm ON lm.conversation_id = cp.conversation_id
+            LEFT JOIN profiles p ON p.id = cp.partner_id
+            LEFT JOIN unread_counts uc ON uc.conversation_id = cp.conversation_id
+            WHERE lm.last_message_at IS NOT NULL
+            ORDER BY lm.last_message_at DESC
+        """
+        try:
+            print(f"\n\n[DEBUG] Executing E2EE query for user {user_id}\n")
+            e2ee_conversations = execute_query(e2ee_query, {"user_id": user_id})
+            print(f"[DEBUG] E2EE conversations result: {e2ee_conversations}\n\n")
+            logger.info(f"E2EE conversations found: {len(e2ee_conversations) if e2ee_conversations else 0}")
+        except Exception as e2ee_err:
+            print(f"[DEBUG] E2EE query error: {e2ee_err}\n\n")
+            logger.error(f"Error fetching E2EE conversations: {e2ee_err}", exc_info=True)
+            e2ee_conversations = []
+
+        # Add E2EE conversations to inbox (skip duplicates already in backlot_direct_messages)
+        existing_dm_ids = {item["id"] for item in inbox_items if item["type"] == "dm"}
+        for conv in e2ee_conversations:
+            if isinstance(conv, dict):
+                partner_id = str(conv.get("id", ""))
+                # Skip if already in inbox from backlot_direct_messages
+                if partner_id in existing_dm_ids:
+                    continue
+
+                inbox_items.append({
+                    "id": partner_id,
+                    "type": "dm",
+                    "folder": "personal",  # E2EE messages default to personal folder
+                    "context_id": None,
+                    "context_metadata": {},
+                    "project_id": None,
+                    "project_title": None,
+                    "project_thumbnail": None,
+                    "other_participant": {
+                        "id": partner_id,
+                        "username": conv.get("username"),
+                        "full_name": conv.get("full_name"),
+                        "avatar_url": conv.get("avatar_url"),
+                    },
+                    "last_message": conv.get("last_message", "[Encrypted message]"),
+                    "last_message_at": conv.get("last_message_at"),
+                    "update_type": None,
+                    "unread_count": conv.get("unread_count", 0),
+                })
+
         # 2. Get user's projects (owner or member)
-        # First get projects they own
-        owned_response = client.table("backlot_projects").select(
-            "id, title, thumbnail_url"
-        ).eq("owner_id", user_id).execute()
-        owned_projects = owned_response.data or []
+        # Only include project updates for 'all', 'backlot', or no folder filter
+        if not folder or folder in ("all", "backlot"):
+            # First get projects they own
+            owned_response = client.table("backlot_projects").select(
+                "id, title, thumbnail_url"
+            ).eq("owner_id", user_id).execute()
+            owned_projects = owned_response.data or []
 
-        # Get projects they're a member of
-        member_response = client.table("backlot_project_members").select(
-            "project:backlot_projects(id, title, thumbnail_url)"
-        ).eq("user_id", user_id).execute()
-        member_projects = [m.get("project") for m in (member_response.data or []) if m.get("project")]
+            # Get projects they're a member of
+            member_response = client.table("backlot_project_members").select(
+                "project:backlot_projects(id, title, thumbnail_url)"
+            ).eq("user_id", user_id).execute()
+            member_projects = [m.get("project") for m in (member_response.data or []) if m.get("project")]
 
-        # Combine and deduplicate
-        all_projects = {p["id"]: p for p in owned_projects}
-        for p in member_projects:
-            if p and p.get("id") not in all_projects:
-                all_projects[p["id"]] = p
+            # Combine and deduplicate
+            all_projects = {p["id"]: p for p in owned_projects}
+            for p in member_projects:
+                if p and p.get("id") not in all_projects:
+                    all_projects[p["id"]] = p
+        else:
+            # Don't include project updates for other folders (personal, application, order, etc.)
+            all_projects = {}
 
         # 3. For each project, get latest update and unread count
         for project_id, project in all_projects.items():

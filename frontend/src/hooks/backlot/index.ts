@@ -68,6 +68,10 @@ export {
   usePublicCallSheet,
   // Weather
   useWeatherForecast,
+  // Hour Schedule
+  useHourSchedule,
+  useSaveHourSchedule,
+  useSyncHourSchedule,
 } from './useSchedule';
 export type {
   BacklotSavedCallSheetTemplate,
@@ -396,6 +400,8 @@ export {
   useCollabApplications,
   useProjectCollabMutations,
   useUpdateCollabApplicationStatus,
+  useBookApplicant,
+  useUnbookApplicant,
 } from './useProjectCollabs';
 
 // Applicant Detail Page Hooks
@@ -412,6 +418,7 @@ export {
   useCrewRateMutations,
   useEffectiveCrewRate,
   calculateDailyCompensation,
+  useAutoCreateRateFromBooking,
 } from './useCrewRates';
 export type {
   CrewRate,
@@ -1098,14 +1105,23 @@ export type {
 // Hot Set (Production Day)
 export {
   HOT_SET_KEYS,
+  OT_THRESHOLDS,
   useHotSetSessions,
   useHotSetSession,
+  useHotSetDayPreview,
   useCreateHotSetSession,
   useUpdateHotSetSession,
   useDeleteHotSetSession,
   useStartHotSetSession,
   useWrapHotSetSession,
+  useResumeHotSetSession,
+  useConfirmCrewCall,
+  useConfirmFirstShot,
+  useHotSetSettings,
+  useUpdateHotSetSettings,
   useImportFromCallSheet,
+  useImportFromProductionDay,
+  useImportFromHourSchedule,
   useHotSetScenes,
   useStartScene,
   useCompleteScene,
@@ -1116,14 +1132,37 @@ export {
   useHotSetDashboard,
   useHotSetCostProjection,
   useHotSetCrew,
+  // Schedule integration hooks
+  useScheduleBlocks,
+  useUpdateScheduleBlock,
+  useStartScheduleBlock,
+  useCompleteScheduleBlock,
+  useSkipScheduleBlock,
+  // AD Notes & Wrap Report
+  useUpdateSessionNotes,
+  useWrapReport,
+  // Hot Set utilities
   formatElapsedTime,
   formatTime,
+  getCurrentTimeFormatted,
+  getCurrentDateFormatted,
   calculateElapsedSeconds,
   formatSeconds,
   getScheduleStatusColor,
   getScheduleStatusBgColor,
   formatCurrency as formatHotSetCurrency,
+  // Schedule time utilities
+  formatScheduleTime,
+  formatDeviation,
+  getDeviationColor,
+  getDeviationBgColor,
+  // Projected schedule helpers
+  findCurrentActivity,
+  findNextActivity,
+  getScheduleVariance,
 } from './useHotSet';
+
+export type { WrapReportData } from './useHotSet';
 
 // Invoices
 export {

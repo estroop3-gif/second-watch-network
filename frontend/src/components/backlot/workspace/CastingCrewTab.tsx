@@ -2,8 +2,9 @@
  * CastingCrewTab - Main tab for managing project roles (cast & crew)
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import {
   Card,
   CardContent,
@@ -15,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -65,6 +67,8 @@ import {
   PROJECT_ROLE_STATUS_LABELS,
   PROJECT_ROLE_STATUS_COLORS,
   DealMemo,
+  ProjectRoleInput,
+  BacklotBookedPerson,
 } from '@/types/backlot';
 import CollabForm from '@/components/community/CollabForm';
 import { ApplicationsBoard } from './ApplicationsBoard';
@@ -118,13 +122,15 @@ import {
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { parseLocalDate } from '@/lib/dateUtils';
+import { POSITIONS } from '@/components/shared/PositionSelector';
+import SearchableCombobox from '@/components/shared/SearchableCombobox';
 
 interface CastingCrewTabProps {
   projectId: string;
   onNavigateToClearances?: (personId?: string, personName?: string) => void;
 }
 
-type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'communication' | 'rates';
+type TabType = 'roles' | 'booked' | 'availability' | 'documents' | 'rates';
 
 export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCrewTabProps) {
   const { toast } = useToast();
@@ -140,6 +146,31 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
   const [viewingApplications, setViewingApplications] = useState<BacklotProjectRole | null>(null);
   const [showSendDocumentDialog, setShowSendDocumentDialog] = useState(false);
   const [showAnnouncementDialog, setShowAnnouncementDialog] = useState(false);
+  const [viewingBookedPerson, setViewingBookedPerson] = useState<BacklotBookedPerson | null>(null);
+  const [bookedPersonDialogOpen, setBookedPersonDialogOpen] = useState(false);
+  const [editingBookedPerson, setEditingBookedPerson] = useState<BacklotBookedPerson | null>(null);
+
+  // Debug: Log when editingBookedPerson changes
+  useEffect(() => {
+    console.log('editingBookedPerson state changed to:', editingBookedPerson);
+    if (editingBookedPerson) {
+      console.log('EditBookingDialog should be rendering via portal for:', editingBookedPerson.name);
+      console.log('Portal target exists?', !!document.body);
+
+      // WORKAROUND: Force render by directly opening the dialog
+      // This is a temporary hack to debug why the portal isn't rendering
+      setTimeout(() => {
+        const editContainer = document.getElementById('edit-booking-container');
+        if (editContainer) {
+          console.log('Edit container found, trying to make visible');
+          editContainer.style.display = 'flex';
+        } else {
+          console.log('Edit container NOT found in DOM');
+        }
+      }, 100);
+    }
+  }, [editingBookedPerson]);
+
   // Collab states
   const [viewingCollab, setViewingCollab] = useState<CommunityCollab | null>(null);
   const [editingCollab, setEditingCollab] = useState<CommunityCollab | null>(null);
@@ -148,7 +179,21 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
   // Get project data for CollabForm
   const { data: project } = useProject(projectId);
 
-  // Queries
+  // Deal memo dialog state
+  const [showDealMemoDialog, setShowDealMemoDialog] = useState(false);
+  const [selectedDealMemo, setSelectedDealMemo] = useState<DealMemo | null>(null);
+  const [showDealMemoDetails, setShowDealMemoDetails] = useState<DealMemo | null>(null);
+
+  // Send documents dialog state
+  const [selectedPeopleForDocs, setSelectedPeopleForDocs] = useState<BacklotBookedPerson[]>([]);
+  const [showSendDialog, setShowSendDialog] = useState(false);
+
+  // Announcement state
+  const [announcementTitle, setAnnouncementTitle] = useState('');
+  const [announcementContent, setAnnouncementContent] = useState('');
+  const [announcementPriority, setAnnouncementPriority] = useState<'normal' | 'high' | 'urgent'>('normal');
+
+  // Queries - MOVED UP BEFORE useEffect hooks
   const { data: roles, isLoading } = useProjectRoles(projectId, {
     type: typeFilter === 'all' ? undefined : typeFilter,
     status: statusFilter === 'all' ? undefined : statusFilter,
@@ -157,11 +202,320 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
 
   const { data: bookedPeople } = useBookedPeople(projectId);
   const { data: crewDocSummaries } = useCrewDocumentSummary(projectId);
-  const { deleteRole } = useProjectRoleMutations(projectId);
+  const { deleteRole, updateRole } = useProjectRoleMutations(projectId);
 
   // Project collabs (roles posted to the community)
   const { data: projectCollabs, isLoading: collabsLoading } = useProjectCollabs(projectId);
   const { deactivateCollab } = useProjectCollabMutations(projectId);
+
+  // Collab applications
+  const { data: collabApplications } = useCollabApplications(
+    viewingCollabApplications?.id || '',
+    { enabled: !!viewingCollabApplications }
+  );
+
+  // Deal memos
+  const { data: dealMemos } = useDealMemos(projectId);
+  const { updateDealMemoStatus } = useDealMemoMutations(projectId);
+
+  // Deal memo history
+  const { data: dealMemoHistory } = useDealMemoHistory(
+    showDealMemoDetails?.id || '',
+    { enabled: !!showDealMemoDetails }
+  );
+
+  // Mutations
+  const updateApplicationStatus = useUpdateCollabApplicationStatus();
+
+  // Announcement mutation
+  const createAnnouncementMutation = useMutation({
+    mutationFn: async (data: { title: string; content: string; priority: 'normal' | 'high' | 'urgent' }) => {
+      const response = await api.post(`/backlot/projects/${projectId}/announcements`, data);
+      return response;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['backlot-announcements', projectId] });
+      toast({
+        title: 'Announcement posted',
+        description: 'Your announcement has been sent to all booked cast and crew.',
+      });
+      setShowAnnouncementDialog(false);
+      setAnnouncementTitle('');
+      setAnnouncementContent('');
+      setAnnouncementPriority('normal');
+    },
+    onError: (error: any) => {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to post announcement',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Render booking detail modal via DOM manipulation (workaround for Dialog component issue)
+  useEffect(() => {
+    if (bookedPersonDialogOpen && viewingBookedPerson) {
+      // Remove existing overlay if any
+      const existing = document.getElementById('booking-detail-overlay');
+      if (existing) existing.remove();
+
+      // Create overlay
+      const overlay = document.createElement('div');
+      overlay.id = 'booking-detail-overlay';
+      overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 50; display: flex; align-items: center; justify-content: center; font-family: sans-serif;';
+
+      const dates = viewingBookedPerson.start_date && viewingBookedPerson.end_date
+        ? `${viewingBookedPerson.start_date} to ${viewingBookedPerson.end_date}`
+        : 'Not specified';
+
+      overlay.innerHTML = `
+        <div style="background: #121212; padding: 2rem; border-radius: 12px; border: 1px solid rgba(76,76,76,0.3); max-width: 700px; width: 90%; max-height: 90vh; overflow-y: auto;">
+          <div style="margin-bottom: 1.5rem;">
+            <h2 style="color: #F9F5EF; font-size: 24px; font-weight: bold; margin-bottom: 0.5rem;">Booking Details</h2>
+            <p style="color: #4C4C4C; font-size: 14px;">View information about this booked person</p>
+          </div>
+
+          <div style="display: flex; gap: 1rem; margin-bottom: 2rem; align-items: start;">
+            <div style="width: 64px; height: 64px; border-radius: 50%; background: #4C4C4C; display: flex; align-items: center; justify-content: center; color: white; font-size: 28px; font-weight: bold;">
+              ${viewingBookedPerson.name?.charAt(0) || '?'}
+            </div>
+            <div style="flex: 1;">
+              <h3 style="color: #F9F5EF; font-size: 20px; font-weight: 600; margin-bottom: 0.25rem;">${viewingBookedPerson.name}</h3>
+              <p style="color: #4C4C4C; margin-bottom: 0.5rem;">${viewingBookedPerson.email || 'No email'}</p>
+              <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <span style="padding: 0.25rem 0.75rem; border: 1px solid rgba(76,76,76,0.5); border-radius: 6px; font-size: 12px; color: #4C4C4C;">${viewingBookedPerson.role_type.toUpperCase()}</span>
+                ${viewingBookedPerson.department ? `<span style="padding: 0.25rem 0.75rem; background: rgba(76,76,76,0.2); border-radius: 6px; font-size: 12px; color: #4C4C4C;">${viewingBookedPerson.department}</span>` : ''}
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 2rem;">
+            <h4 style="color: #F9F5EF; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">Role Information</h4>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem;">
+              <div>
+                <label style="color: #4C4C4C; font-size: 12px;">Position</label>
+                <p style="color: #F9F5EF; font-size: 14px; margin-top: 0.25rem;">${viewingBookedPerson.role_title}</p>
+              </div>
+              ${viewingBookedPerson.character_name ? `
+              <div>
+                <label style="color: #4C4C4C; font-size: 12px;">Character</label>
+                <p style="color: #F9F5EF; font-size: 14px; margin-top: 0.25rem;">"${viewingBookedPerson.character_name}"</p>
+              </div>
+              ` : ''}
+            </div>
+          </div>
+
+          ${viewingBookedPerson.start_date || viewingBookedPerson.end_date ? `
+          <div style="margin-bottom: 2rem;">
+            <h4 style="color: #F9F5EF; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">Booking Period</h4>
+            <p style="color: #F9F5EF; font-size: 14px;">${dates}</p>
+          </div>
+          ` : ''}
+
+          ${viewingBookedPerson.booking_rate ? `
+          <div style="margin-bottom: 2rem;">
+            <h4 style="color: #F9F5EF; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 1rem;">Compensation</h4>
+            <p style="color: #22c55e; font-size: 18px; font-weight: 600;">${viewingBookedPerson.booking_rate}</p>
+          </div>
+          ` : ''}
+
+          <div style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid rgba(76,76,76,0.3);">
+            <button id="close-booking-detail" style="padding: 0.5rem 1.5rem; background: transparent; color: #F9F5EF; border: 1px solid rgba(76,76,76,0.5); border-radius: 6px; cursor: pointer; font-size: 14px;">
+              Close
+            </button>
+            <button id="edit-booking-detail" style="padding: 0.5rem 1.5rem; background: #FF3C3C; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
+              Edit Booking
+            </button>
+          </div>
+        </div>
+      `;
+
+      document.body.appendChild(overlay);
+
+      // Close button handler
+      document.getElementById('close-booking-detail')?.addEventListener('click', () => {
+        overlay.remove();
+        setBookedPersonDialogOpen(false);
+        setViewingBookedPerson(null);
+      });
+
+      // Edit button handler
+      document.getElementById('edit-booking-detail')?.addEventListener('click', () => {
+        console.log('Edit Booking clicked, viewingBookedPerson:', viewingBookedPerson);
+        overlay.remove();
+        setBookedPersonDialogOpen(false);
+        console.log('Setting editingBookedPerson to:', viewingBookedPerson);
+        setEditingBookedPerson(viewingBookedPerson);
+        setViewingBookedPerson(null);
+        console.log('editingBookedPerson state should be set now');
+      });
+
+      // Click outside to close
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          overlay.remove();
+          setBookedPersonDialogOpen(false);
+          setViewingBookedPerson(null);
+        }
+      });
+    } else {
+      // Remove overlay when closing
+      const existing = document.getElementById('booking-detail-overlay');
+      if (existing) existing.remove();
+    }
+
+    // Cleanup on unmount
+    return () => {
+      const existing = document.getElementById('booking-detail-overlay');
+      if (existing) existing.remove();
+    };
+  }, [bookedPersonDialogOpen, viewingBookedPerson]);
+
+  // Render edit booking modal via DOM manipulation (workaround for Dialog component issue)
+  useEffect(() => {
+    if (editingBookedPerson) {
+      console.log('Creating edit booking modal for:', editingBookedPerson.name);
+
+      // Remove existing overlay if any
+      const existing = document.getElementById('edit-booking-overlay');
+      if (existing) existing.remove();
+
+      // Create overlay
+      const overlay = document.createElement('div');
+      overlay.id = 'edit-booking-overlay';
+      overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 50; display: flex; align-items: center; justify-content: center; font-family: sans-serif;';
+
+      // Create content container
+      const content = document.createElement('div');
+      content.style.cssText = 'background: #121212; padding: 2rem; border-radius: 12px; border: 1px solid rgba(76,76,76,0.3); max-width: 700px; width: 90%; max-height: 90vh; overflow-y: auto;';
+
+      content.innerHTML = `
+        <div style="margin-bottom: 1.5rem;">
+          <h2 style="color: #F9F5EF; font-size: 24px; font-weight: bold; margin-bottom: 0.5rem;">Edit Booking</h2>
+          <p style="color: #4C4C4C; font-size: 14px;">Update booking details for ${editingBookedPerson.name}</p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 1rem;">
+          <div>
+            <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">Position / Role Title</label>
+            <input id="edit-role-title" type="text" value="${editingBookedPerson.role_title || ''}"
+              style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+          </div>
+
+          <div>
+            <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">Department</label>
+            <input id="edit-department" type="text" value="${editingBookedPerson.department || ''}"
+              style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+          </div>
+
+          ${editingBookedPerson.role_type === 'cast' ? `
+          <div>
+            <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">Character Name</label>
+            <input id="edit-character-name" type="text" value="${editingBookedPerson.character_name || ''}"
+              style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+          </div>
+          ` : ''}
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div>
+              <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">Start Date</label>
+              <input id="edit-start-date" type="date" value="${editingBookedPerson.start_date || ''}"
+                style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+            </div>
+            <div>
+              <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">End Date</label>
+              <input id="edit-end-date" type="date" value="${editingBookedPerson.end_date || ''}"
+                style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+            </div>
+          </div>
+
+          <div>
+            <label style="color: #F9F5EF; font-size: 14px; display: block; margin-bottom: 0.5rem;">Booking Rate</label>
+            <input id="edit-booking-rate" type="text" value="${editingBookedPerson.booking_rate || ''}" placeholder="e.g., $500/daily, $2000/weekly"
+              style="width: 100%; padding: 0.5rem; background: #121212; border: 1px solid rgba(76,76,76,0.3); border-radius: 6px; color: #F9F5EF; font-size: 14px;" />
+            <p style="color: #4C4C4C; font-size: 12px; margin-top: 0.25rem;">Enter rate in format: $amount/period</p>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 1rem; justify-content: flex-end; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid rgba(76,76,76,0.3);">
+          <button id="cancel-edit-booking" style="padding: 0.5rem 1.5rem; background: transparent; color: #F9F5EF; border: 1px solid rgba(76,76,76,0.5); border-radius: 6px; cursor: pointer; font-size: 14px;">
+            Cancel
+          </button>
+          <button id="save-edit-booking" style="padding: 0.5rem 1.5rem; background: #FF3C3C; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">
+            Save Changes
+          </button>
+        </div>
+      `;
+
+      overlay.appendChild(content);
+      document.body.appendChild(overlay);
+
+      // Cancel button handler
+      document.getElementById('cancel-edit-booking')?.addEventListener('click', () => {
+        overlay.remove();
+        setEditingBookedPerson(null);
+      });
+
+      // Save button handler
+      document.getElementById('save-edit-booking')?.addEventListener('click', async () => {
+        const roleTitle = (document.getElementById('edit-role-title') as HTMLInputElement)?.value;
+        const department = (document.getElementById('edit-department') as HTMLInputElement)?.value;
+        const characterName = (document.getElementById('edit-character-name') as HTMLInputElement)?.value;
+        const startDate = (document.getElementById('edit-start-date') as HTMLInputElement)?.value;
+        const endDate = (document.getElementById('edit-end-date') as HTMLInputElement)?.value;
+        const bookingRate = (document.getElementById('edit-booking-rate') as HTMLInputElement)?.value;
+
+        if (!roleTitle) {
+          alert('Please enter a role title');
+          return;
+        }
+
+        try {
+          const input: ProjectRoleInput = {
+            type: editingBookedPerson.role_type,
+            title: roleTitle,
+            department: department || null,
+            character_name: characterName || null,
+            start_date: startDate || null,
+            end_date: endDate || null,
+            rate_description: bookingRate || null,
+            status: 'booked',
+          };
+
+          await updateRole.mutateAsync({ roleId: editingBookedPerson.role_id, input });
+
+          overlay.remove();
+          setEditingBookedPerson(null);
+
+          toast({
+            title: 'Booking updated',
+            description: 'The booking details have been updated successfully.',
+          });
+        } catch (error: any) {
+          alert('Error updating booking: ' + (error.message || 'Unknown error'));
+        }
+      });
+
+      // Click outside to close
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          overlay.remove();
+          setEditingBookedPerson(null);
+        }
+      });
+    } else {
+      // Remove overlay when closing
+      const existing = document.getElementById('edit-booking-overlay');
+      if (existing) existing.remove();
+    }
+
+    // Cleanup on unmount
+    return () => {
+      const existing = document.getElementById('edit-booking-overlay');
+      if (existing) existing.remove();
+    };
+  }, [editingBookedPerson, updateRole, toast]);
 
   // Filtered roles
   const filteredRoles = useMemo(() => {
@@ -316,7 +670,7 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as TabType)}>
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="roles">Role Postings</TabsTrigger>
           <TabsTrigger value="booked">Booked ({bookedPeople?.length || 0})</TabsTrigger>
           <TabsTrigger value="availability">Availability</TabsTrigger>
@@ -327,10 +681,6 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
           <TabsTrigger value="documents">
             <FileSignature className="w-4 h-4 mr-1" />
             Documents
-          </TabsTrigger>
-          <TabsTrigger value="communication">
-            <MessageSquare className="w-4 h-4 mr-1" />
-            Comms
           </TabsTrigger>
         </TabsList>
 
@@ -382,7 +732,15 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
           {bookedPeople && bookedPeople.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               {bookedPeople.map((person) => (
-                <Card key={person.role_id} className="bg-charcoal-black border-muted-gray/30">
+                <Card
+                  key={person.role_id}
+                  className="bg-charcoal-black border-muted-gray/30 cursor-pointer hover:border-muted-gray/50 transition-colors group"
+                  onClick={() => {
+                    console.log('Clicked on person:', person.name);
+                    setViewingBookedPerson(person);
+                    setBookedPersonDialogOpen(true);
+                  }}
+                >
                   <CardContent className="pt-4">
                     <div className="flex items-start gap-3">
                       <Avatar className="h-10 w-10">
@@ -392,10 +750,66 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
                         </AvatarFallback>
                       </Avatar>
                       <div className="flex-1">
-                        <p className="font-medium text-bone-white">{person.name}</p>
-                        <p className="text-sm text-muted-gray">
-                          {person.role_title}
-                        </p>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <p className="font-medium text-bone-white">{person.name}</p>
+                            <p className="text-sm text-muted-gray">
+                              {person.role_title}
+                            </p>
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 opacity-0 group-hover:opacity-100 transition-opacity"
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={(e) => {
+                                e.stopPropagation();
+                                setViewingBookedPerson(person);
+                                setBookedPersonDialogOpen(true);
+                              }}>
+                                <Eye className="w-4 h-4 mr-2" />
+                                View Details
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={(e) => {
+                                e.stopPropagation();
+                                setEditingBookedPerson(person);
+                              }}>
+                                <Edit className="w-4 h-4 mr-2" />
+                                Edit Booking
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  if (confirm(`Remove ${person.name} from this project?`)) {
+                                    try {
+                                      await deleteRole.mutateAsync(person.role_id);
+                                      toast({
+                                        title: 'Booking removed',
+                                        description: `${person.name} has been removed from the project.`,
+                                      });
+                                    } catch (error: any) {
+                                      toast({
+                                        title: 'Error',
+                                        description: error.message || 'Failed to remove booking',
+                                        variant: 'destructive',
+                                      });
+                                    }
+                                  }
+                                }}
+                              >
+                                <Trash className="w-4 h-4 mr-2" />
+                                Remove Booking
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
                         <div className="flex items-center gap-2 mt-1">
                           <Badge variant="outline" className="text-xs border-muted-gray/50 text-muted-gray">
                             {PROJECT_ROLE_TYPE_LABELS[person.role_type]}
@@ -418,13 +832,22 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
                             {person.end_date && ` - ${format(parseLocalDate(person.end_date), 'MMM d')}`}
                           </p>
                         )}
+                        {person.booking_rate && (
+                          <p className="text-xs text-green-600 mt-1">
+                            <DollarSign className="w-3 h-3 inline mr-1" />
+                            {person.booking_rate}
+                          </p>
+                        )}
                         {/* Document Status Badges */}
                         <div className="mt-2 flex items-center gap-2 flex-wrap">
                           <ClearanceStatusBadge
                             projectId={projectId}
                             personId={person.user_id}
                             personName={person.name}
-                            onClick={() => onNavigateToClearances?.(person.user_id, person.name)}
+                            onClick={(e) => {
+                              e?.stopPropagation();
+                              onNavigateToClearances?.(person.user_id, person.name);
+                            }}
                           />
                           {/* Onboarding Progress */}
                           {crewDocSummaries && (() => {
@@ -482,11 +905,6 @@ export function CastingCrewTab({ projectId, onNavigateToClearances }: CastingCre
           />
           {/* Deal Memos and other documents */}
           <DocumentsSection projectId={projectId} />
-        </TabsContent>
-
-        {/* Communication Tab */}
-        <TabsContent value="communication" className="space-y-6">
-          <CommunicationSection projectId={projectId} />
         </TabsContent>
       </Tabs>
 
@@ -2396,6 +2814,317 @@ function CommunicationSection({ projectId }: CommunicationSectionProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Booked Person Detail Modal - Rendered via DOM manipulation in useEffect above */}
+
+      {/* Edit Booking Dialog - Will be rendered via DOM manipulation in useEffect */}
+    </div>
+  );
+}
+
+// Edit Booking Dialog Component
+interface EditBookingDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  person: BacklotBookedPerson | null;
+  projectId: string;
+  onSuccess: () => void;
+}
+
+// Extract unique departments from POSITIONS
+const DEPARTMENTS = Array.from(new Set(POSITIONS.map(p => p.department)))
+  .sort()
+  .map((dept) => ({
+    id: dept.toLowerCase().replace(/\s+/g, '-'),
+    name: dept,
+  }));
+
+function EditBookingDialog({ open, onOpenChange, person, projectId, onSuccess }: EditBookingDialogProps) {
+  console.log('=== EditBookingDialog FUNCTION CALLED ===');
+  console.log('EditBookingDialog component rendering for:', person?.name);
+  console.log('Props received:', { open, person: person?.name, projectId });
+
+  const { toast } = useToast();
+  const { updateRole } = useProjectRoleMutations(projectId);
+
+  const [roleTitle, setRoleTitle] = useState('');
+  const [department, setDepartment] = useState('');
+  const [characterName, setCharacterName] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [bookingRate, setBookingRate] = useState('');
+  const [customRoles, setCustomRoles] = useState<Array<{ id: string; name: string; department?: string }>>([]);
+  const [customDepartments, setCustomDepartments] = useState<Array<{ id: string; name: string }>>([]);
+
+  // Initialize form when person changes
+  React.useEffect(() => {
+    if (person) {
+      setRoleTitle(person.role_title || '');
+      setDepartment(person.department || '');
+      setCharacterName(person.character_name || '');
+      setStartDate(person.start_date || '');
+      setEndDate(person.end_date || '');
+      setBookingRate(person.booking_rate || '');
+    }
+  }, [person]);
+
+  const handleSubmit = async () => {
+    if (!person) return;
+
+    try {
+      const input: ProjectRoleInput = {
+        type: person.role_type,
+        title: roleTitle,
+        department: department || null,
+        character_name: characterName || null,
+        start_date: startDate || null,
+        end_date: endDate || null,
+        rate_description: bookingRate || null,
+        status: 'booked',
+      };
+
+      await updateRole.mutateAsync({ roleId: person.role_id, input });
+      onSuccess();
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to update booking',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  if (!person) {
+    console.log('EditBookingDialog: person is null, returning null');
+    return null;
+  }
+
+  console.log('EditBookingDialog: rendering UI for', person.name);
+
+  // Prepare roles for SearchableCombobox
+  const baseRoles = POSITIONS.map(p => ({ id: p.id, name: p.name, department: p.department }));
+  const allRoles = [...baseRoles, ...customRoles];
+  const selectedRole = allRoles.find(r => r.name === roleTitle);
+
+  const searchRoles = async (query: string) => {
+    if (!query || query.length < 1) {
+      return allRoles.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    const lowerQuery = query.toLowerCase();
+    return allRoles.filter(r =>
+      r.name.toLowerCase().includes(lowerQuery) ||
+      ('department' in r && (r as any).department?.toLowerCase().includes(lowerQuery))
+    ).sort((a, b) => {
+      const aName = a.name.toLowerCase();
+      const bName = b.name.toLowerCase();
+      if (aName === lowerQuery && bName !== lowerQuery) return -1;
+      if (bName === lowerQuery && aName !== lowerQuery) return 1;
+      if (aName.startsWith(lowerQuery) && !bName.startsWith(lowerQuery)) return -1;
+      if (bName.startsWith(lowerQuery) && !aName.startsWith(lowerQuery)) return 1;
+      return aName.localeCompare(bName);
+    });
+  };
+
+  const handleAddRole = async (name: string) => {
+    const newRole = {
+      id: name.toLowerCase().replace(/\s+/g, '-'),
+      name: name,
+    };
+    setCustomRoles(prev => [...prev, newRole]);
+    setRoleTitle(name);
+    return newRole;
+  };
+
+  // Prepare departments for SearchableCombobox
+  const allDepartments = [...DEPARTMENTS, ...customDepartments];
+  const selectedDept = allDepartments.find(d => d.name === department);
+
+  const searchDepartments = async (query: string) => {
+    if (!query || query.length < 1) {
+      return allDepartments.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    const lowerQuery = query.toLowerCase();
+    return allDepartments.filter(d =>
+      d.name.toLowerCase().includes(lowerQuery)
+    ).sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const handleAddDepartment = async (name: string) => {
+    const newDept = {
+      id: name.toLowerCase().replace(/\s+/g, '-'),
+      name: name,
+    };
+    setCustomDepartments(prev => [...prev, newDept]);
+    setDepartment(name);
+    return newDept;
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onOpenChange(false);
+      }}
+    >
+      <div className="bg-charcoal-black border border-muted-gray/30 rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto mx-4">
+        <div className="mb-6">
+          <h2 className="text-2xl font-bold text-bone-white mb-2">Edit Booking</h2>
+          <p className="text-muted-gray">
+            Update booking details for {person.name}
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {/* Role Title with SearchableCombobox */}
+          <div className="space-y-2">
+            <Label className="text-bone-white">Position / Role Title</Label>
+            <SearchableCombobox
+              value={selectedRole?.id || null}
+              onChange={(id, role) => setRoleTitle(role?.name || '')}
+              searchFn={searchRoles}
+              onAddNew={handleAddRole}
+              placeholder="Select or add role title..."
+              searchPlaceholder="Search roles..."
+              emptyMessage="No roles found."
+              addNewLabel="Add custom role"
+              renderItem={(role) => (
+                <div className="flex items-center gap-2">
+                  <Briefcase className="h-4 w-4 text-muted-gray" />
+                  <div className="flex flex-col">
+                    <span className="text-bone-white">{role.name}</span>
+                    {'department' in role && (role as any).department && (
+                      <span className="text-[10px] text-muted-gray">{(role as any).department}</span>
+                    )}
+                  </div>
+                </div>
+              )}
+              renderSelected={(role) => (
+                <div className="flex items-center gap-2">
+                  <Briefcase className="h-4 w-4 text-muted-gray" />
+                  <span>{role.name}</span>
+                </div>
+              )}
+              initialSelectedItem={selectedRole}
+            />
+          </div>
+
+          {/* Department with SearchableCombobox */}
+          <div className="space-y-2">
+            <Label className="text-bone-white">Department</Label>
+            <SearchableCombobox
+              value={selectedDept?.id || null}
+              onChange={(id, dept) => setDepartment(dept?.name || '')}
+              searchFn={searchDepartments}
+              onAddNew={handleAddDepartment}
+              placeholder="Select department..."
+              searchPlaceholder="Search departments..."
+              emptyMessage="No departments found."
+              addNewLabel="Add department"
+              renderItem={(dept) => (
+                <div className="flex items-center gap-2">
+                  <Briefcase className="h-4 w-4 text-muted-gray" />
+                  <span className="text-bone-white">{dept.name}</span>
+                </div>
+              )}
+              renderSelected={(dept) => (
+                <div className="flex items-center gap-2">
+                  <Briefcase className="h-4 w-4 text-muted-gray" />
+                  <span>{dept.name}</span>
+                </div>
+              )}
+              initialSelectedItem={selectedDept}
+            />
+          </div>
+
+          {/* Character Name (for cast) */}
+          {person.role_type === 'cast' && (
+            <div className="space-y-2">
+              <Label htmlFor="character-name" className="text-bone-white">
+                Character Name
+              </Label>
+              <Input
+                id="character-name"
+                value={characterName}
+                onChange={(e) => setCharacterName(e.target.value)}
+                placeholder="e.g., John Doe"
+                className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+              />
+            </div>
+          )}
+
+          {/* Dates */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="start-date" className="text-bone-white">
+                Start Date
+              </Label>
+              <Input
+                id="start-date"
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="end-date" className="text-bone-white">
+                End Date
+              </Label>
+              <Input
+                id="end-date"
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+              />
+            </div>
+          </div>
+
+          {/* Booking Rate */}
+          <div className="space-y-2">
+            <Label htmlFor="booking-rate" className="text-bone-white">
+              Booking Rate
+            </Label>
+            <Input
+              id="booking-rate"
+              value={bookingRate}
+              onChange={(e) => setBookingRate(e.target.value)}
+              placeholder="e.g., $500/daily, $2000/weekly"
+              className="bg-charcoal-black border-muted-gray/30 text-bone-white"
+            />
+            <p className="text-xs text-muted-gray">
+              Enter rate in format: $amount/period (e.g., $500/daily, $2000/weekly)
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-3 justify-end mt-6 pt-6 border-t border-muted-gray/30">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            className="border-muted-gray/30"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={!roleTitle || updateRole.isPending}
+            className="bg-primary-red hover:bg-primary-red/90"
+          >
+            {updateRole.isPending ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <Edit className="w-4 h-4 mr-2" />
+                Save Changes
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

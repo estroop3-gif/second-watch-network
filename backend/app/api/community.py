@@ -97,6 +97,13 @@ class CollabPermissionUpdate(BaseModel):
     can_book_applicants: Optional[bool] = None
 
 
+class ApplicantEmailInput(BaseModel):
+    """Input for sending email to applicant"""
+    subject: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=5000)
+    attachments: Optional[List[Dict[str, Any]]] = None  # [{name, url, type, size}]
+
+
 router = APIRouter()
 
 
@@ -2365,8 +2372,60 @@ async def book_applicant(
 
         # TODO: Handle document package request if booking.request_documents
 
-        # TODO: Send notification to applicant if booking.send_notification
-        # notification_message = booking.notification_message or f"Congratulations! You've been booked for {collab.get('title')}"
+        # Send notification and message to applicant if booking.send_notification
+        if booking.send_notification:
+            notification_message = booking.notification_message or f"Congratulations! You've been booked for {collab.get('title')}. We're excited to have you on board."
+
+            # Create in-app notification
+            try:
+                client.table("notifications").insert({
+                    "user_id": applicant_user_id,
+                    "type": "booking",
+                    "title": f"You've been booked for {collab.get('title')}",
+                    "body": notification_message,
+                    "related_id": application_id,
+                    "payload": {
+                        "collab_id": collab_id,
+                        "collab_title": collab.get("title"),
+                        "booking_rate": booking.booking_rate,
+                        "booking_start_date": booking.booking_start_date,
+                        "booking_end_date": booking.booking_end_date,
+                    },
+                    "is_read": False,
+                }).execute()
+            except Exception as notif_err:
+                print(f"Error creating notification: {notif_err}")
+
+            # Send in-app message to applicant
+            try:
+                # Get or create conversation between collab owner and applicant
+                conv_response = client.rpc("get_or_create_conversation", {
+                    "user1_id": profile_id,
+                    "user2_id": applicant_user_id
+                }).execute()
+
+                conversation_id = None
+                if conv_response.data:
+                    conversation_id = conv_response.data[0]["id"]
+
+                # Create message
+                message_content = f"🎉 {notification_message}"
+                if booking.booking_rate:
+                    message_content += f"\n\n**Rate:** {booking.booking_rate}"
+                if booking.booking_start_date and booking.booking_end_date:
+                    message_content += f"\n**Dates:** {booking.booking_start_date} to {booking.booking_end_date}"
+                elif booking.booking_start_date:
+                    message_content += f"\n**Start Date:** {booking.booking_start_date}"
+
+                message_content += f"\n\nWe'll be in touch with more details soon!"
+
+                client.table("messages").insert({
+                    "conversation_id": conversation_id,
+                    "sender_id": profile_id,
+                    "content": message_content,
+                }).execute()
+            except Exception as msg_err:
+                print(f"Error sending message: {msg_err}")
 
         return {
             "success": True,
@@ -2465,6 +2524,122 @@ async def unbook_applicant(
         raise
     except Exception as e:
         print(f"Error unbooking applicant: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/collab-applications/{application_id}/email")
+async def get_applicant_email(
+    application_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get applicant's email for mailto: link (respecting privacy settings).
+
+    Returns email if:
+    - User is collab owner OR has can_message_applicants permission
+    - Applicant has show_email=true OR who_can_message='everyone' OR (who_can_message='connections' AND users are connected)
+    """
+    from app.api.users import get_profile_id_from_cognito_id
+
+    user = await get_current_user_from_token(authorization)
+    cognito_id = user["id"]
+
+    # Convert Cognito ID to profile UUID
+    profile_id = get_profile_id_from_cognito_id(cognito_id)
+    if not profile_id:
+        raise HTTPException(status_code=401, detail="Profile not found")
+
+    client = get_client()
+
+    try:
+        # Get application
+        app_result = client.table("community_collab_applications").select("*").eq("id", application_id).single().execute()
+
+        if not app_result.data:
+            raise HTTPException(status_code=404, detail="Application not found")
+
+        app_data = app_result.data
+        applicant_user_id = app_data.get("applicant_user_id")
+
+        # Get collab
+        collab_id = app_data.get("collab_id")
+        collab_result = client.table("community_collabs").select("id, user_id, title, backlot_project_id").eq("id", collab_id).single().execute()
+        collab = collab_result.data if collab_result else None
+
+        if not collab:
+            raise HTTPException(status_code=404, detail="Collab not found")
+
+        # Check permission: Must be collab owner OR have can_message_applicants permission
+        is_owner = collab.get("user_id") == profile_id
+        has_permission = False
+
+        if not is_owner:
+            # Check for granted permission
+            perm_result = client.table("collab_application_permissions").select("*").eq(
+                "collab_id", collab_id
+            ).eq("user_id", profile_id).execute()
+
+            if perm_result.data and perm_result.data[0].get("can_message_applicants"):
+                has_permission = True
+
+        if not is_owner and not has_permission:
+            raise HTTPException(status_code=403, detail="You don't have permission to contact this applicant")
+
+        # Get applicant profile with email and privacy settings
+        applicant_result = client.table("profiles").select("id, email, display_name").eq("id", applicant_user_id).single().execute()
+
+        if not applicant_result.data:
+            raise HTTPException(status_code=404, detail="Applicant profile not found")
+
+        applicant = applicant_result.data
+        applicant_email = applicant.get("email")
+
+        if not applicant_email:
+            raise HTTPException(status_code=400, detail="Email not available", headers={"X-Fallback": "message"})
+
+        # Check filmmaker_profiles.show_email
+        # Note: For job applicants, default to ALLOWING email unless explicitly blocked
+        # This is a professional/hiring context, not social messaging
+        filmmaker_result = client.table("filmmaker_profiles").select("show_email").eq("user_id", applicant_user_id).execute()
+        show_email = filmmaker_result.data[0].get("show_email") if filmmaker_result.data else None
+
+        # If show_email is explicitly false, check other privacy settings
+        if show_email is False:
+            # Check user_message_preferences.who_can_message as fallback
+            msg_pref_result = client.table("user_message_preferences").select("who_can_message").eq("user_id", applicant_user_id).execute()
+            who_can_message = msg_pref_result.data[0].get("who_can_message") if msg_pref_result.data else None
+
+            # Only block if explicitly set to 'nobody'
+            if who_can_message == "nobody":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Applicant has restricted email contact. Please use direct messaging instead.",
+                    headers={"X-Fallback": "message"}
+                )
+
+            # If connections only, check connection status
+            if who_can_message == "connections":
+                connection_result = client.table("user_connections").select("id").or_(
+                    f"and(user_id.eq.{profile_id},connected_user_id.eq.{applicant_user_id}),and(user_id.eq.{applicant_user_id},connected_user_id.eq.{profile_id})"
+                ).eq("status", "accepted").execute()
+
+                if not connection_result.data:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Applicant has restricted email to connections only. Please use direct messaging instead.",
+                        headers={"X-Fallback": "message"}
+                    )
+
+        # Allow email (either show_email is true/null, or who_can_message allows it)
+        return {
+            "email": applicant_email,
+            "name": applicant.get("display_name")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting applicant email: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

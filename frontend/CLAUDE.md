@@ -47,7 +47,7 @@ Client-side timing instrumentation for diagnosing cold start and load issues:
 - `EnrichedProfileContext` - User profile with badges, permissions, Order membership
 - `DashboardSettingsContext` - Dashboard customization state
 - `SettingsContext` - User preferences
-- `SocketContext` - Real-time WebSocket connections
+- `SocketContext` - Real-time WebSocket connections via Socket.IO
 
 ### Dashboard System (`src/components/dashboard/`)
 Role-based adaptive dashboard with lazy-loaded widgets:
@@ -71,9 +71,10 @@ Role-based adaptive dashboard with lazy-loaded widgets:
 5. Add to `dataMap` in `AdaptiveDashboard.tsx`
 
 ### Component Organization (`src/components/`)
-- `ui/` - shadcn/ui base components (auto-generated, avoid direct edits)
+- `ui/` - shadcn/ui base components (auto-generated, see customization notes below)
 - `dashboard/` - Adaptive dashboard and widgets
 - `backlot/workspace/` - Production management UI (120+ components, largest feature area)
+  - `hot-set/` - Real-time production day management (see Hot Set System below)
   - `continuity/` - Continuity PDF annotation tools (ContinuityPDFAnnotator)
   - `scripty/` - Script supervisor tools (TakeLogger, LinedScriptOverlay, ContinuityNotes/Photos)
   - `camera-continuity/` - Camera & continuity notes
@@ -81,6 +82,41 @@ Role-based adaptive dashboard with lazy-loaded widgets:
 - `gear/` - Gear House equipment management (see below)
 - `admin/` - Admin panel components
 - `order/` - Order (guild) components
+
+### Hot Set System (`src/components/backlot/workspace/hot-set/`)
+Real-time production day management for 1st ADs:
+
+**Features**:
+- Live scene progression (start, complete, skip)
+- Real-time schedule tracking with variance calculations
+- OT countdown and cost projections
+- Timeline view of day's activities
+- Schedule block management (lunch, company moves, etc.)
+- Catch-up suggestions when behind schedule
+
+**Key Components**:
+- `HotSetView.tsx` - Main container (production day selection and session management)
+- `HotSetTimeline.tsx` - Visual timeline of scenes and schedule blocks
+- `LiveScheduleView.tsx` - Current schedule with projected vs actual times
+- `ScheduleDeviationCard.tsx` - Shows schedule variance (ahead/behind)
+- `OTProjectionCard.tsx` - Projected OT costs based on current pace
+- `CurrentActivityCard.tsx` - Currently active scene/block
+- `ScheduleBlockCard.tsx` - Schedule items (lunch, wrap, etc.)
+- `CatchUpSuggestionsPanel.tsx` - AI suggestions when behind
+- `WrapDayModal.tsx` - End-of-day wrap workflow
+- `CreateHotSetSessionModal.tsx` - Session creation/import
+
+**Hooks** (`src/hooks/backlot/` - exported via index):
+- `useHotSetSessions` - List/fetch sessions
+- `useHotSetDashboard` - Dashboard data (scenes, schedule, OT)
+- `useCreateHotSetSession` / `useStartHotSetSession` / `useWrapHotSetSession`
+- `useStartScene` / `useCompleteScene` / `useSkipScene`
+- `useStartScheduleBlock` / `useCompleteScheduleBlock` / `useSkipScheduleBlock`
+- `useImportFromProductionDay` / `useImportFromHourSchedule`
+
+**Schedule Tracking Modes**:
+- `scenes_only` - Track scenes without detailed schedule
+- `full_schedule` - Track scenes + schedule blocks (lunch, moves, etc.)
 
 ### Gear House System (`src/components/gear/`)
 Equipment rental/checkout management system with barcode/QR scanning:
@@ -193,13 +229,35 @@ React Query cache keys follow domain patterns:
 queryKey: ['backlot-budget', projectId]
 queryKey: ['projects', projectId]
 queryKey: ['moodboards', projectId, moodboardId]
+queryKey: ['hot-set-dashboard', sessionId]
 ```
+
+## Real-Time Features
+
+### Socket.IO Integration
+WebSocket connections managed via `SocketContext`:
+```typescript
+import { useSocket } from '@/context/SocketContext';
+
+const { socket, connected } = useSocket();
+
+// Listen for events
+useEffect(() => {
+  if (!socket) return;
+  socket.on('hot_set_update', handleUpdate);
+  return () => socket.off('hot_set_update', handleUpdate);
+}, [socket]);
+```
+
+### WebRTC (Simple Peer)
+Peer-to-peer connections for video chat features using `simple-peer` library with Node.js polyfills enabled in Vite config.
 
 ## Vite Configuration
 
 - Dev server: Port 8080
-- API proxy: `/api` routes to `localhost:8000` in development
+- API proxy: `/api` routes to `localhost:8000` in development (auto-disabled when VITE_API_URL is set)
 - Production: Uses `VITE_API_URL` environment variable (https://vnvvoelid6.execute-api.us-east-1.amazonaws.com)
+- Node.js polyfills enabled for `buffer`, `events`, `stream`, `util`, `process` (required for simple-peer)
 
 ## Deployment
 
@@ -212,13 +270,40 @@ aws s3 sync dist/ s3://swn-frontend-517220555400 --delete
 aws cloudfront create-invalidation --distribution-id EJRGRTMJFSXN2 --paths "/*"
 ```
 
+## Mobile App (Capacitor)
+
+The app supports iOS and Android via Capacitor. Dependencies are included but build configuration is in the root project.
+
 ## Important Notes
 
 ### TypeScript Configuration
 TypeScript is configured with relaxed settings (`noImplicitAny: false`, `strictNullChecks: false`). ESLint unused variable checks are disabled.
 
 ### shadcn/ui Components
-Components in `src/components/ui/` are auto-generated by shadcn. Do not edit them directly - create wrapper components if customization is needed.
+Components in `src/components/ui/` are auto-generated by shadcn. **Do not edit them directly** - instead:
+
+1. **For simple customization**: Create wrapper components
+2. **For accessibility fixes**: Extend the base component with additional props
+   - Example: `DialogContent` supports `ariaLabel` and `ariaDescription` props for hidden titles
+   - All dialog-based components (Dialog, Sheet, AlertDialog) include default hidden titles for accessibility
+   - Always provide proper `DialogTitle` and `DialogDescription` when visible
+
+**Accessibility Pattern**:
+```typescript
+// Dialogs with visible titles - standard pattern
+<DialogContent>
+  <DialogHeader>
+    <DialogTitle>My Dialog</DialogTitle>
+    <DialogDescription>Description text</DialogDescription>
+  </DialogHeader>
+  {/* content */}
+</DialogContent>
+
+// Dialogs without visible titles - use ariaLabel
+<DialogContent ariaLabel="Hidden title for screen readers">
+  {/* content without DialogHeader */}
+</DialogContent>
+```
 
 ### Large Components
 Some workspace components (backlot views) are 2k-4k lines. When editing these, read the entire file first to understand the structure before making changes.
@@ -233,3 +318,11 @@ import { parseLocalDate } from '@/lib/dateUtils';
 // Prevents "2024-01-15" from becoming Jan 14 in US timezones
 const date = parseLocalDate(entry.date);
 ```
+
+### Hot Set Time Formatting
+Hot Set uses specialized time utilities in `src/hooks/backlot/`:
+- `formatTime(date)` - Format Date to HH:MM AM/PM
+- `formatElapsedTime(seconds)` - Format duration as HH:MM:SS or MM:SS
+- `calculateElapsedSeconds(start, end)` - Calculate duration between timestamps
+- `formatSeconds(seconds)` - Convert seconds to readable duration
+- `formatScheduleTime(timeString)` - Parse and format schedule times

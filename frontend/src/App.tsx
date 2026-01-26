@@ -107,6 +107,7 @@ import BacklotOversight from "./pages/admin/BacklotOversight";
 import BillingManagement from "./pages/admin/Billing";
 import PartnerManagement from "./pages/admin/PartnerManagement";
 import Moderation from "./pages/admin/Moderation";
+import MessageModeration from "./pages/admin/MessageModeration";
 import CommunityManagement from "./pages/admin/CommunityManagement";
 import AuditLog from "./pages/admin/AuditLog";
 import AdminDonations from "./pages/admin/Donations";
@@ -426,6 +427,7 @@ const App = () => (
                         <Route path="organizations" element={<AdminOrganizations />} />
                         <Route path="partners" element={<PartnerManagement />} />
                         <Route path="moderation" element={<Moderation />} />
+                        <Route path="message-moderation" element={<MessageModeration />} />
                         <Route path="community" element={<CommunityManagement />} />
                         <Route path="audit-log" element={<AuditLog />} />
                         <Route path="donations" element={<AdminDonations />} />

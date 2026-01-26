@@ -247,7 +247,60 @@ export async function encryptMessage(
   recipientId: string,
   plaintext: string
 ): Promise<crypto.EncryptedMessage> {
-  // Get or establish session
+  // Special case: self-messaging (encrypting to yourself)
+  // Use a simpler symmetric encryption approach
+  if (recipientId === currentUserId) {
+    const identityKey = await storage.getIdentityKey();
+    if (!identityKey) {
+      throw new Error('No identity key found for self-encryption');
+    }
+
+    // Use AES-GCM with a key derived from our identity private key
+    const encoder = new TextEncoder();
+    const data = encoder.encode(plaintext);
+
+    // Derive encryption key from identity private key
+    const keyMaterial = await window.crypto.subtle.importKey(
+      'raw',
+      identityKey.keyPair.privateKey,
+      'HKDF',
+      false,
+      ['deriveKey']
+    );
+
+    const encryptionKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(32), // Fixed salt for self-messaging
+        info: encoder.encode('self-message-encryption'),
+      },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt']
+    );
+
+    // Generate random IV
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+    // Encrypt
+    const ciphertext = await window.crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv },
+      encryptionKey,
+      data
+    );
+
+    return {
+      ciphertext: crypto.encodeBase64(new Uint8Array(ciphertext)),
+      nonce: crypto.encodeBase64(iv),
+      isPreKeyMessage: false,
+      senderPublicKey: '',
+      messageNumber: 0,
+    };
+  }
+
+  // Normal case: encrypting to another user
   let session = await storage.getSession(recipientId);
   const isPreKeyMessage = !session;
 
@@ -278,6 +331,53 @@ export async function decryptMessage(
   senderId: string,
   encrypted: crypto.EncryptedMessage
 ): Promise<string> {
+  // Special case: self-messaging (decrypting your own message)
+  if (senderId === currentUserId && !encrypted.isPreKeyMessage) {
+    const identityKey = await storage.getIdentityKey();
+    if (!identityKey) {
+      throw new Error('No identity key found for self-decryption');
+    }
+
+    // Use the same symmetric decryption approach
+    const encoder = new TextEncoder();
+
+    // Derive decryption key from identity private key (same as encryption)
+    const keyMaterial = await window.crypto.subtle.importKey(
+      'raw',
+      identityKey.keyPair.privateKey,
+      'HKDF',
+      false,
+      ['deriveKey']
+    );
+
+    const decryptionKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: new Uint8Array(32), // Same fixed salt as encryption
+        info: encoder.encode('self-message-encryption'),
+      },
+      keyMaterial,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['decrypt']
+    );
+
+    // Decrypt
+    const ciphertextBytes = crypto.decodeBase64(encrypted.ciphertext);
+    const iv = crypto.decodeBase64(encrypted.nonce);
+
+    const plaintextBytes = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv },
+      decryptionKey,
+      ciphertextBytes
+    );
+
+    const decoder = new TextDecoder();
+    return decoder.decode(plaintextBytes);
+  }
+
+  // Normal case: decrypting from another user
   let session = await storage.getSession(senderId);
 
   // Handle prekey message (first message in session)
