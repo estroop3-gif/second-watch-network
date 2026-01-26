@@ -13535,6 +13535,74 @@ async def delete_scene(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/projects/{project_id}/scenes/recalculate-page-lengths")
+async def recalculate_scene_page_lengths(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Recalculate page_length for all scenes in a project based on page_start values.
+
+    This is useful for scenes that were imported before page_length calculation was added.
+    Scene N's length = Scene N+1's page_start - Scene N's page_start
+    """
+    user = await get_current_user_from_token(authorization)
+    profile_id = get_profile_id_from_cognito_id(user["sub"])
+    if not profile_id:
+        raise HTTPException(status_code=403, detail="Profile not found")
+
+    client = get_client()
+
+    try:
+        # Verify project access
+        await verify_project_access(client, project_id, profile_id, require_edit=True)
+
+        # Get all scenes for the project, ordered by page_start and sequence
+        scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, page_start, page_length, sequence"
+        ).eq("project_id", project_id).order("page_start", nullsfirst=False).order("sequence").execute()
+
+        scenes = scenes_result.data or []
+        if not scenes:
+            return {"success": True, "message": "No scenes found", "updated": 0}
+
+        # Calculate page_length from sequential page_start values
+        updated_count = 0
+        for i, scene in enumerate(scenes):
+            if scene.get("page_start") is not None:
+                # Get next scene's page_start to calculate length
+                if i + 1 < len(scenes) and scenes[i + 1].get("page_start") is not None:
+                    next_page_start = scenes[i + 1]["page_start"]
+                    calculated_length = float(next_page_start - scene["page_start"])
+                    new_page_length = max(0.125, calculated_length)  # Minimum 1/8 page
+                else:
+                    # Last scene - estimate 1 page if no next scene info
+                    new_page_length = 1.0
+            else:
+                new_page_length = 1.0  # Default if no page_start info
+
+            # Only update if page_length is null/0 or different from calculated
+            current_page_length = scene.get("page_length")
+            if current_page_length is None or current_page_length == 0 or abs(current_page_length - new_page_length) > 0.01:
+                client.table("backlot_scenes").update({
+                    "page_length": new_page_length
+                }).eq("id", scene["id"]).execute()
+                updated_count += 1
+
+        return {
+            "success": True,
+            "message": f"Recalculated page lengths for {updated_count} scenes",
+            "updated": updated_count,
+            "total_scenes": len(scenes)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error recalculating scene page lengths: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # BREAKDOWN ITEMS CRUD
 # =====================================================

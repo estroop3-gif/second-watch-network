@@ -103,6 +103,8 @@ import {
 import { ModeSelector } from './ModeSelector';
 import { SegmentSelector } from './SegmentSelector';
 import { AddCustomSegmentDialog } from './AddCustomSegmentDialog';
+import { useRecalculatePageLengths } from '@/hooks/backlot';
+import { toast } from 'sonner';
 
 // ============================================================================
 // TYPES
@@ -761,6 +763,22 @@ export const HourScheduleWizard: React.FC<HourScheduleWizardProps> = ({
     })
   );
 
+  // Page length recalculation
+  const recalculatePageLengths = useRecalculatePageLengths(projectId);
+  const [isRecalculating, setIsRecalculating] = useState(false);
+
+  const handleRecalculatePageLengths = async () => {
+    setIsRecalculating(true);
+    try {
+      const result = await recalculatePageLengths.mutateAsync();
+      toast.success(`Recalculated page lengths for ${result.updated} scenes`);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to recalculate page lengths');
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
+
   // Schedule summary
   const summary = useMemo(
     () => getScheduleSummary(generatedSchedule),
@@ -1281,8 +1299,26 @@ export const HourScheduleWizard: React.FC<HourScheduleWizardProps> = ({
                         <div className="p-3 bg-orange-500/10 border border-orange-500/20 rounded-lg">
                           <p className="text-sm text-orange-400">
                             Some scenes don't have page counts set. These will be scheduled with minimum duration (15 min).
-                            For accurate scheduling, set page counts in the Script view.
                           </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 border-orange-500/40 text-orange-400 hover:bg-orange-500/20"
+                            onClick={handleRecalculatePageLengths}
+                            disabled={isRecalculating}
+                          >
+                            {isRecalculating ? (
+                              <>
+                                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                Recalculating...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="w-4 h-4 mr-2" />
+                                Recalculate Page Lengths
+                              </>
+                            )}
+                          </Button>
                         </div>
                       )}
 

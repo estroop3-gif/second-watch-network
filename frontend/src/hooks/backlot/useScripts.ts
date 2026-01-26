@@ -529,6 +529,47 @@ export function useSceneMutations() {
   };
 }
 
+/**
+ * Hook to recalculate page lengths for all scenes in a project
+ * Useful for scenes imported before page_length calculation was added
+ */
+export function useRecalculatePageLengths(projectId: string | null) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      if (!projectId) throw new Error('Project ID required');
+
+      const token = api.getToken();
+      if (!token) throw new Error('Not authenticated');
+
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/projects/${projectId}/scenes/recalculate-page-lengths`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to recalculate page lengths');
+      }
+
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate all scene-related queries
+      queryClient.invalidateQueries({ queryKey: ['backlot-scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-day-scenes'] });
+      queryClient.invalidateQueries({ queryKey: ['backlot-production-days'] });
+    },
+  });
+}
+
 // =============================================================================
 // BREAKDOWN ITEMS
 // =============================================================================
