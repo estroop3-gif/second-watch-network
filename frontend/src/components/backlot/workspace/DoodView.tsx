@@ -87,7 +87,7 @@ import {
   AvailableContact,
   AvailableTeamMember,
 } from '@/hooks/backlot';
-import { useSocket } from '@/context/SocketContext';
+import { useSocket } from '@/hooks/useSocket';
 
 interface DoodViewProps {
   projectId: string;
