@@ -98,6 +98,10 @@ class HotSetSessionUpdate(BaseModel):
     notes: Optional[str] = None
 
 
+class WrapSessionRequest(BaseModel):
+    record_to_budget: bool = False  # If True, record all labor costs to budget actuals
+
+
 class HotSetSessionProductionDay(BaseModel):
     day_number: int
     date: str
@@ -4170,10 +4174,6 @@ class SwapScenesRequest(BaseModel):
     scene_to_remove_id: str  # Hot set scene log ID
     scene_to_add_id: str  # Scene ID from backlot_scenes
     source_production_day_id: str
-
-
-class WrapSessionRequest(BaseModel):
-    record_to_budget: bool = False  # If True, record all labor costs to budget actuals
 
 
 # Activity type defaults
