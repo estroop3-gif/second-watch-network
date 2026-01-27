@@ -13547,7 +13547,8 @@ async def recalculate_scene_page_lengths(
     Scene N's length = Scene N+1's page_start - Scene N's page_start
     """
     user = await get_current_user_from_token(authorization)
-    profile_id = get_profile_id_from_cognito_id(user["sub"])
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
     if not profile_id:
         raise HTTPException(status_code=403, detail="Profile not found")
 
@@ -26464,11 +26465,11 @@ class TaskLabelCreate(BaseModel):
 
 
 class TaskCommentCreate(BaseModel):
-    body: str
+    content: str
 
 
 class TaskCommentUpdate(BaseModel):
-    body: str
+    content: str
 
 
 class TaskViewCreate(BaseModel):
@@ -27165,9 +27166,31 @@ async def get_task(
         # Verify access to task list
         await verify_task_list_access(client, task["task_list_id"], user["id"])
 
-        # Get assignees
+        # Get assignees with profile data
         assignees_result = client.table("backlot_task_assignees").select("*").eq("task_id", task_id).execute()
-        task["assignees"] = assignees_result.data or []
+        assignees = assignees_result.data or []
+
+        # Fetch profiles for assignees
+        if assignees:
+            assignee_user_ids = [a["user_id"] for a in assignees if a.get("user_id")]
+            if assignee_user_ids:
+                profiles_resp = client.table("profiles").select(
+                    "id, full_name, display_name, avatar_url, username"
+                ).in_("id", assignee_user_ids).execute()
+                profiles_by_id = {p["id"]: p for p in (profiles_resp.data or [])}
+
+                for assignee in assignees:
+                    profile = profiles_by_id.get(assignee.get("user_id"))
+                    if profile:
+                        assignee["profile"] = {
+                            "id": profile["id"],
+                            "display_name": profile.get("display_name") or profile.get("full_name"),
+                            "full_name": profile.get("full_name"),
+                            "avatar_url": profile.get("avatar_url"),
+                            "username": profile.get("username"),
+                        }
+
+        task["assignees"] = assignees
 
         # Get watchers
         watchers_result = client.table("backlot_task_watchers").select("*").eq("task_id", task_id).execute()
@@ -27339,17 +27362,47 @@ async def add_task_assignee(
         await verify_task_list_access(client, task_result.data["task_list_id"], current_user["id"], require_edit=True)
 
         # Check if already assigned
-        existing = client.table("backlot_task_assignees").select("id").eq("task_id", task_id).eq("user_id", user_id).single().execute()
+        existing = client.table("backlot_task_assignees").select("*").eq("task_id", task_id).eq("user_id", user_id).single().execute()
 
         if existing.data:
-            return {"success": True, "assignee": existing.data}
+            # Fetch profile for the existing assignee
+            profile_resp = client.table("profiles").select(
+                "id, full_name, display_name, avatar_url, username"
+            ).eq("id", user_id).single().execute()
+            assignee = existing.data
+            if profile_resp.data:
+                profile = profile_resp.data
+                assignee["profile"] = {
+                    "id": profile["id"],
+                    "display_name": profile.get("display_name") or profile.get("full_name"),
+                    "full_name": profile.get("full_name"),
+                    "avatar_url": profile.get("avatar_url"),
+                    "username": profile.get("username"),
+                }
+            return {"success": True, "assignee": assignee}
 
         result = client.table("backlot_task_assignees").insert({
             "task_id": task_id,
             "user_id": user_id,
         }).execute()
 
-        return {"success": True, "assignee": result.data[0] if result.data else None}
+        assignee = result.data[0] if result.data else None
+        if assignee:
+            # Fetch profile for the new assignee
+            profile_resp = client.table("profiles").select(
+                "id, full_name, display_name, avatar_url, username"
+            ).eq("id", user_id).single().execute()
+            if profile_resp.data:
+                profile = profile_resp.data
+                assignee["profile"] = {
+                    "id": profile["id"],
+                    "display_name": profile.get("display_name") or profile.get("full_name"),
+                    "full_name": profile.get("full_name"),
+                    "avatar_url": profile.get("avatar_url"),
+                    "username": profile.get("username"),
+                }
+
+        return {"success": True, "assignee": assignee}
 
     except HTTPException:
         raise
@@ -27649,8 +27702,32 @@ async def get_task_comments(
         await verify_task_list_access(client, task_result.data["task_list_id"], user["id"])
 
         result = client.table("backlot_task_comments").select("*").eq("task_id", task_id).order("created_at").execute()
+        comments = result.data or []
 
-        return {"success": True, "comments": result.data or []}
+        # Fetch user profiles for all comment authors
+        if comments:
+            user_ids = list(set(c["user_id"] for c in comments if c.get("user_id")))
+            profiles_by_id = {}
+            if user_ids:
+                profiles_result = client.table("profiles").select(
+                    "id, display_name, full_name, avatar_url, username"
+                ).in_("id", user_ids).execute()
+                for p in (profiles_result.data or []):
+                    profiles_by_id[str(p["id"])] = p
+
+            # Attach user_profile to each comment
+            for comment in comments:
+                user_id = str(comment.get("user_id", ""))
+                profile = profiles_by_id.get(user_id, {})
+                comment["user_profile"] = {
+                    "id": user_id,
+                    "display_name": profile.get("display_name") or profile.get("full_name"),
+                    "full_name": profile.get("full_name"),
+                    "avatar_url": profile.get("avatar_url"),
+                    "username": profile.get("username"),
+                }
+
+        return {"success": True, "comments": comments}
 
     except HTTPException:
         raise
@@ -27681,11 +27758,27 @@ async def create_task_comment(
 
         result = client.table("backlot_task_comments").insert({
             "task_id": task_id,
-            "author_user_id": user["id"],
-            "body": request.body,
+            "user_id": user["id"],
+            "content": request.content,
         }).execute()
 
-        return {"success": True, "comment": result.data[0] if result.data else None}
+        comment = result.data[0] if result.data else None
+
+        # Fetch the user's profile to include with the response
+        if comment:
+            profile_result = client.table("profiles").select(
+                "id, display_name, full_name, avatar_url, username"
+            ).eq("id", user["id"]).single().execute()
+            profile = profile_result.data or {}
+            comment["user_profile"] = {
+                "id": user["id"],
+                "display_name": profile.get("display_name") or profile.get("full_name"),
+                "full_name": profile.get("full_name"),
+                "avatar_url": profile.get("avatar_url"),
+                "username": profile.get("username"),
+            }
+
+        return {"success": True, "comment": comment}
 
     except HTTPException:
         raise
@@ -27706,17 +27799,17 @@ async def update_task_comment(
 
     try:
         # Get comment
-        comment_result = client.table("backlot_task_comments").select("author_user_id").eq("id", comment_id).single().execute()
+        comment_result = client.table("backlot_task_comments").select("user_id").eq("id", comment_id).single().execute()
 
         if not comment_result.data:
             raise HTTPException(status_code=404, detail="Comment not found")
 
         # Only author can edit
-        if comment_result.data["author_user_id"] != user["id"]:
+        if comment_result.data["user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="You can only edit your own comments")
 
         result = client.table("backlot_task_comments").update({
-            "body": request.body,
+            "content": request.content,
         }).eq("id", comment_id).execute()
 
         return {"success": True, "comment": result.data[0] if result.data else None}
@@ -27739,7 +27832,7 @@ async def delete_task_comment(
 
     try:
         # Get comment
-        comment_result = client.table("backlot_task_comments").select("author_user_id, task_id").eq("id", comment_id).single().execute()
+        comment_result = client.table("backlot_task_comments").select("user_id, task_id").eq("id", comment_id).single().execute()
 
         if not comment_result.data:
             raise HTTPException(status_code=404, detail="Comment not found")
@@ -27747,7 +27840,7 @@ async def delete_task_comment(
         comment = comment_result.data
 
         # Author can delete, or admins
-        if comment["author_user_id"] != user["id"]:
+        if comment["user_id"] != user["id"]:
             # Get task to check permissions
             task_result = client.table("backlot_tasks").select("task_list_id").eq("id", comment["task_id"]).single().execute()
 
@@ -36400,6 +36493,17 @@ async def create_production_day(
 
         result = client.table("backlot_production_days").insert(day_data).execute()
 
+        # Trigger DOOD auto-sync for new production day
+        if result.data:
+            try:
+                from app.api.dood import trigger_dood_sync
+                import asyncio
+                asyncio.create_task(trigger_dood_sync(
+                    project_id, "production_day_added", result.data[0]["id"]
+                ))
+            except Exception:
+                pass  # DOOD sync is optional, don't fail the main operation
+
         return {"day": result.data[0] if result.data else None}
 
     except HTTPException:
@@ -36521,6 +36625,514 @@ async def mark_production_day_completed(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =====================================================
+# PRODUCTION DAY AD NOTES
+# =====================================================
+
+@router.get("/production-days/{day_id}/ad-notes")
+async def get_production_day_ad_notes(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get AD notes for a production day"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_production_days").select("project_id, ad_notes").eq("id", day_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        return {"notes": existing.data[0].get("ad_notes")}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting AD notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/production-days/{day_id}/ad-notes")
+async def update_production_day_ad_notes(
+    day_id: str,
+    body: dict,
+    authorization: str = Header(None)
+):
+    """Update AD notes for a production day (optimized for auto-save)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        existing = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+
+        notes = body.get("notes", "")
+        result = client.table("backlot_production_days").update(
+            {"ad_notes": notes}
+        ).eq("id", day_id).execute()
+
+        return {"success": True, "notes": notes}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating AD notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# AD NOTE ENTRIES (Version History System)
+# =====================================================
+
+class AdNoteEntryInput(BaseModel):
+    content: str
+
+
+class AdNoteCommentInput(BaseModel):
+    content: str
+    parent_comment_id: Optional[str] = None
+
+
+@router.get("/production-days/{day_id}/ad-note-entries")
+async def get_ad_note_entries(
+    day_id: str,
+    include_drafts: bool = False,
+    authorization: str = Header(None)
+):
+    """Get all published note entries for a production day (with optional drafts)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify production day exists and get project_id
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Build query for entries
+        query = client.table("backlot_ad_note_entries").select("*").eq("production_day_id", day_id)
+
+        if not include_drafts:
+            query = query.eq("is_draft", False)
+
+        result = query.order("created_at", desc=True).execute()
+
+        entries = result.data or []
+
+        # Get creator profiles for all entries
+        creator_ids = list(set(e["created_by"] for e in entries if e.get("created_by")))
+        profiles = {}
+        if creator_ids:
+            profiles_result = client.table("profiles").select("id, display_name, avatar_url").in_("id", creator_ids).execute()
+            profiles = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Get comment counts for each entry
+        entry_ids = [e["id"] for e in entries]
+        comment_counts = {}
+        if entry_ids:
+            for entry_id in entry_ids:
+                count_result = client.table("backlot_ad_note_comments").select("id").eq("entry_id", entry_id).execute()
+                comment_counts[entry_id] = len(count_result.data or [])
+
+        # Enrich entries with creator info and comment counts
+        for entry in entries:
+            creator_id = entry.get("created_by")
+            if creator_id and creator_id in profiles:
+                entry["creator"] = profiles[creator_id]
+            entry["comment_count"] = comment_counts.get(entry["id"], 0)
+
+        return {"entries": entries}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting AD note entries: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/production-days/{day_id}/ad-note-draft")
+async def get_ad_note_draft(
+    day_id: str,
+    authorization: str = Header(None)
+):
+    """Get or create current user's draft for a production day"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Verify production day exists and get project_id
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Look for existing draft
+        draft_result = client.table("backlot_ad_note_entries").select("*").eq("production_day_id", day_id).eq("created_by", profile_id).eq("is_draft", True).execute()
+
+        if draft_result.data:
+            return {"draft": draft_result.data[0]}
+
+        # No draft exists, return null (don't create until user starts typing)
+        return {"draft": None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting AD note draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/production-days/{day_id}/ad-note-draft")
+async def save_ad_note_draft(
+    day_id: str,
+    body: AdNoteEntryInput,
+    authorization: str = Header(None)
+):
+    """Save/update current user's draft for a production day (auto-save)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Verify production day exists and get project_id
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Look for existing draft
+        draft_result = client.table("backlot_ad_note_entries").select("id").eq("production_day_id", day_id).eq("created_by", profile_id).eq("is_draft", True).execute()
+
+        if draft_result.data:
+            # Update existing draft
+            result = client.table("backlot_ad_note_entries").update({
+                "content": body.content,
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }).eq("id", draft_result.data[0]["id"]).execute()
+            return {"draft": result.data[0] if result.data else None}
+        else:
+            # Create new draft
+            result = client.table("backlot_ad_note_entries").insert({
+                "production_day_id": day_id,
+                "project_id": project_id,
+                "content": body.content,
+                "is_draft": True,
+                "version_number": 0,
+                "created_by": profile_id
+            }).execute()
+            return {"draft": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error saving AD note draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/production-days/{day_id}/ad-note-entries")
+async def publish_ad_note(
+    day_id: str,
+    body: AdNoteEntryInput,
+    authorization: str = Header(None)
+):
+    """Publish a new AD note entry (creates new version)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Verify production day exists and get project_id
+        day_result = client.table("backlot_production_days").select("project_id").eq("id", day_id).execute()
+        if not day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        project_id = day_result.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get the latest version number
+        latest_result = client.table("backlot_ad_note_entries").select("id, version_number").eq("production_day_id", day_id).eq("is_draft", False).order("version_number", desc=True).limit(1).execute()
+
+        latest_version = 0
+        parent_entry_id = None
+        if latest_result.data:
+            latest_version = latest_result.data[0]["version_number"]
+            parent_entry_id = latest_result.data[0]["id"]
+
+        new_version = latest_version + 1
+
+        # Create published entry
+        result = client.table("backlot_ad_note_entries").insert({
+            "production_day_id": day_id,
+            "project_id": project_id,
+            "content": body.content,
+            "is_draft": False,
+            "version_number": new_version,
+            "parent_entry_id": parent_entry_id,
+            "created_by": profile_id
+        }).execute()
+
+        new_entry = result.data[0] if result.data else None
+
+        # Delete user's draft if it exists
+        client.table("backlot_ad_note_entries").delete().eq("production_day_id", day_id).eq("created_by", profile_id).eq("is_draft", True).execute()
+
+        # Also update the legacy ad_notes field for backwards compatibility
+        client.table("backlot_production_days").update({
+            "ad_notes": body.content
+        }).eq("id", day_id).execute()
+
+        # Enrich with creator info
+        if new_entry:
+            profile_result = client.table("profiles").select("id, display_name, avatar_url").eq("id", profile_id).execute()
+            if profile_result.data:
+                new_entry["creator"] = profile_result.data[0]
+            new_entry["comment_count"] = 0
+
+        return {"entry": new_entry}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error publishing AD note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/ad-note-entries/{entry_id}")
+async def update_ad_note_entry(
+    entry_id: str,
+    body: AdNoteEntryInput,
+    authorization: str = Header(None)
+):
+    """Update an existing AD note entry (creator only)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Get entry and verify ownership
+        entry_result = client.table("backlot_ad_note_entries").select("*").eq("id", entry_id).execute()
+        if not entry_result.data:
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        entry = entry_result.data[0]
+
+        if entry["created_by"] != profile_id:
+            raise HTTPException(status_code=403, detail="Only the creator can edit this entry")
+
+        # Update entry
+        result = client.table("backlot_ad_note_entries").update({
+            "content": body.content,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        }).eq("id", entry_id).execute()
+
+        return {"entry": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating AD note entry: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================
+# AD NOTE COMMENTS
+# =====================================================
+
+@router.get("/ad-note-entries/{entry_id}/comments")
+async def get_ad_note_comments(
+    entry_id: str,
+    authorization: str = Header(None)
+):
+    """Get comments for an AD note entry (with threading)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Get entry and verify project access
+        entry_result = client.table("backlot_ad_note_entries").select("project_id").eq("id", entry_id).execute()
+        if not entry_result.data:
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        await verify_project_access(client, entry_result.data[0]["project_id"], user["id"])
+
+        # Get all comments for this entry
+        comments_result = client.table("backlot_ad_note_comments").select("*").eq("entry_id", entry_id).order("created_at", desc=False).execute()
+
+        comments = comments_result.data or []
+
+        # Get creator profiles
+        creator_ids = list(set(c["created_by"] for c in comments if c.get("created_by")))
+        profiles = {}
+        if creator_ids:
+            profiles_result = client.table("profiles").select("id, display_name, avatar_url").in_("id", creator_ids).execute()
+            profiles = {p["id"]: p for p in (profiles_result.data or [])}
+
+        # Enrich comments with creator info
+        for comment in comments:
+            creator_id = comment.get("created_by")
+            if creator_id and creator_id in profiles:
+                comment["creator"] = profiles[creator_id]
+
+        # Build nested tree structure
+        def build_tree(comments, parent_id=None):
+            tree = []
+            for comment in comments:
+                if comment.get("parent_comment_id") == parent_id:
+                    comment["replies"] = build_tree(comments, comment["id"])
+                    tree.append(comment)
+            return tree
+
+        comment_tree = build_tree(comments)
+
+        return {"comments": comment_tree}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting AD note comments: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ad-note-entries/{entry_id}/comments")
+async def add_ad_note_comment(
+    entry_id: str,
+    body: AdNoteCommentInput,
+    authorization: str = Header(None)
+):
+    """Add a comment to an AD note entry"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Get entry and verify project access
+        entry_result = client.table("backlot_ad_note_entries").select("project_id").eq("id", entry_id).execute()
+        if not entry_result.data:
+            raise HTTPException(status_code=404, detail="Entry not found")
+
+        await verify_project_access(client, entry_result.data[0]["project_id"], user["id"])
+
+        # Validate parent comment if provided
+        if body.parent_comment_id:
+            parent_result = client.table("backlot_ad_note_comments").select("id").eq("id", body.parent_comment_id).eq("entry_id", entry_id).execute()
+            if not parent_result.data:
+                raise HTTPException(status_code=400, detail="Parent comment not found")
+
+        # Create comment
+        result = client.table("backlot_ad_note_comments").insert({
+            "entry_id": entry_id,
+            "parent_comment_id": body.parent_comment_id,
+            "content": body.content,
+            "created_by": profile_id
+        }).execute()
+
+        new_comment = result.data[0] if result.data else None
+
+        # Enrich with creator info
+        if new_comment:
+            profile_result = client.table("profiles").select("id, display_name, avatar_url").eq("id", profile_id).execute()
+            if profile_result.data:
+                new_comment["creator"] = profile_result.data[0]
+            new_comment["replies"] = []
+
+        return {"comment": new_comment}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error adding AD note comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/ad-note-comments/{comment_id}")
+async def update_ad_note_comment(
+    comment_id: str,
+    body: AdNoteCommentInput,
+    authorization: str = Header(None)
+):
+    """Update a comment (creator only)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Get comment and verify ownership
+        comment_result = client.table("backlot_ad_note_comments").select("*").eq("id", comment_id).execute()
+        if not comment_result.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        comment = comment_result.data[0]
+
+        if comment["created_by"] != profile_id:
+            raise HTTPException(status_code=403, detail="Only the creator can edit this comment")
+
+        # Update comment
+        result = client.table("backlot_ad_note_comments").update({
+            "content": body.content,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "is_edited": True
+        }).eq("id", comment_id).execute()
+
+        return {"comment": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating AD note comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/ad-note-comments/{comment_id}")
+async def delete_ad_note_comment(
+    comment_id: str,
+    authorization: str = Header(None)
+):
+    """Delete a comment (creator only)"""
+    user = await get_current_user_from_token(authorization)
+    cognito_user_id = user.get("user_id") or user.get("id")
+    profile_id = get_profile_id_from_cognito_id(cognito_user_id)
+    client = get_client()
+
+    try:
+        # Get comment and verify ownership
+        comment_result = client.table("backlot_ad_note_comments").select("created_by").eq("id", comment_id).execute()
+        if not comment_result.data:
+            raise HTTPException(status_code=404, detail="Comment not found")
+
+        if comment_result.data[0]["created_by"] != profile_id:
+            raise HTTPException(status_code=403, detail="Only the creator can delete this comment")
+
+        # Delete comment (cascade will handle replies)
+        client.table("backlot_ad_note_comments").delete().eq("id", comment_id).execute()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting AD note comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/production-days/{day_id}")
 async def delete_production_day(
     day_id: str,
@@ -36535,7 +37147,18 @@ async def delete_production_day(
         if not existing.data:
             raise HTTPException(status_code=404, detail="Production day not found")
 
-        await verify_project_access(client, existing.data[0]["project_id"], user["id"])
+        project_id = existing.data[0]["project_id"]
+        await verify_project_access(client, project_id, user["id"])
+
+        # Trigger DOOD auto-sync to clean up assignments for this day
+        try:
+            from app.api.dood import trigger_dood_sync
+            import asyncio
+            asyncio.create_task(trigger_dood_sync(
+                project_id, "production_day_deleted", day_id
+            ))
+        except Exception:
+            pass  # DOOD sync is optional
 
         client.table("backlot_production_days").delete().eq("id", day_id).execute()
 
@@ -37216,12 +37839,32 @@ async def get_production_day_scenes(
 
         await verify_project_access(client, day_result.data[0]["project_id"], user["id"])
 
-        # Get scene assignments with scene details
-        result = client.table("backlot_production_day_scenes").select(
-            "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
-        ).eq("production_day_id", day_id).order("sort_order").execute()
+        # Get scene assignments (the Supabase-style client doesn't support nested joins well)
+        assignments_result = client.table("backlot_production_day_scenes").select("*").eq("production_day_id", day_id).order("sort_order").execute()
+        assignments = assignments_result.data or []
 
-        return {"scenes": result.data or []}
+        if not assignments:
+            return {"scenes": []}
+
+        # Get scene IDs and fetch scene details separately
+        scene_ids = [a["scene_id"] for a in assignments if a.get("scene_id")]
+        if scene_ids:
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day"
+            ).in_("id", scene_ids).execute()
+            scenes_by_id = {s["id"]: s for s in (scenes_result.data or [])}
+        else:
+            scenes_by_id = {}
+
+        # Manually join scene data to assignments
+        for assignment in assignments:
+            scene_id = assignment.get("scene_id")
+            if scene_id and scene_id in scenes_by_id:
+                assignment["scene"] = scenes_by_id[scene_id]
+            else:
+                assignment["scene"] = None
+
+        return {"scenes": assignments}
 
     except HTTPException:
         raise
@@ -37453,7 +38096,7 @@ async def get_unassigned_scenes(
 
         # Get all scenes for the project
         all_scenes = client.table("backlot_scenes").select(
-            "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day, status"
+            "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day"
         ).eq("project_id", project_id).order("scene_number").execute()
 
         if not all_scenes.data:

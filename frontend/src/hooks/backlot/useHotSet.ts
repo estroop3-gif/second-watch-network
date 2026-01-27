@@ -329,18 +329,23 @@ export function useStartHotSetSession() {
 
 /**
  * Wrap a Hot Set session (end the production day)
+ * Optionally records labor costs to budget
  */
 export function useWrapHotSetSession() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (sessionId: string) => {
+    mutationFn: async ({ sessionId, recordToBudget = false }: { sessionId: string; recordToBudget?: boolean }) => {
       const token = getAuthToken();
       const response = await fetch(
         `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/wrap`,
         {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}` },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ record_to_budget: recordToBudget }),
         }
       );
 
@@ -349,13 +354,17 @@ export function useWrapHotSetSession() {
         throw new Error(error.detail);
       }
 
-      return response.json() as Promise<HotSetSession>;
+      return response.json() as Promise<HotSetSession & { labor_recorded?: { crew_recorded: number; total_cost: number } }>;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.session(data.id) });
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(data.id) });
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.markers(data.id) });
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(data.id) });
+      // Also invalidate budget queries if labor was recorded
+      if (data.labor_recorded) {
+        queryClient.invalidateQueries({ queryKey: ['backlot-budget'] });
+      }
     },
   });
 }
@@ -736,6 +745,50 @@ export function useReorderScenes() {
     onSuccess: ({ sessionId }) => {
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
       queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Reorder the entire schedule (scenes + schedule blocks together)
+ * Uses unified schedule_position field for ordering
+ */
+export function useReorderSchedule() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      items,
+    }: {
+      sessionId: string;
+      items: Array<{ id: string; type: 'scene' | 'block' }>;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/schedule/reorder`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ items }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to reorder schedule' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId };
+    },
+    onSuccess: ({ sessionId }) => {
+      // Invalidate all schedule-related queries to trigger real-time updates
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
     },
   });
 }
@@ -1511,4 +1564,383 @@ export function getScheduleVariance(
     .find(item => item.status === 'in_progress' || item.status === 'completed');
 
   return currentOrLastCompleted?.variance_from_plan ?? 0;
+}
+
+// =============================================================================
+// SCHEDULE MODIFICATION HOOKS
+// =============================================================================
+
+// Add query key for available scenes
+export const HOT_SET_MODIFICATION_KEYS = {
+  availableScenes: (sessionId: string) => ['backlot', 'hot-set', 'available-scenes', sessionId],
+  swapSuggestions: (sessionId: string, sceneId: string) => ['backlot', 'hot-set', 'swap-suggestions', sessionId, sceneId],
+};
+
+/**
+ * Available scene from another production day
+ */
+export interface AvailableScene {
+  id: string;
+  scene_number: string;
+  slugline?: string;
+  set_name?: string;
+  description?: string;
+  page_length?: number;
+  int_ext?: string;
+  time_of_day?: string;
+  estimated_minutes: number;
+  production_day_scene_id: string;
+}
+
+/**
+ * Production day with its available scenes
+ */
+export interface AvailableScenesDay {
+  production_day_id: string;
+  day_number: number;
+  date: string;
+  title?: string;
+  scenes: AvailableScene[];
+}
+
+/**
+ * Swap suggestion for a scene
+ */
+export interface SwapSuggestion {
+  scene_id: string;
+  scene_number: string;
+  set_name?: string;
+  description?: string;
+  int_ext?: string;
+  time_of_day?: string;
+  estimated_minutes: number;
+  page_length?: number;
+  production_day_id: string;
+  day_number: number;
+  date: string;
+  match_score: number;
+  match_reasons: string[];
+}
+
+/**
+ * Get scenes available to add from other production days
+ */
+export function useAvailableScenes(sessionId: string | null) {
+  return useQuery({
+    queryKey: HOT_SET_MODIFICATION_KEYS.availableScenes(sessionId || ''),
+    queryFn: async (): Promise<AvailableScenesDay[]> => {
+      if (!sessionId) return [];
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/available-scenes`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch available scenes' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!sessionId,
+  });
+}
+
+/**
+ * Add a scene from another day to the Hot Set
+ */
+export function useAddSceneToHotSet() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      sceneId,
+      sourceProductionDayId,
+      insertAfterId,
+      estimatedMinutes,
+    }: {
+      sessionId: string;
+      sceneId: string;
+      sourceProductionDayId: string;
+      insertAfterId?: string | null;
+      estimatedMinutes?: number;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/add`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            scene_id: sceneId,
+            source_production_day_id: sourceProductionDayId,
+            insert_after_id: insertAfterId,
+            estimated_minutes: estimatedMinutes || 30,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to add scene' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, ...(await response.json()) };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_MODIFICATION_KEYS.availableScenes(sessionId) });
+    },
+  });
+}
+
+/**
+ * Activity type options
+ */
+export type ActivityBlockType = 'meal' | 'company_move' | 'activity' | 'camera_reset' | 'lighting_reset';
+
+/**
+ * Activity type defaults
+ */
+export const ACTIVITY_DEFAULTS: Record<ActivityBlockType, { name: string; duration: number }> = {
+  meal: { name: 'Meal Break', duration: 30 },
+  company_move: { name: 'Company Move', duration: 20 },
+  camera_reset: { name: 'Camera Reset', duration: 15 },
+  lighting_reset: { name: 'Lighting Reset', duration: 20 },
+  activity: { name: 'Activity', duration: 15 },
+};
+
+/**
+ * Create a new activity/schedule block
+ */
+export function useCreateActivity() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      blockType,
+      name,
+      expectedDurationMinutes,
+      insertAfterId,
+      locationName,
+      notes,
+    }: {
+      sessionId: string;
+      blockType: ActivityBlockType;
+      name?: string;
+      expectedDurationMinutes?: number;
+      insertAfterId?: string | null;
+      locationName?: string;
+      notes?: string;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/activities`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            block_type: blockType,
+            name,
+            expected_duration_minutes: expectedDurationMinutes,
+            insert_after_id: insertAfterId,
+            location_name: locationName,
+            notes,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to create activity' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, ...(await response.json()) };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Remove a scene from the Hot Set
+ */
+export function useRemoveSceneFromHotSet() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      logId,
+      removeFromDay = false,
+    }: {
+      sessionId: string;
+      logId: string;
+      removeFromDay?: boolean;
+    }) => {
+      const token = getAuthToken();
+      const url = new URL(`${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/${logId}`);
+      if (removeFromDay) {
+        url.searchParams.set('remove_from_day', 'true');
+      }
+
+      const response = await fetch(url.toString(), {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove scene' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, ...(await response.json()) };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_MODIFICATION_KEYS.availableScenes(sessionId) });
+    },
+  });
+}
+
+/**
+ * Remove an activity from the Hot Set
+ */
+export function useRemoveActivity() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      blockId,
+    }: {
+      sessionId: string;
+      blockId: string;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/activities/${blockId}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to remove activity' }));
+        throw new Error(error.detail);
+      }
+
+      return { sessionId, ...(await response.json()) };
+    },
+    onSuccess: ({ sessionId }) => {
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.scheduleBlocks(sessionId) });
+      queryClient.invalidateQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) });
+    },
+  });
+}
+
+/**
+ * Swap scenes between days
+ */
+export function useSwapScenes() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      sceneToRemoveId,
+      sceneToAddId,
+      sourceProductionDayId,
+    }: {
+      sessionId: string;
+      sceneToRemoveId: string;
+      sceneToAddId: string;
+      sourceProductionDayId: string;
+    }) => {
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/scenes/swap`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            scene_to_remove_id: sceneToRemoveId,
+            scene_to_add_id: sceneToAddId,
+            source_production_day_id: sourceProductionDayId,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to swap scenes' }));
+        throw new Error(error.detail);
+      }
+
+      const result = await response.json();
+
+      // Refetch immediately after mutation to ensure fresh data
+      // Do this in mutationFn so it's awaited before onSuccess runs
+      await Promise.all([
+        queryClient.refetchQueries({ queryKey: HOT_SET_KEYS.scenes(sessionId) }),
+        queryClient.refetchQueries({ queryKey: HOT_SET_KEYS.dashboard(sessionId) }),
+      ]);
+
+      return { sessionId, ...result };
+    },
+    onSuccess: ({ sessionId }) => {
+      // Also invalidate available scenes for the next time the modal opens
+      queryClient.invalidateQueries({ queryKey: HOT_SET_MODIFICATION_KEYS.availableScenes(sessionId) });
+    },
+  });
+}
+
+/**
+ * Get swap suggestions for a scene
+ */
+export function useSwapSuggestions(sessionId: string | null, sceneId: string | null) {
+  return useQuery({
+    queryKey: HOT_SET_MODIFICATION_KEYS.swapSuggestions(sessionId || '', sceneId || ''),
+    queryFn: async (): Promise<{
+      scene: { id: string; scene_number: string; set_name: string; estimated_minutes: number };
+      suggestions: SwapSuggestion[];
+    } | null> => {
+      if (!sessionId || !sceneId) return null;
+
+      const token = getAuthToken();
+      const response = await fetch(
+        `${API_BASE}/api/v1/backlot/hot-set/sessions/${sessionId}/swap-suggestions?scene_id=${sceneId}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: 'Failed to fetch swap suggestions' }));
+        throw new Error(error.detail);
+      }
+
+      return response.json();
+    },
+    enabled: !!sessionId && !!sceneId,
+  });
 }

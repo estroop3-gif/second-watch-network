@@ -26,6 +26,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Square,
   CheckCircle2,
@@ -39,6 +40,7 @@ import {
   TrendingDown,
   ArrowRight,
   ShieldAlert,
+  DollarSign,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWrapReport, formatElapsedTime, WrapReportData } from '@/hooks/backlot';
@@ -47,7 +49,7 @@ interface WrapDayModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   sessionId: string;
-  onConfirmWrap: () => void;
+  onConfirmWrap: (recordToBudget: boolean) => void;
   isWrapping: boolean;
 }
 
@@ -63,12 +65,14 @@ export const WrapDayModal: React.FC<WrapDayModalProps> = ({
   // Two-step confirmation state
   const [confirmationStep, setConfirmationStep] = useState<1 | 2>(1);
   const [confirmText, setConfirmText] = useState('');
+  const [recordToBudget, setRecordToBudget] = useState(false);
 
   // Reset state when modal opens/closes
   useEffect(() => {
     if (!open) {
       setConfirmationStep(1);
       setConfirmText('');
+      setRecordToBudget(false);
     }
   }, [open]);
 
@@ -86,7 +90,7 @@ export const WrapDayModal: React.FC<WrapDayModalProps> = ({
 
   const handleFinalConfirm = () => {
     if (isConfirmTextValid) {
-      onConfirmWrap();
+      onConfirmWrap(recordToBudget);
     }
   };
 
@@ -350,6 +354,28 @@ export const WrapDayModal: React.FC<WrapDayModalProps> = ({
                 </div>
               </CardContent>
             </Card>
+
+            {/* Record labor costs option */}
+            <div className="flex items-start gap-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+              <Checkbox
+                id="record-to-budget"
+                checked={recordToBudget}
+                onCheckedChange={(checked) => setRecordToBudget(checked === true)}
+                className="mt-0.5"
+              />
+              <div className="flex-1">
+                <Label
+                  htmlFor="record-to-budget"
+                  className="text-sm font-medium text-bone-white cursor-pointer flex items-center gap-2"
+                >
+                  <DollarSign className="w-4 h-4 text-blue-400" />
+                  Record labor costs to budget
+                </Label>
+                <p className="text-xs text-muted-gray mt-1">
+                  Automatically record all crew day rates and overtime to the project budget actuals.
+                </p>
+              </div>
+            </div>
 
             {/* Type WRAP to confirm */}
             <div className="space-y-2">

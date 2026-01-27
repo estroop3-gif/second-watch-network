@@ -53,10 +53,11 @@ import {
   Settings,
   RotateCcw,
   FileDown,
+  Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { parseLocalDate } from '@/lib/dateUtils';
-import { useProductionDays, useCallSheets } from '@/hooks/backlot';
+import { useProductionDays, useCallSheets, useProductionDayAdNotes } from '@/hooks/backlot';
 import {
   useHotSetSessions,
   useCreateHotSetSession,
@@ -78,6 +79,7 @@ import {
   useConfirmFirstShot,
   useHotSetSettings,
   useUpdateHotSetSettings,
+  useReorderSchedule,
   formatElapsedTime,
   formatTime,
   getCurrentTimeFormatted,
@@ -114,8 +116,13 @@ import {
   TabbedScheduleView,
   HotSetSettingsPanel,
   HotSetDayReportView,
+  SessionTasksCard,
+  AdNotesHistoryCard,
+  AdNoteDetailModal,
 } from './hot-set';
+import { AdNoteEntry } from '@/hooks/backlot/useAdNotes';
 import { useTaskLists, useCreateTaskFromSource } from '@/hooks/backlot/useTaskLists';
+import TaskDetailDrawer from './TaskDetailDrawer';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ListTodo } from 'lucide-react';
@@ -332,6 +339,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
 
   // Wrap modal state
   const [showWrapModal, setShowWrapModal] = useState(false);
+  const [pendingWrapBlockId, setPendingWrapBlockId] = useState<string | null>(null);
 
   // Resume modal state (for accidentally wrapped sessions)
   const [showResumeModal, setShowResumeModal] = useState(false);
@@ -342,6 +350,14 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   // Settings panel state
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
+  // AD Note detail modal state
+  const [selectedAdNoteEntry, setSelectedAdNoteEntry] = useState<AdNoteEntry | null>(null);
+  const [showAdNoteModal, setShowAdNoteModal] = useState(false);
+
+  // Task detail drawer state
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [showTaskDrawer, setShowTaskDrawer] = useState(false);
+
   // Queries
   const { days: productionDays, isLoading: daysLoading } = useProductionDays(projectId);
   const { data: callSheets } = useCallSheets(projectId);
@@ -350,6 +366,9 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
     // Poll every 5s when session is in_progress for live updates, 30s otherwise
     pollingInterval: selectedSessionId ? (sessions?.find(s => s.id === selectedSessionId)?.status === 'in_progress' ? 5000 : 30000) : undefined,
   });
+
+  // Production day AD notes (persisted at day level, not session)
+  const { data: dayAdNotes } = useProductionDayAdNotes(dashboard?.session?.production_day_id || null);
 
   // Settings and confirmation hooks
   const { data: hotSetSettings } = useHotSetSettings(projectId);
@@ -372,6 +391,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const completeScheduleBlock = useCompleteScheduleBlock();
   const skipScheduleBlock = useSkipScheduleBlock();
   const updateScheduleBlock = useUpdateScheduleBlock();
+  const reorderSchedule = useReorderSchedule();
 
   // Import mutations
   const importFromProductionDay = useImportFromProductionDay();
@@ -392,6 +412,17 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       // Don't auto-select otherwise - let user see all production days
     }
   }, [sessions, selectedSessionId]);
+
+  // Auto-detect user's timezone on first load if no timezone is set
+  useEffect(() => {
+    if (hotSetSettings && !hotSetSettings.timezone && canEdit) {
+      // Get user's browser timezone
+      const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (userTimezone) {
+        updateSettings.mutate({ timezone: userTimezone });
+      }
+    }
+  }, [hotSetSettings, canEdit]);
 
   // Get days that don't have sessions yet
   const availableDays = useMemo(() => {
@@ -499,13 +530,29 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   };
 
   const handleOpenWrapModal = () => {
+    setPendingWrapBlockId(null);  // Clear any pending block - this is manual wrap
     setShowWrapModal(true);
   };
 
-  const handleConfirmWrap = async () => {
+  const handleConfirmWrap = async (recordToBudget: boolean = false) => {
     if (!selectedSessionId) return;
-    await wrapSession.mutateAsync(selectedSessionId);
+
+    // If wrap was triggered from a wrap block, complete that block first
+    if (pendingWrapBlockId) {
+      try {
+        await completeScheduleBlock.mutateAsync({
+          sessionId: selectedSessionId,
+          blockId: pendingWrapBlockId
+        });
+      } catch (e) {
+        // Block might already be completed, continue with wrap
+        console.log('Wrap block completion error (may already be complete):', e);
+      }
+    }
+
+    await wrapSession.mutateAsync({ sessionId: selectedSessionId, recordToBudget });
     setShowWrapModal(false);
+    setPendingWrapBlockId(null);
   };
 
   const handleOpenResumeModal = () => {
@@ -632,7 +679,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 overflow-x-hidden">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -643,7 +690,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           <p className="text-muted-gray text-sm">Real-time shoot day management</p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {/* Settings Button */}
           {canEdit && selectedSessionId && (
             <Button
@@ -652,8 +699,8 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               onClick={() => setShowSettingsPanel(!showSettingsPanel)}
               className="border-muted-gray/30"
             >
-              <Settings className="w-4 h-4 mr-2" />
-              {showSettingsPanel ? 'Hide Settings' : 'Settings'}
+              <Settings className="w-4 h-4 sm:mr-2" />
+              <span className="hidden sm:inline">{showSettingsPanel ? 'Hide Settings' : 'Settings'}</span>
             </Button>
           )}
           <Button
@@ -662,28 +709,29 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
             onClick={() => setShowTipsPanel(true)}
             className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
           >
-            <HelpCircle className="w-4 h-4 mr-1" />
-            Tips
+            <HelpCircle className="w-4 h-4 sm:mr-1" />
+            <span className="hidden sm:inline">Tips</span>
           </Button>
           {/* View All Days Button - Always visible when a session is selected */}
           {selectedSessionId && (
             <Button
               variant="outline"
+              size="sm"
               onClick={() => {
                 setSelectedSessionId(null);
                 setShowReportView(false);
               }}
               className="border-muted-gray/30"
             >
-              <Calendar className="w-4 h-4 mr-2" />
-              All Days
+              <Calendar className="w-4 h-4 sm:mr-2" />
+              <span className="hidden sm:inline">All Days</span>
             </Button>
           )}
 
           {/* Session Selector */}
           {sessions && sessions.length > 0 && selectedSessionId && (
             <Select value={selectedSessionId || ''} onValueChange={setSelectedSessionId}>
-              <SelectTrigger className="w-48 bg-charcoal-black border-muted-gray/30">
+              <SelectTrigger className="w-32 sm:w-48 bg-charcoal-black border-muted-gray/30">
                 <SelectValue placeholder="Select day" />
               </SelectTrigger>
               <SelectContent>
@@ -708,11 +756,12 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           {/* Create New Session */}
           {canEdit && availableDays.length > 0 && selectedSessionId && (
             <Button
+              size="sm"
               onClick={() => setShowCreateModal(true)}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             >
-              <Plus className="w-4 h-4 mr-2" />
-              New Day
+              <Plus className="w-4 h-4 sm:mr-2" />
+              <span className="hidden sm:inline">New Day</span>
             </Button>
           )}
         </div>
@@ -734,6 +783,69 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       {/* No Session Selected - Show Production Days */}
       {!selectedSessionId && (
         <div className="space-y-6">
+          {/* Timezone Selector Card */}
+          <Card className="bg-soft-black border-muted-gray/20">
+            <CardContent className="py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Globe className="w-5 h-5 text-accent-yellow" />
+                  <div>
+                    <p className="text-sm font-medium text-bone-white">Production Timezone</p>
+                    <p className="text-xs text-muted-gray">
+                      Schedule times will be compared using this timezone
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={hotSetSettings?.timezone || ''}
+                    onValueChange={(value) => {
+                      if (canEdit) {
+                        updateSettings.mutate({ timezone: value });
+                      }
+                    }}
+                    disabled={!canEdit || updateSettings.isPending}
+                  >
+                    <SelectTrigger className="w-64 bg-charcoal-black border-muted-gray/30">
+                      <SelectValue placeholder="Select timezone" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-80">
+                      <SelectItem value="America/Los_Angeles">Pacific Time (Los Angeles)</SelectItem>
+                      <SelectItem value="America/Denver">Mountain Time (Denver)</SelectItem>
+                      <SelectItem value="America/Chicago">Central Time (Chicago)</SelectItem>
+                      <SelectItem value="America/New_York">Eastern Time (New York)</SelectItem>
+                      <SelectItem value="America/Anchorage">Alaska Time (Anchorage)</SelectItem>
+                      <SelectItem value="Pacific/Honolulu">Hawaii Time (Honolulu)</SelectItem>
+                      <SelectItem value="America/Phoenix">Arizona (Phoenix - No DST)</SelectItem>
+                      <SelectItem value="America/Toronto">Eastern Time (Toronto)</SelectItem>
+                      <SelectItem value="America/Vancouver">Pacific Time (Vancouver)</SelectItem>
+                      <SelectItem value="Europe/London">UK Time (London)</SelectItem>
+                      <SelectItem value="Europe/Paris">Central European (Paris)</SelectItem>
+                      <SelectItem value="Europe/Berlin">Central European (Berlin)</SelectItem>
+                      <SelectItem value="Asia/Tokyo">Japan (Tokyo)</SelectItem>
+                      <SelectItem value="Asia/Seoul">Korea (Seoul)</SelectItem>
+                      <SelectItem value="Asia/Shanghai">China (Shanghai)</SelectItem>
+                      <SelectItem value="Asia/Singapore">Singapore</SelectItem>
+                      <SelectItem value="Australia/Sydney">Australia Eastern (Sydney)</SelectItem>
+                      <SelectItem value="Australia/Melbourne">Australia Eastern (Melbourne)</SelectItem>
+                      <SelectItem value="Pacific/Auckland">New Zealand (Auckland)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {hotSetSettings?.timezone && (
+                    <span className="text-xs text-muted-gray whitespace-nowrap">
+                      {new Date().toLocaleTimeString('en-US', {
+                        timeZone: hotSetSettings.timezone,
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true,
+                      })} now
+                    </span>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Available Production Days */}
           {productionDays && productionDays.length > 0 ? (
             <Card className="bg-soft-black border-muted-gray/20">
@@ -756,7 +868,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                       <div
                         key={day.id}
                         className={cn(
-                          'flex items-center gap-4 p-4 rounded-lg border transition-all cursor-pointer',
+                          'flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-4 p-3 sm:p-4 rounded-lg border transition-all cursor-pointer',
                           hasSession
                             ? 'bg-green-500/5 border-green-500/30 hover:bg-green-500/10'
                             : day.is_completed
@@ -783,7 +895,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         {/* Day Number */}
                         <div
                           className={cn(
-                            'flex-shrink-0 w-14 h-14 rounded-lg flex flex-col items-center justify-center font-bold',
+                            'flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 rounded-lg flex flex-col items-center justify-center font-bold',
                             hasSession
                               ? 'bg-green-500/20 text-green-400 border border-green-500/30'
                               : day.is_completed
@@ -796,15 +908,15 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                           )}
                         >
                           <span className="text-xs">Day</span>
-                          <span className="text-xl">{day.day_number}</span>
+                          <span className="text-lg sm:text-xl">{day.day_number}</span>
                         </div>
 
                         {/* Day Info */}
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="font-medium text-bone-white">
+                          <div className="flex flex-wrap items-center gap-1 sm:gap-2 mb-1">
+                            <span className="font-medium text-bone-white text-sm sm:text-base truncate">
                               {parseLocalDate(day.date).toLocaleDateString('en-US', {
-                                weekday: 'long',
+                                weekday: 'short',
                                 month: 'short',
                                 day: 'numeric',
                               })}
@@ -816,29 +928,29 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                             )}
                             {day.is_completed && (
                               <Badge className="bg-muted-gray/20 text-muted-gray border-muted-gray/30 text-xs">
-                                <CheckCircle2 className="w-3 h-3 mr-1" />
-                                Completed
+                                <CheckCircle2 className="w-3 h-3 sm:mr-1" />
+                                <span className="hidden sm:inline">Completed</span>
                               </Badge>
                             )}
                           </div>
-                          <div className="flex items-center gap-4 text-sm text-muted-gray">
-                            {day.title && <span>{day.title}</span>}
+                          <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs sm:text-sm text-muted-gray">
+                            {day.title && <span className="truncate max-w-[120px] sm:max-w-none">{day.title}</span>}
                             {day.general_call_time && (
-                              <span className="flex items-center gap-1">
+                              <span className="flex items-center gap-1 flex-shrink-0">
                                 <Clock className="w-3 h-3" />
-                                Call: {day.general_call_time}
+                                {day.general_call_time}
                               </span>
                             )}
                           </div>
                         </div>
 
                         {/* Session Status */}
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-shrink-0">
                           {hasSession ? (
                             <>
                               <Badge
                                 className={cn(
-                                  'capitalize',
+                                  'capitalize text-xs',
                                   existingSession?.status === 'in_progress' &&
                                     'bg-green-500/20 text-green-400 border-green-500/30',
                                   existingSession?.status === 'wrapped' &&
@@ -847,25 +959,25 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                                     'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
                                 )}
                               >
-                                {existingSession?.status === 'in_progress' && <Play className="w-3 h-3 mr-1" />}
-                                {existingSession?.status === 'wrapped' && <CheckCircle2 className="w-3 h-3 mr-1" />}
-                                {existingSession?.status?.replace('_', ' ')}
+                                {existingSession?.status === 'in_progress' && <Play className="w-3 h-3 sm:mr-1" />}
+                                {existingSession?.status === 'wrapped' && <CheckCircle2 className="w-3 h-3 sm:mr-1" />}
+                                <span className="hidden sm:inline">{existingSession?.status?.replace('_', ' ')}</span>
                               </Badge>
-                              <ChevronRight className="w-5 h-5 text-muted-gray" />
+                              <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5 text-muted-gray" />
                             </>
                           ) : !day.is_completed && canEdit ? (
                             <Button
                               variant="outline"
                               size="sm"
-                              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+                              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 text-xs sm:text-sm"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setNewSessionDayId(day.id);
                                 setShowCreateModal(true);
                               }}
                             >
-                              <Play className="w-4 h-4 mr-1" />
-                              Start Day
+                              <Play className="w-3 h-3 sm:w-4 sm:h-4 sm:mr-1" />
+                              <span className="hidden sm:inline">Start Day</span>
                             </Button>
                           ) : null}
                         </div>
@@ -912,21 +1024,21 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           {!showReportView && (
             <>
               {/* Day Header Banner */}
-              <Card className="bg-gradient-to-r from-accent-yellow/10 via-soft-black to-soft-black border-accent-yellow/30">
-            <CardContent className="py-4">
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div className="flex items-center gap-6">
+              <Card className="bg-gradient-to-r from-accent-yellow/10 via-soft-black to-soft-black border-accent-yellow/30 overflow-hidden">
+            <CardContent className="py-3 sm:py-4 px-3 sm:px-6">
+              <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-4">
+                <div className="flex flex-wrap items-center gap-3 sm:gap-6 min-w-0">
                   {/* Day Number */}
-                  <div>
-                    <span className="text-3xl font-bold text-accent-yellow">
+                  <div className="flex-shrink-0">
+                    <span className="text-2xl sm:text-3xl font-bold text-accent-yellow">
                       Day {currentProductionDay?.day_number || '?'}
                     </span>
                   </div>
 
                   {/* Schedule Date */}
-                  <div className="hidden sm:block">
-                    <p className="text-xs text-muted-gray uppercase">Schedule Date</p>
-                    <p className="text-lg text-bone-white">
+                  <div className="hidden xs:block flex-shrink-0">
+                    <p className="text-xs text-muted-gray uppercase">Date</p>
+                    <p className="text-sm sm:text-lg text-bone-white">
                       {currentProductionDay?.date
                         ? new Date(currentProductionDay.date + 'T00:00:00').toLocaleDateString('en-US', {
                             weekday: 'short',
@@ -938,20 +1050,20 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                   </div>
 
                   {/* Call Time */}
-                  <div className="hidden md:block">
+                  <div className="hidden sm:block flex-shrink-0">
                     <p className="text-xs text-muted-gray uppercase">Call</p>
-                    <p className="text-lg text-bone-white">
+                    <p className="text-sm sm:text-lg text-bone-white">
                       {formatTime(session?.actual_call_time || null, session?.timezone)}
                     </p>
                   </div>
 
                   {/* Current Date & Time */}
-                  <div className="hidden md:block">
-                    <p className="text-xs text-muted-gray uppercase">
+                  <div className="hidden lg:block flex-shrink-0">
+                    <p className="text-xs text-muted-gray uppercase truncate max-w-[150px]">
                       Now{session?.location_name && ` (${session.location_name})`}
                       {!session?.location_name && session?.timezone && ` (${session.timezone.split('/').pop()?.replace(/_/g, ' ')})`}
                     </p>
-                    <p className="text-lg text-bone-white">
+                    <p className="text-sm sm:text-lg text-bone-white">
                       <LiveDate timezone={session?.timezone} />{' '}
                       <LiveClock timezone={session?.timezone} />
                     </p>
@@ -961,7 +1073,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                 {/* Status Badge */}
                 <Badge
                   className={cn(
-                    'text-sm py-1.5 px-3',
+                    'text-xs sm:text-sm py-1 sm:py-1.5 px-2 sm:px-3 flex-shrink-0',
                     session?.status === 'in_progress' && 'bg-green-500/20 text-green-400 border-green-500/30',
                     session?.status === 'not_started' && 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
                     session?.status === 'wrapped' && 'bg-blue-500/20 text-blue-400 border-blue-500/30'
@@ -1011,17 +1123,17 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           )}
 
           {/* Status Bar */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-4">
             {/* Schedule Status */}
             <Card
               className={cn('bg-soft-black', getScheduleStatusBgColor(scheduleStatus?.status || 'on_time'))}
             >
-              <CardContent className="p-4">
+              <CardContent className="p-3 sm:p-4">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-muted-gray uppercase">Schedule</p>
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-gray uppercase truncate">Schedule</p>
                     <p
-                      className={cn('text-2xl font-bold', getScheduleStatusColor(scheduleStatus?.status || 'on_time'))}
+                      className={cn('text-xl sm:text-2xl font-bold', getScheduleStatusColor(scheduleStatus?.status || 'on_time'))}
                     >
                       {scheduleStatus?.status === 'ahead' && '+'}
                       {scheduleStatus?.variance_minutes || 0}m
@@ -1029,7 +1141,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                   </div>
                   <Badge
                     className={cn(
-                      'capitalize',
+                      'capitalize text-xs hidden sm:inline-flex',
                       scheduleStatus?.status === 'ahead' && 'bg-green-500/20 text-green-400',
                       scheduleStatus?.status === 'behind' && 'bg-red-500/20 text-red-400',
                       scheduleStatus?.status === 'on_time' && 'bg-yellow-500/20 text-yellow-400'
@@ -1043,25 +1155,25 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
 
             {/* Time Elapsed */}
             <Card className="bg-soft-black border-muted-gray/20">
-              <CardContent className="p-4">
+              <CardContent className="p-3 sm:p-4">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-muted-gray uppercase">Elapsed</p>
-                    <p className="text-2xl font-bold text-bone-white">
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-gray uppercase truncate">Elapsed</p>
+                    <p className="text-xl sm:text-2xl font-bold text-bone-white">
                       {formatElapsedTime(timeStats?.elapsed_minutes || 0)}
                     </p>
                   </div>
-                  <Clock className="w-6 h-6 text-muted-gray" />
+                  <Clock className="w-5 h-5 sm:w-6 sm:h-6 text-muted-gray flex-shrink-0" />
                 </div>
               </CardContent>
             </Card>
 
             {/* Progress */}
             <Card className="bg-soft-black border-muted-gray/20">
-              <CardContent className="p-4">
+              <CardContent className="p-3 sm:p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs text-muted-gray uppercase">Progress</p>
-                  <span className="text-sm text-bone-white">
+                  <p className="text-xs text-muted-gray uppercase truncate">Progress</p>
+                  <span className="text-xs sm:text-sm text-bone-white flex-shrink-0">
                     {scheduleStatus?.scenes_completed || 0}/{scheduleStatus?.scenes_total || 0}
                   </span>
                 </div>
@@ -1071,13 +1183,13 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
 
             {/* Day Type */}
             <Card className="bg-soft-black border-muted-gray/20">
-              <CardContent className="p-4">
+              <CardContent className="p-3 sm:p-4">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs text-muted-gray uppercase">Day Type</p>
-                    <p className="text-2xl font-bold text-bone-white">{session?.day_type || '10hr'}</p>
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-gray uppercase truncate">Day Type</p>
+                    <p className="text-xl sm:text-2xl font-bold text-bone-white">{session?.day_type || '10hr'}</p>
                   </div>
-                  <Timer className="w-6 h-6 text-muted-gray" />
+                  <Timer className="w-5 h-5 sm:w-6 sm:h-6 text-muted-gray flex-shrink-0" />
                 </div>
               </CardContent>
             </Card>
@@ -1175,7 +1287,9 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                     isActive={session.status === 'in_progress'}
                     isWrapped={session.status === 'wrapped'}
                     canEdit={canEdit}
+                    sessionId={session.id}
                     defaultTab={hotSetSettings?.default_schedule_view || 'current'}
+                    onScheduleModified={() => refetch()}
                     onStartScene={(sceneId) => startScene.mutate({ sessionId: session.id, sceneId })}
                     onCompleteScene={(sceneId) => completeScene.mutate({ sessionId: session.id, sceneId })}
                     onSkipScene={(sceneId) => skipScene.mutate({ sessionId: session.id, sceneId })}
@@ -1195,7 +1309,19 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         }
                       );
                     }}
-                    onCompleteActivity={(blockId) => completeScheduleBlock.mutate({ sessionId: session.id, blockId })}
+                    onCompleteActivity={(blockId) => {
+                      // Check if completing a wrap block - show modal instead of direct complete
+                      const block = scheduleBlocks.find(b =>
+                        b.id === blockId || b.original_schedule_block_id === blockId
+                      );
+                      if (block?.block_type === 'wrap') {
+                        // Store the block ID and open wrap modal
+                        setPendingWrapBlockId(blockId);
+                        setShowWrapModal(true);
+                      } else {
+                        completeScheduleBlock.mutate({ sessionId: session.id, blockId });
+                      }
+                    }}
                     onSkipActivity={(blockId) => skipScheduleBlock.mutate({ sessionId: session.id, blockId })}
                     onStartDay={() => startSession.mutate(session.id)}
                     isStartingScene={startScene.isPending}
@@ -1205,6 +1331,20 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                     isCompletingActivity={completeScheduleBlock.isPending}
                     isSkippingActivity={skipScheduleBlock.isPending}
                     timezone={session?.timezone}
+                    onReorderSchedule={(items) => {
+                      reorderSchedule.mutate(
+                        { sessionId: session.id, items },
+                        {
+                          onSuccess: () => {
+                            toast.success('Schedule reordered');
+                          },
+                          onError: (error) => {
+                            toast.error(`Failed to reorder: ${error.message}`);
+                          },
+                        }
+                      );
+                    }}
+                    isReordering={reorderSchedule.isPending}
                   />
               ) : (
                 /* Fallback when no schedule - show import options */
@@ -1337,11 +1477,37 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               )}
 
               {/* AD Notes */}
-              {session && (
+              {session && session.production_day_id && (
                 <ADNotesPanel
-                  sessionId={session.id}
-                  initialNotes={session.notes}
+                  dayId={session.production_day_id}
+                  initialNotes={dayAdNotes ?? null}
                   canEdit={canEdit}
+                />
+              )}
+
+              {/* AD Notes History */}
+              {session && session.production_day_id && (
+                <AdNotesHistoryCard
+                  dayId={session.production_day_id}
+                  projectId={projectId}
+                  canEdit={canEdit}
+                  onEntryClick={(entry) => {
+                    setSelectedAdNoteEntry(entry);
+                    setShowAdNoteModal(true);
+                  }}
+                />
+              )}
+
+              {/* Session Tasks */}
+              {session && (
+                <SessionTasksCard
+                  projectId={projectId}
+                  sessionId={session.id}
+                  canEdit={canEdit}
+                  onTaskClick={(taskId) => {
+                    setSelectedTaskId(taskId);
+                    setShowTaskDrawer(true);
+                  }}
                 />
               )}
 
@@ -1739,10 +1905,13 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
       {selectedSessionId && (
         <WrapDayModal
           open={showWrapModal}
-          onOpenChange={setShowWrapModal}
+          onOpenChange={(open) => {
+            setShowWrapModal(open);
+            if (!open) setPendingWrapBlockId(null);  // Clear pending block when modal closes
+          }}
           sessionId={selectedSessionId}
           onConfirmWrap={handleConfirmWrap}
-          isWrapping={wrapSession.isPending}
+          isWrapping={wrapSession.isPending || completeScheduleBlock.isPending}
         />
       )}
 
@@ -1808,6 +1977,32 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AD Note Detail Modal */}
+      {session?.production_day_id && (
+        <AdNoteDetailModal
+          entry={selectedAdNoteEntry}
+          dayId={session.production_day_id}
+          canEdit={canEdit}
+          isOpen={showAdNoteModal}
+          onClose={() => {
+            setShowAdNoteModal(false);
+            setSelectedAdNoteEntry(null);
+          }}
+        />
+      )}
+
+      {/* Task Detail Drawer */}
+      <TaskDetailDrawer
+        taskId={selectedTaskId}
+        projectId={projectId}
+        canEdit={canEdit}
+        open={showTaskDrawer}
+        onClose={() => {
+          setShowTaskDrawer(false);
+          setSelectedTaskId(null);
+        }}
+      />
     </div>
   );
 };

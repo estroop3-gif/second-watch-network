@@ -44,6 +44,8 @@ class SubjectCreate(BaseModel):
     notes: Optional[str] = None
     source_type: Optional[str] = None  # cast_member, crew_member, contact, team_member
     source_id: Optional[str] = None  # ID from source table
+    rate_type: Optional[str] = None  # hourly, daily, weekly, flat
+    rate_amount: Optional[float] = None
 
 
 class SubjectUpdate(BaseModel):
@@ -52,6 +54,13 @@ class SubjectUpdate(BaseModel):
     department: Optional[str] = None
     notes: Optional[str] = None
     sort_order: Optional[int] = None
+    rate_type: Optional[str] = None  # hourly, daily, weekly, flat
+    rate_amount: Optional[float] = None
+
+
+class AutoSyncRequest(BaseModel):
+    sync_type: str  # production_day_added, production_day_deleted, cast_member_added, crew_member_added, cast_member_removed
+    source_id: Optional[str] = None  # The ID of the changed entity
 
 
 class AssignmentUpsert(BaseModel):
@@ -379,7 +388,9 @@ async def create_subject(
         "notes": request.notes,
         "sort_order": next_order,
         "source_type": request.source_type,
-        "source_id": request.source_id
+        "source_id": request.source_id,
+        "rate_type": request.rate_type,
+        "rate_amount": request.rate_amount
     }
 
     result = client.table("dood_subjects").insert(subject_data).execute()
@@ -438,6 +449,12 @@ async def update_subject(
         update_data["notes"] = request.notes
     if request.sort_order is not None:
         update_data["sort_order"] = request.sort_order
+    if request.rate_type is not None:
+        if request.rate_type not in ('hourly', 'daily', 'weekly', 'flat', ''):
+            raise HTTPException(status_code=400, detail="Invalid rate_type. Must be one of: hourly, daily, weekly, flat")
+        update_data["rate_type"] = request.rate_type if request.rate_type else None
+    if request.rate_amount is not None:
+        update_data["rate_amount"] = request.rate_amount if request.rate_amount > 0 else None
 
     if update_data:
         update_data["updated_at"] = datetime.utcnow().isoformat()
@@ -806,3 +823,111 @@ async def get_dood_version(
         version["snapshot_json"] = json.loads(version["snapshot_json"])
 
     return version
+
+
+# =====================================================
+# Auto-Sync Endpoints
+# =====================================================
+
+@router.post("/projects/{project_id}/dood/auto-sync")
+async def auto_sync_dood(
+    project_id: str,
+    request: AutoSyncRequest,
+    authorization: str = Header(None)
+):
+    """
+    Auto-sync DOOD when changes occur in Schedule or Cast/Crew.
+    Called by other endpoints when production days or team members change.
+
+    sync_type options:
+    - production_day_added: New production day was added
+    - production_day_deleted: Production day was deleted
+    - production_day_updated: Production day was updated
+    - cast_member_added: New cast member added to project
+    - crew_member_added: New crew/team member added to project
+    - cast_member_removed: Cast member removed from project
+    - team_member_removed: Team member removed from project
+    """
+    user = await get_current_user_from_token(authorization)
+    await verify_project_access(project_id, user["id"])
+
+    client = get_client()
+    now = datetime.utcnow().isoformat()
+    result = {"sync_type": request.sync_type, "actions": []}
+
+    if request.sync_type == "production_day_added":
+        # When a new production day is added, it automatically becomes available
+        # in the DOOD grid (days are fetched from backlot_production_days)
+        # No explicit action needed - just return success
+        result["actions"].append("Day will appear in DOOD grid automatically")
+
+    elif request.sync_type == "production_day_deleted":
+        # When a production day is deleted, clean up any assignments for that day
+        if request.source_id:
+            deleted = client.table("dood_assignments").delete().eq(
+                "project_id", project_id
+            ).eq("day_id", request.source_id).execute()
+            result["actions"].append(f"Cleaned up {len(deleted.data or [])} assignments")
+
+    elif request.sync_type == "production_day_updated":
+        # Day was updated - no action needed for DOOD
+        result["actions"].append("Day updates reflected automatically")
+
+    elif request.sync_type in ("cast_member_added", "crew_member_added"):
+        # When cast/crew is added, they become available in the subject picker
+        # No automatic subject creation - user chooses who to add
+        result["actions"].append("New member available in Add Subjects picker")
+
+    elif request.sync_type in ("cast_member_removed", "team_member_removed"):
+        # When a member is removed, we could optionally clean up their DOOD subject
+        # For now, keep the subject to preserve historical data
+        if request.source_id:
+            source_type = "cast_member" if "cast" in request.sync_type else "team_member"
+            # Mark subject as orphaned by clearing source_id
+            update_result = client.table("dood_subjects").update({
+                "source_id": None,
+                "last_synced_at": now
+            }).eq("project_id", project_id).eq(
+                "source_type", source_type
+            ).eq("source_id", request.source_id).execute()
+            if update_result.data:
+                result["actions"].append(f"Orphaned {len(update_result.data)} DOOD subject(s)")
+            else:
+                result["actions"].append("No linked DOOD subjects found")
+
+    return result
+
+
+async def trigger_dood_sync(project_id: str, sync_type: str, source_id: str = None, token: str = None):
+    """
+    Helper function to trigger DOOD sync from other parts of the codebase.
+    Can be called internally without going through HTTP.
+    """
+    client = get_client()
+    now = datetime.utcnow().isoformat()
+
+    if sync_type == "production_day_deleted" and source_id:
+        # Clean up assignments for deleted day
+        client.table("dood_assignments").delete().eq(
+            "project_id", project_id
+        ).eq("day_id", source_id).execute()
+
+    elif sync_type in ("cast_member_removed", "team_member_removed") and source_id:
+        source_type = "cast_member" if "cast" in sync_type else "team_member"
+        client.table("dood_subjects").update({
+            "source_id": None,
+            "last_synced_at": now
+        }).eq("project_id", project_id).eq(
+            "source_type", source_type
+        ).eq("source_id", source_id).execute()
+
+    # Emit socket event for real-time update
+    try:
+        from app.socketio_app import sio
+        await sio.emit('dood_updated', {
+            'project_id': project_id,
+            'sync_type': sync_type,
+            'source_id': source_id
+        }, room=f"project:{project_id}")
+    except Exception:
+        pass  # Socket emission is optional

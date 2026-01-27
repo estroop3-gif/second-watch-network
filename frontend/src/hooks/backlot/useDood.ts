@@ -23,6 +23,8 @@ export interface DoodSubject {
   sort_order: number;
   source_type: string | null;
   source_id: string | null;
+  rate_type: 'hourly' | 'daily' | 'weekly' | 'flat' | null;
+  rate_amount: number | null;
   created_at?: string;
 }
 
@@ -181,6 +183,8 @@ export function useCreateDoodSubject(projectId: string | null) {
       notes?: string;
       source_type?: string;  // cast_member, crew_member, contact, team_member
       source_id?: string;    // ID from source table
+      rate_type?: 'hourly' | 'daily' | 'weekly' | 'flat';
+      rate_amount?: number;
     }) => {
       if (!projectId) throw new Error('Project ID required');
       return api.post(`/api/v1/backlot/projects/${projectId}/dood/subjects`, data);
@@ -211,6 +215,8 @@ export function useUpdateDoodSubject(projectId: string | null) {
         department: string;
         notes: string;
         sort_order: number;
+        rate_type: 'hourly' | 'daily' | 'weekly' | 'flat' | '';
+        rate_amount: number | null;
       }>;
     }) => {
       if (!projectId) throw new Error('Project ID required');

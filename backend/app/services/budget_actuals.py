@@ -671,3 +671,186 @@ def record_invoice_line_items(
             recorded.append(result)
 
     return recorded
+
+
+# ============================================================================
+# Hot Set Labor Cost Recording
+# ============================================================================
+
+def record_session_labor_to_budget(
+    project_id: str,
+    session_id: str,
+    production_day_id: str,
+    day_type: str,
+    actual_call_time: str,
+    actual_wrap_time: str,
+    created_by_user_id: str
+) -> Dict[str, Any]:
+    """
+    Record all crew labor costs from a Hot Set session to budget actuals.
+    Includes base day rates AND OT premiums.
+
+    Args:
+        project_id: The project ID
+        session_id: The Hot Set session ID
+        production_day_id: The production day ID
+        day_type: Day type for OT calculation (4hr, 8hr, 10hr, 12hr, 6th_day, 7th_day)
+        actual_call_time: ISO datetime string of actual call time
+        actual_wrap_time: ISO datetime string of actual wrap time
+        created_by_user_id: User who is wrapping the session
+
+    Returns:
+        Dict with crew_recorded count and total costs
+    """
+    from datetime import datetime as dt
+
+    client = get_client()
+
+    # Parse times
+    try:
+        if "T" in actual_call_time:
+            call_time = dt.fromisoformat(actual_call_time.replace("Z", "+00:00"))
+        else:
+            call_time = dt.strptime(actual_call_time, "%Y-%m-%d %H:%M:%S")
+
+        if "T" in actual_wrap_time:
+            wrap_time = dt.fromisoformat(actual_wrap_time.replace("Z", "+00:00"))
+        else:
+            wrap_time = dt.strptime(actual_wrap_time, "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError) as e:
+        logger.error(f"[BudgetActuals] Error parsing times for session {session_id}: {e}")
+        return {"error": str(e), "crew_recorded": 0}
+
+    # Calculate total hours worked
+    total_hours = (wrap_time - call_time).total_seconds() / 3600
+    if total_hours <= 0:
+        logger.warning(f"[BudgetActuals] Invalid hours ({total_hours}) for session {session_id}")
+        return {"error": "Invalid work hours", "crew_recorded": 0}
+
+    # Get all crew for this session
+    crew_result = client.table("backlot_hot_set_crew").select(
+        "id, user_id, display_name, rate_type, rate_amount, department"
+    ).eq("session_id", session_id).execute()
+
+    if not crew_result.data:
+        logger.info(f"[BudgetActuals] No crew found for session {session_id}")
+        return {"crew_recorded": 0, "total_cost": 0}
+
+    # OT thresholds from hot_set.py
+    OT_THRESHOLDS = {
+        '4hr':     {'ot1_after': 4,  'ot2_after': 6},
+        '8hr':     {'ot1_after': 8,  'ot2_after': 10},
+        '10hr':    {'ot1_after': 10, 'ot2_after': 12},
+        '12hr':    {'ot1_after': 12, 'ot2_after': 14},
+        '6th_day': {'ot1_after': 8,  'ot2_after': 12},
+        '7th_day': {'ot1_after': 0,  'ot2_after': 0},  # All DT
+    }
+
+    thresholds = OT_THRESHOLDS.get(day_type, OT_THRESHOLDS['10hr'])
+    ot1_after = thresholds['ot1_after']
+    ot2_after = thresholds['ot2_after']
+
+    # Calculate hours breakdown
+    if day_type == '7th_day':
+        regular_hours = 0
+        ot1_hours = 0
+        ot2_hours = total_hours
+    else:
+        if total_hours <= ot1_after:
+            regular_hours = total_hours
+            ot1_hours = 0
+            ot2_hours = 0
+        elif total_hours <= ot2_after:
+            regular_hours = ot1_after
+            ot1_hours = total_hours - ot1_after
+            ot2_hours = 0
+        else:
+            regular_hours = ot1_after
+            ot1_hours = ot2_after - ot1_after
+            ot2_hours = total_hours - ot2_after
+
+    # Get production day info for expense date
+    day_result = client.table("backlot_production_days").select("date, day_number").eq(
+        "id", production_day_id
+    ).execute()
+    expense_date = day_result.data[0]["date"] if day_result.data else None
+    day_number = day_result.data[0].get("day_number", "") if day_result.data else ""
+
+    crew_recorded = 0
+    total_cost = 0.0
+    skipped_no_rate = 0
+
+    for crew in crew_result.data:
+        if not crew.get("rate_amount"):
+            skipped_no_rate += 1
+            continue
+
+        rate_type = crew.get("rate_type", "hourly")
+        rate_amount = float(crew.get("rate_amount", 0))
+
+        # Calculate cost breakdown
+        if rate_type == "hourly":
+            regular_cost = regular_hours * rate_amount
+            ot1_cost = ot1_hours * rate_amount * 1.5
+            ot2_cost = ot2_hours * rate_amount * 2.0
+        elif rate_type == "daily":
+            # Daily rate covers regular hours, OT is extra
+            effective_hourly = rate_amount / 10.0
+            regular_cost = rate_amount
+            ot1_cost = ot1_hours * effective_hourly * 1.5
+            ot2_cost = ot2_hours * effective_hourly * 2.0
+        elif rate_type == "weekly":
+            daily_rate = rate_amount / 5.0
+            effective_hourly = daily_rate / 10.0
+            regular_cost = daily_rate
+            ot1_cost = ot1_hours * effective_hourly * 1.5
+            ot2_cost = ot2_hours * effective_hourly * 2.0
+        else:
+            # Flat rate - no OT
+            regular_cost = rate_amount
+            ot1_cost = 0
+            ot2_cost = 0
+
+        total_crew_cost = round(regular_cost + ot1_cost + ot2_cost, 2)
+        total_cost += total_crew_cost
+
+        # Record to budget actuals using composite key to prevent duplicates
+        source_id = f"{session_id}:{crew['id']}"
+
+        # Build description
+        desc_parts = [crew.get('display_name', 'Crew')]
+        if day_number:
+            desc_parts.append(f"Day {day_number}")
+        desc_parts.append(f"{day_type} ({total_hours:.1f} hrs)")
+
+        result = record_budget_actual(
+            project_id=project_id,
+            source_type="hot_set_session",
+            source_id=source_id,
+            amount=total_crew_cost,
+            description=" - ".join(desc_parts),
+            expense_date=expense_date,
+            expense_category="Labor",
+            created_by_user_id=created_by_user_id,
+            submitter_user_id=crew.get("user_id"),
+            submitter_name=crew.get("display_name"),
+        )
+
+        if result:
+            crew_recorded += 1
+            logger.info(
+                f"[BudgetActuals] Recorded labor for {crew.get('display_name')}: "
+                f"${total_crew_cost:.2f} (reg: ${regular_cost:.2f}, OT1: ${ot1_cost:.2f}, OT2: ${ot2_cost:.2f})"
+            )
+
+    return {
+        "crew_recorded": crew_recorded,
+        "skipped_no_rate": skipped_no_rate,
+        "total_cost": round(total_cost, 2),
+        "total_hours": round(total_hours, 2),
+        "hours_breakdown": {
+            "regular": round(regular_hours, 2),
+            "ot1": round(ot1_hours, 2),
+            "ot2": round(ot2_hours, 2)
+        }
+    }

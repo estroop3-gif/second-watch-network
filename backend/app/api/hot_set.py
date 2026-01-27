@@ -12,7 +12,43 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from app.core.database import get_client
+
+
+def get_session_local_time(session: dict, project_settings: dict = None) -> datetime:
+    """
+    Get current time in the session's timezone.
+
+    Schedule times (crew call, lunch, wrap) are stored as local time strings like "08:00".
+    To compare current time against the schedule, we need current time in the same timezone.
+
+    Timezone priority:
+    1. Session's timezone (from call sheet)
+    2. Project settings timezone (user-configured)
+    3. Server local time (fallback)
+    """
+    # Try session timezone first (usually from call sheet)
+    session_tz = session.get("timezone")
+    if session_tz:
+        try:
+            tz = ZoneInfo(session_tz)
+            return datetime.now(tz)
+        except Exception:
+            pass
+
+    # Try project settings timezone
+    if project_settings:
+        project_tz = project_settings.get("timezone")
+        if project_tz:
+            try:
+                tz = ZoneInfo(project_tz)
+                return datetime.now(tz)
+            except Exception:
+                pass
+
+    # Fallback to server local time (better than UTC for schedule comparison)
+    return datetime.now()
 
 # =============================================================================
 # DAY TYPE & OT THRESHOLDS
@@ -289,6 +325,17 @@ class SceneReorder(BaseModel):
     scene_ids: List[str]
 
 
+class ScheduleReorderItem(BaseModel):
+    """Item in a schedule reorder request"""
+    id: str
+    type: str  # 'scene' | 'block'
+
+
+class ScheduleReorder(BaseModel):
+    """Request body for unified schedule reordering"""
+    items: List[ScheduleReorderItem]
+
+
 class ScheduleBlockUpdate(BaseModel):
     expected_start_time: Optional[str] = None
     expected_end_time: Optional[str] = None
@@ -302,6 +349,7 @@ class ScheduleBlockUpdate(BaseModel):
 class HotSetSettings(BaseModel):
     id: str
     project_id: str
+    timezone: Optional[str] = None  # IANA timezone (e.g., "America/Los_Angeles")
     auto_start_enabled: bool = True
     auto_start_minutes_before_call: int = 30
     notifications_enabled: bool = True
@@ -316,6 +364,7 @@ class HotSetSettings(BaseModel):
 
 
 class HotSetSettingsUpdate(BaseModel):
+    timezone: Optional[str] = None  # IANA timezone (e.g., "America/Los_Angeles")
     auto_start_enabled: Optional[bool] = None
     auto_start_minutes_before_call: Optional[int] = None
     notifications_enabled: Optional[bool] = None
@@ -946,26 +995,38 @@ def calculate_realtime_deviation(
     # Get current time in minutes since session start (or midnight if no session start)
     if session_start_time:
         try:
-            # Ensure both times are timezone-aware for proper comparison
-            if current_time.tzinfo is None and session_start_time.tzinfo is not None:
-                from datetime import timezone
-                current_time = current_time.replace(tzinfo=timezone.utc)
-            elif current_time.tzinfo is not None and session_start_time.tzinfo is None:
-                from datetime import timezone
-                session_start_time = session_start_time.replace(tzinfo=timezone.utc)
+            from datetime import timezone as dt_timezone
 
-            current_minutes = int((current_time - session_start_time).total_seconds() / 60)
-        except TypeError as e:
-            # Fallback to current time if timezone mismatch occurs
+            # Convert both to UTC for accurate elapsed time calculation
+            if current_time.tzinfo is not None:
+                current_utc = current_time.astimezone(dt_timezone.utc)
+            else:
+                # Naive datetime - assume it's already in local time, treat as UTC for calc
+                current_utc = current_time.replace(tzinfo=dt_timezone.utc)
+
+            if session_start_time.tzinfo is not None:
+                session_start_utc = session_start_time.astimezone(dt_timezone.utc)
+            else:
+                session_start_utc = session_start_time.replace(tzinfo=dt_timezone.utc)
+
+            current_minutes = int((current_utc - session_start_utc).total_seconds() / 60)
+        except (TypeError, ValueError) as e:
+            # Fallback to current time if timezone conversion fails
             import logging
-            logging.error(f"Timezone mismatch in calculate_realtime_deviation: {e}")
+            logging.error(f"Timezone conversion error in calculate_realtime_deviation: {e}")
             current_time_str = current_time.strftime("%H:%M")
             current_minutes = time_to_minutes(current_time_str)
             session_start_time = None  # Fall through to non-session logic
 
         # Convert all planned times to minutes since session start
         if session_start_time:  # Check again in case fallback occurred
-            session_start_time_str = session_start_time.strftime("%H:%M")
+            # Use the local time representation for schedule comparison
+            if session_start_time.tzinfo is not None and current_time.tzinfo is not None:
+                # Convert session start to the same timezone as current_time for HH:MM comparison
+                session_start_local = session_start_time.astimezone(current_time.tzinfo)
+                session_start_time_str = session_start_local.strftime("%H:%M")
+            else:
+                session_start_time_str = session_start_time.strftime("%H:%M")
             session_start_minutes = time_to_minutes(session_start_time_str)
 
         def adjust_to_session_minutes(time_str: str) -> int:
@@ -1165,6 +1226,7 @@ def calculate_projected_schedule(
                 "status": matched_scene.get("status", "pending"),
                 "source_type": "scene_log",
                 "source_id": matched_scene.get("id"),
+                "schedule_position": matched_scene.get("schedule_position"),
             })
         elif matched_block:
             # Use actual schedule block data
@@ -1182,9 +1244,17 @@ def calculate_projected_schedule(
                 "status": matched_block.get("status", "pending"),
                 "source_type": "schedule_block",
                 "source_id": matched_block.get("id"),
+                "schedule_position": matched_block.get("schedule_position"),
             })
         else:
-            # Use imported schedule data directly
+            # No matching scene_log or schedule_block found
+            # For scenes: skip if no scene_log exists (scene may have been swapped/deleted)
+            # For activities: show from imported schedule if no schedule_block exists
+            if item_type == "scene":
+                # Don't show imported scene items without a scene_log - they've been swapped/deleted
+                continue
+
+            # Use imported schedule data for non-scene items
             all_items.append({
                 "id": sched_item.get("id") or str(uuid.uuid4()),
                 "type": item_type,
@@ -1199,10 +1269,76 @@ def calculate_projected_schedule(
                 "status": "pending",
                 "source_type": "imported",
                 "source_id": sched_item.get("id"),
+                "schedule_position": None,
             })
 
-    # Sort by planned start time
-    all_items.sort(key=lambda x: time_to_minutes(x["planned_start_time"]))
+    # Add scenes that weren't matched to any imported schedule item (e.g., swapped scenes)
+    # Track which scenes were matched
+    matched_scene_ids = {item.get("source_id") for item in all_items if item.get("source_type") == "scene_log"}
+
+    for scene in scenes:
+        if scene.get("id") not in matched_scene_ids:
+            # This scene wasn't matched - add it directly
+            # Use schedule_position for ordering, fallback to sort_order
+            start_time = scene.get("expected_start_time") or "00:00"
+            duration = scene.get("estimated_minutes") or 30
+            end_minutes = time_to_minutes(start_time) + duration
+            end_time = minutes_to_time(end_minutes)
+
+            all_items.append({
+                "id": scene.get("id"),
+                "type": "scene",
+                "name": scene.get("scene_number") or "Scene",
+                "description": scene.get("set_name") or scene.get("description"),
+                "planned_start_time": start_time,
+                "planned_end_time": end_time,
+                "planned_duration_minutes": duration,
+                "actual_start_time": scene.get("actual_start_time"),
+                "actual_end_time": scene.get("actual_end_time"),
+                "actual_duration_minutes": scene.get("actual_duration_minutes"),
+                "status": scene.get("status", "pending"),
+                "source_type": "scene_log",
+                "source_id": scene.get("id"),
+                "schedule_position": scene.get("schedule_position"),
+            })
+
+    # Add schedule blocks that weren't matched (e.g., manually added activities)
+    matched_block_ids = {item.get("source_id") for item in all_items if item.get("source_type") == "schedule_block"}
+
+    for block in schedule_blocks:
+        if block.get("id") not in matched_block_ids:
+            start_time = block.get("expected_start_time") or "00:00"
+            duration = block.get("expected_duration_minutes") or 15
+            end_minutes = time_to_minutes(start_time) + duration
+            end_time = minutes_to_time(end_minutes)
+
+            all_items.append({
+                "id": block.get("id"),
+                "type": block.get("block_type") or "activity",
+                "name": block.get("name") or block.get("block_type", "").replace("_", " ").title(),
+                "description": block.get("location_name"),
+                "planned_start_time": start_time,
+                "planned_end_time": end_time,
+                "planned_duration_minutes": duration,
+                "actual_start_time": block.get("actual_start_time"),
+                "actual_end_time": block.get("actual_end_time"),
+                "actual_duration_minutes": None,
+                "status": block.get("status", "pending"),
+                "source_type": "schedule_block",
+                "source_id": block.get("id"),
+                "schedule_position": block.get("schedule_position"),
+            })
+
+    # Sort by schedule_position if available, otherwise by planned start time
+    # This allows user reordering to take precedence over imported schedule times
+    def sort_key(x):
+        pos = x.get("schedule_position")
+        if pos is not None:
+            return (0, pos, 0)  # Has position: sort by position first
+        # No position: sort by planned start time
+        return (1, 0, time_to_minutes(x["planned_start_time"]))
+
+    all_items.sort(key=sort_key)
 
     # Calculate cumulative variance and project future times
     cumulative_variance_minutes = 0  # Positive = ahead of schedule, Negative = behind
@@ -1869,9 +2005,10 @@ async def start_session(
 @router.post("/hot-set/sessions/{session_id}/wrap")
 async def wrap_session(
     session_id: str,
+    request: Optional[WrapSessionRequest] = None,
     authorization: str = Header(None)
 ):
-    """Wrap the production day"""
+    """Wrap the production day and optionally record labor costs to budget."""
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
@@ -1882,7 +2019,8 @@ async def wrap_session(
     if not session.data:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    project_id = session.data[0]["project_id"]
+    session_data = session.data[0]
+    project_id = session_data["project_id"]
     if not await verify_project_edit(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -1908,7 +2046,31 @@ async def wrap_session(
         "actual_end_time": now,
     }).eq("session_id", session_id).eq("status", "in_progress").execute()
 
-    return result.data[0] if result.data else None
+    # Record labor costs to budget if requested
+    labor_result = None
+    if request and request.record_to_budget:
+        try:
+            from app.services.budget_actuals import record_session_labor_to_budget
+
+            # Get actual call time (use actual_call_time or created_at as fallback)
+            actual_call_time = session_data.get("actual_call_time") or session_data.get("created_at")
+
+            labor_result = record_session_labor_to_budget(
+                project_id=project_id,
+                session_id=session_id,
+                production_day_id=session_data.get("production_day_id"),
+                day_type=session_data.get("day_type", "10hr"),
+                actual_call_time=actual_call_time,
+                actual_wrap_time=now,
+                created_by_user_id=user["id"]
+            )
+        except Exception as e:
+            # Don't fail the wrap if labor recording fails
+            labor_result = {"error": str(e)}
+
+    response = result.data[0] if result.data else {}
+    response["labor_recorded"] = labor_result
+    return response
 
 
 @router.post("/hot-set/sessions/{session_id}/resume")
@@ -2093,7 +2255,7 @@ async def import_scenes_from_call_sheet(client, session_id: str, call_sheet_id: 
             "set_name": scene.get("set_name"),
             "int_ext": scene.get("int_ext"),
             "description": scene.get("description"),
-            "estimated_minutes": scene.get("estimated_time_minutes") or 30,  # Default 30 min
+            "estimated_minutes": scene.get("estimated_duration") or 30,  # Default 30 min
             "sort_order": i,
             "status": "pending",
         }).execute()
@@ -2109,9 +2271,9 @@ async def import_scenes_from_production_day(client, session_id: str, production_
     import logging
     logger = logging.getLogger(__name__)
 
-    # Get scenes assigned to this production day with scene details
+    # Get scenes assigned to this production day (no nested join - Supabase-compatible client doesn't support it)
     day_scenes = client.table("backlot_production_day_scenes").select(
-        "*, scene:scene_id(id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day)"
+        "id, scene_id, sort_order, estimated_duration"
     ).eq("production_day_id", production_day_id).order("sort_order").execute()
 
     if not day_scenes.data:
@@ -2120,19 +2282,27 @@ async def import_scenes_from_production_day(client, session_id: str, production_
 
     logger.info(f"[HotSet] Importing {len(day_scenes.data)} scenes from production day")
 
+    # Get all scene IDs and fetch scene details in a separate query
+    scene_ids = [ds["scene_id"] for ds in day_scenes.data if ds.get("scene_id")]
+    scenes_data = {}
+    if scene_ids:
+        scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day"
+        ).in_("id", scene_ids).execute()
+        scenes_data = {s["id"]: s for s in (scenes_result.data or [])}
+
     scenes_imported = 0
     for i, day_scene in enumerate(day_scenes.data):
-        scene = day_scene.get("scene") or {}
+        scene = scenes_data.get(day_scene.get("scene_id")) or {}
 
         # Create scene log (note: table doesn't have scene_id column, uses call_sheet_scene_id for call sheet refs)
         client.table("backlot_hot_set_scene_logs").insert({
             "session_id": session_id,
-            "scene_number": scene.get("scene_number") or day_scene.get("scene_number"),
+            "scene_number": scene.get("scene_number"),
             "set_name": scene.get("set_name") or scene.get("slugline"),
             "int_ext": scene.get("int_ext"),
             "description": scene.get("description") or scene.get("slugline"),
-            "estimated_minutes": day_scene.get("estimated_time_minutes") or 30,
-            "expected_start_time": day_scene.get("scheduled_time"),
+            "estimated_minutes": day_scene.get("estimated_duration") or 30,
             "sort_order": i,
             "status": "pending",
         }).execute()
@@ -2442,6 +2612,46 @@ async def reorder_scenes(
     return {"success": True}
 
 
+@router.post("/hot-set/sessions/{session_id}/schedule/reorder")
+async def reorder_schedule(
+    session_id: str,
+    body: ScheduleReorder,
+    authorization: str = Header(None)
+):
+    """
+    Reorder the entire schedule (scenes and blocks together).
+    Uses schedule_position field for unified ordering.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Verify session exists and user has access
+    session = client.table("backlot_hot_set_sessions").select("project_id").eq(
+        "id", session_id
+    ).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Update schedule_position for each item
+    # Position is multiplied by 10 to allow for future insertions
+    for position, item in enumerate(body.items):
+        if item.type == 'scene':
+            client.table("backlot_hot_set_scene_logs").update({
+                "schedule_position": position * 10
+            }).eq("id", item.id).eq("session_id", session_id).execute()
+        else:  # 'block'
+            client.table("backlot_hot_set_schedule_blocks").update({
+                "schedule_position": position * 10
+            }).eq("id", item.id).eq("session_id", session_id).execute()
+
+    return {"success": True}
+
+
 # =============================================================================
 # MARKERS
 # =============================================================================
@@ -2534,11 +2744,16 @@ async def get_dashboard(
     if not await verify_project_access(client, project_id, user["id"]):
         raise HTTPException(status_code=403, detail="Not a project member")
 
-    # Get scenes
+    # Get scenes - order by schedule_position (unified ordering) with fallback to sort_order
     scenes_result = client.table("backlot_hot_set_scene_logs").select("*").eq(
         "session_id", session_id
-    ).order("sort_order").execute()
+    ).execute()
     scenes = scenes_result.data or []
+    # Sort by schedule_position first (if set), then by sort_order
+    scenes.sort(key=lambda s: (
+        s.get("schedule_position") if s.get("schedule_position") is not None else float('inf'),
+        s.get("sort_order") or 0
+    ))
 
     # Categorize scenes
     current_scene = None
@@ -2559,10 +2774,18 @@ async def get_dashboard(
     ).order("timestamp").execute()
     markers = markers_result.data or []
 
-    # Calculate time stats
-    # NOTE: Using UTC for all calculations. Future: Use production location timezone
-    from datetime import timezone
-    now = datetime.now(timezone.utc)
+    # Get project settings early (needed for timezone fallback and suggestion triggers)
+    project_id = session.get("project_id")
+    hot_set_settings = None
+    if project_id:
+        settings_result = client.table("backlot_hot_set_settings").select("*").eq(
+            "project_id", project_id
+        ).execute()
+        if settings_result.data:
+            hot_set_settings = settings_result.data[0]
+
+    # Calculate time stats using production's local timezone
+    now = get_session_local_time(session, hot_set_settings)
     call_time = session.get("actual_call_time")
     elapsed_minutes = calculate_elapsed_minutes(call_time) if call_time else 0
 
@@ -2630,11 +2853,16 @@ async def get_dashboard(
         ot_overage_alert=False,
     )
 
-    # Get schedule blocks (non-scene items)
+    # Get schedule blocks (non-scene items) - order by schedule_position with fallback to sort_order
     schedule_blocks_result = client.table("backlot_hot_set_schedule_blocks").select("*").eq(
         "session_id", session_id
-    ).order("sort_order").execute()
+    ).execute()
     schedule_blocks = schedule_blocks_result.data or []
+    # Sort by schedule_position first (if set), then by sort_order
+    schedule_blocks.sort(key=lambda b: (
+        b.get("schedule_position") if b.get("schedule_position") is not None else float('inf'),
+        b.get("sort_order") or 0
+    ))
 
     # Calculate schedule deviation with expected times
     schedule_deviation, current_expected_block, next_expected_block = calculate_schedule_deviation(
@@ -2642,16 +2870,6 @@ async def get_dashboard(
     )
 
     # Generate catch-up suggestions if behind schedule
-    # Get project settings for suggestion triggers
-    project_id = session.get("project_id")
-    hot_set_settings = None
-    if project_id:
-        settings_result = client.table("backlot_hot_set_settings").select("*").eq(
-            "project_id", project_id
-        ).execute()
-        if settings_result.data:
-            hot_set_settings = settings_result.data[0]
-
     catch_up_suggestions = generate_catch_up_suggestions(
         schedule_deviation,
         scenes,
@@ -3022,9 +3240,15 @@ async def get_schedule_blocks(
 
     result = client.table("backlot_hot_set_schedule_blocks").select("*").eq(
         "session_id", session_id
-    ).order("sort_order").execute()
+    ).execute()
 
-    return result.data or []
+    # Sort by schedule_position first (if set), then by sort_order
+    blocks = result.data or []
+    blocks.sort(key=lambda b: (
+        b.get("schedule_position") if b.get("schedule_position") is not None else float('inf'),
+        b.get("sort_order") or 0
+    ))
+    return blocks
 
 
 @router.put("/hot-set/sessions/{session_id}/schedule-blocks/{block_id}")
@@ -3323,12 +3547,15 @@ def calculate_hours_from_schedule(hour_schedule: list, hour_schedule_config: dic
     }
 
 
-def get_effective_rate(client, project_id: str, user_id: str = None, role_id: str = None, role_title: str = None):
+def get_effective_rate(client, project_id: str, user_id: str = None, role_id: str = None,
+                       role_title: str = None, dood_subject_id: str = None):
     """
     Get effective rate for a person. Priority:
-    1. User-specific rate
-    2. Role-based rate
-    3. Booking rate
+    1. User-specific rate in backlot_crew_rates
+    2. Role-based rate in backlot_crew_rates
+    3. Booking rate from backlot_booked_people
+    4. Rate from dood_subjects (if linked)
+    5. Default rate from user profile
     """
     # 1. Try user-specific rate
     if user_id:
@@ -3392,6 +3619,30 @@ def get_effective_rate(client, project_id: str, user_id: str = None, role_id: st
                     }
             except (ValueError, AttributeError):
                 pass
+
+    # 5. Try DOOD subject rate (if linked)
+    if dood_subject_id:
+        subject_rate = client.table("dood_subjects").select(
+            "rate_type, rate_amount"
+        ).eq("id", dood_subject_id).execute()
+        if subject_rate.data and subject_rate.data[0].get("rate_amount"):
+            return {
+                "rate_type": subject_rate.data[0]["rate_type"] or "hourly",
+                "rate_amount": float(subject_rate.data[0]["rate_amount"]),
+                "source": "dood_subject"
+            }
+
+    # 6. Try user profile default rate
+    if user_id:
+        profile_rate = client.table("profiles").select(
+            "default_rate_type, default_hourly_rate"
+        ).eq("id", user_id).execute()
+        if profile_rate.data and profile_rate.data[0].get("default_hourly_rate"):
+            return {
+                "rate_type": profile_rate.data[0].get("default_rate_type") or "hourly",
+                "rate_amount": float(profile_rate.data[0]["default_hourly_rate"]),
+                "source": "profile"
+            }
 
     return None
 
@@ -3893,3 +4144,908 @@ async def confirm_first_shot(
         "first_shot_confirmed_by": user["id"],
         "actual_first_shot_time": now,
     }
+
+
+# =============================================================================
+# SCHEDULE MODIFICATION MODELS
+# =============================================================================
+
+class AddSceneToHotSetRequest(BaseModel):
+    scene_id: str
+    source_production_day_id: str
+    insert_after_id: Optional[str] = None
+    estimated_minutes: Optional[int] = 30
+
+
+class CreateActivityRequest(BaseModel):
+    block_type: str = "activity"  # 'meal' | 'company_move' | 'activity' | 'camera_reset' | 'lighting_reset'
+    name: Optional[str] = None
+    expected_duration_minutes: Optional[int] = None
+    insert_after_id: Optional[str] = None
+    location_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class SwapScenesRequest(BaseModel):
+    scene_to_remove_id: str  # Hot set scene log ID
+    scene_to_add_id: str  # Scene ID from backlot_scenes
+    source_production_day_id: str
+
+
+class WrapSessionRequest(BaseModel):
+    record_to_budget: bool = False  # If True, record all labor costs to budget actuals
+
+
+# Activity type defaults
+ACTIVITY_DEFAULTS = {
+    'meal': {'name': 'Meal Break', 'duration': 30},
+    'company_move': {'name': 'Company Move', 'duration': 20},
+    'camera_reset': {'name': 'Camera Reset', 'duration': 15},
+    'lighting_reset': {'name': 'Lighting Reset', 'duration': 20},
+    'activity': {'name': 'Activity', 'duration': 15},
+}
+
+
+# =============================================================================
+# SCHEDULE MODIFICATION ENDPOINTS
+# =============================================================================
+
+@router.get("/hot-set/sessions/{session_id}/available-scenes")
+async def get_available_scenes(
+    session_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get scenes available to add from other production days.
+    Returns scenes that are assigned to other days (not the current session's day).
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session and its production day
+    session = client.table("backlot_hot_set_sessions").select(
+        "project_id, production_day_id"
+    ).eq("id", session_id).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+    current_day_id = session.data[0]["production_day_id"]
+
+    logger.info(f"[available-scenes] Session: {session_id}, Project: {project_id}, Current day: {current_day_id}")
+
+    if not await verify_project_access(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not a project member")
+
+    # Get all production days for this project (excluding current)
+    days_result = client.table("backlot_production_days").select(
+        "id, day_number, date, title"
+    ).eq("project_id", project_id).neq("id", current_day_id).order("day_number").execute()
+
+    logger.info(f"[available-scenes] Found {len(days_result.data or [])} other production days")
+
+    # Get all wrapped sessions for this project to exclude those days
+    wrapped_sessions = client.table("backlot_hot_set_sessions").select(
+        "production_day_id"
+    ).eq("project_id", project_id).eq("status", "wrapped").execute()
+    wrapped_day_ids = {s["production_day_id"] for s in (wrapped_sessions.data or []) if s.get("production_day_id")}
+    logger.info(f"[available-scenes] Found {len(wrapped_day_ids)} wrapped days to exclude")
+
+    result = []
+    for day in days_result.data or []:
+        # Skip wrapped days
+        if day["id"] in wrapped_day_ids:
+            logger.info(f"[available-scenes] Skipping day {day['day_number']} - already wrapped")
+            continue
+
+        logger.info(f"[available-scenes] Checking day {day['day_number']} (id: {day['id']})")
+
+        # Get scene assignments for this day (separate query - no nested joins)
+        day_scenes = client.table("backlot_production_day_scenes").select(
+            "id, scene_id, sort_order, estimated_duration"
+        ).eq("production_day_id", day["id"]).order("sort_order").execute()
+
+        logger.info(f"[available-scenes] Day {day['day_number']} has {len(day_scenes.data or [])} scene assignments")
+
+        if not day_scenes.data:
+            continue
+
+        # Get the scene IDs to fetch scene details
+        scene_ids = [ds["scene_id"] for ds in day_scenes.data if ds.get("scene_id")]
+        logger.info(f"[available-scenes] Day {day['day_number']} scene_ids: {scene_ids}")
+        if not scene_ids:
+            continue
+
+        # Fetch scene details separately
+        scenes_result = client.table("backlot_scenes").select(
+            "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day"
+        ).in_("id", scene_ids).execute()
+
+        # Create a lookup map for scene details
+        scene_map = {s["id"]: s for s in (scenes_result.data or [])}
+        logger.info(f"[available-scenes] Day {day['day_number']} found {len(scene_map)} scenes in backlot_scenes")
+
+        # Log any missing scenes
+        missing_scene_ids = [sid for sid in scene_ids if sid not in scene_map]
+        if missing_scene_ids:
+            logger.warning(f"[available-scenes] Day {day['day_number']} missing scene_ids in backlot_scenes: {missing_scene_ids}")
+
+        scenes = []
+        for ds in day_scenes.data:
+            scene_id = ds.get("scene_id")
+            scene = scene_map.get(scene_id, {})
+            scenes.append({
+                "id": scene_id,
+                "scene_number": scene.get("scene_number"),
+                "slugline": scene.get("slugline"),
+                "set_name": scene.get("set_name"),
+                "description": scene.get("description"),
+                "page_length": scene.get("page_length"),
+                "int_ext": scene.get("int_ext"),
+                "time_of_day": scene.get("time_of_day"),
+                "estimated_minutes": ds.get("estimated_duration") or 30,
+                "production_day_scene_id": ds.get("id"),
+            })
+
+        if scenes:
+            result.append({
+                "production_day_id": day["id"],
+                "day_number": day["day_number"],
+                "date": day["date"],
+                "title": day.get("title"),
+                "scenes": scenes,
+            })
+
+    logger.info(f"[available-scenes] Returning {len(result)} days with scenes")
+    return result
+
+
+@router.post("/hot-set/sessions/{session_id}/scenes/add")
+async def add_scene_to_hot_set(
+    session_id: str,
+    body: AddSceneToHotSetRequest,
+    authorization: str = Header(None)
+):
+    """
+    Add (move) a scene from another production day to this Hot Set session.
+    The scene is removed from the source day and added to the current day.
+    """
+    import uuid
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session
+    session = client.table("backlot_hot_set_sessions").select(
+        "project_id, production_day_id"
+    ).eq("id", session_id).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+    target_day_id = session.data[0]["production_day_id"]
+
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Get scene data from backlot_scenes
+    scene_result = client.table("backlot_scenes").select(
+        "id, scene_number, slugline, set_name, description, page_length, int_ext, time_of_day"
+    ).eq("id", body.scene_id).execute()
+
+    if not scene_result.data:
+        raise HTTPException(status_code=404, detail="Scene not found")
+
+    scene = scene_result.data[0]
+    logger.info(f"[HotSet] Adding scene {scene['scene_number']} from day {body.source_production_day_id} to session {session_id}")
+
+    # Remove scene from source production day's assignment
+    client.table("backlot_production_day_scenes").delete().eq(
+        "scene_id", body.scene_id
+    ).eq("production_day_id", body.source_production_day_id).execute()
+    logger.info(f"[HotSet] Removed scene from source day {body.source_production_day_id}")
+
+    # Add scene to target production day's assignment
+    # Get max sort_order for target day
+    max_order_result = client.table("backlot_production_day_scenes").select(
+        "sort_order"
+    ).eq("production_day_id", target_day_id).order("sort_order", desc=True).limit(1).execute()
+
+    new_day_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
+
+    client.table("backlot_production_day_scenes").insert({
+        "id": str(uuid.uuid4()),
+        "production_day_id": target_day_id,
+        "scene_id": body.scene_id,
+        "sort_order": new_day_sort_order,
+        "estimated_duration": body.estimated_minutes,
+    }).execute()
+    logger.info(f"[HotSet] Added scene to target day {target_day_id}")
+
+    # Determine sort order for the scene log
+    if body.insert_after_id:
+        # Get the sort_order of the item to insert after
+        after_scene = client.table("backlot_hot_set_scene_logs").select("sort_order").eq(
+            "id", body.insert_after_id
+        ).execute()
+        after_block = client.table("backlot_hot_set_schedule_blocks").select("sort_order").eq(
+            "id", body.insert_after_id
+        ).execute()
+
+        if after_scene.data:
+            insert_order = after_scene.data[0]["sort_order"] + 1
+        elif after_block.data:
+            insert_order = after_block.data[0]["sort_order"] + 1
+        else:
+            insert_order = 0
+
+        # Shift existing items down
+        client.table("backlot_hot_set_scene_logs").update({
+            "sort_order": "sort_order + 1"
+        }).eq("session_id", session_id).gte("sort_order", insert_order).execute()
+    else:
+        # Add at the end - get max sort_order
+        max_scene = client.table("backlot_hot_set_scene_logs").select("sort_order").eq(
+            "session_id", session_id
+        ).order("sort_order", desc=True).limit(1).execute()
+        max_block = client.table("backlot_hot_set_schedule_blocks").select("sort_order").eq(
+            "session_id", session_id
+        ).order("sort_order", desc=True).limit(1).execute()
+
+        max_order = max(
+            max_scene.data[0]["sort_order"] if max_scene.data else -1,
+            max_block.data[0]["sort_order"] if max_block.data else -1
+        )
+        insert_order = max_order + 1
+
+    # Create scene log entry
+    new_log = client.table("backlot_hot_set_scene_logs").insert({
+        "session_id": session_id,
+        "scene_number": scene["scene_number"],
+        "set_name": scene.get("set_name") or scene.get("slugline"),
+        "int_ext": scene.get("int_ext"),
+        "description": scene.get("description") or scene.get("slugline"),
+        "estimated_minutes": body.estimated_minutes,
+        "sort_order": insert_order,
+        "status": "pending",
+    }).execute()
+
+    logger.info(f"[HotSet] Created scene log at position {insert_order}")
+
+    return {
+        "success": True,
+        "scene_log": new_log.data[0] if new_log.data else None,
+        "scene_number": scene["scene_number"],
+        "message": f"Scene {scene['scene_number']} added to Hot Set",
+    }
+
+
+@router.post("/hot-set/sessions/{session_id}/activities")
+async def create_activity(
+    session_id: str,
+    body: CreateActivityRequest,
+    authorization: str = Header(None)
+):
+    """
+    Create a new activity/schedule block in the Hot Set.
+    """
+    import uuid
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session
+    session = client.table("backlot_hot_set_sessions").select("project_id").eq(
+        "id", session_id
+    ).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Get defaults for the block type
+    defaults = ACTIVITY_DEFAULTS.get(body.block_type, ACTIVITY_DEFAULTS['activity'])
+    name = body.name or defaults['name']
+    duration = body.expected_duration_minutes or defaults['duration']
+
+    # Determine sort order
+    if body.insert_after_id:
+        after_scene = client.table("backlot_hot_set_scene_logs").select("sort_order").eq(
+            "id", body.insert_after_id
+        ).execute()
+        after_block = client.table("backlot_hot_set_schedule_blocks").select("sort_order").eq(
+            "id", body.insert_after_id
+        ).execute()
+
+        if after_scene.data:
+            insert_order = after_scene.data[0]["sort_order"] + 1
+        elif after_block.data:
+            insert_order = after_block.data[0]["sort_order"] + 1
+        else:
+            insert_order = 0
+
+        # Shift existing items down
+        client.table("backlot_hot_set_scene_logs").update({
+            "sort_order": "sort_order + 1"
+        }).eq("session_id", session_id).gte("sort_order", insert_order).execute()
+        client.table("backlot_hot_set_schedule_blocks").update({
+            "sort_order": "sort_order + 1"
+        }).eq("session_id", session_id).gte("sort_order", insert_order).execute()
+    else:
+        # Add at the end
+        max_scene = client.table("backlot_hot_set_scene_logs").select("sort_order").eq(
+            "session_id", session_id
+        ).order("sort_order", desc=True).limit(1).execute()
+        max_block = client.table("backlot_hot_set_schedule_blocks").select("sort_order").eq(
+            "session_id", session_id
+        ).order("sort_order", desc=True).limit(1).execute()
+
+        max_order = max(
+            max_scene.data[0]["sort_order"] if max_scene.data else -1,
+            max_block.data[0]["sort_order"] if max_block.data else -1
+        )
+        insert_order = max_order + 1
+
+    # Create schedule block
+    new_block = client.table("backlot_hot_set_schedule_blocks").insert({
+        "id": str(uuid.uuid4()),
+        "session_id": session_id,
+        "block_type": body.block_type,
+        "expected_duration_minutes": duration,
+        "name": name,
+        "location_name": body.location_name,
+        "notes": body.notes,
+        "sort_order": insert_order,
+        "status": "pending",
+    }).execute()
+
+    logger.info(f"[HotSet] Created activity '{name}' at position {insert_order}")
+
+    return {
+        "success": True,
+        "block": new_block.data[0] if new_block.data else None,
+        "message": f"Activity '{name}' added to schedule",
+    }
+
+
+@router.delete("/hot-set/sessions/{session_id}/scenes/{log_id}")
+async def remove_scene_from_hot_set(
+    session_id: str,
+    log_id: str,
+    remove_from_day: bool = Query(False, description="Also remove from production day assignment"),
+    authorization: str = Header(None)
+):
+    """
+    Remove a scene from the Hot Set schedule.
+    Optionally also remove it from the production day assignment.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session
+    session = client.table("backlot_hot_set_sessions").select(
+        "project_id, production_day_id"
+    ).eq("id", session_id).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+    production_day_id = session.data[0]["production_day_id"]
+
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Get scene log
+    scene_log = client.table("backlot_hot_set_scene_logs").select("*").eq(
+        "id", log_id
+    ).eq("session_id", session_id).execute()
+
+    if not scene_log.data:
+        raise HTTPException(status_code=404, detail="Scene log not found")
+
+    scene_data = scene_log.data[0]
+
+    # Don't allow removing completed or in_progress scenes
+    if scene_data.get("status") in ["completed", "in_progress"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove scene with status '{scene_data.get('status')}'"
+        )
+
+    # Delete the scene log
+    client.table("backlot_hot_set_scene_logs").delete().eq("id", log_id).execute()
+    logger.info(f"[HotSet] Removed scene log {log_id}")
+
+    # Optionally remove from production day assignment
+    if remove_from_day and scene_data.get("scene_number"):
+        # Find the backlot_scenes entry by scene_number and remove from production day
+        scene_result = client.table("backlot_scenes").select("id").eq(
+            "project_id", project_id
+        ).eq("scene_number", scene_data["scene_number"]).execute()
+
+        if scene_result.data:
+            scene_id = scene_result.data[0]["id"]
+            client.table("backlot_production_day_scenes").delete().eq(
+                "scene_id", scene_id
+            ).eq("production_day_id", production_day_id).execute()
+            logger.info(f"[HotSet] Also removed scene from production day assignment")
+
+    return {
+        "success": True,
+        "scene_number": scene_data.get("scene_number"),
+        "message": f"Scene {scene_data.get('scene_number', log_id)} removed from Hot Set",
+    }
+
+
+@router.delete("/hot-set/sessions/{session_id}/activities/{block_id}")
+async def remove_activity_from_hot_set(
+    session_id: str,
+    block_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Remove an activity/schedule block from the Hot Set.
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session
+    session = client.table("backlot_hot_set_sessions").select("project_id").eq(
+        "id", session_id
+    ).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Get schedule block
+    block = client.table("backlot_hot_set_schedule_blocks").select("*").eq(
+        "id", block_id
+    ).eq("session_id", session_id).execute()
+
+    if not block.data:
+        raise HTTPException(status_code=404, detail="Schedule block not found")
+
+    block_data = block.data[0]
+
+    # Don't allow removing completed or in_progress blocks
+    if block_data.get("status") in ["completed", "in_progress"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot remove block with status '{block_data.get('status')}'"
+        )
+
+    # Delete the schedule block
+    client.table("backlot_hot_set_schedule_blocks").delete().eq("id", block_id).execute()
+    logger.info(f"[HotSet] Removed schedule block {block_id}")
+
+    return {
+        "success": True,
+        "block_type": block_data.get("block_type"),
+        "name": block_data.get("name"),
+        "message": f"Activity '{block_data.get('name', block_id)}' removed from schedule",
+    }
+
+
+# =============================================================================
+# SWAP SCENES (Phase 2)
+# =============================================================================
+
+@router.post("/hot-set/sessions/{session_id}/scenes/swap")
+async def swap_scenes(
+    session_id: str,
+    body: SwapScenesRequest,
+    authorization: str = Header(None)
+):
+    """
+    Swap a scene in the current Hot Set with a scene from another production day.
+    The scene being removed goes to the source day, and the scene being added comes to this day.
+    """
+    import uuid
+    import logging
+    logger = logging.getLogger(__name__)
+
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    # Get session
+    session = client.table("backlot_hot_set_sessions").select(
+        "project_id, production_day_id"
+    ).eq("id", session_id).execute()
+
+    if not session.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    project_id = session.data[0]["project_id"]
+    current_day_id = session.data[0]["production_day_id"]
+
+    if not await verify_project_edit(client, project_id, user["id"]):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    # Get the scene log to be removed
+    scene_log = client.table("backlot_hot_set_scene_logs").select("*").eq(
+        "id", body.scene_to_remove_id
+    ).eq("session_id", session_id).execute()
+
+    if not scene_log.data:
+        raise HTTPException(status_code=404, detail="Scene to remove not found in Hot Set")
+
+    removed_scene_data = scene_log.data[0]
+    removed_sort_order = removed_scene_data["sort_order"]
+    removed_schedule_position = removed_scene_data.get("schedule_position")
+
+    # Don't allow swapping completed or in_progress scenes
+    if removed_scene_data.get("status") in ["completed", "in_progress"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot swap scene with status '{removed_scene_data.get('status')}'"
+        )
+
+    # Get the scene to be added
+    new_scene = client.table("backlot_scenes").select("*").eq(
+        "id", body.scene_to_add_id
+    ).execute()
+
+    if not new_scene.data:
+        raise HTTPException(status_code=404, detail="Scene to add not found")
+
+    new_scene_data = new_scene.data[0]
+
+    logger.info(f"[HotSet] Swapping scene {removed_scene_data['scene_number']} with {new_scene_data['scene_number']}")
+    logger.info(f"[HotSet] New scene data: set_name={new_scene_data.get('set_name')}, slugline={new_scene_data.get('slugline')}, description={new_scene_data.get('description')}")
+
+    # Find the scene_id of the removed scene (by scene_number match)
+    removed_scene_number = removed_scene_data["scene_number"]
+    logger.info(f"[HotSet] Looking up scene_id for scene_number '{removed_scene_number}' in project {project_id}")
+
+    removed_scene = client.table("backlot_scenes").select("id, scene_number").eq(
+        "project_id", project_id
+    ).eq("scene_number", removed_scene_number).execute()
+
+    if not removed_scene.data:
+        # Try case-insensitive match by fetching all scenes and matching
+        logger.warning(f"[HotSet] No exact match for scene_number '{removed_scene_number}', trying fuzzy match")
+        all_scenes = client.table("backlot_scenes").select("id, scene_number").eq(
+            "project_id", project_id
+        ).execute()
+        for s in (all_scenes.data or []):
+            if str(s.get("scene_number", "")).strip().lower() == str(removed_scene_number).strip().lower():
+                removed_scene.data = [s]
+                logger.info(f"[HotSet] Found fuzzy match: {s['scene_number']}")
+                break
+
+    if removed_scene.data:
+        logger.info(f"[HotSet] Found scene_id {removed_scene.data[0]['id']} for scene_number '{removed_scene_number}'")
+    else:
+        logger.warning(f"[HotSet] Could not find scene_id for scene_number '{removed_scene_number}' - scene won't be moved to source day")
+
+    # Step 1: Remove new scene from source production day
+    logger.info(f"[HotSet] Step 1: Removing scene {body.scene_to_add_id} from source day {body.source_production_day_id}")
+    client.table("backlot_production_day_scenes").delete().eq(
+        "scene_id", body.scene_to_add_id
+    ).eq("production_day_id", body.source_production_day_id).execute()
+
+    # Step 2: Add removed scene to source production day
+    if removed_scene.data:
+        removed_scene_id = removed_scene.data[0]["id"]
+        logger.info(f"[HotSet] Step 2: Adding scene {removed_scene_id} (scene {removed_scene_number}) to source day {body.source_production_day_id}")
+        # Get max sort_order for source day
+        max_order_result = client.table("backlot_production_day_scenes").select(
+            "sort_order"
+        ).eq("production_day_id", body.source_production_day_id).order("sort_order", desc=True).limit(1).execute()
+
+        new_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
+
+        client.table("backlot_production_day_scenes").insert({
+            "id": str(uuid.uuid4()),
+            "production_day_id": body.source_production_day_id,
+            "scene_id": removed_scene_id,
+            "sort_order": new_sort_order,
+            "estimated_duration": removed_scene_data.get("estimated_minutes") or 30,
+        }).execute()
+
+    # Step 3: Remove old scene from current production day (if it exists)
+    if removed_scene.data:
+        client.table("backlot_production_day_scenes").delete().eq(
+            "scene_id", removed_scene.data[0]["id"]
+        ).eq("production_day_id", current_day_id).execute()
+
+    # Step 4: Add new scene to current production day
+    max_order_result = client.table("backlot_production_day_scenes").select(
+        "sort_order"
+    ).eq("production_day_id", current_day_id).order("sort_order", desc=True).limit(1).execute()
+
+    new_day_sort_order = (max_order_result.data[0]["sort_order"] + 1) if max_order_result.data else 0
+
+    client.table("backlot_production_day_scenes").insert({
+        "id": str(uuid.uuid4()),
+        "production_day_id": current_day_id,
+        "scene_id": body.scene_to_add_id,
+        "sort_order": new_day_sort_order,
+    }).execute()
+
+    # Step 5: Delete the old scene log
+    logger.info(f"[HotSet] Deleting old scene log {body.scene_to_remove_id}")
+    client.table("backlot_hot_set_scene_logs").delete().eq("id", body.scene_to_remove_id).execute()
+
+    # Step 6: Create new scene log at the same position
+    logger.info(f"[HotSet] Creating new scene log for {new_scene_data['scene_number']} at sort_order {removed_sort_order}, schedule_position {removed_schedule_position}")
+    try:
+        insert_data = {
+            "session_id": session_id,
+            "scene_number": new_scene_data["scene_number"],
+            "set_name": new_scene_data.get("set_name") or new_scene_data.get("slugline"),
+            "int_ext": new_scene_data.get("int_ext"),
+            "description": new_scene_data.get("description") or new_scene_data.get("slugline"),
+            "estimated_minutes": new_scene_data.get("estimated_duration") or 30,
+            "sort_order": removed_sort_order,
+            "status": "pending",
+        }
+        # Preserve schedule_position if it was set
+        if removed_schedule_position is not None:
+            insert_data["schedule_position"] = removed_schedule_position
+
+        new_log = client.table("backlot_hot_set_scene_logs").insert(insert_data).execute()
+        logger.info(f"[HotSet] Insert result: {new_log.data}")
+
+        if not new_log.data:
+            logger.error("[HotSet] Insert returned no data - scene log may not have been created")
+            raise HTTPException(status_code=500, detail="Failed to create new scene log")
+    except Exception as e:
+        logger.error(f"[HotSet] Error creating scene log: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create new scene log: {str(e)}")
+
+    logger.info(f"[HotSet] Swap complete - new log id: {new_log.data[0]['id'] if new_log.data else 'NONE'}")
+
+    return {
+        "success": True,
+        "removed_scene": {
+            "scene_number": removed_scene_data["scene_number"],
+            "moved_to_day_id": body.source_production_day_id,
+        },
+        "added_scene": {
+            "scene_number": new_scene_data["scene_number"],
+            "log_id": new_log.data[0]["id"] if new_log.data else None,
+        },
+        "message": f"Swapped scene {removed_scene_data['scene_number']} with {new_scene_data['scene_number']}",
+    }
+
+
+@router.get("/hot-set/sessions/{session_id}/swap-suggestions")
+async def get_swap_suggestions(
+    session_id: str,
+    scene_id: str = Query(..., description="Scene log ID to get swap suggestions for"),
+    authorization: str = Header(None)
+):
+    """
+    Get swap suggestions for a scene.
+    Returns scenes from other days that could be good swap candidates based on:
+    - Similar duration (within 15 minutes)
+    - Same set/location
+    - Available on adjacent days
+    """
+    import traceback
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        user = await get_current_user_from_token(authorization)
+        client = get_client()
+
+        # Get session
+        session = client.table("backlot_hot_set_sessions").select(
+            "project_id, production_day_id"
+        ).eq("id", session_id).execute()
+
+        if not session.data:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        project_id = session.data[0]["project_id"]
+        current_day_id = session.data[0]["production_day_id"]
+
+        if not await verify_project_access(client, project_id, user["id"]):
+            raise HTTPException(status_code=403, detail="Not a project member")
+
+        # Get the scene log
+        scene_log = client.table("backlot_hot_set_scene_logs").select("*").eq(
+            "id", scene_id
+        ).eq("session_id", session_id).execute()
+
+        if not scene_log.data:
+            raise HTTPException(status_code=404, detail="Scene not found")
+
+        scene_data = scene_log.data[0]
+        scene_duration = scene_data.get("estimated_minutes") or 30
+        scene_set = (scene_data.get("set_name") or "").strip().lower()
+        scene_int_ext = (scene_data.get("int_ext") or "").strip().upper()
+        scene_time_of_day = (scene_data.get("time_of_day") or "").strip().upper()
+        scene_page_length = scene_data.get("page_length") or 0
+
+        # Get current day number
+        current_day = client.table("backlot_production_days").select("day_number").eq(
+            "id", current_day_id
+        ).execute()
+        current_day_number = current_day.data[0]["day_number"] if current_day.data else 0
+
+        # Get all other production days
+        other_days = client.table("backlot_production_days").select(
+            "id, day_number, date, title"
+        ).eq("project_id", project_id).neq("id", current_day_id).order("day_number").execute()
+
+        # Get wrapped sessions to exclude those days
+        wrapped_sessions = client.table("backlot_hot_set_sessions").select(
+            "production_day_id"
+        ).eq("project_id", project_id).eq("status", "wrapped").execute()
+        wrapped_day_ids = {s["production_day_id"] for s in (wrapped_sessions.data or []) if s.get("production_day_id")}
+
+        suggestions = []
+        for day in other_days.data or []:
+            # Skip wrapped days
+            if day["id"] in wrapped_day_ids:
+                continue
+
+            is_adjacent = abs(day["day_number"] - current_day_number) <= 1
+
+            # Get scene assignments from this day (no nested joins)
+            day_scenes = client.table("backlot_production_day_scenes").select(
+                "id, scene_id, estimated_duration"
+            ).eq("production_day_id", day["id"]).execute()
+
+            if not day_scenes.data:
+                continue
+
+            # Get scene IDs and fetch scene details separately
+            scene_ids = [ds["scene_id"] for ds in day_scenes.data if ds.get("scene_id")]
+            if not scene_ids:
+                continue
+
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, slugline, set_name, description, int_ext, time_of_day, page_length"
+            ).in_("id", scene_ids).execute()
+
+            # Build lookup map
+            scene_map = {s["id"]: s for s in (scenes_result.data or [])}
+
+            for ds in day_scenes.data:
+                scene = scene_map.get(ds.get("scene_id"), {})
+                if not scene:
+                    continue
+
+                other_duration = ds.get("estimated_duration") or 30
+                other_set = (scene.get("set_name") or scene.get("slugline") or "").strip().lower()
+                other_int_ext = (scene.get("int_ext") or "").strip().upper()
+                other_time_of_day = (scene.get("time_of_day") or "").strip().upper()
+                other_page_length = scene.get("page_length") or 0
+
+                # Calculate match score with weighted criteria
+                # Max possible score: 100 (for a perfect match)
+                match_score = 0
+                reasons = []
+
+                # 1. Duration similarity (max 35 points)
+                # Most important for schedule impact
+                duration_diff = abs(scene_duration - other_duration)
+                if duration_diff == 0:
+                    match_score += 35
+                    reasons.append("Exact duration match")
+                elif duration_diff <= 5:
+                    match_score += 30
+                    reasons.append(f"Very similar duration ({other_duration}m)")
+                elif duration_diff <= 10:
+                    match_score += 20
+                    reasons.append(f"Similar duration ({other_duration}m)")
+                elif duration_diff <= 15:
+                    match_score += 10
+                    reasons.append(f"Close duration ({other_duration}m)")
+                elif duration_diff <= 20:
+                    match_score += 5
+                    # No reason added for marginal matches
+
+                # 2. Same set/location (max 25 points)
+                # Important for crew efficiency - same setup
+                if scene_set and other_set and scene_set == other_set:
+                    match_score += 25
+                    reasons.append("Same set/location")
+                elif scene_set and other_set:
+                    # Partial match - check if one contains the other
+                    if scene_set in other_set or other_set in scene_set:
+                        match_score += 10
+                        reasons.append("Related location")
+
+                # 3. Same INT/EXT (max 15 points)
+                # Affects lighting and equipment needs
+                if scene_int_ext and other_int_ext and scene_int_ext == other_int_ext:
+                    match_score += 15
+                    reasons.append(f"Same INT/EXT ({other_int_ext})")
+                elif scene_int_ext and other_int_ext:
+                    # Partial match for INT/EXT combinations
+                    if "INT" in scene_int_ext and "INT" in other_int_ext:
+                        match_score += 8
+                    elif "EXT" in scene_int_ext and "EXT" in other_int_ext:
+                        match_score += 8
+
+                # 4. Same time of day (max 15 points)
+                # DAY/NIGHT affects lighting dramatically
+                if scene_time_of_day and other_time_of_day:
+                    if scene_time_of_day == other_time_of_day:
+                        match_score += 15
+                        reasons.append(f"Same time of day ({other_time_of_day})")
+                    elif ("DAY" in scene_time_of_day and "DAY" in other_time_of_day) or \
+                         ("NIGHT" in scene_time_of_day and "NIGHT" in other_time_of_day):
+                        match_score += 8
+                        reasons.append("Similar lighting conditions")
+
+                # 5. Adjacent day bonus (max 10 points)
+                # Continuity and scheduling flexibility
+                if is_adjacent:
+                    match_score += 10
+                    reasons.append("Adjacent day")
+
+                # 6. Similar page length/complexity (bonus, max 5 points)
+                if scene_page_length and other_page_length:
+                    page_diff = abs(scene_page_length - other_page_length)
+                    if page_diff <= 0.125:  # 1/8 page difference
+                        match_score += 5
+                        reasons.append("Similar complexity")
+                    elif page_diff <= 0.5:  # Half page difference
+                        match_score += 2
+
+                # Only include if there's meaningful match (at least one significant criterion)
+                # Threshold of 10 ensures at least one real criterion matched
+                if match_score >= 10:
+                    suggestions.append({
+                        "scene_id": scene.get("id"),
+                        "scene_number": scene.get("scene_number"),
+                        "set_name": scene.get("set_name") or scene.get("slugline"),
+                        "description": scene.get("description"),
+                        "int_ext": scene.get("int_ext"),
+                        "time_of_day": scene.get("time_of_day"),
+                        "estimated_minutes": other_duration,
+                        "page_length": other_page_length,
+                        "production_day_id": day["id"],
+                        "day_number": day["day_number"],
+                        "date": day["date"],
+                        "match_score": match_score,
+                        "match_reasons": reasons,
+                    })
+
+        # Sort by match score (highest first)
+        suggestions.sort(key=lambda x: x["match_score"], reverse=True)
+
+        return {
+            "scene": {
+                "id": scene_id,
+                "scene_number": scene_data["scene_number"],
+                "set_name": scene_set,
+                "estimated_minutes": scene_duration,
+            },
+            "suggestions": suggestions[:10],  # Return top 10 suggestions
+        }
+    except Exception as e:
+        logger.error(f"Error in get_swap_suggestions: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")

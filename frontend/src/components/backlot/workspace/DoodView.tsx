@@ -11,7 +11,7 @@
  * - Publish snapshot
  * - Export CSV
  */
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -87,6 +87,7 @@ import {
   AvailableContact,
   AvailableTeamMember,
 } from '@/hooks/backlot';
+import { useSocket } from '@/context/SocketContext';
 
 interface DoodViewProps {
   projectId: string;
@@ -132,6 +133,8 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectType, setNewSubjectType] = useState<string>('CAST');
   const [newSubjectDept, setNewSubjectDept] = useState('');
+  const [newSubjectRateType, setNewSubjectRateType] = useState<'hourly' | 'daily' | 'weekly' | 'flat' | ''>('');
+  const [newSubjectRateAmount, setNewSubjectRateAmount] = useState<string>('');
 
   // Delete confirmation state
   const [deleteSubjectId, setDeleteSubjectId] = useState<string | null>(null);
@@ -166,6 +169,25 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   const upsertAssignment = useUpsertDoodAssignment(projectId);
   const publishDood = usePublishDood(projectId);
 
+  // Socket listener for real-time DOOD updates
+  const { socket } = useSocket();
+
+  useEffect(() => {
+    if (!socket || !projectId) return;
+
+    const handleDoodUpdate = (data: { project_id: string; sync_type: string }) => {
+      if (data.project_id === projectId) {
+        // Refetch DOOD data when changes occur
+        refetch();
+      }
+    };
+
+    socket.on('dood_updated', handleDoodUpdate);
+    return () => {
+      socket.off('dood_updated', handleDoodUpdate);
+    };
+  }, [socket, projectId, refetch]);
+
   // Build assignment lookup map
   const assignmentMap = useMemo(() => {
     const map = new Map<string, DoodAssignment>();
@@ -197,20 +219,25 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
       return;
     }
     try {
+      const rateAmount = newSubjectRateAmount ? parseFloat(newSubjectRateAmount) : undefined;
       await createSubject.mutateAsync({
         display_name: newSubjectName.trim(),
         subject_type: newSubjectType,
         department: newSubjectDept.trim() || undefined,
+        rate_type: newSubjectRateType || undefined,
+        rate_amount: rateAmount && !isNaN(rateAmount) ? rateAmount : undefined,
       });
       setNewSubjectName('');
       setNewSubjectType('CAST');
       setNewSubjectDept('');
+      setNewSubjectRateType('');
+      setNewSubjectRateAmount('');
       setShowAddSubject(false);
       toast.success('Subject added');
     } catch (err: any) {
       toast.error(err.message || 'Failed to add subject');
     }
-  }, [createSubject, newSubjectName, newSubjectType, newSubjectDept]);
+  }, [createSubject, newSubjectName, newSubjectType, newSubjectDept, newSubjectRateType, newSubjectRateAmount]);
 
   const handleAddSelectedSubjects = useCallback(async () => {
     if (selectedSubjects.size === 0) {
@@ -1062,6 +1089,35 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                       placeholder="e.g., Camera, Art, Production"
                     />
                   </div>
+                  <div className="space-y-2">
+                    <Label>Pay Rate (Optional)</Label>
+                    <div className="flex gap-2">
+                      <Select value={newSubjectRateType} onValueChange={(v) => setNewSubjectRateType(v as any)}>
+                        <SelectTrigger className="w-28">
+                          <SelectValue placeholder="Type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">None</SelectItem>
+                          <SelectItem value="hourly">Hourly</SelectItem>
+                          <SelectItem value="daily">Daily</SelectItem>
+                          <SelectItem value="weekly">Weekly</SelectItem>
+                          <SelectItem value="flat">Flat</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                        <Input
+                          type="number"
+                          value={newSubjectRateAmount}
+                          onChange={(e) => setNewSubjectRateAmount(e.target.value)}
+                          placeholder="0.00"
+                          className="pl-7"
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                    </div>
+                  </div>
                   <Button
                     onClick={() => {
                       handleAddSubject();
@@ -1143,6 +1199,38 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                 onChange={(e) => setNewSubjectDept(e.target.value)}
                 placeholder="e.g., Camera, Art, Production"
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Pay Rate (Optional)</Label>
+              <p className="text-xs text-muted-gray">
+                Used for Hot Set OT calculations when no other rate is defined.
+              </p>
+              <div className="flex gap-2">
+                <Select value={newSubjectRateType} onValueChange={(v) => setNewSubjectRateType(v as any)}>
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">None</SelectItem>
+                    <SelectItem value="hourly">Hourly</SelectItem>
+                    <SelectItem value="daily">Daily</SelectItem>
+                    <SelectItem value="weekly">Weekly</SelectItem>
+                    <SelectItem value="flat">Flat</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray">$</span>
+                  <Input
+                    type="number"
+                    value={newSubjectRateAmount}
+                    onChange={(e) => setNewSubjectRateAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="pl-7"
+                    min="0"
+                    step="0.01"
+                  />
+                </div>
+              </div>
             </div>
           </div>
           <DialogFooter>
