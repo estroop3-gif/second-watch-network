@@ -1943,6 +1943,7 @@ export interface HotSetOTConfig {
 export interface HotSetSettings {
   id: string;
   project_id: string;
+  timezone?: string | null;  // IANA timezone (e.g., "America/Los_Angeles")
   auto_start_enabled: boolean;
   auto_start_minutes_before_call: number;
   notifications_enabled: boolean;
@@ -1958,6 +1959,7 @@ export interface HotSetSettings {
 
 // Hot Set settings update payload
 export interface HotSetSettingsUpdate {
+  timezone?: string | null;  // IANA timezone (e.g., "America/Los_Angeles")
   auto_start_enabled?: boolean;
   auto_start_minutes_before_call?: number;
   notifications_enabled?: boolean;
@@ -5641,7 +5643,6 @@ export interface BacklotTaskComment {
   task_id: string;
   user_id: string;
   content: string;
-  is_edited: boolean;
   created_at: string;
   updated_at: string;
   // Joined data
@@ -6032,7 +6033,7 @@ export interface ReviewNote {
 export interface ReviewAssetInput {
   name: string;
   description?: string | null;
-  video_url: string;
+  video_url?: string;
   video_provider?: VideoProvider;
   external_video_id?: string | null;
   thumbnail_url?: string | null;
@@ -6257,7 +6258,7 @@ export function parseTimecode(timecode: string): number | null {
 // =====================================================
 
 export type UnifiedAssetSource = 'dailies' | 'review' | 'standalone';
-export type StandaloneAssetType = 'audio' | '3d_model' | 'image' | 'document' | 'graphics' | 'music' | 'sfx' | 'other';
+export type StandaloneAssetType = 'audio' | '3d_model' | 'image' | 'document' | 'graphics' | 'music' | 'sfx' | 'video' | 'video_link' | 'other';
 export type AssetFolderType = 'audio' | '3d' | 'graphics' | 'documents' | 'mixed';
 
 export interface UnifiedAsset {
@@ -6285,8 +6286,8 @@ export interface StandaloneAsset {
   name: string;
   description: string | null;
   asset_type: StandaloneAssetType;
-  file_name: string;
-  s3_key: string;
+  file_name: string | null;
+  s3_key: string | null;
   file_size_bytes: number | null;
   mime_type: string | null;
   duration_seconds: number | null;
@@ -6297,14 +6298,17 @@ export interface StandaloneAsset {
   created_by_user_id: string | null;
   created_at: string;
   updated_at: string;
+  source_url: string | null;
+  video_provider: string | null;
+  external_video_id: string | null;
 }
 
 export interface StandaloneAssetInput {
   name: string;
   description?: string | null;
   asset_type: StandaloneAssetType;
-  file_name: string;
-  s3_key: string;
+  file_name?: string;
+  s3_key?: string;
   file_size_bytes?: number | null;
   mime_type?: string | null;
   duration_seconds?: number | null;
@@ -6312,6 +6316,9 @@ export interface StandaloneAssetInput {
   tags?: string[];
   metadata?: Record<string, unknown>;
   folder_id?: string | null;
+  source_url?: string;
+  video_provider?: string;
+  external_video_id?: string;
 }
 
 export interface AssetFolder {
@@ -6576,6 +6583,7 @@ export interface BacklotDailiesClip {
   shot_id?: string | null;
   notes?: string | null;
   thumbnail_url?: string | null;
+  production_day_id?: string | null;
   created_by_user_id: string;
   created_at: string;
   updated_at: string;
@@ -7368,6 +7376,25 @@ export interface DealMemo {
   created_at: string;
   updated_at: string;
 
+  // PDF & In-App Signing
+  template_id: string | null;
+  template_type: 'crew' | 'talent' | null;
+  pdf_s3_key: string | null;
+  signed_pdf_s3_key: string | null;
+  signature_request_token: string | null;
+  signing_ip: string | null;
+  signing_user_agent: string | null;
+  signature_type: 'draw' | 'type' | 'saved' | null;
+  signature_data: string | null;
+  signed_at: string | null;
+  sent_at: string | null;
+  viewed_at: string | null;
+  performer_category: string | null;
+  usage_rights: Record<string, unknown> | null;
+  signer_name: string | null;
+  signer_email: string | null;
+  email_message: string | null;
+
   // Joined data
   user?: BacklotProfile;
   role?: {
@@ -7395,6 +7422,19 @@ export interface DealMemoInput {
   end_date?: string | null;
   additional_terms?: Record<string, unknown>;
   notes?: string | null;
+  template_type?: 'crew' | 'talent';
+  performer_category?: string | null;
+  usage_rights?: Record<string, unknown> | null;
+  signer_name?: string | null;
+  signer_email?: string | null;
+}
+
+export interface DealMemoTemplate {
+  id: string;
+  name: string;
+  template_type: string;
+  is_system_template: boolean;
+  field_schema: Record<string, unknown>;
 }
 
 export interface DealMemoResponse {

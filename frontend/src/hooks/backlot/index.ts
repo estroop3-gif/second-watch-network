@@ -7,9 +7,11 @@ export {
   useProjects,
   useProject,
   useProjectBySlug,
-  useProjectMembers,
   useProjectPermission,
 } from './useProjects';
+
+// Project Members (from useProjectAccess - uses working backend API)
+export { useProjectMembers } from './useProjectAccess';
 
 // Optimized Project Dashboard (single API call for overview)
 export { useProjectDashboard } from './useProjectDashboard';
@@ -72,6 +74,9 @@ export {
   useHourSchedule,
   useSaveHourSchedule,
   useSyncHourSchedule,
+  // Production Day AD Notes
+  useProductionDayAdNotes,
+  useUpdateProductionDayAdNotes,
 } from './useSchedule';
 export type {
   BacklotSavedCallSheetTemplate,
@@ -533,6 +538,10 @@ export {
   // Tasks
   useTaskListTasks,
   useTaskDetail,
+  // Assignees
+  useTaskAssignees,
+  // Label Links
+  useTaskLabelLinks,
   // Comments
   useTaskComments,
   // Views
@@ -584,15 +593,24 @@ export {
   useUnlinkedProductionDays,
   useImportProductionDays,
   useLinkedProductionDay,
+  // Production Day View (Auto-Import)
+  useDailiesProductionDayView,
+  useEnsureDailiesDay,
   // Media Library
   useMediaLibrary,
   useProjectCameras,
   useProjectScenes,
+  // Production Day Clips (direct clip-to-day linking)
+  useProductionDayClips,
+  useAssignClipsToDay,
+  useUnassignClipsFromDay,
   // Types
   type MediaLibraryFilters,
   type MediaLibrarySortBy,
   type MediaLibrarySortOrder,
   type MediaLibraryClipWithContext,
+  type DailiesProductionDayView,
+  type EnsureDailiesDayResult,
 } from './useDailies';
 
 // Backlot Project Roles & View Config
@@ -1128,6 +1146,7 @@ export {
   useCompleteScene,
   useSkipScene,
   useReorderScenes,
+  useReorderSchedule,
   useHotSetMarkers,
   useAddMarker,
   useHotSetDashboard,
@@ -1161,9 +1180,26 @@ export {
   findCurrentActivity,
   findNextActivity,
   getScheduleVariance,
+  // Schedule Modification hooks (Phase 1 & 2)
+  HOT_SET_MODIFICATION_KEYS,
+  useAvailableScenes,
+  useAddSceneToHotSet,
+  useCreateActivity,
+  useRemoveSceneFromHotSet,
+  useRemoveActivity,
+  useSwapScenes,
+  useSwapSuggestions,
+  // Activity defaults
+  ACTIVITY_DEFAULTS,
 } from './useHotSet';
 
-export type { WrapReportData } from './useHotSet';
+export type {
+  WrapReportData,
+  AvailableScene,
+  AvailableScenesDay,
+  SwapSuggestion,
+  ActivityBlockType,
+} from './useHotSet';
 
 // Invoices
 export {
@@ -1762,3 +1798,53 @@ export type {
   CreateExternalSeatParams,
   UpdateExternalSeatParams,
 } from './useExternalSeats';
+
+// Embedded Player (YouTube/Vimeo timecode tracking)
+export { useEmbeddedPlayer } from './useEmbeddedPlayer';
+export type { EmbeddedPlayerState } from './useEmbeddedPlayer';
+
+// AD Notes (Version History & Comments)
+export {
+  useAdNoteEntries,
+  useAdNoteDraft,
+  useSaveAdNoteDraft,
+  usePublishAdNote,
+  useUpdateAdNoteEntry,
+  useAdNoteComments,
+  useAddAdNoteComment,
+  useUpdateAdNoteComment,
+  useDeleteAdNoteComment,
+} from './useAdNotes';
+export type {
+  AdNoteEntry,
+  AdNoteComment,
+  AdNoteEntryCreator,
+} from './useAdNotes';
+
+// Deal Memo PDF & Signing
+export {
+  useGenerateDealMemoPDF,
+  useDealMemoPDFUrl,
+  useSendDealMemo,
+  useDealMemoSigningData,
+  useSignDealMemo,
+  useDealMemoTemplates,
+  useEncryptDealMemoFields,
+} from './useDealMemoPDF';
+
+// Onboarding Wizard
+export {
+  useOnboardingSession,
+  useOnboardingSessionByToken,
+  useStartOnboarding,
+  useCompleteStep,
+  useSaveStepProgress,
+  useCompleteOnboarding,
+  useOnboardingSummary,
+  useSaveToProfile,
+} from './useOnboarding';
+export type {
+  OnboardingSession,
+  OnboardingStep,
+  FormFieldSchema,
+} from './useOnboarding';

@@ -58,3 +58,6 @@ export * as e2eeCrypto from './crypto';
 
 // Storage (for advanced usage)
 export * as e2eeStorage from './storage';
+
+// Document encryption (AES-256-GCM for PDFs, fields, and key envelopes)
+export * as documentCrypto from './documentCrypto';

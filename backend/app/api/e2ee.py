@@ -366,3 +366,81 @@ async def get_session_status(peer_id: str, user_id: str):
     except Exception as e:
         logger.error(f"Error getting session status: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ============================================================================
+# DOCUMENT ENCRYPTION (E2EE for documents like deal memos, clearances)
+# ============================================================================
+
+class DocumentKeyEnvelope(BaseModel):
+    """Encrypted document key for a specific recipient"""
+    document_type: str  # 'deal_memo', 'clearance', 'onboarding_field'
+    document_id: str
+    recipient_user_id: str
+    encrypted_document_key: str  # Base64 encoded
+    nonce: str  # Base64 encoded
+
+
+class DocumentKeyEnvelopeBatch(BaseModel):
+    """Batch of key envelopes for multiple recipients"""
+    envelopes: List[DocumentKeyEnvelope]
+
+
+@router.post("/keys/encrypt-for-document")
+async def store_document_key_envelopes(batch: DocumentKeyEnvelopeBatch, user_id: str):
+    """
+    Store encrypted key envelopes for document recipients.
+    Called when a producer encrypts a document and creates key envelopes
+    for each authorized recipient (including themselves).
+    """
+    try:
+        client = get_client()
+
+        for envelope in batch.envelopes:
+            client.table("e2ee_document_keys").upsert({
+                "document_type": envelope.document_type,
+                "document_id": envelope.document_id,
+                "recipient_user_id": envelope.recipient_user_id,
+                "encrypted_document_key": envelope.encrypted_document_key,
+                "nonce": envelope.nonce,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="document_type,document_id,recipient_user_id").execute()
+
+        return {"status": "ok", "count": len(batch.envelopes)}
+
+    except Exception as e:
+        logger.error(f"Error storing document key envelopes: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/keys/document-key/{document_type}/{document_id}")
+async def get_document_key_envelope(document_type: str, document_id: str, user_id: str):
+    """
+    Get the encrypted key envelope for the requesting user for a specific document.
+    The user will decrypt this with their private key to get the document encryption key.
+    """
+    try:
+        client = get_client()
+
+        response = client.table("e2ee_document_keys").select(
+            "encrypted_document_key, nonce"
+        ).eq("document_type", document_type).eq(
+            "document_id", document_id
+        ).eq("recipient_user_id", user_id).single().execute()
+
+        if not response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="No key envelope found for this document and user"
+            )
+
+        return {
+            "encrypted_document_key": response.data["encrypted_document_key"],
+            "nonce": response.data["nonce"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting document key envelope: {e}")
+        raise HTTPException(status_code=400, detail=str(e))

@@ -13,6 +13,7 @@ from app.services.email_service import (
     generate_call_sheet_text
 )
 from app.services.pdf_service import generate_call_sheet_pdf as create_call_sheet_pdf
+from app.services.deal_memo_pdf_service import generate_deal_memo_pdf, generate_signed_deal_memo_pdf
 
 # Breakdown PDF service is optional - requires WeasyPrint with native libraries
 try:
@@ -17478,7 +17479,68 @@ async def save_continuity_export(
             try:
                 parsed_scene_mappings = json.loads(scene_mappings)
             except json.JSONDecodeError:
-                pass  # Ignore invalid JSON, scene_mappings is optional
+                pass  # Ignore invalid JSON, will auto-generate below
+
+        # Auto-generate scene_mappings from project scenes if not provided
+        if not parsed_scene_mappings or not parsed_scene_mappings.get("scenes"):
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, int_ext, location_hint, set_name, page_start, page_end"
+            ).eq("project_id", project_id).execute()
+            scenes_list = scenes_result.data or []
+
+            auto_scene_mappings = []
+            for scene in scenes_list:
+                raw_page_start = scene.get("page_start")
+                if raw_page_start is None:
+                    continue  # Skip scenes without page mapping
+
+                try:
+                    start_page = int(float(raw_page_start))
+                except (ValueError, TypeError):
+                    continue
+
+                int_ext = (scene.get("int_ext") or "").upper()
+                location = scene.get("location_hint") or scene.get("set_name") or ""
+                bookmark_title = f"Scene {scene.get('scene_number', '?')}"
+                if int_ext or location:
+                    bookmark_title += f" - {int_ext} {location}".strip()
+
+                auto_scene_mappings.append({
+                    "scene_number": scene.get("scene_number"),
+                    "scene_id": str(scene.get("id")),
+                    "page_number": start_page,
+                    "bookmark_title": bookmark_title
+                })
+
+            # Sort by page number
+            auto_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+
+            if auto_scene_mappings:
+                parsed_scene_mappings = {"scenes": auto_scene_mappings}
+                print(f"[IMPORT] Auto-generated scene_mappings with {len(auto_scene_mappings)} scenes from database for project {project_id}")
+
+        # If still no scene mappings and this is a script PDF, parse the PDF directly
+        if (not parsed_scene_mappings or not parsed_scene_mappings.get("scenes")) and export_type == "script":
+            try:
+                from app.utils.script_parser import parse_pdf
+                parse_result = parse_pdf(file_content)
+                if parse_result.scenes:
+                    pdf_scene_mappings = []
+                    for scene in parse_result.scenes:
+                        bookmark_title = f"Scene {scene.scene_number}"
+                        if scene.int_ext or scene.location_hint:
+                            bookmark_title += f" - {(scene.int_ext or '').upper()} {scene.location_hint or ''}".strip()
+                        pdf_scene_mappings.append({
+                            "scene_number": scene.scene_number,
+                            "scene_id": None,  # No database scene ID yet
+                            "page_number": scene.page_start or 1,
+                            "bookmark_title": bookmark_title
+                        })
+                    pdf_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+                    parsed_scene_mappings = {"scenes": pdf_scene_mappings}
+                    print(f"[IMPORT] Auto-generated scene_mappings with {len(pdf_scene_mappings)} scenes from PDF parsing for project {project_id}")
+            except Exception as e:
+                print(f"[IMPORT] Could not parse PDF for scene mappings: {e}")
 
         # Insert new export record
         export_data = {
@@ -18439,20 +18501,113 @@ async def generate_script_sides(
         master_export = master_result.data
         scene_mappings = master_export.get("scene_mappings", {})
 
+        # Auto-generate scene_mappings from project scenes if not present
         if not scene_mappings or not scene_mappings.get("scenes"):
-            raise HTTPException(
-                status_code=400,
-                detail="Master script has no scene mappings. Please re-export with scene mappings."
-            )
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, int_ext, location_hint, set_name, page_start, page_end"
+            ).eq("project_id", project_id).execute()
+            scenes_list = scenes_result.data or []
+
+            auto_scene_mappings = []
+            for scene in scenes_list:
+                raw_page_start = scene.get("page_start")
+                if raw_page_start is None:
+                    continue
+
+                try:
+                    start_page = int(float(raw_page_start))
+                except (ValueError, TypeError):
+                    continue
+
+                int_ext = (scene.get("int_ext") or "").upper()
+                location = scene.get("location_hint") or scene.get("set_name") or ""
+                bookmark_title = f"Scene {scene.get('scene_number', '?')}"
+                if int_ext or location:
+                    bookmark_title += f" - {int_ext} {location}".strip()
+
+                auto_scene_mappings.append({
+                    "scene_number": scene.get("scene_number"),
+                    "scene_id": str(scene.get("id")),
+                    "page_number": start_page,
+                    "bookmark_title": bookmark_title
+                })
+
+            auto_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+
+            if auto_scene_mappings:
+                scene_mappings = {"scenes": auto_scene_mappings}
+                # Update the export record with auto-generated mappings
+                client.table("backlot_continuity_exports").update({
+                    "scene_mappings": scene_mappings
+                }).eq("id", master_export["id"]).execute()
+                print(f"[SCRIPT SIDES] Auto-generated scene_mappings with {len(auto_scene_mappings)} scenes from database")
+            else:
+                # Fallback: Parse the master PDF directly to extract scene mappings
+                try:
+                    import boto3
+                    from io import BytesIO
+                    from app.utils.script_parser import parse_pdf
+
+                    # Download the master PDF
+                    s3_client = boto3.client("s3")
+                    file_url = master_export.get("file_url", "")
+                    if file_url.startswith("s3://"):
+                        parts = file_url[5:].split("/", 1)
+                        bucket = parts[0]
+                        key = parts[1]
+                        response = s3_client.get_object(Bucket=bucket, Key=key)
+                        pdf_content = response["Body"].read()
+
+                        # Parse the PDF for scenes
+                        parse_result = parse_pdf(pdf_content)
+                        if parse_result.scenes:
+                            pdf_scene_mappings = []
+                            for scene in parse_result.scenes:
+                                bookmark_title = f"Scene {scene.scene_number}"
+                                if scene.int_ext or scene.location_hint:
+                                    bookmark_title += f" - {(scene.int_ext or '').upper()} {scene.location_hint or ''}".strip()
+                                pdf_scene_mappings.append({
+                                    "scene_number": scene.scene_number,
+                                    "scene_id": None,
+                                    "page_number": scene.page_start or 1,
+                                    "bookmark_title": bookmark_title
+                                })
+                            pdf_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+                            scene_mappings = {"scenes": pdf_scene_mappings}
+                            # Update the export record
+                            client.table("backlot_continuity_exports").update({
+                                "scene_mappings": scene_mappings
+                            }).eq("id", master_export["id"]).execute()
+                            print(f"[SCRIPT SIDES] Auto-generated scene_mappings with {len(pdf_scene_mappings)} scenes from PDF parsing")
+                        else:
+                            raise HTTPException(
+                                status_code=400,
+                                detail="Could not detect scenes in the master script PDF."
+                            )
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Master script file not found in storage."
+                        )
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    print(f"[SCRIPT SIDES] PDF parsing fallback failed: {e}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No scenes with page mappings found and could not parse PDF."
+                    )
 
         # Find page ranges for requested scenes
         pages_to_extract = []
         scene_mapping_list = scene_mappings.get("scenes", [])
 
-        # Build a map of scene_id -> page info
+        # Build maps for both scene_id and scene_number lookups
         scene_id_to_pages = {}
+        scene_number_to_pages = {}
         for i, mapping in enumerate(scene_mapping_list):
             scene_id = mapping.get("scene_id")
+            scene_number = str(mapping.get("scene_number", ""))
             start_page = mapping.get("page_number", 1)
 
             # Calculate end page (next scene's start - 1, or use last page)
@@ -18464,16 +18619,35 @@ async def generate_script_sides(
             if end_page < start_page:
                 end_page = start_page
 
-            scene_id_to_pages[scene_id] = {
+            page_info = {
                 "start_page": start_page,
                 "end_page": end_page,
-                "scene_number": mapping.get("scene_number", "")
+                "scene_number": scene_number
             }
 
-        # Collect pages for requested scenes
+            if scene_id:
+                scene_id_to_pages[scene_id] = page_info
+            if scene_number:
+                scene_number_to_pages[scene_number] = page_info
+
+        # Get scene numbers for requested scene_ids (for fallback matching)
+        requested_scene_numbers = {}
+        if scene_ids:
+            scenes_result = client.table("backlot_scenes").select("id, scene_number").in_("id", scene_ids).execute()
+            for scene in (scenes_result.data or []):
+                requested_scene_numbers[str(scene["id"])] = str(scene.get("scene_number", ""))
+
+        # Collect pages for requested scenes (try scene_id first, then scene_number)
         for scene_id in scene_ids:
+            page_info = None
             if scene_id in scene_id_to_pages:
                 page_info = scene_id_to_pages[scene_id]
+            elif scene_id in requested_scene_numbers:
+                scene_num = requested_scene_numbers[scene_id]
+                if scene_num in scene_number_to_pages:
+                    page_info = scene_number_to_pages[scene_num]
+
+            if page_info:
                 for page in range(page_info["start_page"], page_info["end_page"] + 1):
                     if page not in pages_to_extract:
                         pages_to_extract.append(page)
@@ -18483,7 +18657,7 @@ async def generate_script_sides(
         if not pages_to_extract:
             raise HTTPException(
                 status_code=400,
-                detail="No pages found for the requested scenes"
+                detail="No pages found for the requested scenes. Scene mappings may not match database scenes."
             )
 
         # Download master PDF from S3
@@ -18671,16 +18845,99 @@ async def regenerate_script_sides(
         master_export = master_result.data
         scene_mappings = master_export.get("scene_mappings", {})
 
+        # Auto-generate scene_mappings from project scenes if not present
         if not scene_mappings or not scene_mappings.get("scenes"):
-            raise HTTPException(status_code=400, detail="Master script has no scene mappings")
+            scenes_result = client.table("backlot_scenes").select(
+                "id, scene_number, int_ext, location_hint, set_name, page_start, page_end"
+            ).eq("project_id", project_id).execute()
+            scenes_list = scenes_result.data or []
+
+            auto_scene_mappings = []
+            for scene in scenes_list:
+                raw_page_start = scene.get("page_start")
+                if raw_page_start is None:
+                    continue
+
+                try:
+                    start_page = int(float(raw_page_start))
+                except (ValueError, TypeError):
+                    continue
+
+                int_ext = (scene.get("int_ext") or "").upper()
+                location = scene.get("location_hint") or scene.get("set_name") or ""
+                bookmark_title = f"Scene {scene.get('scene_number', '?')}"
+                if int_ext or location:
+                    bookmark_title += f" - {int_ext} {location}".strip()
+
+                auto_scene_mappings.append({
+                    "scene_number": scene.get("scene_number"),
+                    "scene_id": str(scene.get("id")),
+                    "page_number": start_page,
+                    "bookmark_title": bookmark_title
+                })
+
+            auto_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+
+            if auto_scene_mappings:
+                scene_mappings = {"scenes": auto_scene_mappings}
+                client.table("backlot_continuity_exports").update({
+                    "scene_mappings": scene_mappings
+                }).eq("id", master_export["id"]).execute()
+                print(f"[REGENERATE SIDES] Auto-generated scene_mappings with {len(auto_scene_mappings)} scenes from database")
+            else:
+                # Fallback: Parse the master PDF directly
+                try:
+                    import boto3
+                    from io import BytesIO
+                    from app.utils.script_parser import parse_pdf
+
+                    s3_client = boto3.client("s3")
+                    file_url = master_export.get("file_url", "")
+                    if file_url.startswith("s3://"):
+                        parts = file_url[5:].split("/", 1)
+                        bucket = parts[0]
+                        key = parts[1]
+                        response = s3_client.get_object(Bucket=bucket, Key=key)
+                        pdf_content = response["Body"].read()
+
+                        parse_result = parse_pdf(pdf_content)
+                        if parse_result.scenes:
+                            pdf_scene_mappings = []
+                            for scene in parse_result.scenes:
+                                bookmark_title = f"Scene {scene.scene_number}"
+                                if scene.int_ext or scene.location_hint:
+                                    bookmark_title += f" - {(scene.int_ext or '').upper()} {scene.location_hint or ''}".strip()
+                                pdf_scene_mappings.append({
+                                    "scene_number": scene.scene_number,
+                                    "scene_id": None,
+                                    "page_number": scene.page_start or 1,
+                                    "bookmark_title": bookmark_title
+                                })
+                            pdf_scene_mappings.sort(key=lambda x: x.get("page_number", 0))
+                            scene_mappings = {"scenes": pdf_scene_mappings}
+                            client.table("backlot_continuity_exports").update({
+                                "scene_mappings": scene_mappings
+                            }).eq("id", master_export["id"]).execute()
+                            print(f"[REGENERATE SIDES] Auto-generated scene_mappings with {len(pdf_scene_mappings)} scenes from PDF parsing")
+                        else:
+                            raise HTTPException(status_code=400, detail="Could not detect scenes in master script PDF.")
+                    else:
+                        raise HTTPException(status_code=400, detail="Master script file not found.")
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    print(f"[REGENERATE SIDES] PDF parsing fallback failed: {e}")
+                    raise HTTPException(status_code=400, detail="No scenes with page mappings found and could not parse PDF.")
 
         # Find page ranges
         pages_to_extract = []
         scene_mapping_list = scene_mappings.get("scenes", [])
         scene_id_to_pages = {}
+        scene_number_to_pages = {}
 
         for i, mapping in enumerate(scene_mapping_list):
             scene_id = mapping.get("scene_id")
+            scene_number = str(mapping.get("scene_number", ""))
             start_page = mapping.get("page_number", 1)
             if i + 1 < len(scene_mapping_list):
                 end_page = scene_mapping_list[i + 1].get("page_number", start_page) - 1
@@ -18688,11 +18945,29 @@ async def regenerate_script_sides(
                 end_page = master_export.get("page_count", start_page)
             if end_page < start_page:
                 end_page = start_page
-            scene_id_to_pages[scene_id] = {"start_page": start_page, "end_page": end_page}
+            page_info = {"start_page": start_page, "end_page": end_page, "scene_number": scene_number}
+            if scene_id:
+                scene_id_to_pages[scene_id] = page_info
+            if scene_number:
+                scene_number_to_pages[scene_number] = page_info
+
+        # Get scene numbers for requested scene_ids (for fallback matching)
+        requested_scene_numbers = {}
+        if scene_ids:
+            scenes_result = client.table("backlot_scenes").select("id, scene_number").in_("id", scene_ids).execute()
+            for scene in (scenes_result.data or []):
+                requested_scene_numbers[str(scene["id"])] = str(scene.get("scene_number", ""))
 
         for scene_id in scene_ids:
+            page_info = None
             if scene_id in scene_id_to_pages:
                 page_info = scene_id_to_pages[scene_id]
+            elif scene_id in requested_scene_numbers:
+                scene_num = requested_scene_numbers[scene_id]
+                if scene_num in scene_number_to_pages:
+                    page_info = scene_number_to_pages[scene_num]
+
+            if page_info:
                 for page in range(page_info["start_page"], page_info["end_page"] + 1):
                     if page not in pages_to_extract:
                         pages_to_extract.append(page)
@@ -28192,7 +28467,7 @@ class ReviewAssetCreate(BaseModel):
     """Create a new review asset"""
     name: str
     description: Optional[str] = None
-    video_url: str  # For placeholder player
+    video_url: Optional[str] = None  # Optional for browser uploads (version created via upload-url endpoint)
     video_provider: str = "placeholder"  # 'placeholder' | 'vimeo' | 'youtube'
     external_video_id: Optional[str] = None
     thumbnail_url: Optional[str] = None
@@ -28432,7 +28707,8 @@ async def verify_review_note_access(
     await verify_project_access(client, project_id, user_id, require_edit)
 
     # If editing, user must own the note or have edit permission
-    if require_edit and note["created_by_user_id"] != user_id:
+    note_author = note.get("created_by_user_id") or note.get("user_id")
+    if require_edit and note_author != user_id:
         # Check if user has edit permission on project
         await verify_project_access(client, project_id, user_id, require_edit=True)
 
@@ -28925,7 +29201,6 @@ async def create_review_asset(
         await verify_project_access(client, project_id, user["id"], require_edit=True)
 
         asset_id = str(uuid.uuid4())
-        version_id = str(uuid.uuid4())
 
         # Create the asset
         asset_data = {
@@ -28934,31 +29209,38 @@ async def create_review_asset(
             "name": request.name,
             "description": request.description,
             "thumbnail_url": request.thumbnail_url,
-            "linked_scene_id": request.linked_scene_id,
-            "linked_shot_list_id": request.linked_shot_list_id,
-            "created_by_user_id": user["id"],
-            "active_version_id": version_id,  # Will point to the first version
+            "uploaded_by": user["id"],
+            "status": "draft",
         }
 
+        # Conditionally include linked IDs when provided
+        if request.linked_scene_id:
+            asset_data["linked_scene_id"] = request.linked_scene_id
+        if request.linked_shot_list_id:
+            asset_data["linked_shot_list_id"] = request.linked_shot_list_id
+
+        # Always insert the asset first (without active_version_id to avoid FK violation)
         client.table("backlot_review_assets").insert(asset_data).execute()
 
-        # Create the initial version (V1)
-        version_data = {
-            "id": version_id,
-            "asset_id": asset_id,
-            "version_number": 1,
-            "name": "V1",
-            "video_url": request.video_url,
-            "video_provider": request.video_provider,
-            "external_video_id": request.external_video_id or "",
-            "thumbnail_url": request.thumbnail_url,
-            "duration_seconds": request.duration_seconds,
-            "created_by_user_id": user["id"],
-        }
+        # Only create an initial version if video_url is provided (link flow)
+        # For browser uploads, the version is created by the upload-url endpoint
+        if request.video_url:
+            version_id = str(uuid.uuid4())
 
-        client.table("backlot_review_versions").insert(version_data).execute()
+            version_data = {
+                "id": version_id,
+                "asset_id": asset_id,
+                "version_number": 1,
+                "file_url": request.video_url,
+                "thumbnail_url": request.thumbnail_url,
+                "duration_seconds": request.duration_seconds,
+                "uploaded_by": user["id"],
+            }
 
-        # Return the created asset with version
+            client.table("backlot_review_versions").insert(version_data).execute()
+            client.table("backlot_review_assets").update({"active_version_id": version_id}).eq("id", asset_id).execute()
+
+        # Return the created asset with version (if any)
         result = client.table("backlot_review_assets").select("*").eq("id", asset_id).execute()
         asset = result.data[0] if result.data else None
         if asset and asset.get("active_version_id"):
@@ -28997,6 +29279,16 @@ async def get_review_asset(
             notes_count = client.table("backlot_review_notes").select("id", count="exact").eq("version_id", version["id"]).execute()
             version["note_count"] = notes_count.count or 0
 
+        # Populate active_version from active_version_id
+        if asset.get("active_version_id"):
+            active_version_resp = client.table("backlot_review_versions").select("*").eq(
+                "id", asset["active_version_id"]
+            ).single().execute()
+            asset["active_version"] = active_version_resp.data if active_version_resp.data else None
+        else:
+            # Fall back to latest version if no active version is set
+            asset["active_version"] = asset["versions"][0] if asset["versions"] else None
+
         return {"asset": asset}
 
     except HTTPException:
@@ -29026,11 +29318,6 @@ async def update_review_asset(
             update_data["description"] = request.description
         if request.thumbnail_url is not None:
             update_data["thumbnail_url"] = request.thumbnail_url
-        if request.linked_scene_id is not None:
-            update_data["linked_scene_id"] = request.linked_scene_id
-        if request.linked_shot_list_id is not None:
-            update_data["linked_shot_list_id"] = request.linked_shot_list_id
-
         if update_data:
             client.table("backlot_review_assets").update(update_data).eq("id", asset_id).execute()
 
@@ -29101,13 +29388,10 @@ async def create_review_version(
             "id": version_id,
             "asset_id": asset_id,
             "version_number": next_version_number,
-            "name": request.name or f"V{next_version_number}",
-            "video_url": request.video_url,
-            "video_provider": request.video_provider,
-            "external_video_id": request.external_video_id or "",
+            "file_url": request.video_url,
             "thumbnail_url": request.thumbnail_url,
             "duration_seconds": request.duration_seconds,
-            "created_by_user_id": user["id"],
+            "uploaded_by": user["id"],
         }
 
         client.table("backlot_review_versions").insert(version_data).execute()
@@ -29207,7 +29491,7 @@ async def get_review_version_stream_url(
         if storage_mode == "external":
             # For external videos, just return the video URL
             return {
-                "url": version["video_url"],
+                "url": version.get("file_url") or version.get("cloud_url", ""),
                 "quality": "external",
                 "expires_at": None
             }
@@ -29241,11 +29525,21 @@ async def get_review_version_stream_url(
 
         s3_client = boto3.client(
             's3',
+            region_name='us-east-1',
             config=Config(signature_version='s3v4')
         )
 
-        # Use the backlot bucket for review videos
-        bucket_name = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        # All new uploads go to the files bucket.
+        # Legacy keys starting with "assets/" (not "projects/") used the main bucket.
+        # Legacy "review/" and "dailies/" keys are in the files bucket.
+        main_bucket = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        files_bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        if stream_key.startswith("assets/"):
+            bucket_name = main_bucket
+        else:
+            bucket_name = files_bucket
+
         expires_in = 3600  # 1 hour
 
         presigned_url = s3_client.generate_presigned_url(
@@ -29280,31 +29574,37 @@ async def get_review_version_upload_url(
     request: ReviewVersionUploadRequest,
     authorization: str = Header(None)
 ):
-    """Get presigned upload URL for a new review version"""
+    """Get presigned upload URL for a new review version.
+
+    Uploads go to the standalone assets system so there is only one copy
+    of the file. The review version links to it via linked_standalone_asset_id.
+    """
     user = await get_current_user_from_token(authorization)
     client = get_client()
 
     try:
-        await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
+        review_asset = await verify_review_asset_access(client, asset_id, user["id"], require_edit=True)
+        project_id = review_asset["project_id"]
 
         import boto3
         import uuid
         from datetime import datetime, timedelta
         from botocore.config import Config
 
-        # Generate unique S3 key
         version_id = str(uuid.uuid4())
-        file_ext = request.filename.split('.')[-1] if '.' in request.filename else 'mp4'
-        s3_key = f"review/{asset_id}/{version_id}/original.{file_ext}"
+        standalone_asset_id = str(uuid.uuid4())
+
+        # Store under standalone assets path — single source of truth
+        s3_key = f"projects/{project_id}/assets/{standalone_asset_id}/{request.filename}"
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        expires_in = 3600  # 1 hour
 
         # Generate presigned upload URL
         s3_client = boto3.client(
             's3',
+            region_name='us-east-1',
             config=Config(signature_version='s3v4')
         )
-
-        bucket_name = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
-        expires_in = 3600  # 1 hour
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
@@ -29316,25 +29616,50 @@ async def get_review_version_upload_url(
             ExpiresIn=expires_in
         )
 
+        # Create standalone asset record (the single copy of the file)
+        file_ext = request.filename.split('.')[-1].lower() if '.' in request.filename else ''
+        is_video = request.content_type.startswith('video/') or file_ext in ('mp4', 'mov', 'avi', 'webm', 'mkv')
+        asset_type = "video" if is_video else "other"
+        asset_name = request.filename.rsplit('.', 1)[0] if '.' in request.filename else request.filename
+
+        standalone_data = {
+            "id": standalone_asset_id,
+            "project_id": project_id,
+            "name": asset_name,
+            "asset_type": asset_type,
+            "file_name": request.filename,
+            "s3_key": s3_key,
+            "mime_type": request.content_type,
+            "tags": [],
+            "metadata": {},
+            "created_by_user_id": user["id"],
+        }
+        client.table("backlot_standalone_assets").insert(standalone_data).execute()
+
         # Get current version count
         versions = client.table("backlot_review_versions").select("version_number").eq("asset_id", asset_id).order("version_number", desc=True).limit(1).execute()
         next_version_number = (versions.data[0]["version_number"] + 1) if versions.data else 1
 
-        # Create version record (pending upload)
+        # Create review version linked to the standalone asset
         new_version = {
             "id": version_id,
             "asset_id": asset_id,
             "version_number": next_version_number,
-            "video_url": "",  # Will be filled after upload
-            "video_provider": "s3",
+            "file_url": "",
             "storage_mode": "s3",
             "s3_key": s3_key,
             "original_filename": request.filename,
             "transcode_status": "pending",
-            "created_by_user_id": user["id"],
+            "uploaded_by": user["id"],
+            "linked_standalone_asset_id": standalone_asset_id,
         }
 
         client.table("backlot_review_versions").insert(new_version).execute()
+
+        # Also link the review asset itself
+        client.table("backlot_review_assets").update({
+            "linked_standalone_asset_id": standalone_asset_id,
+        }).eq("id", asset_id).execute()
 
         return {
             "upload_url": presigned_url,
@@ -29369,17 +29694,36 @@ async def complete_review_version_upload(
             "transcode_status": "processing"
         }).eq("id", version_id).execute()
 
-        # TODO: Trigger Lambda transcoding job (same as dailies)
-        # For now, mark as completed with original only
-        client.table("backlot_review_versions").update({
-            "transcode_status": "completed",
-            "renditions": {"original": version["s3_key"]}
-        }).eq("id", version_id).execute()
+        # Trigger background FFmpeg transcoding
+        import asyncio
+        from app.services.review_transcoder import transcode_review_version
+        asyncio.create_task(
+            transcode_review_version(version_id, version["s3_key"], version["asset_id"])
+        )
 
         # Set as active version
         client.table("backlot_review_assets").update({
             "active_version_id": version_id
         }).eq("id", version["asset_id"]).execute()
+
+        # If linked to a standalone asset, try to get file size from S3
+        standalone_id = version.get("linked_standalone_asset_id")
+        if standalone_id and version.get("s3_key"):
+            try:
+                import boto3
+                s3_client = boto3.client("s3", region_name="us-east-1")
+                bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+                head = s3_client.head_object(Bucket=bucket, Key=version["s3_key"])
+                file_size = head.get("ContentLength")
+                if file_size:
+                    client.table("backlot_standalone_assets").update({
+                        "file_size_bytes": file_size,
+                    }).eq("id", standalone_id).execute()
+                    client.table("backlot_review_versions").update({
+                        "file_size_bytes": file_size,
+                    }).eq("id", version_id).execute()
+            except Exception as size_err:
+                print(f"Could not get file size for standalone asset: {size_err}")
 
         return {
             "version": updated.data[0] if updated.data else None,
@@ -29841,11 +30185,10 @@ async def create_external_note(
         # Create note with external session reference
         new_note = {
             "version_id": request.version_id,
-            "timecode_seconds": request.timecode_seconds,
+            "timecode": request.timecode_seconds,
             "content": request.content,
             "external_session_id": session_data["id"],
             "external_author_name": session_data["display_name"],
-            "is_resolved": False,
         }
 
         result = client.table("backlot_review_notes").insert(new_note).execute()
@@ -29855,7 +30198,10 @@ async def create_external_note(
             "last_activity_at": datetime.utcnow().isoformat()
         }).eq("id", session_data["id"]).execute()
 
-        return {"note": result.data[0] if result.data else None}
+        note = result.data[0] if result.data else None
+        if note:
+            note["timecode_seconds"] = note.get("timecode")
+        return {"note": note}
 
     except HTTPException:
         raise
@@ -29880,20 +30226,23 @@ async def list_version_notes(
     try:
         await verify_review_version_access(client, version_id, user["id"])
 
-        notes_response = client.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode_seconds", desc=False).execute()
+        notes_response = client.table("backlot_review_notes").select("*").eq("version_id", version_id).order("timecode", desc=False).execute()
 
         notes = notes_response.data or []
 
         # Enrich with user data and replies
         for note in notes:
-            note["created_by_user"] = enrich_user_data(client, note["created_by_user_id"])
+            note["timecode_seconds"] = note.get("timecode")
+            author_id = note.get("created_by_user_id") or note.get("user_id")
+            note["created_by_user"] = enrich_user_data(client, author_id) if author_id else None
 
             # Get replies
             replies_response = client.table("backlot_review_note_replies").select("*").eq("note_id", note["id"]).order("created_at", desc=False).execute()
             note["replies"] = replies_response.data or []
 
             for reply in note["replies"]:
-                reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
+                reply_author_id = reply.get("created_by_user_id") or reply.get("user_id")
+                reply["created_by_user"] = enrich_user_data(client, reply_author_id) if reply_author_id else None
 
         return {"notes": notes}
 
@@ -29921,11 +30270,9 @@ async def create_review_note(
         note_data = {
             "id": note_id,
             "version_id": version_id,
-            "timecode_seconds": request.timecode_seconds,
-            "timecode_end_seconds": request.timecode_end_seconds,
+            "timecode": request.timecode_seconds,
             "content": request.content,
-            "drawing_data": request.drawing_data,
-            "created_by_user_id": user["id"],
+            "user_id": user["id"],
         }
 
         client.table("backlot_review_notes").insert(note_data).execute()
@@ -29934,7 +30281,9 @@ async def create_review_note(
         note = result.data[0] if result.data else None
 
         if note:
-            note["created_by_user"] = enrich_user_data(client, note["created_by_user_id"])
+            note["timecode_seconds"] = note.get("timecode")
+            author_id = note.get("created_by_user_id") or note.get("user_id")
+            note["created_by_user"] = enrich_user_data(client, author_id) if author_id else None
             note["replies"] = []
 
         return {"note": note}
@@ -29974,12 +30323,14 @@ async def update_review_note(
         updated_note = result.data[0] if result.data else None
 
         if updated_note:
-            updated_note["created_by_user"] = enrich_user_data(client, updated_note["created_by_user_id"])
+            author_id = updated_note.get("created_by_user_id") or updated_note.get("user_id")
+            updated_note["created_by_user"] = enrich_user_data(client, author_id) if author_id else None
             # Get replies
             replies_response = client.table("backlot_review_note_replies").select("*").eq("note_id", note_id).order("created_at", desc=False).execute()
             updated_note["replies"] = replies_response.data or []
             for reply in updated_note["replies"]:
-                reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
+                reply_author_id = reply.get("created_by_user_id") or reply.get("user_id")
+                reply["created_by_user"] = enrich_user_data(client, reply_author_id) if reply_author_id else None
 
         return {"note": updated_note}
 
@@ -30044,7 +30395,8 @@ async def create_note_reply(
         reply = result.data[0] if result.data else None
 
         if reply:
-            reply["created_by_user"] = enrich_user_data(client, reply["created_by_user_id"])
+            reply_author_id = reply.get("created_by_user_id") or reply.get("user_id")
+            reply["created_by_user"] = enrich_user_data(client, reply_author_id) if reply_author_id else None
 
         return {"reply": reply}
 
@@ -30071,7 +30423,8 @@ async def delete_note_reply(
             raise HTTPException(status_code=404, detail="Reply not found")
 
         reply = reply_response.data[0]
-        if reply["created_by_user_id"] != user["id"]:
+        reply_author = reply.get("created_by_user_id") or reply.get("user_id")
+        if reply_author != user["id"]:
             raise HTTPException(status_code=403, detail="You can only delete your own replies")
 
         client.table("backlot_review_note_replies").delete().eq("id", reply_id).execute()
@@ -30115,10 +30468,10 @@ async def create_task_from_note(
 
         # Build task title
         task_title = request.title or note["content"][:100]  # Truncate if too long
-        if note["timecode_seconds"] is not None:
+        if note.get("timecode") is not None:
             # Format timecode as MM:SS
-            minutes = int(note["timecode_seconds"] // 60)
-            seconds = int(note["timecode_seconds"] % 60)
+            minutes = int(note["timecode"] // 60)
+            seconds = int(note["timecode"] % 60)
             task_title = f"[{minutes:02d}:{seconds:02d}] {task_title}"
 
         # Build task description with link back to review
@@ -31735,20 +32088,18 @@ async def get_dailies_clip_stream_url(
         s3_client = boto3.client('s3', region_name='us-east-1')
 
         # Detect which bucket the file is in
-        # Default to files bucket for traditional dailies uploads
+        # Default to files bucket — all new uploads go here
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
         main_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
         source_url = clip.get("cloud_url") or clip.get("file_path") or ""
 
-        # Determine bucket based on S3 key pattern:
-        # - Keys starting with "assets/" are in the main bucket (linked from standalone_assets)
-        # - Keys starting with "dailies/" are in the files bucket
-        if "/assets/" in source_url or source_url.startswith("assets/"):
+        # Detect bucket from URL or key:
+        # - Explicit bucket references in URLs override key-based detection
+        # - Legacy "assets/" prefix keys (not "projects/") used the main bucket
+        if "swn-backlot-517220555400.s3" in source_url and "swn-backlot-files" not in source_url:
             bucket_name = main_bucket
-        elif "swn-backlot-517220555400.s3" in source_url:
+        elif source_url.startswith("assets/"):
             bucket_name = main_bucket
-        elif "swn-backlot-files-517220555400.s3" in source_url:
-            bucket_name = "swn-backlot-files-517220555400"
 
         # Use file_path as the S3 key (original quality)
         original_s3_key = clip.get("file_path") or ""
@@ -31931,15 +32282,15 @@ async def get_dailies_clip_stream_urls(
         import boto3
         s3_client = boto3.client('s3', region_name='us-east-1')
 
-        # Detect which bucket the file is in
+        # Detect which bucket the file is in — default to files bucket
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
         main_bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
         source_url = clip.get("cloud_url") or clip.get("file_path") or ""
 
-        # Determine bucket based on S3 key pattern
-        if "/assets/" in source_url or source_url.startswith("assets/"):
+        # Legacy "assets/" prefix keys (not "projects/") used the main bucket
+        if "swn-backlot-517220555400.s3" in source_url and "swn-backlot-files" not in source_url:
             bucket_name = main_bucket
-        elif "swn-backlot-517220555400.s3" in source_url:
+        elif source_url.startswith("assets/"):
             bucket_name = main_bucket
 
         # Get original S3 key
@@ -32289,8 +32640,8 @@ async def get_dailies_clip_thumbnail_upload_url(
         s3_client = boto3.client('s3', region_name='us-east-1')
         bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
 
-        # Create S3 key for thumbnail
-        thumbnail_key = f"dailies/{clip['project_id']}/thumbnails/{clip_id}.jpg"
+        # Create S3 key for thumbnail under projects path
+        thumbnail_key = f"projects/{clip['project_id']}/thumbnails/{clip_id}.jpg"
 
         presigned_url = s3_client.generate_presigned_url(
             'put_object',
@@ -32711,7 +33062,7 @@ async def promote_dailies_clip_to_review(
         await verify_project_access(client, project_id, user["id"], require_edit=True)
 
         # Check if clip has S3 content
-        s3_key = clip.get("s3_key") or clip.get("proxy_s3_key")
+        s3_key = clip.get("s3_key") or clip.get("proxy_s3_key") or clip.get("file_path")
         if not s3_key:
             raise HTTPException(
                 status_code=400,
@@ -32737,7 +33088,7 @@ async def promote_dailies_clip_to_review(
             "name": asset_name,
             "description": request.description or clip.get("notes", ""),
             "status": "in_review",
-            "created_by_user_id": user["id"],
+            "uploaded_by": user["id"],
         }
         if request.folder_id:
             asset_data["folder_id"] = request.folder_id
@@ -32753,16 +33104,17 @@ async def promote_dailies_clip_to_review(
         version_data = {
             "asset_id": asset_id,
             "version_number": 1,
+            "file_url": "",
             "storage_mode": "s3",
             "s3_key": s3_key,
             "original_filename": clip.get("file_name"),
-            "file_size_bytes": clip.get("file_size"),
+            "file_size_bytes": clip.get("file_size_bytes"),
             "duration_seconds": clip.get("duration_seconds"),
             "resolution": clip.get("resolution"),
             "frame_rate": clip.get("frame_rate"),
             "codec": clip.get("codec"),
             "thumbnail_url": clip.get("thumbnail_url"),
-            "created_by_user_id": user["id"],
+            "uploaded_by": user["id"],
             # Copy renditions if available
             "renditions": clip.get("renditions", {}),
             "transcode_status": clip.get("transcode_status", "pending"),
@@ -33525,6 +33877,324 @@ async def import_production_days_to_dailies(
         raise
     except Exception as e:
         print(f"Error importing production days: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class EnsureDailiesDayInput(BaseModel):
+    """Input for ensuring a dailies day exists for a production day"""
+    production_day_id: str
+
+
+@router.get("/projects/{project_id}/dailies/production-day-view")
+async def get_production_day_view(
+    project_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get unified view of all production days with their dailies status.
+
+    Returns all production days from the schedule, enriched with dailies info
+    (has_footage, clip_count, card_count, circle_take_count, total_duration).
+    This allows showing all scheduled shoot days in the Dailies tab without
+    requiring manual dailies day creation.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        # Get all production days for the project
+        prod_days_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title, location_name, is_completed, general_call_time, wrap_time"
+        ).eq("project_id", project_id).order("day_number").execute()
+
+        prod_days = prod_days_result.data or []
+        if not prod_days:
+            return {"production_days": []}
+
+        prod_day_ids = [d["id"] for d in prod_days]
+
+        # Get all dailies days linked to these production days
+        dailies_result = client.table("backlot_dailies_days").select(
+            "id, production_day_id, shoot_date, notes, status"
+        ).eq("project_id", project_id).in_(
+            "production_day_id", prod_day_ids
+        ).execute()
+
+        dailies_map = {}
+        dailies_day_ids = []
+        for d in (dailies_result.data or []):
+            if d.get("production_day_id"):
+                dailies_map[d["production_day_id"]] = d
+                dailies_day_ids.append(d["id"])
+
+        # Get cards for all dailies days
+        card_counts = {}
+        if dailies_day_ids:
+            cards_result = client.table("backlot_dailies_cards").select(
+                "id, dailies_day_id"
+            ).in_("dailies_day_id", dailies_day_ids).execute()
+
+            for card in (cards_result.data or []):
+                day_id = card["dailies_day_id"]
+                card_counts[day_id] = card_counts.get(day_id, 0) + 1
+
+        # Get clip stats grouped by production_day_id
+        clips_result = client.table("backlot_dailies_clips").select(
+            "id, is_circle_take, duration_seconds, production_day_id"
+        ).eq("project_id", project_id).execute()
+
+        # Aggregate clip stats per production day
+        per_day_clip_stats = {}
+        for clip in (clips_result.data or []):
+            pd_id = clip.get("production_day_id")
+            if pd_id:
+                if pd_id not in per_day_clip_stats:
+                    per_day_clip_stats[pd_id] = {"count": 0, "circles": 0, "duration": 0}
+                per_day_clip_stats[pd_id]["count"] += 1
+                if clip.get("is_circle_take"):
+                    per_day_clip_stats[pd_id]["circles"] += 1
+                per_day_clip_stats[pd_id]["duration"] += clip.get("duration_seconds") or 0
+
+        # Get scene counts for each production day
+        scene_counts = {}
+        for prod_day in prod_days:
+            scenes_result = client.table("backlot_scenes").select(
+                "id", count="exact"
+            ).eq("scheduled_day_id", prod_day["id"]).execute()
+            scene_counts[prod_day["id"]] = scenes_result.count or 0
+
+        # Build response
+        result = []
+        for prod_day in prod_days:
+            dailies_day = dailies_map.get(prod_day["id"])
+            dailies_day_id = dailies_day["id"] if dailies_day else None
+
+            day_data = {
+                # Production day info
+                "production_day_id": prod_day["id"],
+                "day_number": prod_day["day_number"],
+                "date": prod_day["date"],
+                "title": prod_day.get("title"),
+                "location_name": prod_day.get("location_name"),
+                "is_completed": prod_day.get("is_completed", False),
+                "call_time": prod_day.get("general_call_time"),
+                "first_shot_time": None,
+                "wrap_time": prod_day.get("wrap_time"),
+                "scene_count": scene_counts.get(prod_day["id"], 0),
+                # Dailies day info (null if not created yet)
+                "dailies_day_id": dailies_day_id,
+                "dailies_day_label": dailies_day.get("notes") if dailies_day else None,
+                "dailies_day_unit": None,
+                "dailies_day_status": dailies_day.get("status") if dailies_day else None,
+                # Footage stats (per production day via production_day_id on clips)
+                "has_footage": per_day_clip_stats.get(prod_day["id"], {}).get("count", 0) > 0,
+                "card_count": card_counts.get(dailies_day_id, 0) if dailies_day_id else 0,
+                "clip_count": per_day_clip_stats.get(prod_day["id"], {}).get("count", 0),
+                "circle_take_count": per_day_clip_stats.get(prod_day["id"], {}).get("circles", 0),
+                "total_duration_seconds": per_day_clip_stats.get(prod_day["id"], {}).get("duration", 0),
+            }
+            result.append(day_data)
+
+        return {"production_days": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production day view: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AssignClipsInput(BaseModel):
+    """Input for assigning/unassigning clips to a production day"""
+    clip_ids: list[str]
+
+
+@router.post("/projects/{project_id}/dailies/production-days/{production_day_id}/assign-clips")
+async def assign_clips_to_production_day(
+    project_id: str,
+    production_day_id: str,
+    input: AssignClipsInput,
+    authorization: str = Header(None)
+):
+    """
+    Assign clips to a production day by setting their production_day_id.
+    Only updates clips that belong to the same project.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        # Verify production day belongs to this project
+        pd_result = client.table("backlot_production_days").select("id").eq(
+            "id", production_day_id
+        ).eq("project_id", project_id).execute()
+        if not pd_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        updated_count = 0
+        for clip_id in input.clip_ids:
+            try:
+                client.table("backlot_dailies_clips").update(
+                    {"production_day_id": production_day_id}
+                ).eq("id", clip_id).eq("project_id", project_id).execute()
+                updated_count += 1
+            except Exception:
+                pass  # Skip clips that don't exist or don't belong to this project
+
+        return {"updated_count": updated_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error assigning clips to production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/dailies/production-days/{production_day_id}/unassign-clips")
+async def unassign_clips_from_production_day(
+    project_id: str,
+    production_day_id: str,
+    input: AssignClipsInput,
+    authorization: str = Header(None)
+):
+    """
+    Unassign clips from a production day by setting production_day_id to NULL.
+    Only updates clips that belong to the same project and production day.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        updated_count = 0
+        for clip_id in input.clip_ids:
+            try:
+                client.table("backlot_dailies_clips").update(
+                    {"production_day_id": None}
+                ).eq("id", clip_id).eq("project_id", project_id).eq(
+                    "production_day_id", production_day_id
+                ).execute()
+                updated_count += 1
+            except Exception:
+                pass
+
+        return {"updated_count": updated_count}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error unassigning clips from production day: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/dailies/production-days/{production_day_id}/clips")
+async def get_production_day_clips(
+    project_id: str,
+    production_day_id: str,
+    authorization: str = Header(None)
+):
+    """
+    Get all clips assigned to a specific production day.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"])
+
+        clips_result = client.table("backlot_dailies_clips").select(
+            "id, project_id, file_name, file_path, storage_mode, "
+            "cloud_url, duration_seconds, file_size_bytes, timecode_start, frame_rate, "
+            "resolution, codec, camera_label, scene_number, take_number, is_circle_take, "
+            "is_locked, rating, notes, thumbnail_url, proxy_url, "
+            "created_at, updated_at, production_day_id, scene_id"
+        ).eq("project_id", project_id).eq(
+            "production_day_id", production_day_id
+        ).order("created_at").execute()
+
+        return {"clips": clips_result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting production day clips: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/projects/{project_id}/dailies/ensure-day-for-production-day")
+async def ensure_dailies_day_for_production_day(
+    project_id: str,
+    input: EnsureDailiesDayInput,
+    authorization: str = Header(None)
+):
+    """
+    Ensure a dailies day exists for a production day.
+
+    If a dailies day already exists for the given production day, returns the existing one.
+    Otherwise, creates a new dailies day linked to the production day.
+    Auto-populates label from production day info.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        # Check if dailies day already exists for this production day
+        existing_result = client.table("backlot_dailies_days").select("*").eq(
+            "project_id", project_id
+        ).eq("production_day_id", input.production_day_id).limit(1).execute()
+
+        if existing_result.data:
+            # Return existing dailies day
+            return {"day": existing_result.data[0], "created": False}
+
+        # Get the production day to populate label
+        prod_day_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title"
+        ).eq("id", input.production_day_id).eq(
+            "project_id", project_id
+        ).single().execute()
+
+        if not prod_day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        prod_day = prod_day_result.data
+
+        # Generate label from production day info
+        if prod_day.get("title"):
+            label = f"Day {prod_day['day_number']} - {prod_day['title']}"
+        else:
+            label = f"Day {prod_day['day_number']}"
+
+        # Create new dailies day
+        dailies_day_data = {
+            "project_id": project_id,
+            "production_day_id": input.production_day_id,
+            "shoot_date": prod_day["date"],
+            "label": label,
+            "status": "pending",
+            "created_by_user_id": user["id"]
+        }
+
+        day_result = client.table("backlot_dailies_days").insert(
+            dailies_day_data
+        ).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create dailies day")
+
+        return {"day": day_result.data[0], "created": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error ensuring dailies day: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -40660,15 +41330,35 @@ async def get_dailies_upload_url(
     try:
         import uuid
         import boto3
+        from botocore.config import Config
 
-        # Generate a unique S3 key
-        file_ext = request.file_name.split(".")[-1] if "." in request.file_name else "mp4"
-        card_path = request.card_id if request.card_id else "uploads"
-        s3_key = f"dailies/{project_id}/{card_path}/{uuid.uuid4()}.{file_ext}"
+        # Create standalone asset — single source of truth for the file
+        standalone_asset_id = str(uuid.uuid4())
+        s3_key = f"projects/{project_id}/assets/{standalone_asset_id}/{request.file_name}"
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
 
-        # Use boto3 to generate a PUT presigned URL
-        s3_client = boto3.client('s3', region_name='us-east-1')
-        bucket_name = "swn-backlot-files-517220555400"
+        # Create standalone asset record
+        file_ext = request.file_name.rsplit('.', 1)[-1].lower() if '.' in request.file_name else ''
+        is_video = request.content_type.startswith('video/') or file_ext in ('mp4', 'mov', 'avi', 'webm', 'mkv')
+        asset_name = request.file_name.rsplit('.', 1)[0] if '.' in request.file_name else request.file_name
+        client = get_client()
+        standalone_data = {
+            "id": standalone_asset_id,
+            "project_id": project_id,
+            "name": asset_name,
+            "asset_type": "video" if is_video else "other",
+            "file_name": request.file_name,
+            "s3_key": s3_key,
+            "mime_type": request.content_type,
+            "file_size_bytes": request.file_size,
+            "tags": [],
+            "metadata": {},
+            "created_by_user_id": user_id,
+        }
+        client.table("backlot_standalone_assets").insert(standalone_data).execute()
+
+        # Generate presigned URL
+        s3_client = boto3.client('s3', config=Config(signature_version='s3v4'))
 
         upload_url = s3_client.generate_presigned_url(
             'put_object',
@@ -40684,12 +41374,175 @@ async def get_dailies_upload_url(
             "upload_url": upload_url,
             "key": s3_key,
             "s3_key": s3_key,
+            "standalone_asset_id": standalone_asset_id,
             "expires_in": 900,
             "bucket": bucket_name,
         }
 
     except Exception as e:
         print(f"Error generating presigned URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DailiesBrowserUploadRequest(BaseModel):
+    """Request for browser-based dailies upload through standalone assets"""
+    project_id: str
+    filename: str
+    content_type: str = "video/mp4"
+
+
+class CompleteDailiesBrowserUploadRequest(BaseModel):
+    """Complete a browser dailies upload — creates the clip linked to the standalone asset"""
+    standalone_asset_id: str
+    project_id: str
+    camera_label: Optional[str] = None
+    scene_number: Optional[str] = None
+    take_number: Optional[int] = None
+
+
+@router.post("/dailies/browser-upload-url")
+async def get_dailies_browser_upload_url(
+    request: DailiesBrowserUploadRequest,
+    authorization: str = Header(None)
+):
+    """
+    Get a presigned URL for browser-based dailies upload.
+    The file is stored as a standalone asset so there is only one copy.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        project_id = request.project_id
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+
+        # Check storage quota
+        await check_storage_quota(user["id"], 0)
+
+        import boto3
+        import uuid
+        from botocore.config import Config
+
+        standalone_asset_id = str(uuid.uuid4())
+
+        # Store under standalone assets path — single source of truth
+        s3_key = f"projects/{project_id}/assets/{standalone_asset_id}/{request.filename}"
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        s3_client = boto3.client('s3', config=Config(signature_version='s3v4'))
+
+        presigned_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': s3_key,
+                'ContentType': request.content_type,
+            },
+            ExpiresIn=3600  # 1 hour
+        )
+
+        # Create standalone asset record
+        file_ext = request.filename.rsplit('.', 1)[-1].lower() if '.' in request.filename else ''
+        is_video = request.content_type.startswith('video/') or file_ext in ('mp4', 'mov', 'avi', 'webm', 'mkv')
+        asset_name = request.filename.rsplit('.', 1)[0] if '.' in request.filename else request.filename
+
+        standalone_data = {
+            "id": standalone_asset_id,
+            "project_id": project_id,
+            "name": asset_name,
+            "asset_type": "video" if is_video else "other",
+            "file_name": request.filename,
+            "s3_key": s3_key,
+            "mime_type": request.content_type,
+            "tags": [],
+            "metadata": {},
+            "created_by_user_id": user["id"],
+        }
+        client.table("backlot_standalone_assets").insert(standalone_data).execute()
+
+        return {
+            "upload_url": presigned_url,
+            "s3_key": s3_key,
+            "standalone_asset_id": standalone_asset_id,
+            "expires_in": 3600,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating dailies browser upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dailies/complete-browser-upload")
+async def complete_dailies_browser_upload(
+    request: CompleteDailiesBrowserUploadRequest,
+    authorization: str = Header(None)
+):
+    """
+    Complete a browser-based dailies upload.
+    Creates a dailies clip record linked to the standalone asset.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, request.project_id, user["id"], require_edit=True)
+
+        # Get the standalone asset to copy metadata from
+        asset_result = client.table("backlot_standalone_assets").select("*").eq("id", request.standalone_asset_id).execute()
+        if not asset_result.data:
+            raise HTTPException(status_code=404, detail="Standalone asset not found")
+        asset_data = asset_result.data[0]
+
+        # Build cloud URL
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+        cloud_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
+
+        # Try to get file size from S3
+        file_size = None
+        try:
+            import boto3
+            s3_client = boto3.client("s3", region_name="us-east-1")
+            head = s3_client.head_object(Bucket=bucket, Key=asset_data["s3_key"])
+            file_size = head.get("ContentLength")
+            if file_size:
+                client.table("backlot_standalone_assets").update({
+                    "file_size_bytes": file_size,
+                }).eq("id", request.standalone_asset_id).execute()
+        except Exception as size_err:
+            print(f"Could not get file size: {size_err}")
+
+        # Create dailies clip linked to standalone asset
+        clip_data = {
+            "project_id": request.project_id,
+            "file_name": asset_data["file_name"],
+            "file_path": asset_data["s3_key"],
+            "cloud_url": cloud_url,
+            "proxy_url": cloud_url,
+            "storage_mode": "cloud",
+            "upload_status": "completed",
+            "camera_label": request.camera_label or "A",
+            "scene_number": request.scene_number,
+            "take_number": request.take_number,
+            "file_size_bytes": file_size,
+            "linked_standalone_asset_id": request.standalone_asset_id,
+            "created_by_user_id": user["id"],
+        }
+        if asset_data.get("duration_seconds"):
+            clip_data["duration_seconds"] = float(asset_data["duration_seconds"])
+
+        result = client.table("backlot_dailies_clips").insert(clip_data).execute()
+
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create clip")
+
+        return {"clip": result.data[0]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error completing dailies browser upload: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -42960,12 +43813,99 @@ async def resend_deal_memo(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/deal-memos/{deal_memo_id}/send")
-async def send_deal_memo(
+class DealMemoSendInput(BaseModel):
+    """Input for sending deal memo with in-app signing"""
+    signer_email: Optional[str] = None
+    signer_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+@router.post("/deal-memos/{deal_memo_id}/generate-pdf")
+async def generate_deal_memo_pdf_endpoint(
     deal_memo_id: str,
     authorization: str = Header(None)
 ):
-    """Send deal memo for signature (placeholder - would integrate with DocuSign)"""
+    """Generate PDF from deal memo data, store in S3"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("*").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        project_id = memo["project_id"]
+
+        # Verify project admin access
+        project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project = project_response.data[0]
+        is_owner = str(project.get("owner_id")) == str(current_user_id)
+
+        if not is_owner:
+            member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
+            if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get user profile for the crew member
+        user_profile = {}
+        if memo.get("user_id"):
+            profile_result = client.table("profiles").select("id, full_name, username, avatar_url, email").eq("id", memo["user_id"]).execute()
+            if profile_result.data:
+                user_profile = profile_result.data[0]
+
+        # Generate PDF
+        pdf_bytes = await generate_deal_memo_pdf(memo, project, user_profile)
+
+        # Upload to S3
+        s3_key = f"deal-memos/{project_id}/{deal_memo_id}/deal_memo_{deal_memo_id}.pdf"
+        import boto3
+        s3_client = boto3.client("s3")
+        s3_client.put_object(
+            Bucket=settings.AWS_S3_BACKLOT_FILES_BUCKET,
+            Key=s3_key,
+            Body=pdf_bytes,
+            ContentType="application/pdf",
+        )
+
+        # Update deal memo with S3 key
+        client.table("backlot_deal_memos").update({
+            "pdf_s3_key": s3_key,
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", deal_memo_id).execute()
+
+        # Generate presigned URL for immediate preview
+        presigned_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.AWS_S3_BACKLOT_FILES_BUCKET, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+
+        return {
+            "success": True,
+            "pdf_url": presigned_url,
+            "pdf_s3_key": s3_key,
+            "message": "Deal memo PDF generated",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating deal memo PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/send")
+async def send_deal_memo(
+    deal_memo_id: str,
+    send_input: Optional[DealMemoSendInput] = None,
+    authorization: str = Header(None)
+):
+    """Send deal memo for in-app signature. Generates PDF if needed, creates signing token, sends notification."""
     user = await get_current_user_from_token(authorization)
     current_user_id = user["id"]
     client = get_client()
@@ -42984,33 +43924,107 @@ async def send_deal_memo(
             raise HTTPException(status_code=400, detail=f"Cannot send deal memo with status '{memo['status']}'")
 
         # Verify project admin access
-        project_response = client.table("backlot_projects").select("owner_id").eq("id", project_id).execute()
-        is_owner = str(project_response.data[0]["owner_id"]) == str(current_user_id) if project_response.data else False
+        project_response = client.table("backlot_projects").select("*").eq("id", project_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        project = project_response.data[0]
+        is_owner = str(project.get("owner_id")) == str(current_user_id)
 
         if not is_owner:
             member_response = client.table("backlot_project_members").select("role").eq("project_id", project_id).eq("user_id", current_user_id).execute()
             if not member_response.data or member_response.data[0]["role"] not in ["owner", "admin"]:
                 raise HTTPException(status_code=403, detail="Access denied")
 
-        # Update status to sent (in real implementation, would create DocuSign envelope first)
-        update_result = client.table("backlot_deal_memos").update({
+        # Generate PDF if not already generated
+        if not memo.get("pdf_s3_key"):
+            user_profile = {}
+            if memo.get("user_id"):
+                profile_result = client.table("profiles").select("id, full_name, username, avatar_url, email").eq("id", memo["user_id"]).execute()
+                if profile_result.data:
+                    user_profile = profile_result.data[0]
+
+            pdf_bytes = await generate_deal_memo_pdf(memo, project, user_profile)
+            s3_key = f"deal-memos/{project_id}/{deal_memo_id}/deal_memo_{deal_memo_id}.pdf"
+            import boto3
+            s3_client = boto3.client("s3")
+            s3_client.put_object(
+                Bucket=settings.AWS_S3_BACKLOT_FILES_BUCKET,
+                Key=s3_key,
+                Body=pdf_bytes,
+                ContentType="application/pdf",
+            )
+            memo["pdf_s3_key"] = s3_key
+
+        # Generate unique signing token
+        signing_token = secrets.token_urlsafe(48)
+
+        # Update deal memo
+        update_data = {
             "status": "sent",
             "docusign_status": "sent",
             "docusign_sent_at": datetime.utcnow().isoformat(),
+            "sent_at": datetime.utcnow().isoformat(),
+            "signature_request_token": signing_token,
+            "pdf_s3_key": memo.get("pdf_s3_key"),
             "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", deal_memo_id).execute()
+        }
+        if send_input:
+            if send_input.signer_email:
+                update_data["signer_email"] = send_input.signer_email
+            if send_input.signer_name:
+                update_data["signer_name"] = send_input.signer_name
+            if send_input.message:
+                update_data["email_message"] = send_input.message
 
-        # Notify the recipient
+        client.table("backlot_deal_memos").update(update_data).eq("id", deal_memo_id).execute()
+
+        # Send notification to crew member
         if memo.get("user_id"):
             client.table("notifications").insert({
                 "user_id": memo["user_id"],
                 "type": "deal_memo_received",
                 "title": "Deal Memo Received",
-                "body": f"You have received a deal memo for {memo['position_title']}. Please review and sign.",
-                "data": {"deal_memo_id": deal_memo_id, "project_id": project_id},
+                "body": f"You have received a deal memo for {memo['position_title']} on {project.get('title', 'a project')}. Please review and sign.",
+                "data": {
+                    "deal_memo_id": deal_memo_id,
+                    "project_id": project_id,
+                    "signing_token": signing_token,
+                },
             }).execute()
 
-        return {"success": True, "message": "Deal memo sent for signature"}
+        # Send email if signer_email provided
+        signer_email = (send_input.signer_email if send_input else None) or memo.get("signer_email")
+        if signer_email:
+            try:
+                email_service = EmailService()
+                signing_url = f"{settings.FRONTEND_URL}/deal-memo/sign/{signing_token}"
+                subject = f"Deal Memo - {memo['position_title']} on {project.get('title', '')}"
+                body_html = f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2>Deal Memo for Signature</h2>
+                    <p>You have a deal memo ready for review and signature:</p>
+                    <ul>
+                        <li><strong>Project:</strong> {project.get('title', '')}</li>
+                        <li><strong>Position:</strong> {memo['position_title']}</li>
+                    </ul>
+                    {f'<p><em>{send_input.message}</em></p>' if send_input and send_input.message else ''}
+                    <p><a href="{signing_url}" style="display:inline-block;padding:12px 24px;background:#FF3C3C;color:#fff;text-decoration:none;border-radius:6px;">Review & Sign</a></p>
+                    <p style="color:#666;font-size:12px;">This link is unique to you. Do not share it.</p>
+                </div>
+                """
+                await email_service.send_email(
+                    to_email=signer_email,
+                    subject=subject,
+                    html_content=body_html,
+                )
+            except Exception as email_err:
+                print(f"Warning: Failed to send deal memo email: {email_err}")
+
+        return {
+            "success": True,
+            "signing_token": signing_token,
+            "message": "Deal memo sent for signature",
+        }
 
     except HTTPException:
         raise
@@ -43278,6 +44292,342 @@ async def get_deal_memo_history(
         raise
     except Exception as e:
         print(f"Error fetching deal memo history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# DEAL MEMO SIGNING PORTAL (Public - Token Based)
+# =============================================================================
+
+@router.get("/deal-memos/sign/{token}")
+async def get_deal_memo_signing_data(token: str):
+    """Public endpoint - Get deal memo data for signing portal. No auth required."""
+    client = get_client()
+
+    try:
+        result = client.table("backlot_deal_memos").select("*").eq("signature_request_token", token).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Invalid or expired signing link")
+
+        memo = result.data
+
+        if memo["status"] not in ["sent", "viewed"]:
+            if memo["status"] == "signed":
+                return {"success": True, "already_signed": True, "signed_at": memo.get("signed_at")}
+            raise HTTPException(status_code=400, detail=f"This deal memo is no longer available for signing (status: {memo['status']})")
+
+        # Get project info
+        project_result = client.table("backlot_projects").select("title, project_type, settings").eq("id", memo["project_id"]).execute()
+        project_title = project_result.data[0]["title"] if project_result.data else "Unknown Project"
+
+        # Get user profile
+        user_name = memo.get("signer_name", "")
+        if memo.get("user_id"):
+            profile_result = client.table("profiles").select("full_name, username").eq("id", memo["user_id"]).execute()
+            if profile_result.data:
+                user_name = profile_result.data[0].get("full_name") or profile_result.data[0].get("username") or user_name
+
+        # Generate presigned URL for PDF
+        pdf_url = None
+        if memo.get("pdf_s3_key"):
+            import boto3
+            s3_client = boto3.client("s3")
+            pdf_url = s3_client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": settings.AWS_S3_BACKLOT_FILES_BUCKET, "Key": memo["pdf_s3_key"]},
+                ExpiresIn=3600,
+            )
+
+        # Mark as viewed if first time
+        if memo["status"] == "sent":
+            client.table("backlot_deal_memos").update({
+                "status": "viewed",
+                "docusign_status": "viewed",
+                "viewed_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq("id", memo["id"]).execute()
+
+        return {
+            "success": True,
+            "deal_memo": {
+                "id": memo["id"],
+                "position_title": memo["position_title"],
+                "rate_type": memo["rate_type"],
+                "rate_amount": memo["rate_amount"],
+                "overtime_multiplier": memo.get("overtime_multiplier"),
+                "double_time_multiplier": memo.get("double_time_multiplier"),
+                "kit_rental_rate": memo.get("kit_rental_rate"),
+                "car_allowance": memo.get("car_allowance"),
+                "phone_allowance": memo.get("phone_allowance"),
+                "per_diem_rate": memo.get("per_diem_rate"),
+                "start_date": memo.get("start_date"),
+                "end_date": memo.get("end_date"),
+                "additional_terms": memo.get("additional_terms", {}),
+                "notes": memo.get("notes"),
+                "template_type": memo.get("template_type", "crew"),
+                "performer_category": memo.get("performer_category"),
+                "usage_rights": memo.get("usage_rights", {}),
+            },
+            "project_title": project_title,
+            "signer_name": user_name,
+            "pdf_url": pdf_url,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching signing data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class DealMemoSignInput(BaseModel):
+    """Input for signing a deal memo"""
+    signature_data: str  # Base64 PNG image of signature
+    signature_type: Literal["draw", "type", "saved"]
+    signer_name: Optional[str] = None
+
+
+@router.post("/deal-memos/sign/{token}")
+async def sign_deal_memo(
+    token: str,
+    sign_input: DealMemoSignInput,
+    request: Request,
+):
+    """Public endpoint - Sign a deal memo via token. No auth required."""
+    client = get_client()
+
+    try:
+        result = client.table("backlot_deal_memos").select("*").eq("signature_request_token", token).single().execute()
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Invalid or expired signing link")
+
+        memo = result.data
+
+        if memo["status"] not in ["sent", "viewed"]:
+            raise HTTPException(status_code=400, detail=f"This deal memo cannot be signed (status: {memo['status']})")
+
+        project_id = memo["project_id"]
+        now = datetime.utcnow()
+
+        # Get project and user profile for signed PDF generation
+        project_result = client.table("backlot_projects").select("*").eq("id", project_id).execute()
+        project = project_result.data[0] if project_result.data else {}
+
+        user_profile = {}
+        if memo.get("user_id"):
+            profile_result = client.table("profiles").select("id, full_name, username, avatar_url, email").eq("id", memo["user_id"]).execute()
+            if profile_result.data:
+                user_profile = profile_result.data[0]
+
+        signer_name = sign_input.signer_name or memo.get("signer_name") or user_profile.get("full_name") or "Signer"
+
+        # Generate signed PDF with embedded signature
+        signed_pdf_bytes = await generate_signed_deal_memo_pdf(
+            memo, project, user_profile,
+            signature_image_base64=sign_input.signature_data,
+            signer_name=signer_name,
+            signed_at=now.strftime("%B %d, %Y at %I:%M %p"),
+        )
+
+        # Upload signed PDF to S3
+        signed_s3_key = f"deal-memos/{project_id}/{memo['id']}/signed_deal_memo_{memo['id']}.pdf"
+        import boto3
+        s3_client = boto3.client("s3")
+        s3_client.put_object(
+            Bucket=settings.AWS_S3_BACKLOT_FILES_BUCKET,
+            Key=signed_s3_key,
+            Body=signed_pdf_bytes,
+            ContentType="application/pdf",
+        )
+
+        # Update deal memo
+        update_data = {
+            "status": "signed",
+            "docusign_status": "signed",
+            "docusign_signed_at": now.isoformat(),
+            "signed_at": now.isoformat(),
+            "signed_pdf_s3_key": signed_s3_key,
+            "signature_type": sign_input.signature_type,
+            "signature_data": sign_input.signature_data[:200],  # Store first 200 chars as reference
+            "signing_ip": request.client.host if request.client else None,
+            "signing_user_agent": request.headers.get("user-agent", "")[:500],
+            "signer_name": signer_name,
+            "signature_request_token": None,  # Invalidate token after use
+            "updated_at": now.isoformat(),
+        }
+        client.table("backlot_deal_memos").update(update_data).eq("id", memo["id"]).execute()
+
+        # Post-sign automation: auto-create crew rate
+        existing_rate = client.table("backlot_crew_rates").select("id").eq("deal_memo_id", memo["id"]).execute()
+        if not existing_rate.data:
+            rate_data = {
+                "project_id": project_id,
+                "user_id": memo.get("user_id"),
+                "role_id": memo.get("role_id"),
+                "rate_type": memo["rate_type"],
+                "rate_amount": memo["rate_amount"],
+                "overtime_multiplier": memo.get("overtime_multiplier", 1.5),
+                "double_time_multiplier": memo.get("double_time_multiplier", 2.0),
+                "kit_rental_rate": memo.get("kit_rental_rate"),
+                "car_allowance": memo.get("car_allowance"),
+                "phone_allowance": memo.get("phone_allowance"),
+                "effective_start": memo.get("start_date"),
+                "effective_end": memo.get("end_date"),
+                "notes": f"Auto-created from signed deal memo: {memo['position_title']}",
+                "deal_memo_id": memo["id"],
+                "source": "deal_memo",
+            }
+            client.table("backlot_crew_rates").insert(rate_data).execute()
+
+        # Post-sign automation: auto-trigger onboarding if configured
+        if project.get("default_onboarding_package_id") and project.get("onboarding_auto_trigger") and memo.get("user_id"):
+            try:
+                # Create onboarding session
+                session_token = secrets.token_urlsafe(48)
+                session_data = {
+                    "project_id": project_id,
+                    "user_id": memo["user_id"],
+                    "access_token": session_token,
+                    "package_id": project["default_onboarding_package_id"],
+                    "deal_memo_id": memo["id"],
+                    "status": "in_progress",
+                }
+                client.table("backlot_onboarding_sessions").insert(session_data).execute()
+            except Exception as onb_err:
+                print(f"Warning: Failed to auto-create onboarding session: {onb_err}")
+
+        # Notify project owner
+        if project.get("owner_id"):
+            client.table("notifications").insert({
+                "user_id": project["owner_id"],
+                "type": "deal_memo_signed",
+                "title": "Deal Memo Signed",
+                "body": f"The deal memo for {memo['position_title']} has been signed by {signer_name}.",
+                "data": {"deal_memo_id": memo["id"], "project_id": project_id},
+            }).execute()
+
+        return {"success": True, "message": "Deal memo signed successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error signing deal memo: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deal-memo-templates")
+async def get_deal_memo_templates(
+    template_type: Optional[str] = None,
+    authorization: str = Header(None)
+):
+    """Get available deal memo templates (system + organization)"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        query = client.table("backlot_deal_memo_templates").select("*").order("is_system_template", desc=True).order("name")
+
+        if template_type:
+            query = query.eq("template_type", template_type)
+
+        result = query.execute()
+
+        return {"success": True, "templates": result.data or []}
+
+    except Exception as e:
+        print(f"Error fetching deal memo templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/deal-memos/{deal_memo_id}/encrypt-fields")
+async def encrypt_deal_memo_fields(
+    deal_memo_id: str,
+    fields: Dict[str, Any] = Body(...),
+    authorization: str = Header(None)
+):
+    """Store E2EE encrypted field values for a deal memo"""
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        # Verify access to deal memo
+        memo_result = client.table("backlot_deal_memos").select("project_id, user_id").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        for field_name, field_data in fields.items():
+            client.table("e2ee_encrypted_fields").upsert({
+                "document_type": "deal_memo",
+                "document_id": deal_memo_id,
+                "field_name": field_name,
+                "encrypted_value": field_data.get("encrypted_value", ""),
+                "nonce": field_data.get("nonce", ""),
+                "updated_at": datetime.utcnow().isoformat(),
+            }, on_conflict="document_type,document_id,field_name").execute()
+
+        return {"success": True, "message": f"Encrypted {len(fields)} fields"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error encrypting deal memo fields: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/deal-memos/{deal_memo_id}/encrypted-document")
+async def get_encrypted_document(
+    deal_memo_id: str,
+    authorization: str = Header(None)
+):
+    """Return encrypted PDF + key envelope for requesting user"""
+    user = await get_current_user_from_token(authorization)
+    current_user_id = user["id"]
+    client = get_client()
+
+    try:
+        # Get deal memo
+        memo_result = client.table("backlot_deal_memos").select("project_id, pdf_s3_key, signed_pdf_s3_key").eq("id", deal_memo_id).single().execute()
+        if not memo_result.data:
+            raise HTTPException(status_code=404, detail="Deal memo not found")
+
+        memo = memo_result.data
+        s3_key = memo.get("signed_pdf_s3_key") or memo.get("pdf_s3_key")
+
+        if not s3_key:
+            raise HTTPException(status_code=404, detail="No PDF available")
+
+        # Get key envelope for this user
+        key_result = client.table("e2ee_document_keys").select("*").eq(
+            "document_type", "deal_memo"
+        ).eq("document_id", deal_memo_id).eq("recipient_user_id", current_user_id).execute()
+
+        key_envelope = key_result.data[0] if key_result.data else None
+
+        # Get encrypted fields
+        fields_result = client.table("e2ee_encrypted_fields").select("*").eq(
+            "document_type", "deal_memo"
+        ).eq("document_id", deal_memo_id).execute()
+
+        # Generate presigned URL
+        import boto3
+        s3_client = boto3.client("s3")
+        pdf_url = s3_client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": settings.AWS_S3_BACKLOT_FILES_BUCKET, "Key": s3_key},
+            ExpiresIn=3600,
+        )
+
+        return {
+            "success": True,
+            "pdf_url": pdf_url,
+            "key_envelope": key_envelope,
+            "encrypted_fields": fields_result.data or [],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error fetching encrypted document: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -44076,6 +45426,99 @@ async def create_dailies_day_for_desktop(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/desktop-keys/projects/{project_id}/dailies/ensure-day")
+async def ensure_dailies_day_for_desktop(
+    project_id: str,
+    request: dict,
+    x_api_key: str = Header(None, alias="X-API-Key")
+):
+    """
+    Ensure a dailies day exists for a production day using desktop API key authentication.
+
+    If a dailies day already exists for the given production day, returns the existing one.
+    Otherwise, creates a new dailies day linked to the production day.
+    Auto-populates label from production day info.
+
+    Request body:
+        production_day_id: ID of the production day to ensure dailies day for
+    """
+    try:
+        user_id = await verify_desktop_key_and_project_access(x_api_key, project_id)
+        client = get_client()
+
+        production_day_id = request.get("production_day_id")
+        if not production_day_id:
+            raise HTTPException(status_code=400, detail="production_day_id is required")
+
+        # Check if dailies day already exists for this production day
+        existing_result = client.table("backlot_dailies_days").select("*").eq(
+            "project_id", project_id
+        ).eq("production_day_id", production_day_id).limit(1).execute()
+
+        if existing_result.data:
+            # Return existing dailies day
+            day = existing_result.data[0]
+            return {
+                "id": str(day["id"]),
+                "label": day.get("label") or f"Shoot {day.get('shoot_date', '')}",
+                "shoot_date": str(day["shoot_date"]) if day.get("shoot_date") else None,
+                "production_day_id": str(day["production_day_id"]) if day.get("production_day_id") else None,
+                "status": day.get("status"),
+                "created": False,
+            }
+
+        # Get the production day to populate label
+        prod_day_result = client.table("backlot_production_days").select(
+            "id, day_number, date, title"
+        ).eq("id", production_day_id).eq(
+            "project_id", project_id
+        ).single().execute()
+
+        if not prod_day_result.data:
+            raise HTTPException(status_code=404, detail="Production day not found")
+
+        prod_day = prod_day_result.data
+
+        # Generate label from production day info
+        if prod_day.get("title"):
+            label = f"Day {prod_day['day_number']} - {prod_day['title']}"
+        else:
+            label = f"Day {prod_day['day_number']}"
+
+        # Create new dailies day
+        dailies_day_data = {
+            "project_id": project_id,
+            "production_day_id": production_day_id,
+            "shoot_date": prod_day["date"],
+            "label": label,
+            "status": "pending",
+            "created_by_user_id": user_id
+        }
+
+        day_result = client.table("backlot_dailies_days").insert(
+            dailies_day_data
+        ).execute()
+
+        if not day_result.data:
+            raise HTTPException(status_code=500, detail="Failed to create dailies day")
+
+        day = day_result.data[0]
+        return {
+            "id": str(day["id"]),
+            "label": day.get("label") or label,
+            "shoot_date": str(day["shoot_date"]) if day.get("shoot_date") else None,
+            "production_day_id": str(day["production_day_id"]) if day.get("production_day_id") else None,
+            "status": day.get("status"),
+            "created": True,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error ensuring dailies day for desktop: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/desktop-keys/dailies/days/{day_id}/cards")
 async def get_dailies_cards_for_desktop(
     day_id: str,
@@ -44237,6 +45680,10 @@ async def confirm_desktop_dailies_upload(
 
         client = get_client()
 
+        # Look up standalone asset by s3_key to link it
+        standalone_asset = client.table("backlot_standalone_assets").select("id").eq("s3_key", s3_key).execute()
+        standalone_asset_id = standalone_asset.data[0]["id"] if standalone_asset.data else None
+
         # Create the clip record with upload confirmed
         clip_data = {
             "project_id": project_id,
@@ -44247,6 +45694,9 @@ async def confirm_desktop_dailies_upload(
             "storage_mode": "cloud",
             "upload_status": "completed",
         }
+
+        if standalone_asset_id:
+            clip_data["linked_standalone_asset_id"] = standalone_asset_id
 
         if checksum:
             clip_data["original_checksum"] = checksum
@@ -44489,9 +45939,9 @@ async def get_assets_summary(
 class StandaloneAssetInput(BaseModel):
     name: str
     description: Optional[str] = None
-    asset_type: str  # audio, 3d_model, image, document, graphics, music, sfx, other
-    file_name: str
-    s3_key: str
+    asset_type: str  # audio, 3d_model, image, document, graphics, music, sfx, video, video_link, other
+    file_name: Optional[str] = None
+    s3_key: Optional[str] = None
     file_size_bytes: Optional[int] = None
     mime_type: Optional[str] = None
     duration_seconds: Optional[float] = None  # For audio
@@ -44499,6 +45949,9 @@ class StandaloneAssetInput(BaseModel):
     tags: Optional[List[str]] = None
     metadata: Optional[dict] = None
     folder_id: Optional[str] = None
+    source_url: Optional[str] = None  # URL for link-based assets (YouTube, Vimeo, etc.)
+    video_provider: Optional[str] = None  # 'youtube', 'vimeo', etc.
+    external_video_id: Optional[str] = None  # Provider-specific video ID
 
 
 @router.post("/projects/{project_id}/assets/standalone")
@@ -44508,9 +45961,14 @@ async def create_standalone_asset(
     authorization: str = Header(None)
 ):
     """
-    Create a new standalone asset (non-video: audio, 3D, images, etc.)
+    Create a new standalone asset (files, audio, 3D, images, or URL-based video links)
     """
+    user = await get_current_user_from_token(authorization)
     try:
+        # Validate: must have either s3_key or source_url
+        if not asset_input.s3_key and not asset_input.source_url:
+            raise HTTPException(status_code=400, detail="Either s3_key or source_url must be provided")
+
         client = get_client()
 
         insert_data = {
@@ -44518,8 +45976,6 @@ async def create_standalone_asset(
             "name": asset_input.name,
             "description": asset_input.description,
             "asset_type": asset_input.asset_type,
-            "file_name": asset_input.file_name,
-            "s3_key": asset_input.s3_key,
             "file_size_bytes": asset_input.file_size_bytes,
             "mime_type": asset_input.mime_type,
             "duration_seconds": asset_input.duration_seconds,
@@ -44529,6 +45985,20 @@ async def create_standalone_asset(
             "folder_id": asset_input.folder_id,
             "created_by_user_id": user["id"],
         }
+
+        # Include file fields only when provided (nullable for link assets)
+        if asset_input.file_name is not None:
+            insert_data["file_name"] = asset_input.file_name
+        if asset_input.s3_key is not None:
+            insert_data["s3_key"] = asset_input.s3_key
+
+        # Include link asset fields when provided
+        if asset_input.source_url is not None:
+            insert_data["source_url"] = asset_input.source_url
+        if asset_input.video_provider is not None:
+            insert_data["video_provider"] = asset_input.video_provider
+        if asset_input.external_video_id is not None:
+            insert_data["external_video_id"] = asset_input.external_video_id
 
         result = client.table("backlot_standalone_assets").insert(insert_data).execute()
 
@@ -44728,6 +46198,101 @@ async def get_standalone_asset_upload_url(
 
     except Exception as e:
         print(f"Error generating upload URL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# GENERAL ASSET UPLOAD (BROWSER)
+# ============================================================================
+
+class AssetUploadRequest(BaseModel):
+    """Request for browser-based asset upload of any file type"""
+    filename: str
+    content_type: str
+    folder_id: Optional[str] = None
+
+
+def _detect_asset_type(content_type: str, filename: str) -> str:
+    """Detect asset type from content type and file extension."""
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    if content_type.startswith('video/') or ext in ('mp4', 'mov', 'avi', 'webm', 'mkv', 'mxf', 'r3d'):
+        return 'video'
+    if content_type.startswith('audio/') or ext in ('mp3', 'wav', 'aac', 'flac', 'ogg', 'm4a'):
+        return 'audio'
+    if content_type.startswith('image/') or ext in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'tiff', 'tif', 'exr', 'dpx'):
+        return 'image'
+    if content_type == 'application/pdf' or content_type.startswith('text/') or ext in ('doc', 'docx', 'txt', 'rtf', 'pages', 'pdf'):
+        return 'document'
+    if ext in ('fbx', 'obj', 'gltf', 'glb', 'blend', 'usd', 'usdc', 'usdz', 'c4d', 'ma', 'mb'):
+        return '3d_model'
+    if ext in ('psd', 'ai', 'svg', 'eps', 'sketch', 'fig', 'xd'):
+        return 'graphics'
+    return 'other'
+
+
+@router.post("/projects/{project_id}/assets/upload-url")
+async def get_asset_upload_url(
+    project_id: str,
+    request: AssetUploadRequest,
+    authorization: str = Header(None)
+):
+    """
+    Get a presigned URL for browser-based asset upload of any file type.
+    Creates a standalone asset record and returns a presigned PUT URL.
+    """
+    user = await get_current_user_from_token(authorization)
+    client = get_client()
+
+    try:
+        await verify_project_access(client, project_id, user["id"], require_edit=True)
+        await check_storage_quota(user["id"], 0)
+
+        import boto3, uuid
+        from botocore.config import Config
+
+        asset_id = str(uuid.uuid4())
+        s3_key = f"projects/{project_id}/assets/{asset_id}/{request.filename}"
+        bucket_name = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
+
+        asset_type = _detect_asset_type(request.content_type, request.filename)
+        asset_name = request.filename.rsplit('.', 1)[0] if '.' in request.filename else request.filename
+
+        asset_data = {
+            "id": asset_id,
+            "project_id": project_id,
+            "name": asset_name,
+            "asset_type": asset_type,
+            "file_name": request.filename,
+            "s3_key": s3_key,
+            "mime_type": request.content_type,
+            "tags": [],
+            "metadata": {},
+            "created_by_user_id": user["id"],
+        }
+
+        if request.folder_id:
+            asset_data["folder_id"] = request.folder_id
+
+        client.table("backlot_standalone_assets").insert(asset_data).execute()
+
+        s3_client = boto3.client('s3', region_name='us-east-1', config=Config(signature_version='s3v4'))
+        upload_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': bucket_name, 'Key': s3_key, 'ContentType': request.content_type},
+            ExpiresIn=3600,
+        )
+
+        return {
+            "upload_url": upload_url,
+            "s3_key": s3_key,
+            "asset_id": asset_id,
+            "expires_in": 3600,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error generating asset upload URL: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -45025,7 +46590,7 @@ async def create_review_asset_for_desktop(
             "name": request.get("name", "Untitled"),
             "description": request.get("description", ""),
             "status": "draft",
-            "created_by_user_id": user_id,
+            "uploaded_by": user_id,
         }
 
         if request.get("folder_id"):
@@ -45078,10 +46643,11 @@ async def get_review_upload_url_for_desktop(
         version_data = {
             "asset_id": asset_id,
             "version_number": 1,  # Will be updated
+            "file_url": "",
             "storage_mode": storage_mode,
             "original_filename": filename,
             "transcode_status": "pending",
-            "created_by_user_id": user_id,
+            "uploaded_by": user_id,
         }
 
         # Get next version number
@@ -45092,12 +46658,33 @@ async def get_review_upload_url_for_desktop(
         if versions.data:
             version_data["version_number"] = versions.data[0]["version_number"] + 1
 
-        # Generate S3 key
+        # Create standalone asset — single source of truth for the file
         import uuid
         version_id = str(uuid.uuid4())
-        s3_key = f"review/{project_id}/{asset_id}/{version_id}/{filename}"
+        standalone_asset_id = str(uuid.uuid4())
+        s3_key = f"projects/{project_id}/assets/{standalone_asset_id}/{filename}"
+
+        # Create standalone asset record
+        file_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        is_video = content_type.startswith('video/') or file_ext in ('mp4', 'mov', 'avi', 'webm', 'mkv')
+        asset_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        standalone_data = {
+            "id": standalone_asset_id,
+            "project_id": project_id,
+            "name": asset_name,
+            "asset_type": "video" if is_video else "other",
+            "file_name": filename,
+            "s3_key": s3_key,
+            "mime_type": content_type,
+            "tags": [],
+            "metadata": {},
+            "created_by_user_id": user_id,
+        }
+        client.table("backlot_standalone_assets").insert(standalone_data).execute()
+
         version_data["id"] = version_id
         version_data["s3_key"] = s3_key
+        version_data["linked_standalone_asset_id"] = standalone_asset_id
 
         # Create version record
         result = client.table("backlot_review_versions").insert(version_data).execute()
@@ -45105,10 +46692,17 @@ async def get_review_upload_url_for_desktop(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create version")
 
-        # Generate presigned URL
+        # Set active_version_id on asset if not already set, and link standalone asset
+        asset_record = client.table("backlot_review_assets").select("active_version_id").eq("id", asset_id).single().execute()
+        update_asset = {"linked_standalone_asset_id": standalone_asset_id}
+        if asset_record.data and not asset_record.data.get("active_version_id"):
+            update_asset["active_version_id"] = version_id
+        client.table("backlot_review_assets").update(update_asset).eq("id", asset_id).execute()
+
+        # Generate presigned URL — use files bucket
         import boto3
         s3_client = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
 
         upload_url = s3_client.generate_presigned_url(
             "put_object",
@@ -45300,7 +46894,7 @@ async def get_asset_upload_url_for_desktop(
         # Create asset record
         import uuid
         asset_id = str(uuid.uuid4())
-        s3_key = f"assets/{project_id}/{asset_type}/{asset_id}/{filename}"
+        s3_key = f"projects/{project_id}/assets/{asset_id}/{filename}"
 
         asset_data = {
             "id": asset_id,
@@ -45321,10 +46915,10 @@ async def get_asset_upload_url_for_desktop(
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create asset")
 
-        # Generate presigned URL
+        # Generate presigned URL — files bucket
         import boto3
         s3_client = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
 
         upload_url = s3_client.generate_presigned_url(
             "put_object",
@@ -45421,8 +47015,8 @@ async def link_asset_to_dailies(
         project_id = asset_data["project_id"]
         await verify_desktop_key_and_project_access(x_api_key, project_id)
 
-        # Build S3 URL from key (use same bucket as upload endpoint)
-        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        # Build S3 URL from key — files bucket
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
         s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
 
         # Create dailies clip entry in backlot_dailies_clips
@@ -45488,8 +47082,8 @@ async def link_asset_to_review(
         # Get folder_id if specified
         folder_id = request.get("folder_id")
 
-        # Build S3 URL from key (use same bucket as upload endpoint)
-        bucket = os.environ.get("AWS_S3_BACKLOT_BUCKET", "swn-backlot-517220555400")
+        # Build S3 URL from key — files bucket
+        bucket = os.environ.get("AWS_S3_BACKLOT_FILES_BUCKET", "swn-backlot-files-517220555400")
         s3_url = f"https://{bucket}.s3.amazonaws.com/{asset_data['s3_key']}"
 
         # Create review asset
@@ -45512,6 +47106,7 @@ async def link_asset_to_review(
         version_data = {
             "asset_id": review_asset_id,
             "version_number": 1,
+            "file_url": "",
             "storage_mode": "s3",
             "s3_key": asset_data["s3_key"],
             "cloud_url": s3_url,

@@ -60,9 +60,11 @@ interface DealMemoStatusProps {
   onResend?: () => void;
   onDownload?: () => void;
   onDelete?: () => void;
+  onPreviewPdf?: () => void;
   onUpdateStatus?: (status: 'sent' | 'viewed' | 'signed' | 'declined', notes?: string, signedDocumentUrl?: string) => Promise<void>;
   compact?: boolean;
   isUpdating?: boolean;
+  hasPdf?: boolean;
 }
 
 const STATUS_CONFIG: Record<
@@ -135,9 +137,11 @@ export function DealMemoStatus({
   onResend,
   onDownload,
   onDelete,
+  onPreviewPdf,
   onUpdateStatus,
   compact = false,
   isUpdating = false,
+  hasPdf = false,
 }: DealMemoStatusProps) {
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [pendingStatus, setPendingStatus] = useState<'sent' | 'viewed' | 'signed' | 'declined' | null>(null);
@@ -149,7 +153,7 @@ export function DealMemoStatus({
   const canSend = dealMemo.status === 'draft' || dealMemo.status === 'pending_send';
   const canResend = dealMemo.status === 'declined' || dealMemo.status === 'expired';
   const canVoid = dealMemo.status === 'sent' || dealMemo.status === 'viewed';
-  const canDownload = dealMemo.status === 'signed' && dealMemo.signed_document_url;
+  const canDownload = dealMemo.status === 'signed' && (dealMemo.signed_document_url || dealMemo.signed_pdf_s3_key);
   const canDelete = dealMemo.status === 'draft';
 
   // Paperwork tracking - determine next available status
@@ -297,6 +301,12 @@ export function DealMemoStatus({
                 <DropdownMenuItem onClick={onEdit}>
                   <Edit className="w-4 h-4 mr-2" />
                   Edit Draft
+                </DropdownMenuItem>
+              )}
+              {hasPdf && onPreviewPdf && (
+                <DropdownMenuItem onClick={onPreviewPdf}>
+                  <Eye className="w-4 h-4 mr-2" />
+                  Preview PDF
                 </DropdownMenuItem>
               )}
 

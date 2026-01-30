@@ -100,6 +100,11 @@ export function DealMemoDialog({
     start_date: string;
     end_date: string;
     notes: string;
+    template_type: 'crew' | 'talent';
+    performer_category: string;
+    usage_rights: string;
+    signer_name: string;
+    signer_email: string;
   }>({
     position_title: '',
     rate_type: 'daily',
@@ -113,6 +118,11 @@ export function DealMemoDialog({
     start_date: '',
     end_date: '',
     notes: '',
+    template_type: 'crew',
+    performer_category: '',
+    usage_rights: '',
+    signer_name: '',
+    signer_email: '',
   });
 
   // Initialize form with existing data or defaults
@@ -131,6 +141,11 @@ export function DealMemoDialog({
         start_date: existingMemo.start_date || '',
         end_date: existingMemo.end_date || '',
         notes: existingMemo.notes || '',
+        template_type: existingMemo.template_type || 'crew',
+        performer_category: existingMemo.performer_category || '',
+        usage_rights: existingMemo.usage_rights ? JSON.stringify(existingMemo.usage_rights) : '',
+        signer_name: existingMemo.signer_name || '',
+        signer_email: existingMemo.signer_email || '',
       });
     } else if (roleTitle) {
       setFormData(prev => ({
@@ -171,6 +186,11 @@ export function DealMemoDialog({
       start_date: formData.start_date || null,
       end_date: formData.end_date || null,
       notes: formData.notes.trim() || null,
+      template_type: formData.template_type,
+      performer_category: formData.template_type === 'talent' && formData.performer_category ? formData.performer_category : null,
+      usage_rights: formData.template_type === 'talent' && formData.usage_rights ? JSON.parse(formData.usage_rights || '{}') : null,
+      signer_name: formData.signer_name.trim() || null,
+      signer_email: formData.signer_email.trim() || null,
     };
 
     try {
@@ -236,6 +256,25 @@ export function DealMemoDialog({
 
         {/* Form Fields */}
         <div className="space-y-6">
+          {/* Template Type */}
+          <div>
+            <Label>Template Type</Label>
+            <Select
+              value={formData.template_type}
+              onValueChange={(value: 'crew' | 'talent') =>
+                setFormData(prev => ({ ...prev, template_type: value }))
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="crew">Crew Deal Memo</SelectItem>
+                <SelectItem value="talent">Talent Deal Memo</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* Position & Rate */}
           <div className="grid grid-cols-2 gap-4">
             <div className="col-span-2">
@@ -433,6 +472,72 @@ export function DealMemoDialog({
                   onChange={(e) => setFormData(prev => ({ ...prev, end_date: e.target.value }))}
                 />
               </div>
+            </div>
+          </div>
+
+          {/* Talent-specific fields */}
+          {formData.template_type === 'talent' && (
+            <>
+              <Separator />
+              <div className="space-y-4">
+                <Label className="text-sm font-medium block">Talent Details</Label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="performer_category" className="text-xs text-muted-foreground">Performer Category</Label>
+                    <Select
+                      value={formData.performer_category}
+                      onValueChange={(value) => setFormData(prev => ({ ...prev, performer_category: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select category" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="principal">Principal</SelectItem>
+                        <SelectItem value="supporting">Supporting</SelectItem>
+                        <SelectItem value="day_player">Day Player</SelectItem>
+                        <SelectItem value="background">Background</SelectItem>
+                        <SelectItem value="stunt">Stunt Performer</SelectItem>
+                        <SelectItem value="voice_over">Voice Over</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label htmlFor="usage_rights" className="text-xs text-muted-foreground">Usage Rights (JSON)</Label>
+                    <Textarea
+                      id="usage_rights"
+                      value={formData.usage_rights}
+                      onChange={(e) => setFormData(prev => ({ ...prev, usage_rights: e.target.value }))}
+                      placeholder='{"territories": ["worldwide"], "term": "perpetuity"}'
+                      rows={2}
+                    />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+
+          <Separator />
+
+          {/* Signer Info */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="signer_name">Signer Name</Label>
+              <Input
+                id="signer_name"
+                value={formData.signer_name}
+                onChange={(e) => setFormData(prev => ({ ...prev, signer_name: e.target.value }))}
+                placeholder="Full name of the signer"
+              />
+            </div>
+            <div>
+              <Label htmlFor="signer_email">Signer Email</Label>
+              <Input
+                id="signer_email"
+                type="email"
+                value={formData.signer_email}
+                onChange={(e) => setFormData(prev => ({ ...prev, signer_email: e.target.value }))}
+                placeholder="email@example.com"
+              />
             </div>
           </div>
 

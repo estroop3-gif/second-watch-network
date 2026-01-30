@@ -66,6 +66,7 @@ from app.api import (
     e2ee,  # End-to-end encryption key management
     channels,  # Group chat channels
     message_folders,  # Custom message folders for DM organization
+    onboarding,  # Crew onboarding wizard
 )
 from app.api.gear import router as gear_router  # Gear House - Equipment management
 from app.api.set_house import router as set_house_router  # Set House - Space/location management
@@ -275,6 +276,7 @@ app.include_router(timecards.router, prefix=f"{settings.API_V1_PREFIX}/backlot",
 app.include_router(expenses.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Expenses"])
 app.include_router(project_access.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Backlot Project Access"])
 app.include_router(cast_crew.router, prefix=f"{settings.API_V1_PREFIX}/backlot", tags=["Cast & Crew"])
+app.include_router(onboarding.router, prefix=f"{settings.API_V1_PREFIX}/onboarding", tags=["Onboarding"])
 app.include_router(directory.router, prefix=f"{settings.API_V1_PREFIX}/directory", tags=["Directory"])
 app.include_router(geocoding.router, prefix=f"{settings.API_V1_PREFIX}/geocoding", tags=["Geocoding"])
 

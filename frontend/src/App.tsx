@@ -161,6 +161,21 @@ const StripboardPrintPage = React.lazy(() =>
   import("./pages/backlot/StripboardPrintPage")
 );
 
+// Lazy load deal memo signing page (public, no auth)
+const DealMemoSignPage = React.lazy(() =>
+  import("./pages/DealMemoSignPage")
+);
+
+// Lazy load onboarding wizard pages
+const OnboardingWizardPage = React.lazy(() =>
+  import("./pages/backlot/OnboardingWizardPage")
+);
+const ExternalOnboardingWizardPage = React.lazy(() =>
+  import("./pages/backlot/OnboardingWizardPage").then(module => ({
+    default: module.ExternalOnboardingWizardPage
+  }))
+);
+
 // Church Production Tools Pages
 import { ChurchToolsHome, ChurchToolPage } from "./pages/church";
 
@@ -267,6 +282,27 @@ const App = () => (
                 <Route path="/clearance/view/:token" element={
                   <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
                     <ClearanceViewPage />
+                  </Suspense>
+                } />
+
+                {/* Public Deal Memo Signing Route (no auth required) */}
+                <Route path="/deal-memo/sign/:token" element={
+                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                    <DealMemoSignPage />
+                  </Suspense>
+                } />
+
+                {/* Onboarding Wizard - Authenticated */}
+                <Route path="/onboarding/:sessionId" element={
+                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                    <OnboardingWizardPage />
+                  </Suspense>
+                } />
+
+                {/* Onboarding Wizard - External/Token-based (no auth required) */}
+                <Route path="/onboarding/external/:token" element={
+                  <Suspense fallback={<div className="min-h-screen bg-charcoal-black flex items-center justify-center"><div className="animate-spin w-8 h-8 border-2 border-accent-yellow border-t-transparent rounded-full" /></div>}>
+                    <ExternalOnboardingWizardPage />
                   </Suspense>
                 } />
 
