@@ -348,23 +348,43 @@ async def get_filmmaker_profile_by_username(username: str):
 
         filmmaker = filmmaker_result.data[0]
 
-        # Get credits with production details (including featured flag)
-        credits_result = client.table("credits").select(
-            "*, productions(id, title)"
-        ).eq("user_id", user_id).order("created_at", desc=True).execute()
+        # Get credits (separate queries — nested joins not supported)
+        credits_result = client.table("credits").select("*").eq(
+            "user_id", user_id
+        ).order("created_at", desc=True).execute()
+
+        # Fetch associated productions by ID and merge
+        credits_data = credits_result.data or []
+        production_ids = list({c["production_id"] for c in credits_data if c.get("production_id")})
+        productions_map = {}
+        if production_ids:
+            for pid in production_ids:
+                prod_result = client.table("productions").select("id, title").eq("id", pid).execute()
+                if prod_result.data:
+                    productions_map[pid] = prod_result.data[0]
+        for credit in credits_data:
+            pid = credit.get("production_id")
+            credit["productions"] = productions_map.get(pid) if pid else None
 
         # Get Order membership info if member and showing publicly
         order_info = None
         if base_profile.get("is_order_member") and base_profile.get("show_order_membership", True):
             try:
-                # Get order member profile with lodge info
-                order_result = client.table("order_member_profiles").select(
-                    "*, order_lodges(id, name, city, state)"
-                ).eq("user_id", user_id).execute()
+                # Get order member profile and lodge info (separate queries)
+                order_result = client.table("order_member_profiles").select("*").eq(
+                    "user_id", user_id
+                ).execute()
 
                 if order_result.data:
                     order_member = order_result.data[0]
-                    lodge = order_member.get("order_lodges")
+                    lodge = None
+                    lodge_id = order_member.get("lodge_id")
+                    if lodge_id:
+                        lodge_result = client.table("order_lodges").select(
+                            "id, name, city, state"
+                        ).eq("id", lodge_id).execute()
+                        if lodge_result.data:
+                            lodge = lodge_result.data[0]
 
                     # Check if lodge officer
                     officer_title = None
@@ -409,7 +429,7 @@ async def get_filmmaker_profile_by_username(username: str):
             "preferred_locations": filmmaker.get("preferred_locations") or [],
             "contact_method": filmmaker.get("contact_method"),
             "show_email": filmmaker.get("show_email", False),
-            "credits": credits_result.data or [],
+            "credits": credits_data,
             "status_message": base_profile.get("status_message"),
             "order_info": order_info,
         }
