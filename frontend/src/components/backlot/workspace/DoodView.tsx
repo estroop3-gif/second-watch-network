@@ -170,10 +170,10 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   const publishDood = usePublishDood(projectId);
 
   // Socket listener for real-time DOOD updates
-  const { socket } = useSocket();
+  const { on, off } = useSocket();
 
   useEffect(() => {
-    if (!socket || !projectId) return;
+    if (!projectId) return;
 
     const handleDoodUpdate = (data: { project_id: string; sync_type: string }) => {
       if (data.project_id === projectId) {
@@ -182,11 +182,11 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
       }
     };
 
-    socket.on('dood_updated', handleDoodUpdate);
+    on('dood_updated', handleDoodUpdate);
     return () => {
-      socket.off('dood_updated', handleDoodUpdate);
+      off('dood_updated', handleDoodUpdate);
     };
-  }, [socket, projectId, refetch]);
+  }, [on, off, projectId, refetch]);
 
   // Build assignment lookup map
   const assignmentMap = useMemo(() => {
@@ -479,22 +479,22 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
   const latestVersion = rangeData?.latest_published_version;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6 overflow-x-hidden">
       {/* Header */}
       <div>
-        <h2 className="text-2xl font-heading text-bone-white">Day Out of Days</h2>
-        <p className="text-sm text-muted-gray">
+        <h2 className="text-xl md:text-2xl font-heading text-bone-white">Day Out of Days</h2>
+        <p className="text-xs md:text-sm text-muted-gray">
           Track cast and crew availability across your shoot schedule
         </p>
       </div>
 
       {/* Published Version Banner */}
       {latestVersion && (
-        <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-4 py-2 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Check className="w-4 h-4 text-green-500" />
-            <span className="text-sm text-green-400">
-              Latest published: Version {latestVersion.version_number} (
+        <div className="bg-green-500/10 border border-green-500/30 rounded-lg px-3 md:px-4 py-2 flex items-center">
+          <div className="flex items-center gap-2 min-w-0">
+            <Check className="w-4 h-4 text-green-500 shrink-0" />
+            <span className="text-xs md:text-sm text-green-400 truncate">
+              Latest published: v{latestVersion.version_number} (
               {new Date(latestVersion.created_at).toLocaleDateString()})
             </span>
           </div>
@@ -504,7 +504,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
       {/* Controls */}
       <Card className="bg-white/5 border-white/10">
         <CardContent className="pt-4">
-          <div className="flex flex-wrap gap-4 items-end">
+          <div className="flex flex-wrap gap-3 md:gap-4 items-end">
             {/* Date Range */}
             <div className="flex gap-2 items-end">
               <div className="space-y-1">
@@ -515,7 +515,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                   onChange={(e) =>
                     setDateRange((prev) => ({ ...prev, start: e.target.value }))
                   }
-                  className="w-40 bg-white/5 border-white/10"
+                  className="w-[130px] md:w-40 bg-white/5 border-white/10"
                 />
               </div>
               <div className="space-y-1">
@@ -526,60 +526,66 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
                   onChange={(e) =>
                     setDateRange((prev) => ({ ...prev, end: e.target.value }))
                   }
-                  className="w-40 bg-white/5 border-white/10"
+                  className="w-[130px] md:w-40 bg-white/5 border-white/10"
                 />
               </div>
             </div>
 
             {/* Actions */}
-            <div className="flex gap-2 ml-auto">
+            <div className="flex flex-wrap gap-2 ml-auto">
               {canEdit && (
                 <>
                   <Button
                     variant="outline"
+                    size="sm"
                     onClick={handleSyncFromSchedule}
                     disabled={syncDaysFromSchedule.isPending}
-                    className="gap-2"
+                    className="gap-1.5"
                   >
-                    <RefreshCw className={cn("w-4 h-4", syncDaysFromSchedule.isPending && "animate-spin")} />
-                    Sync from Schedule
+                    <RefreshCw className={cn("w-4 h-4 shrink-0", syncDaysFromSchedule.isPending && "animate-spin")} />
+                    <span className="hidden md:inline">Sync from Schedule</span>
+                    <span className="md:hidden">Sync</span>
                   </Button>
                   <Button
                     variant="outline"
+                    size="sm"
                     onClick={() => setShowSubjectPicker(true)}
-                    className="gap-2"
+                    className="gap-1.5"
                   >
-                    <Plus className="w-4 h-4" />
-                    Add Subjects
+                    <Plus className="w-4 h-4 shrink-0" />
+                    <span className="hidden sm:inline">Add Subjects</span>
                   </Button>
                   <Button
                     variant="outline"
+                    size="sm"
                     onClick={() => setShowPublishDialog(true)}
                     disabled={days.length === 0}
-                    className="gap-2"
+                    className="gap-1.5"
                   >
-                    <Save className="w-4 h-4" />
-                    Publish
+                    <Save className="w-4 h-4 shrink-0" />
+                    <span className="hidden sm:inline">Publish</span>
                   </Button>
                 </>
               )}
               <Button
                 variant="outline"
+                size="sm"
                 onClick={handleExport}
                 disabled={days.length === 0}
-                className="gap-2"
+                className="gap-1.5"
               >
-                <Download className="w-4 h-4" />
-                Export CSV
+                <Download className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Export CSV</span>
               </Button>
               <Button
                 variant="outline"
+                size="sm"
                 onClick={handleExportPdf}
                 disabled={days.length === 0}
-                className="gap-2"
+                className="gap-1.5"
               >
-                <FileSpreadsheet className="w-4 h-4" />
-                Download PDF
+                <FileSpreadsheet className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Download PDF</span>
               </Button>
             </div>
           </div>
@@ -588,7 +594,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
 
       {/* Empty State */}
       {days.length === 0 && subjects.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 px-4 border border-white/10 rounded-lg">
+        <div className="flex flex-col items-center justify-center py-8 md:py-16 px-4 border border-white/10 rounded-lg">
           <CalendarRange className="w-12 h-12 text-muted-gray mb-4" />
           <h3 className="text-lg font-medium text-bone-white mb-2">
             No data yet
@@ -612,7 +618,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
             <thead>
               <tr>
                 {/* Subject header */}
-                <th className="sticky left-0 z-20 bg-charcoal-black p-2 text-left text-sm font-medium text-muted-gray border-b border-white/10 min-w-[200px]">
+                <th className="sticky left-0 z-20 bg-charcoal-black p-2 text-left text-xs md:text-sm font-medium text-muted-gray border-b border-white/10 min-w-[120px] md:min-w-[200px]">
                   Subject
                 </th>
                 <th className="p-2 text-center text-xs text-muted-gray border-b border-white/10 w-12">
@@ -809,18 +815,18 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-wrap gap-3">
+            <div className="flex flex-wrap gap-2 md:gap-3">
               {DOOD_CODES.map((c) => (
-                <div key={c.code} className="flex items-center gap-2">
+                <div key={c.code} className="flex items-center gap-1.5 md:gap-2">
                   <span
                     className={cn(
-                      'w-6 h-6 rounded text-xs font-bold flex items-center justify-center text-white',
+                      'w-5 h-5 md:w-6 md:h-6 rounded text-xs font-bold flex items-center justify-center text-white',
                       c.color
                     )}
                   >
                     {c.code}
                   </span>
-                  <span className="text-sm text-muted-gray">{c.label}</span>
+                  <span className="text-xs md:text-sm text-muted-gray">{c.label}</span>
                 </div>
               ))}
             </div>
@@ -836,7 +842,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
           setSubjectPickerTab('cast');
         }
       }}>
-        <DialogContent className="max-w-2xl max-h-[80vh]">
+        <DialogContent className="max-w-2xl max-h-[80vh] w-[95vw] md:w-auto">
           <DialogHeader>
             <DialogTitle>Add Subjects to Day Out of Days</DialogTitle>
             <DialogDescription>
@@ -845,7 +851,7 @@ export function DoodView({ projectId, canEdit }: DoodViewProps) {
           </DialogHeader>
           <div className="py-4">
             {/* Tab buttons */}
-            <div className="flex gap-1 mb-4 border-b border-white/10 pb-2">
+            <div className="flex flex-wrap gap-1 mb-4 border-b border-white/10 pb-2">
               {[
                 { key: 'cast', label: 'Cast', count: availableSubjects?.cast?.filter(c => !c.already_added).length || 0 },
                 { key: 'crew', label: 'Crew', count: availableSubjects?.crew?.filter(c => !c.already_added).length || 0 },

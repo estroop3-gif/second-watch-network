@@ -617,21 +617,22 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       isFullscreen && "fixed inset-0 z-50"
     )}>
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-muted-gray/20">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 p-2 md:p-4 border-b border-muted-gray/20">
+        <div className="flex items-center gap-2 md:gap-3 min-w-0">
           {onBack && !isFullscreen && (
-            <Button variant="ghost" size="icon" onClick={onBack}>
+            <Button variant="ghost" size="icon" onClick={onBack} className="shrink-0">
               <ChevronLeft className="w-5 h-5" />
             </Button>
           )}
-          <div>
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <FileText className="w-5 h-5 text-accent-yellow" />
-              <h2 className="text-lg font-medium text-bone-white">
+              <FileText className="w-4 h-4 md:w-5 md:h-5 text-accent-yellow shrink-0" />
+              <h2 className="text-sm md:text-lg font-medium text-bone-white truncate">
                 {activeScript.title}
               </h2>
               <Badge
                 variant="outline"
+                className="hidden sm:flex shrink-0"
                 style={{
                   backgroundColor: `${colorHex}20`,
                   borderColor: colorHex,
@@ -641,25 +642,25 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                 {colorLabel}
               </Badge>
               {activeScript.is_locked && (
-                <Badge variant="outline" className="border-red-500 text-red-400">
+                <Badge variant="outline" className="border-red-500 text-red-400 shrink-0">
                   <Lock className="w-3 h-3 mr-1" />
-                  Locked
+                  <span className="hidden sm:inline">Locked</span>
                 </Badge>
               )}
             </div>
-            <div className="flex items-center gap-2 text-sm text-muted-gray">
+            <div className="hidden sm:flex items-center gap-2 text-xs md:text-sm text-muted-gray">
               {activeScript.version && <span>v{activeScript.version}</span>}
               {activeScript.version_number && (
                 <span>Revision #{activeScript.version_number}</span>
               )}
               {activeScript.draft_date && (
-                <span>Draft: {activeScript.draft_date}</span>
+                <span className="hidden md:inline">Draft: {activeScript.draft_date}</span>
               )}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 md:gap-2">
           {/* View Mode Toggle */}
           <div className="flex items-center border border-muted-gray/30 rounded-md overflow-hidden">
             <Button
@@ -667,36 +668,36 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               size="sm"
               onClick={() => setViewMode('title')}
               className={cn(
-                'h-8 rounded-none border-0',
+                'h-7 md:h-8 rounded-none border-0 px-2 md:px-3',
                 viewMode === 'title' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
               )}
             >
-              <FileText className="w-4 h-4 mr-1" />
-              Title
+              <FileText className="w-3.5 h-3.5 md:w-4 md:h-4 md:mr-1" />
+              <span className="hidden md:inline">Title</span>
             </Button>
             <Button
               variant={viewMode === 'page' ? 'secondary' : 'ghost'}
               size="sm"
               onClick={() => setViewMode('page')}
               className={cn(
-                'h-8 rounded-none border-0',
+                'h-7 md:h-8 rounded-none border-0 px-2 md:px-3',
                 viewMode === 'page' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
               )}
             >
-              <FileStack className="w-4 h-4 mr-1" />
-              Page
+              <FileStack className="w-3.5 h-3.5 md:w-4 md:h-4 md:mr-1" />
+              <span className="hidden md:inline">Page</span>
             </Button>
             <Button
               variant={viewMode === 'inline' ? 'secondary' : 'ghost'}
               size="sm"
               onClick={() => setViewMode('inline')}
               className={cn(
-                'h-8 rounded-none border-0',
+                'h-7 md:h-8 rounded-none border-0 px-2 md:px-3',
                 viewMode === 'inline' ? 'bg-accent-yellow/20 text-accent-yellow' : 'text-muted-gray'
               )}
             >
-              <AlignJustify className="w-4 h-4 mr-1" />
-              Inline
+              <AlignJustify className="w-3.5 h-3.5 md:w-4 md:h-4 md:mr-1" />
+              <span className="hidden md:inline">Inline</span>
             </Button>
           </div>
 
@@ -706,7 +707,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               variant="outline"
               size="sm"
               onClick={() => setShowTitlePageEditForm(true)}
-              className="border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
+              className="hidden md:flex border-accent-yellow/50 text-accent-yellow hover:bg-accent-yellow/10"
             >
               <Edit className="w-4 h-4 mr-1" />
               Title Page
@@ -718,7 +719,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
             variant="ghost"
             size="icon"
             onClick={toggleFullscreen}
-            className="text-muted-gray hover:text-bone-white"
+            className="hidden sm:flex text-muted-gray hover:text-bone-white h-7 w-7 md:h-8 md:w-8"
           >
             {isFullscreen ? (
               <Minimize2 className="w-4 h-4" />
@@ -735,20 +736,20 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               onClick={handleToggleLock}
               disabled={lockVersion.isPending}
               className={cn(
-                'border-muted-gray/30',
+                'border-muted-gray/30 h-7 md:h-8',
                 activeScript.is_locked
                   ? 'text-red-400 hover:text-red-300'
                   : 'text-green-400 hover:text-green-300'
               )}
             >
               {lockVersion.isPending ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                <Loader2 className="w-4 h-4 md:mr-2 animate-spin" />
               ) : activeScript.is_locked ? (
-                <Unlock className="w-4 h-4 mr-2" />
+                <Unlock className="w-4 h-4 md:mr-2" />
               ) : (
-                <Lock className="w-4 h-4 mr-2" />
+                <Lock className="w-4 h-4 md:mr-2" />
               )}
-              {activeScript.is_locked ? 'Unlock' : 'Lock'}
+              <span className="hidden md:inline">{activeScript.is_locked ? 'Unlock' : 'Lock'}</span>
             </Button>
           )}
 
@@ -758,10 +759,10 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               variant="outline"
               size="sm"
               onClick={() => setShowNewVersionModal(true)}
-              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10"
+              className="border-accent-yellow/30 text-accent-yellow hover:bg-accent-yellow/10 h-7 md:h-8"
             >
-              <GitBranch className="w-4 h-4 mr-2" />
-              New Revision
+              <GitBranch className="w-4 h-4 md:mr-2" />
+              <span className="hidden md:inline">New Revision</span>
             </Button>
           )}
 
@@ -775,14 +776,14 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                     size="sm"
                     onClick={() => handleExtractText(true)}
                     disabled={extractText.isPending}
-                    className="border-muted-gray/30 text-muted-gray hover:text-bone-white"
+                    className="hidden sm:flex border-muted-gray/30 text-muted-gray hover:text-bone-white h-7 md:h-8"
                   >
                     {extractText.isPending ? (
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      <Loader2 className="w-4 h-4 md:mr-2 animate-spin" />
                     ) : (
-                      <FileText className="w-4 h-4 mr-2" />
+                      <FileText className="w-4 h-4 md:mr-2" />
                     )}
-                    Re-extract
+                    <span className="hidden md:inline">Re-extract</span>
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -799,7 +800,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                 variant="outline"
                 size="sm"
                 onClick={handleCancelEdit}
-                className="border-muted-gray/30"
+                className="border-muted-gray/30 h-7 md:h-8"
               >
                 Cancel
               </Button>
@@ -808,14 +809,14 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                 size="sm"
                 onClick={handleSave}
                 disabled={updateScriptText.isPending || !hasUnsavedChanges}
-                className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/10"
+                className="border-muted-gray/30 text-bone-white hover:bg-muted-gray/10 h-7 md:h-8"
               >
                 {updateScriptText.isPending ? (
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  <Loader2 className="w-4 h-4 md:mr-2 animate-spin" />
                 ) : (
-                  <Save className="w-4 h-4 mr-2" />
+                  <Save className="w-4 h-4 md:mr-2" />
                 )}
-                Save
+                <span className="hidden sm:inline">Save</span>
               </Button>
               <TooltipProvider>
                 <Tooltip>
@@ -824,14 +825,14 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                       size="sm"
                       onClick={handleSaveAsRevision}
                       disabled={updateScriptText.isPending || !hasUnsavedChanges}
-                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                      className="bg-accent-yellow text-charcoal-black hover:bg-bone-white h-7 md:h-8"
                     >
                       {updateScriptText.isPending ? (
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Loader2 className="w-4 h-4 md:mr-2 animate-spin" />
                       ) : (
-                        <GitBranch className="w-4 h-4 mr-2" />
+                        <GitBranch className="w-4 h-4 md:mr-2" />
                       )}
-                      Save as Revision
+                      <span className="hidden sm:inline">Save as Revision</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -845,10 +846,10 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               <Button
                 size="sm"
                 onClick={handleStartEditing}
-                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
+                className="bg-accent-yellow text-charcoal-black hover:bg-bone-white h-7 md:h-8"
               >
-                <Edit className="w-4 h-4 mr-2" />
-                Edit Script
+                <Edit className="w-4 h-4 md:mr-2" />
+                <span className="hidden sm:inline">Edit Script</span>
               </Button>
             )
           )}
@@ -868,8 +869,8 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
       {/* Formatting Toolbar - Only show when editing */}
       {isEditing && (
         <TooltipProvider>
-          <div className="flex items-center gap-1 px-4 py-2 border-b border-muted-gray/20 bg-muted-gray/5">
-            <span className="text-xs text-muted-gray mr-2">Element:</span>
+          <div className="flex items-center gap-1 px-2 md:px-4 py-2 border-b border-muted-gray/20 bg-muted-gray/5 overflow-x-auto">
+            <span className="text-xs text-muted-gray mr-1 md:mr-2 shrink-0 hidden sm:inline">Element:</span>
 
             {/* Element Type Buttons */}
             {(['scene_heading', 'action', 'character', 'dialogue', 'parenthetical', 'transition'] as ScriptElementType[]).map((type) => {
@@ -885,14 +886,14 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
                       size="sm"
                       onClick={() => formatAsElement(type)}
                       className={cn(
-                        'h-7 px-2',
+                        'h-7 px-1.5 md:px-2 shrink-0',
                         isActive
                           ? 'bg-accent-yellow text-charcoal-black'
                           : 'text-muted-gray hover:text-bone-white'
                       )}
                     >
-                      <Icon className="w-3.5 h-3.5 mr-1" />
-                      <span className="text-xs">{info.label}</span>
+                      <Icon className="w-3.5 h-3.5 md:mr-1" />
+                      <span className="text-xs hidden md:inline">{info.label}</span>
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
@@ -906,7 +907,7 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
             <div className="flex-1" />
 
             {/* Current Element Indicator */}
-            <div className="flex items-center gap-2 text-xs">
+            <div className="hidden sm:flex items-center gap-2 text-xs shrink-0">
               <span className="text-muted-gray">Current:</span>
               <Badge variant="outline" className="text-xs">
                 {ELEMENT_INFO[currentElementType]?.label || 'General'}
@@ -918,10 +919,10 @@ const ScriptEditorPanel: React.FC<ScriptEditorPanelProps> = ({
               variant="ghost"
               size="sm"
               onClick={() => setShowFormatted(!showFormatted)}
-              className="h-7 px-2 text-muted-gray hover:text-bone-white"
+              className="h-7 px-1.5 md:px-2 text-muted-gray hover:text-bone-white shrink-0"
             >
-              <Type className="w-3.5 h-3.5 mr-1" />
-              <span className="text-xs">{showFormatted ? 'Raw' : 'Formatted'}</span>
+              <Type className="w-3.5 h-3.5 md:mr-1" />
+              <span className="text-xs hidden sm:inline">{showFormatted ? 'Raw' : 'Formatted'}</span>
             </Button>
           </div>
         </TooltipProvider>

@@ -50,7 +50,7 @@ import {
   FileVideo,
   Truck,
 } from 'lucide-react';
-import { useProject, useProjectPermission, useViewConfig, useCanViewAsRole, useCanApprove, BACKLOT_ROLES, useTodayShootDay } from '@/hooks/backlot';
+import { useWorkspaceInit, BACKLOT_ROLES, useViewConfig } from '@/hooks/backlot';
 import { BacklotWorkspaceView, BacklotVisibility, BacklotProjectStatus } from '@/types/backlot';
 import {
   Select,
@@ -110,7 +110,6 @@ const AssetsView = lazy(() => import('@/components/backlot/workspace/AssetsView'
 const AnalyticsView = lazy(() => import('@/components/backlot/workspace/AnalyticsView'));
 const TaskListDetailView = lazy(() => import('@/components/backlot/workspace/TaskListDetailView'));
 const DailiesView = lazy(() => import('@/components/backlot/workspace/DailiesView'));
-const RolesManagementView = lazy(() => import('@/components/backlot/workspace/RolesManagementView'));
 const ScenesView = lazy(() => import('@/components/backlot/workspace/ScenesView'));
 const SceneDetailView = lazy(() => import('@/components/backlot/workspace/SceneDetailView'));
 const PeopleView = lazy(() => import('@/components/backlot/workspace/PeopleView'));
@@ -151,7 +150,7 @@ const ReviewDetailView = lazy(() =>
 );
 
 import { SceneListItem, PersonListItem } from '@/hooks/backlot';
-import { SquarePlay, Video, UserCog, Timer, Layers, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale, ListOrdered, Clock, Workflow } from 'lucide-react';
+import { SquarePlay, Video, Timer, Layers, Shield, Aperture, QrCode, Star, Church, ClipboardList, Flame, ClipboardCheck, Scale, ListOrdered, Clock, Workflow } from 'lucide-react';
 
 const STATUS_LABELS: Record<BacklotProjectStatus, string> = {
   pre_production: 'Pre-Production',
@@ -308,7 +307,6 @@ const NAV_SECTIONS: NavSection[] = [
     title: 'Project',
     items: [
       { id: 'access', label: 'Team & Access', icon: Shield, adminOnly: true },
-      { id: 'roles', label: 'Team Roles', icon: UserCog, adminOnly: true },
       { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
     ],
   },
@@ -357,7 +355,20 @@ const ProjectWorkspace: React.FC = () => {
   const [selectedTaskListId, setSelectedTaskListId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showTaskShareModal, setShowTaskShareModal] = useState(false);
-  const [selectedReviewAssetId, setSelectedReviewAssetId] = useState<string | null>(null);
+  const [selectedReviewAssetId, setSelectedReviewAssetIdState] = useState<string | null>(
+    searchParams.get('reviewAssetId')
+  );
+  const setSelectedReviewAssetId = (id: string | null) => {
+    setSelectedReviewAssetIdState(id);
+    setSearchParams((prev) => {
+      if (id) {
+        prev.set('reviewAssetId', id);
+      } else {
+        prev.delete('reviewAssetId');
+      }
+      return prev;
+    }, { replace: true });
+  };
   const [viewAsRole, setViewAsRole] = useState<string | null>(null);
   // New view states for scenes, people
   const [selectedSceneForView, setSelectedSceneForView] = useState<SceneListItem | null>(null);
@@ -370,12 +381,21 @@ const ProjectWorkspace: React.FC = () => {
   // Episode management state
   const [selectedEpisodeId, setSelectedEpisodeId] = useState<string | null>(null);
 
-  const { data: project, isLoading: projectLoading } = useProject(projectId || null);
-  const { data: permission, isLoading: permissionLoading } = useProjectPermission(projectId || null);
-  const { data: viewConfig, isLoading: viewConfigLoading } = useViewConfig(projectId || null, viewAsRole);
-  const { data: canViewAsRole } = useCanViewAsRole(projectId || null);
-  const { todayDay, hasShootToday } = useTodayShootDay(projectId || null);
-  const { canViewApprovalsDashboard } = useCanApprove(projectId || null);
+  // Single combined API call — replaces 6 individual hooks
+  const {
+    project,
+    permission,
+    viewConfig: initViewConfig,
+    canViewAsRole,
+    todayDay,
+    hasShootToday,
+    canViewApprovalsDashboard,
+    isLoading: workspaceLoading,
+  } = useWorkspaceInit(projectId || null);
+
+  // When admin uses "view as role", fetch the role-specific config (only fires when viewAsRole is set)
+  const { data: roleViewConfig } = useViewConfig(viewAsRole ? (projectId || null) : null, viewAsRole);
+  const viewConfig = viewAsRole ? roleViewConfig : initViewConfig;
   const { profile } = useEnrichedProfile();
 
   // Check if the alpha tester banner is visible (to adjust sidebar height)
@@ -402,7 +422,7 @@ const ProjectWorkspace: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const isLoading = projectLoading || permissionLoading || viewConfigLoading;
+  const isLoading = workspaceLoading;
 
   // Get tabs visibility from view config
   const tabsVisibility = viewConfig?.tabs || viewConfig?.config?.tabs || {};
@@ -521,8 +541,8 @@ const ProjectWorkspace: React.FC = () => {
     <VoiceProvider projectId={project.id}>
     <div className="min-h-screen bg-charcoal-black">
       {/* Header - fixed below the main AppHeader (top-20 = 5rem = 80px) */}
-      <header className="fixed top-20 left-0 right-0 z-40 h-14 bg-charcoal-black border-b border-muted-gray/20">
-        <div className="container mx-auto px-4 h-full flex items-center gap-4">
+      <header className="fixed top-20 left-0 right-0 z-40 h-14 bg-charcoal-black border-b border-muted-gray/20 overflow-hidden">
+        <div className="container mx-auto px-3 md:px-4 h-full flex items-center gap-2 md:gap-4">
           {/* Mobile Menu Button */}
           <Button
             variant="ghost"
@@ -544,20 +564,20 @@ const ProjectWorkspace: React.FC = () => {
               <h1 className="font-heading text-bone-white truncate">{project.title}</h1>
               <Badge
                 variant="outline"
-                className={`hidden sm:flex text-xs shrink-0 ${STATUS_COLORS[project.status]}`}
+                className={`hidden md:flex text-xs shrink-0 ${STATUS_COLORS[project.status]}`}
               >
                 {STATUS_LABELS[project.status]}
               </Badge>
               <Badge
                 variant="outline"
-                className="hidden sm:flex text-xs shrink-0 border-muted-gray/30 items-center gap-1"
+                className="hidden lg:flex text-xs shrink-0 border-muted-gray/30 items-center gap-1"
               >
                 <VisibilityIcon visibility={project.visibility} />
                 {project.visibility}
               </Badge>
             </div>
             {project.logline && (
-              <p className="text-sm text-muted-gray truncate hidden md:block">{project.logline}</p>
+              <p className="text-sm text-muted-gray truncate hidden lg:block">{project.logline}</p>
             )}
           </div>
 
@@ -567,7 +587,7 @@ const ProjectWorkspace: React.FC = () => {
             size="sm"
             onClick={handleGoToToday}
             className={cn(
-              'hidden sm:flex items-center gap-2 border-muted-gray/30',
+              'hidden md:flex items-center gap-2 border-muted-gray/30',
               hasShootToday && 'border-green-500/50 text-green-400 hover:bg-green-500/10'
             )}
           >
@@ -581,7 +601,7 @@ const ProjectWorkspace: React.FC = () => {
 
           {/* View as Role (for admins/showrunners) */}
           {canViewAsRole && (
-            <div className="hidden sm:flex items-center gap-2">
+            <div className="hidden lg:flex items-center gap-2">
               <Select
                 value={viewAsRole || 'my-view'}
                 onValueChange={(v) => setViewAsRole(v === 'my-view' ? null : v)}
@@ -616,7 +636,7 @@ const ProjectWorkspace: React.FC = () => {
             size="sm"
             onClick={() => setCopilotOpen(!copilotOpen)}
             className={cn(
-              'border-muted-gray/30 hidden sm:flex items-center gap-2',
+              'border-muted-gray/30 hidden md:flex items-center gap-2',
               copilotOpen && 'border-accent-yellow text-accent-yellow'
             )}
           >
@@ -989,9 +1009,6 @@ const ProjectWorkspace: React.FC = () => {
           )}
           {activeView === 'access' && (
             <TeamAccessView projectId={project.id} />
-          )}
-          {activeView === 'roles' && (
-            <RolesManagementView projectId={project.id} />
           )}
           {activeView === 'settings' && (
             <ProjectSettings project={project} permission={permission} />

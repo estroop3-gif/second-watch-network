@@ -317,6 +317,9 @@ const SceneCard: React.FC<{
 const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const navigate = useNavigate();
 
+  // Track when user explicitly navigated to All Days so auto-select doesn't override
+  const userWantsAllDays = React.useRef(false);
+
   // State
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -401,15 +404,14 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
   const { taskLists } = useTaskLists({ projectId });
   const { createTaskFromSource } = useCreateTaskFromSource(projectId, selectedTaskListId);
 
-  // Auto-select ONLY if there's an active (in_progress) session - otherwise show all days
+  // Auto-select ONLY if there's an active (in_progress) session on initial load
+  // Don't override if user explicitly navigated to All Days
   useEffect(() => {
-    if (sessions && sessions.length > 0 && !selectedSessionId) {
-      // Only auto-select if there's an active session in progress
+    if (sessions && sessions.length > 0 && !selectedSessionId && !userWantsAllDays.current) {
       const activeSession = sessions.find((s) => s.status === 'in_progress');
       if (activeSession) {
         setSelectedSessionId(activeSession.id);
       }
-      // Don't auto-select otherwise - let user see all production days
     }
   }, [sessions, selectedSessionId]);
 
@@ -478,6 +480,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
 
       setShowCreateModal(false);
       if (result?.id) {
+        userWantsAllDays.current = false;
         setSelectedSessionId(result.id);
       }
     } catch (error) {
@@ -718,6 +721,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               variant="outline"
               size="sm"
               onClick={() => {
+                userWantsAllDays.current = true;
                 setSelectedSessionId(null);
                 setShowReportView(false);
               }}
@@ -730,7 +734,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
 
           {/* Session Selector */}
           {sessions && sessions.length > 0 && selectedSessionId && (
-            <Select value={selectedSessionId || ''} onValueChange={setSelectedSessionId}>
+            <Select value={selectedSessionId || ''} onValueChange={(val) => { userWantsAllDays.current = false; setSelectedSessionId(val); }}>
               <SelectTrigger className="w-32 sm:w-48 bg-charcoal-black border-muted-gray/30">
                 <SelectValue placeholder="Select day" />
               </SelectTrigger>
@@ -879,6 +883,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         )}
                         onClick={() => {
                           if (hasSession && existingSession) {
+                            userWantsAllDays.current = false;
                             setSelectedSessionId(existingSession.id);
                             // Auto-show report view for wrapped sessions
                             if (existingSession.status === 'wrapped') {
@@ -947,24 +952,45 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                         {/* Session Status */}
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {hasSession ? (
-                            <>
-                              <Badge
-                                className={cn(
-                                  'capitalize text-xs',
-                                  existingSession?.status === 'in_progress' &&
-                                    'bg-green-500/20 text-green-400 border-green-500/30',
-                                  existingSession?.status === 'wrapped' &&
-                                    'bg-blue-500/20 text-blue-400 border-blue-500/30',
-                                  existingSession?.status === 'pending' &&
-                                    'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
-                                )}
-                              >
-                                {existingSession?.status === 'in_progress' && <Play className="w-3 h-3 sm:mr-1" />}
-                                {existingSession?.status === 'wrapped' && <CheckCircle2 className="w-3 h-3 sm:mr-1" />}
-                                <span className="hidden sm:inline">{existingSession?.status?.replace('_', ' ')}</span>
-                              </Badge>
-                              <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5 text-muted-gray" />
-                            </>
+                            existingSession?.status === 'in_progress' ? (
+                              <>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="border-green-500/30 text-green-400 hover:bg-green-500/10 text-xs sm:text-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    userWantsAllDays.current = false;
+                                    setSelectedSessionId(existingSession.id);
+                                    setShowReportView(false);
+                                  }}
+                                >
+                                  <Play className="w-3 h-3 sm:w-4 sm:h-4 sm:mr-1" />
+                                  Continue
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Badge
+                                  className={cn(
+                                    'capitalize text-xs',
+                                    existingSession?.status === 'wrapped' &&
+                                      'bg-blue-500/20 text-blue-400 border-blue-500/30',
+                                    existingSession?.status === 'not_started' &&
+                                      'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+                                    existingSession?.status === 'pending' &&
+                                      'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                                  )}
+                                >
+                                  {existingSession?.status === 'wrapped' && <CheckCircle2 className="w-3 h-3 sm:mr-1" />}
+                                  {(existingSession?.status === 'not_started' || existingSession?.status === 'pending') && <Clock className="w-3 h-3 sm:mr-1" />}
+                                  <span className="hidden sm:inline">
+                                    {existingSession?.status === 'wrapped' ? 'Wrapped' : 'Not Started'}
+                                  </span>
+                                </Badge>
+                                <ChevronRight className="w-4 h-4 sm:w-5 sm:h-5 text-muted-gray" />
+                              </>
+                            )
                           ) : !day.is_completed && canEdit ? (
                             <Button
                               variant="outline"
@@ -976,7 +1002,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
                                 setShowCreateModal(true);
                               }}
                             >
-                              <Play className="w-3 h-3 sm:w-4 sm:h-4 sm:mr-1" />
+                              <Plus className="w-3 h-3 sm:w-4 sm:h-4 sm:mr-1" />
                               <span className="hidden sm:inline">Start Day</span>
                             </Button>
                           ) : null}
@@ -1009,6 +1035,7 @@ const HotSetView: React.FC<HotSetViewProps> = ({ projectId, canEdit }) => {
               session={session}
               projectId={projectId}
               onBack={() => {
+                userWantsAllDays.current = true;
                 setShowReportView(false);
                 setSelectedSessionId(null);
               }}

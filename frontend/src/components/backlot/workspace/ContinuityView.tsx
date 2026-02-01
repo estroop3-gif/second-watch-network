@@ -198,17 +198,17 @@ const ContinuityView: React.FC<ContinuityViewProps> = ({ projectId, canEdit }) =
   return (
     <div className="h-full flex flex-col">
       {/* Version Selector Toolbar */}
-      <div className="flex items-center gap-4 p-4 border-b border-muted-gray/20 bg-charcoal-black/50">
+      <div className="flex flex-wrap items-center gap-2 md:gap-4 p-3 md:p-4 border-b border-muted-gray/20 bg-charcoal-black/50">
         <div className="flex items-center gap-2">
           <History className="w-4 h-4 text-muted-gray" />
-          <span className="text-sm text-muted-gray">Version:</span>
+          <span className="text-sm text-muted-gray hidden sm:inline">Version:</span>
         </div>
 
         <Select
           value={selectedExportId ?? ''}
           onValueChange={setSelectedExportId}
         >
-          <SelectTrigger className="w-[300px] bg-rich-black border-muted-gray/30">
+          <SelectTrigger className="w-full sm:w-[300px] bg-rich-black border-muted-gray/30">
             <SelectValue placeholder="Select a version" />
           </SelectTrigger>
           <SelectContent className="bg-rich-black border-muted-gray/30">
@@ -229,13 +229,13 @@ const ContinuityView: React.FC<ContinuityViewProps> = ({ projectId, canEdit }) =
         </Select>
 
         {/* Export count badge */}
-        <Badge variant="outline" className="text-muted-gray border-muted-gray/30">
+        <Badge variant="outline" className="hidden sm:flex text-muted-gray border-muted-gray/30">
           {exports.length} {exports.length === 1 ? 'version' : 'versions'}
         </Badge>
 
         {/* Selected export info */}
         {selectedExport && (
-          <div className="flex items-center gap-4 ml-auto text-sm text-muted-gray">
+          <div className="hidden md:flex items-center gap-4 ml-auto text-sm text-muted-gray">
             {selectedExport.page_count && (
               <span className="flex items-center gap-1">
                 <FileText className="w-3 h-3" />
@@ -264,7 +264,7 @@ const ContinuityView: React.FC<ContinuityViewProps> = ({ projectId, canEdit }) =
         {selectedExport && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8">
+              <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto sm:ml-0">
                 <MoreVertical className="w-4 h-4" />
               </Button>
             </DropdownMenuTrigger>

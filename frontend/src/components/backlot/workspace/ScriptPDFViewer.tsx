@@ -212,17 +212,17 @@ const ScriptPDFViewer: React.FC<ScriptPDFViewerProps> = ({
   return (
     <div className="flex flex-col h-full bg-charcoal-black" ref={containerRef}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-muted-gray/20 bg-black/20 overflow-x-auto">
-        <div className="flex items-center gap-4 flex-shrink-0">
-          <h2 className="text-lg font-medium text-bone-white truncate max-w-[200px]">
+      <div className="flex items-center justify-between px-2 md:px-4 py-2 gap-2 border-b border-muted-gray/20 bg-black/20 overflow-x-auto">
+        <div className="flex items-center gap-2 md:gap-4 flex-shrink-0 min-w-0">
+          <h2 className="text-sm md:text-lg font-medium text-bone-white truncate max-w-[120px] md:max-w-[200px]">
             {script.title}
           </h2>
           {script.version && (
-            <Badge variant="outline" className="text-xs">
+            <Badge variant="outline" className="text-xs hidden sm:flex">
               v{script.version}
             </Badge>
           )}
-          <Badge variant="outline" className="text-xs text-muted-gray border-muted-gray/30">
+          <Badge variant="outline" className="text-xs text-muted-gray border-muted-gray/30 hidden sm:flex">
             Reference Only
           </Badge>
         </div>
@@ -392,36 +392,36 @@ const ScriptPDFViewer: React.FC<ScriptPDFViewerProps> = ({
       </div>
 
       {/* Footer navigation */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-muted-gray/20 bg-black/20">
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={goToFirstPage} disabled={currentPage <= 1}>
+      <div className="flex items-center justify-between px-2 md:px-4 py-2 border-t border-muted-gray/20 bg-black/20">
+        <div className="flex items-center gap-1 md:gap-2">
+          <Button variant="ghost" size="sm" onClick={goToFirstPage} disabled={currentPage <= 1} className="hidden sm:flex">
             <ChevronsLeft className="w-4 h-4" />
           </Button>
           <Button variant="ghost" size="sm" onClick={goToPrevPage} disabled={currentPage <= 1}>
             <ChevronLeft className="w-4 h-4" />
           </Button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 md:gap-2">
             <Input
               type="number"
               min={1}
               max={numPages}
               value={currentPage}
               onChange={(e) => goToPage(parseInt(e.target.value) || 1)}
-              className="w-16 h-8 text-center text-sm"
+              className="w-12 md:w-16 h-8 text-center text-sm"
             />
-            <span className="text-sm text-muted-gray">of {numPages}</span>
+            <span className="text-xs md:text-sm text-muted-gray whitespace-nowrap">of {numPages}</span>
           </div>
 
           <Button variant="ghost" size="sm" onClick={goToNextPage} disabled={currentPage >= numPages}>
             <ChevronRight className="w-4 h-4" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={goToLastPage} disabled={currentPage >= numPages}>
+          <Button variant="ghost" size="sm" onClick={goToLastPage} disabled={currentPage >= numPages} className="hidden sm:flex">
             <ChevronsRight className="w-4 h-4" />
           </Button>
         </div>
 
-        <div className="text-sm text-muted-gray">
+        <div className="text-xs md:text-sm text-muted-gray hidden sm:block">
           Use Text View for notes and highlights
         </div>
       </div>

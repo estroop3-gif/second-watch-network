@@ -860,33 +860,35 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6 overflow-x-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start sm:items-center justify-between gap-2">
         <div>
-          <h2 className="text-2xl font-heading text-bone-white">Receipts</h2>
-          <p className="text-sm text-muted-gray">
+          <h2 className="text-xl md:text-2xl font-heading text-bone-white">Receipts</h2>
+          <p className="text-xs md:text-sm text-muted-gray">
             Upload and manage expense receipts with AI-powered OCR
           </p>
         </div>
         {canEdit && (
           <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={handleExport}>
-              <Download className="w-4 h-4 mr-2" />
-              Export CSV
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="w-4 h-4 shrink-0 sm:mr-2" />
+              <span className="hidden sm:inline">Export CSV</span>
             </Button>
             <Button
               variant="outline"
+              size="sm"
               onClick={() => setShowManualEntry(true)}
             >
-              <Plus className="w-4 h-4 mr-2" />
-              Manual Entry
+              <Plus className="w-4 h-4 shrink-0 sm:mr-2" />
+              <span className="hidden sm:inline">Manual Entry</span>
             </Button>
             <Button
+              size="sm"
               onClick={() => setShowUpload(true)}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             >
-              <Upload className="w-4 h-4 mr-2" />
+              <Upload className="w-4 h-4 shrink-0 sm:mr-2" />
               Upload
             </Button>
           </div>
@@ -894,24 +896,24 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
-        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
-          <div className="text-sm text-muted-gray mb-1">Total Value</div>
-          <div className="text-2xl font-bold text-bone-white">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 md:p-4">
+          <div className="text-xs md:text-sm text-muted-gray mb-1">Total Value</div>
+          <div className="text-xl md:text-2xl font-bold text-bone-white">
             {formatCurrency(stats.total, currency)}
           </div>
         </div>
-        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-4">
-          <div className="text-sm text-muted-gray mb-1">Total Receipts</div>
-          <div className="text-2xl font-bold text-bone-white">{receipts?.length || 0}</div>
+        <div className="bg-charcoal-black/50 border border-muted-gray/20 rounded-lg p-3 md:p-4">
+          <div className="text-xs md:text-sm text-muted-gray mb-1">Total Receipts</div>
+          <div className="text-xl md:text-2xl font-bold text-bone-white">{receipts?.length || 0}</div>
         </div>
-        <div className="bg-charcoal-black/50 border border-green-500/30 rounded-lg p-4">
-          <div className="text-sm text-muted-gray mb-1">Mapped</div>
-          <div className="text-2xl font-bold text-green-400">{stats.mapped}</div>
+        <div className="bg-charcoal-black/50 border border-green-500/30 rounded-lg p-3 md:p-4">
+          <div className="text-xs md:text-sm text-muted-gray mb-1">Mapped</div>
+          <div className="text-xl md:text-2xl font-bold text-green-400">{stats.mapped}</div>
         </div>
-        <div className="bg-charcoal-black/50 border border-yellow-500/30 rounded-lg p-4">
-          <div className="text-sm text-muted-gray mb-1">Unmapped</div>
-          <div className="text-2xl font-bold text-yellow-400">{stats.unmapped}</div>
+        <div className="bg-charcoal-black/50 border border-yellow-500/30 rounded-lg p-3 md:p-4">
+          <div className="text-xs md:text-sm text-muted-gray mb-1">Unmapped</div>
+          <div className="text-xl md:text-2xl font-bold text-yellow-400">{stats.unmapped}</div>
         </div>
       </div>
 
@@ -919,17 +921,18 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
       {canEdit && readyForApprovalCount > 0 && (
         <Card className="bg-amber-500/10 border-amber-500/30">
           <CardContent className="p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-sm text-muted-gray">Ready to Submit for Approval</p>
-                <p className="text-2xl font-bold text-amber-400">
+                <p className="text-xs md:text-sm text-muted-gray">Ready to Submit for Approval</p>
+                <p className="text-xl md:text-2xl font-bold text-amber-400">
                   {readyForApprovalCount} receipt{readyForApprovalCount !== 1 ? 's' : ''}
                 </p>
-                <p className="text-sm text-muted-gray">
+                <p className="text-xs md:text-sm text-muted-gray">
                   {formatCurrency(readyForApprovalTotal, currency)} total
                 </p>
               </div>
               <Button
+                size="sm"
                 onClick={handleBulkSendForApproval}
                 disabled={bulkSubmitForApproval.isPending}
                 className="bg-amber-500 text-charcoal-black hover:bg-amber-400"
@@ -952,7 +955,7 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
       )}
 
       {/* Filters */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
         <div className="flex-1 relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-gray" />
           <Input
@@ -962,64 +965,66 @@ const ReceiptsView: React.FC<ReceiptsViewProps> = ({ projectId, canEdit }) => {
             className="pl-10"
           />
         </div>
-        <Select
-          value={filters.is_mapped === undefined ? 'all' : String(filters.is_mapped)}
-          onValueChange={(v) =>
-            setFilters({ ...filters, is_mapped: v === 'all' ? undefined : v === 'true' })
-          }
-        >
-          <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="true">Mapped</SelectItem>
-            <SelectItem value="false">Unmapped</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.is_verified === undefined ? 'all' : String(filters.is_verified)}
-          onValueChange={(v) =>
-            setFilters({ ...filters, is_verified: v === 'all' ? undefined : v === 'true' })
-          }
-        >
-          <SelectTrigger className="w-[150px]">
-            <SelectValue placeholder="Verification" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="true">Verified</SelectItem>
-            <SelectItem value="false">Unverified</SelectItem>
-          </SelectContent>
-        </Select>
-        <Select
-          value={filters.reimbursement_status || 'all'}
-          onValueChange={(v) =>
-            setFilters({
-              ...filters,
-              reimbursement_status: v === 'all' ? undefined : (v as BacklotReimbursementStatus),
-            })
-          }
-        >
-          <SelectTrigger className="w-[170px]">
-            <SelectValue placeholder="Approval Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Status</SelectItem>
-            <SelectItem value="not_applicable">Not Submitted</SelectItem>
-            <SelectItem value="draft">Draft</SelectItem>
-            <SelectItem value="pending">Pending Approval</SelectItem>
-            <SelectItem value="changes_requested">Changes Requested</SelectItem>
-            <SelectItem value="approved">Approved</SelectItem>
-            <SelectItem value="rejected">Rejected</SelectItem>
-            <SelectItem value="reimbursed">Reimbursed</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex gap-2 overflow-x-auto">
+          <Select
+            value={filters.is_mapped === undefined ? 'all' : String(filters.is_mapped)}
+            onValueChange={(v) =>
+              setFilters({ ...filters, is_mapped: v === 'all' ? undefined : v === 'true' })
+            }
+          >
+            <SelectTrigger className="w-[120px] md:w-[150px] shrink-0">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="true">Mapped</SelectItem>
+              <SelectItem value="false">Unmapped</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.is_verified === undefined ? 'all' : String(filters.is_verified)}
+            onValueChange={(v) =>
+              setFilters({ ...filters, is_verified: v === 'all' ? undefined : v === 'true' })
+            }
+          >
+            <SelectTrigger className="w-[120px] md:w-[150px] shrink-0">
+              <SelectValue placeholder="Verification" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="true">Verified</SelectItem>
+              <SelectItem value="false">Unverified</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.reimbursement_status || 'all'}
+            onValueChange={(v) =>
+              setFilters({
+                ...filters,
+                reimbursement_status: v === 'all' ? undefined : (v as BacklotReimbursementStatus),
+              })
+            }
+          >
+            <SelectTrigger className="w-[130px] md:w-[170px] shrink-0">
+              <SelectValue placeholder="Approval Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Status</SelectItem>
+              <SelectItem value="not_applicable">Not Submitted</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="pending">Pending Approval</SelectItem>
+              <SelectItem value="changes_requested">Changes Requested</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="rejected">Rejected</SelectItem>
+              <SelectItem value="reimbursed">Reimbursed</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Receipts Grid */}
       {receipts && receipts.length > 0 ? (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
           {receipts.map((receipt) => (
             <ReceiptCard
               key={receipt.id}

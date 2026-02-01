@@ -333,6 +333,7 @@ class ScheduleReorderItem(BaseModel):
     """Item in a schedule reorder request"""
     id: str
     type: str  # 'scene' | 'block'
+    duration_minutes: Optional[int] = None  # Optional duration override
 
 
 class ScheduleReorder(BaseModel):
@@ -1346,6 +1347,8 @@ def calculate_projected_schedule(
 
     # Calculate cumulative variance and project future times
     cumulative_variance_minutes = 0  # Positive = ahead of schedule, Negative = behind
+    cascaded_end_minutes = None  # Track running end time through all items
+    current_time_minutes = current_time.hour * 60 + current_time.minute if current_time else None
 
     for item in all_items:
         planned_start_minutes = time_to_minutes(item["planned_start_time"])
@@ -1380,20 +1383,31 @@ def calculate_projected_schedule(
                     try:
                         dt = datetime.fromisoformat(actual_end.replace("Z", "+00:00"))
                         item["projected_end_time"] = dt.strftime("%H:%M")
+                        cascaded_end_minutes = time_to_minutes(dt.strftime("%H:%M"))
                     except:
                         item["projected_end_time"] = item["planned_end_time"]
+                        cascaded_end_minutes = time_to_minutes(item["planned_end_time"])
                 else:
                     item["projected_end_time"] = actual_end
+                    cascaded_end_minutes = time_to_minutes(actual_end)
             else:
                 item["projected_end_time"] = item["planned_end_time"]
+                cascaded_end_minutes = time_to_minutes(item["planned_end_time"])
 
         elif item["status"] == "in_progress":
             # Current item - mark as current, project based on cumulative variance
             item["is_current"] = True
-            projected_start = planned_start_minutes + cumulative_variance_minutes
+            adjusted_planned = planned_start_minutes + cumulative_variance_minutes
+            if cascaded_end_minutes is not None:
+                projected_start = max(cascaded_end_minutes, adjusted_planned)
+            else:
+                projected_start = adjusted_planned
+            if current_time_minutes is not None:
+                projected_start = max(projected_start, current_time_minutes)
+            cascaded_end_minutes = projected_start + planned_duration
             item["projected_start_time"] = minutes_to_time(projected_start)
             item["projected_end_time"] = minutes_to_time(projected_start + planned_duration)
-            item["variance_from_plan"] = cumulative_variance_minutes
+            item["variance_from_plan"] = planned_start_minutes - projected_start
 
         elif item["status"] == "skipped":
             # Skipped item - add its planned duration to variance (we're ahead by that much)
@@ -1401,13 +1415,22 @@ def calculate_projected_schedule(
             item["projected_start_time"] = item["planned_start_time"]
             item["projected_end_time"] = item["planned_end_time"]
             item["variance_from_plan"] = cumulative_variance_minutes
+            # Don't update cascaded_end — skipped items don't consume time
 
         else:
-            # Pending item - apply cumulative variance
-            projected_start = planned_start_minutes + cumulative_variance_minutes
+            # Pending item - apply cumulative variance with cascading
+            adjusted_planned = planned_start_minutes + cumulative_variance_minutes
+            if cascaded_end_minutes is not None:
+                projected_start = max(cascaded_end_minutes, adjusted_planned)
+            else:
+                projected_start = adjusted_planned
+            if current_time_minutes is not None:
+                projected_start = max(projected_start, current_time_minutes)
+            projected_end = projected_start + planned_duration
+            cascaded_end_minutes = projected_end
             item["projected_start_time"] = minutes_to_time(projected_start)
-            item["projected_end_time"] = minutes_to_time(projected_start + planned_duration)
-            item["variance_from_plan"] = cumulative_variance_minutes
+            item["projected_end_time"] = minutes_to_time(projected_end)
+            item["variance_from_plan"] = planned_start_minutes - projected_start
 
     # Calculate real-time deviation for all items
     session_start_time = None
@@ -1548,6 +1571,7 @@ def build_schedule_from_scenes(
     import uuid
 
     all_items = []
+    current_time_minutes = current_time.hour * 60 + current_time.minute if current_time else None
 
     # Get call time for calculating start times
     call_time_str = session.get("actual_call_time")
@@ -1585,6 +1609,8 @@ def build_schedule_from_scenes(
 
         # Project times based on variance
         projected_start_minutes = planned_start_minutes + cumulative_variance
+        if scene.get("status") in ("pending", "in_progress") and current_time_minutes is not None:
+            projected_start_minutes = max(projected_start_minutes, current_time_minutes)
         projected_end_minutes = projected_start_minutes + estimated
 
         item = {
@@ -1620,6 +1646,8 @@ def build_schedule_from_scenes(
 
         start_minutes = time_to_minutes(expected_start)
         projected_start_minutes = start_minutes + cumulative_variance
+        if block.get("status", "pending") in ("pending", "in_progress") and current_time_minutes is not None:
+            projected_start_minutes = max(projected_start_minutes, current_time_minutes)
 
         item = {
             "id": block.get("id") or str(uuid.uuid4()),
@@ -2645,13 +2673,35 @@ async def reorder_schedule(
     # Position is multiplied by 10 to allow for future insertions
     for position, item in enumerate(body.items):
         if item.type == 'scene':
-            client.table("backlot_hot_set_scene_logs").update({
-                "schedule_position": position * 10
-            }).eq("id", item.id).eq("session_id", session_id).execute()
+            update_data = {"schedule_position": position * 10}
+            if item.duration_minutes is not None:
+                update_data["estimated_minutes"] = item.duration_minutes
+            client.table("backlot_hot_set_scene_logs").update(
+                update_data
+            ).eq("id", item.id).eq("session_id", session_id).execute()
         else:  # 'block'
-            client.table("backlot_hot_set_schedule_blocks").update({
-                "schedule_position": position * 10
-            }).eq("id", item.id).eq("session_id", session_id).execute()
+            update_data = {"schedule_position": position * 10}
+            if item.duration_minutes is not None:
+                update_data["expected_duration_minutes"] = item.duration_minutes
+                # Recalculate expected_end_time if start time exists
+                block = client.table("backlot_hot_set_schedule_blocks").select(
+                    "expected_start_time"
+                ).eq("id", item.id).eq("session_id", session_id).execute()
+                if block.data and block.data[0].get("expected_start_time"):
+                    start_time = block.data[0]["expected_start_time"]
+                    try:
+                        # Parse HH:MM format
+                        parts = start_time.split(":")
+                        start_minutes = int(parts[0]) * 60 + int(parts[1])
+                        end_minutes = start_minutes + item.duration_minutes
+                        end_hours = end_minutes // 60
+                        end_mins = end_minutes % 60
+                        update_data["expected_end_time"] = f"{end_hours:02d}:{end_mins:02d}"
+                    except (ValueError, IndexError):
+                        pass  # Skip end time update if parsing fails
+            client.table("backlot_hot_set_schedule_blocks").update(
+                update_data
+            ).eq("id", item.id).eq("session_id", session_id).execute()
 
     return {"success": True}
 

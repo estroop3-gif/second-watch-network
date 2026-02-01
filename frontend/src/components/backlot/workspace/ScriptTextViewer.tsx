@@ -487,7 +487,15 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   targetSceneId,
 }) => {
   const [currentPage, setCurrentPage] = useState(1);
-  const [zoom, setZoom] = useState(70); // Start at 70% to fit page on screen
+  const [zoom, setZoom] = useState(() => {
+    // Auto-fit on small screens, default 70% otherwise
+    if (typeof window !== 'undefined' && window.innerWidth < 768) {
+      // Use tighter padding on mobile to ensure page fits within viewport
+      const available = window.innerWidth - 32;
+      return Math.max(50, Math.min(Math.floor((available / PAGE_WIDTH_PX) * 100), 150));
+    }
+    return 70;
+  });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [selection, setSelection] = useState<TextSelection | null>(null);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>('hidden');
@@ -572,7 +580,8 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
   const fitToWidth = useCallback(() => {
     const container = containerRef.current;
     if (container) {
-      const containerWidth = container.clientWidth - 64;
+      const padding = container.clientWidth < 768 ? 16 : 64;
+      const containerWidth = container.clientWidth - padding;
       const newZoom = Math.floor((containerWidth / PAGE_WIDTH_PX) * 100);
       setZoom(Math.max(50, Math.min(newZoom, 150)));
     }
@@ -1026,23 +1035,23 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
     <div
       ref={containerRef}
       className={cn(
-        "flex flex-col h-full bg-muted-gray/20",
+        "flex flex-col h-full bg-muted-gray/20 overflow-hidden",
         isFullscreen && "fixed inset-0 z-50 bg-charcoal-black"
       )}
     >
       {/* Toolbar - matching ScriptPageView */}
       <div className={cn(
-        "flex items-center justify-between bg-charcoal-black border-b border-muted-gray/20",
-        isFullscreen ? "p-4" : "p-3"
+        "flex flex-wrap items-center justify-between gap-1 bg-charcoal-black border-b border-muted-gray/20",
+        isFullscreen ? "p-4" : "p-2 md:p-3"
       )}>
         {/* Left: Page navigation */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 md:gap-2">
           <Button
             variant="ghost"
             size="icon"
             onClick={() => goToPage(1)}
             disabled={currentPage === 1}
-            className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+            className={cn("hidden sm:flex", isFullscreen ? "h-10 w-10" : "h-8 w-8")}
           >
             <ChevronsLeft className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
           </Button>
@@ -1056,7 +1065,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             <ChevronLeft className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
           </Button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 md:gap-2">
             <Input
               type="number"
               min={1}
@@ -1065,10 +1074,10 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
               onChange={(e) => goToPage(parseInt(e.target.value) || 1)}
               className={cn(
                 "text-center bg-charcoal-black border-muted-gray/30",
-                isFullscreen ? "w-20 h-10 text-base" : "w-16 h-8 text-sm"
+                isFullscreen ? "w-20 h-10 text-base" : "w-12 md:w-16 h-8 text-sm"
               )}
             />
-            <span className={cn("text-muted-gray", isFullscreen ? "text-base" : "text-sm")}>of {totalPages}</span>
+            <span className={cn("text-muted-gray whitespace-nowrap", isFullscreen ? "text-base" : "text-xs md:text-sm")}>of {totalPages}</span>
           </div>
 
           <Button
@@ -1085,26 +1094,26 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             size="icon"
             onClick={() => goToPage(totalPages)}
             disabled={currentPage === totalPages}
-            className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+            className={cn("hidden sm:flex", isFullscreen ? "h-10 w-10" : "h-8 w-8")}
           >
             <ChevronsRight className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
           </Button>
 
           {isLive && (
-            <Badge variant="outline" className="ml-2 text-xs text-green-400 border-green-500/30">
+            <Badge variant="outline" className="ml-1 text-xs text-green-400 border-green-500/30">
               Live
             </Badge>
           )}
         </div>
 
         {/* Center: Title */}
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2">
           <FileText className="w-4 h-4 text-muted-gray" />
           <span className={cn("text-bone-white truncate max-w-[200px]", isFullscreen ? "text-base" : "text-sm")}>{title}</span>
         </div>
 
         {/* Right: Zoom and actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 md:gap-2">
           {/* Scene list toggle */}
           {scenes.length > 0 && (
             <TooltipProvider>
@@ -1119,8 +1128,8 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
                     )}
                     onClick={() => setShowScenePanel(!showScenePanel)}
                   >
-                    <Film className="w-4 h-4 mr-1" />
-                    {scenes.length} Scenes
+                    <Film className="w-4 h-4 md:mr-1" />
+                    <span className="hidden md:inline">{scenes.length} Scenes</span>
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Toggle Scene Navigator</TooltipContent>
@@ -1136,23 +1145,23 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
               className="text-muted-gray hover:text-blue-400"
               onClick={() => onAddNote(currentPage)}
             >
-              <Plus className="w-4 h-4 mr-1" />
-              Add Note
+              <Plus className="w-4 h-4 md:mr-1" />
+              <span className="hidden md:inline">Add Note</span>
             </Button>
           )}
 
-          <div className={cn("w-px bg-muted-gray/30", isFullscreen ? "h-8" : "h-6")} />
+          <div className={cn("w-px bg-muted-gray/30 hidden sm:block", isFullscreen ? "h-8" : "h-6")} />
 
           <Button
             variant="ghost"
             size="icon"
             onClick={zoomOut}
             disabled={zoom <= 50}
-            className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+            className={cn(isFullscreen ? "h-10 w-10" : "h-7 w-7 md:h-8 md:w-8")}
           >
             <ZoomOut className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
           </Button>
-          <Badge variant="outline" className={cn("justify-center", isFullscreen ? "min-w-[70px] text-base" : "min-w-[60px]")}>
+          <Badge variant="outline" className={cn("justify-center", isFullscreen ? "min-w-[70px] text-base" : "min-w-[50px] md:min-w-[60px] text-xs md:text-sm")}>
             {zoom}%
           </Badge>
           <Button
@@ -1160,7 +1169,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             size="icon"
             onClick={zoomIn}
             disabled={zoom >= 200}
-            className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+            className={cn(isFullscreen ? "h-10 w-10" : "h-7 w-7 md:h-8 md:w-8")}
           >
             <ZoomIn className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
           </Button>
@@ -1171,7 +1180,7 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
                   variant="ghost"
                   size="icon"
                   onClick={fitToWidth}
-                  className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+                  className={cn(isFullscreen ? "h-10 w-10" : "h-7 w-7 md:h-8 md:w-8")}
                 >
                   <Maximize className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
                 </Button>
@@ -1180,13 +1189,13 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
             </Tooltip>
           </TooltipProvider>
 
-          <div className={cn("w-px bg-muted-gray/30", isFullscreen ? "h-8" : "h-6")} />
+          <div className={cn("w-px bg-muted-gray/30 hidden sm:block", isFullscreen ? "h-8" : "h-6")} />
 
           <Button
             variant="ghost"
             size="icon"
             onClick={toggleFullscreen}
-            className={cn(isFullscreen ? "h-10 w-10" : "h-8 w-8")}
+            className={cn("hidden sm:flex", isFullscreen ? "h-10 w-10" : "h-8 w-8")}
           >
             {isFullscreen ? (
               <Minimize2 className={cn(isFullscreen ? "w-5 h-5" : "w-4 h-4")} />
@@ -1198,10 +1207,10 @@ const ScriptTextViewer: React.FC<ScriptTextViewerProps> = ({
       </div>
 
       {/* Page view area with optional scene panel */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-w-0 overflow-hidden">
         {/* Scene Navigator Panel */}
         {showScenePanel && scenes.length > 0 && (
-          <div className="w-64 flex-shrink-0 bg-charcoal-black/80 border-r border-muted-gray/20 overflow-y-auto">
+          <div className="w-48 md:w-64 flex-shrink-0 bg-charcoal-black/80 border-r border-muted-gray/20 overflow-y-auto">
             <div className="p-3 border-b border-muted-gray/20 sticky top-0 bg-charcoal-black/95 z-10">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">

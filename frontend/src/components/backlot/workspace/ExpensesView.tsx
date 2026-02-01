@@ -155,19 +155,19 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
   };
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col overflow-x-hidden">
       {/* Quick Stats Header */}
       {summary && (
         <div className="flex-shrink-0 mb-4">
           <Card className="bg-charcoal-black border-muted-gray/20">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-                <div className="flex items-center gap-6">
+            <CardContent className="p-3 md:p-4">
+              <div className="flex flex-wrap items-center gap-3 md:gap-4">
+                <div className="flex flex-wrap items-center gap-3 md:gap-6">
                   <div className="flex items-center gap-2">
-                    <DollarSign className="h-4 w-4 text-muted-foreground" />
+                    <DollarSign className="h-4 w-4 text-muted-foreground shrink-0" />
                     <div>
-                      <p className="text-xs text-muted-foreground">Total Expenses</p>
-                      <p className="text-lg font-semibold">
+                      <p className="text-xs text-muted-foreground">Total</p>
+                      <p className="text-base md:text-lg font-semibold">
                         ${((summary.total_receipts || 0) +
                            (summary.total_mileage || 0) +
                            (summary.total_kit_rentals || 0) +
@@ -179,13 +179,13 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
                     </div>
                   </div>
 
-                  <div className="h-8 w-px bg-border" />
+                  <div className="h-8 w-px bg-border hidden sm:block" />
 
                   <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-amber-500" />
+                    <Clock className="h-4 w-4 text-amber-500 shrink-0" />
                     <div>
-                      <p className="text-xs text-muted-foreground">Pending Approval</p>
-                      <p className="text-lg font-semibold">
+                      <p className="text-xs text-muted-foreground">Pending</p>
+                      <p className="text-base md:text-lg font-semibold">
                         ${(summary.pending_amount || 0).toLocaleString('en-US', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
@@ -194,13 +194,13 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
                     </div>
                   </div>
 
-                  <div className="h-8 w-px bg-border" />
+                  <div className="h-8 w-px bg-border hidden sm:block" />
 
                   <div className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-green-500" />
+                    <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
                     <div>
                       <p className="text-xs text-muted-foreground">Approved</p>
-                      <p className="text-lg font-semibold">
+                      <p className="text-base md:text-lg font-semibold">
                         ${(summary.approved_amount || 0).toLocaleString('en-US', {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2
@@ -211,13 +211,13 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
 
                   {(summary.reimbursed_amount || 0) > 0 && (
                     <>
-                      <div className="h-8 w-px bg-border" />
+                      <div className="h-8 w-px bg-border hidden sm:block" />
 
                       <div className="flex items-center gap-2">
-                        <AlertCircle className="h-4 w-4 text-blue-500" />
+                        <AlertCircle className="h-4 w-4 text-blue-500 shrink-0" />
                         <div>
                           <p className="text-xs text-muted-foreground">Reimbursed</p>
-                          <p className="text-lg font-semibold">
+                          <p className="text-base md:text-lg font-semibold">
                             ${(summary.reimbursed_amount || 0).toLocaleString('en-US', {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2
@@ -231,7 +231,7 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
 
                 {pendingCounts.total > 0 && (
                   <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-500/20">
-                    {pendingCounts.total} pending review
+                    {pendingCounts.total} pending
                   </Badge>
                 )}
               </div>
@@ -246,31 +246,34 @@ export default function ExpensesView({ projectId, canEdit, onNavigateToTab }: Ex
         onValueChange={handleTabChange}
         className="flex-1 flex flex-col min-h-0"
       >
-        <TabsList className="flex-shrink-0 w-full justify-start h-auto p-1 bg-muted/50">
-          {EXPENSE_TABS.map((tab) => {
-            const Icon = tab.icon;
-            const pendingCount = getPendingCount(tab.id);
+        <div className="flex-shrink-0 overflow-x-auto">
+          <TabsList className="w-max md:w-full justify-start h-auto p-1 bg-muted/50">
+            {EXPENSE_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const pendingCount = getPendingCount(tab.id);
 
-            return (
-              <TabsTrigger
-                key={tab.id}
-                value={tab.id}
-                className="flex items-center gap-2 px-4 py-2 data-[state=active]:bg-background"
-              >
-                <Icon className="h-4 w-4" />
-                <span>{tab.label}</span>
-                {pendingCount > 0 && (
-                  <Badge
-                    variant="secondary"
-                    className="ml-1 h-5 min-w-5 px-1.5 text-xs bg-amber-500/20 text-amber-600"
-                  >
-                    {pendingCount}
-                  </Badge>
-                )}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
+              return (
+                <TabsTrigger
+                  key={tab.id}
+                  value={tab.id}
+                  className="flex items-center gap-1.5 md:gap-2 px-2 md:px-4 py-2 text-xs md:text-sm data-[state=active]:bg-background"
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="hidden sm:inline">{tab.label}</span>
+                  <span className="sm:hidden">{tab.label.split(' ')[0]}</span>
+                  {pendingCount > 0 && (
+                    <Badge
+                      variant="secondary"
+                      className="ml-0.5 md:ml-1 h-5 min-w-5 px-1.5 text-xs bg-amber-500/20 text-amber-600"
+                    >
+                      {pendingCount}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+        </div>
 
         {/* Tab Content */}
         <div className="flex-1 min-h-0 mt-4">

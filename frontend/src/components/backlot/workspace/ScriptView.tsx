@@ -87,7 +87,7 @@ import {
   useScripts,
   useScenes,
   useSceneMutations,
-  useLocationNeeds,
+
   useGenerateBudgetSuggestions,
   useScriptVersionHistory,
   useSetCurrentScriptVersion,
@@ -337,13 +337,13 @@ const ScriptVersionSelector: React.FC<{
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" className="gap-2 min-w-[200px] justify-between">
-          <div className="flex items-center gap-2">
+        <Button variant="outline" className="gap-2 min-w-0 sm:min-w-[200px] justify-between max-w-[200px] sm:max-w-none">
+          <div className="flex items-center gap-2 min-w-0">
             <div
-              className="w-3 h-3 rounded-full border border-muted-gray/30"
+              className="w-3 h-3 rounded-full border border-muted-gray/30 shrink-0"
               style={{ backgroundColor: colorHex }}
             />
-            <span className="truncate max-w-[140px]">
+            <span className="truncate max-w-[100px] sm:max-w-[140px]">
               {selectedScript.title}
               {selectedScript.version && ` (${selectedScript.version})`}
             </span>
@@ -495,7 +495,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   });
   const { updateCoverage } = useSceneMutations();
   const { deleteScript } = useScriptMutations();
-  const { data: locationNeeds, isLoading: locationNeedsLoading } = useLocationNeeds(projectId);
+
   const generateBudgetSuggestions = useGenerateBudgetSuggestions();
   const { exportScript, isExporting } = useExportScriptWithHighlights();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -804,13 +804,13 @@ const ScriptView: React.FC<ScriptViewProps> = ({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6 overflow-x-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-4">
-          <div>
-            <h2 className="text-2xl font-heading text-bone-white">Script & Breakdown</h2>
-            <p className="text-sm text-muted-gray">
+      <div className="flex items-center justify-between flex-wrap gap-3 md:gap-4">
+        <div className="flex items-center gap-3 md:gap-4 min-w-0">
+          <div className="min-w-0">
+            <h2 className="text-lg md:text-2xl font-heading text-bone-white truncate">Script & Breakdown</h2>
+            <p className="text-xs md:text-sm text-muted-gray truncate">
               {scenes.length} scenes {scripts.length > 0 && `from ${scripts.length} script${scripts.length > 1 ? 's' : ''}`}
             </p>
           </div>
@@ -824,23 +824,23 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             />
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 md:gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setShowTipsPanel(true)}
             className="border-muted-gray/30"
           >
-            <Lightbulb className="w-4 h-4 mr-2" />
-            Tips
+            <Lightbulb className="w-4 h-4 md:mr-2" />
+            <span className="hidden md:inline">Tips</span>
           </Button>
           {canEdit && (
             <>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm">
-                    <Sparkles className="w-4 h-4 mr-2" />
-                    Generate
+                    <Sparkles className="w-4 h-4 md:mr-2" />
+                    <span className="hidden md:inline">Generate</span>
                   </Button>
                 </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
@@ -857,18 +857,21 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             {activeScript && (
               <Button
                 variant="outline"
+                size="sm"
                 onClick={() => setShowExportModal(true)}
               >
-                <Download className="w-4 h-4 mr-2" />
-                Export Script
+                <Download className="w-4 h-4 md:mr-2" />
+                <span className="hidden md:inline">Export Script</span>
               </Button>
             )}
             <Button
+              size="sm"
               onClick={onImportClick}
               className="bg-accent-yellow text-charcoal-black hover:bg-bone-white"
             >
-              <Upload className="w-4 h-4 mr-2" />
-              Import Script
+              <Upload className="w-4 h-4 md:mr-2" />
+              <span className="hidden sm:inline">Import Script</span>
+              <span className="sm:hidden">Import</span>
             </Button>
             {activeScript && (
               <DropdownMenu>
@@ -924,23 +927,24 @@ const ScriptView: React.FC<ScriptViewProps> = ({
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-        <TabsList className="bg-charcoal-black border border-muted-gray/20">
-          <TabsTrigger value="viewer" className="flex items-center gap-1">
-            <BookOpen className="w-3 h-3" />
-            View Script
-          </TabsTrigger>
-          <TabsTrigger value="editor" className="flex items-center gap-1">
-            <Edit className="w-3 h-3" />
-            Editor
-          </TabsTrigger>
-          <TabsTrigger value="scenes">Scenes</TabsTrigger>
-          <TabsTrigger value="breakdown">Breakdown</TabsTrigger>
-          <TabsTrigger value="notes" className="flex items-center gap-1">
-            <StickyNote className="w-3 h-3" />
-            Notes
-          </TabsTrigger>
-          <TabsTrigger value="locations">Location Needs</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-1 px-1">
+          <TabsList className="bg-charcoal-black border border-muted-gray/20 w-max md:w-auto">
+            <TabsTrigger value="viewer" className="flex items-center gap-1 text-xs md:text-sm">
+              <BookOpen className="w-3 h-3" />
+              <span className="hidden sm:inline">View </span>Script
+            </TabsTrigger>
+            <TabsTrigger value="editor" className="flex items-center gap-1 text-xs md:text-sm">
+              <Edit className="w-3 h-3" />
+              Editor
+            </TabsTrigger>
+            <TabsTrigger value="scenes" className="text-xs md:text-sm">Scenes</TabsTrigger>
+            <TabsTrigger value="breakdown" className="text-xs md:text-sm">Breakdown</TabsTrigger>
+            <TabsTrigger value="notes" className="flex items-center gap-1 text-xs md:text-sm">
+              <StickyNote className="w-3 h-3" />
+              Notes
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Script Viewer Tab - forceMount keeps PDF loaded to avoid reloading on tab switch */}
         <TabsContent
@@ -949,7 +953,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           forceMount
         >
           {/* PDF/Text Toggle Toolbar */}
-          <div className="flex items-center justify-between mb-4 p-3 bg-charcoal-black rounded-lg border border-muted-gray/20">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-4 p-2 md:p-3 bg-charcoal-black rounded-lg border border-muted-gray/20">
             <div className="flex items-center gap-2">
               {/* View Mode Toggle */}
               <div className="flex items-center border border-muted-gray/30 rounded-md overflow-hidden">
@@ -1030,7 +1034,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                 </>
               )}
             </div>
-            <div className="text-xs text-muted-gray">
+            <div className="text-xs text-muted-gray hidden sm:block">
               {pdfTextViewMode === 'pdf' ? 'Original PDF document' : 'Formatted text view (save in Editor to update)'}
             </div>
           </div>
@@ -1039,7 +1043,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           {pdfTextViewMode === 'pdf' ? (
             // PDF View
             activeScript?.file_url ? (
-              <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+              <div className="h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] min-h-[400px] md:min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
                 <ScriptPDFViewer script={activeScript} />
               </div>
             ) : (
@@ -1061,7 +1065,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
             )
           ) : (
             // Text View - shows saved content only (save in Editor to update)
-            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+            <div className="h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] min-h-[400px] md:min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
               <ScriptTextViewer
                 content={activeScript?.text_content ?? ''}
                 title={activeScript?.title || 'Script'}
@@ -1158,7 +1162,7 @@ const ScriptView: React.FC<ScriptViewProps> = ({
         {/* Script Editor Tab */}
         <TabsContent value="editor" className="mt-6">
           {activeScript ? (
-            <div className="h-[calc(100vh-280px)] min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
+            <div className="h-[calc(100vh-220px)] md:h-[calc(100vh-280px)] min-h-[400px] md:min-h-[600px] bg-charcoal-black rounded-lg border border-muted-gray/20 overflow-hidden">
               <ScriptEditorPanel
                 script={activeScript}
                 canEdit={canEdit}
@@ -1318,101 +1322,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
           />
         </TabsContent>
 
-        {/* Location Needs Tab */}
-        <TabsContent value="locations" className="mt-6">
-          {locationNeedsLoading ? (
-            <div className="space-y-4">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-32" />
-              ))}
-            </div>
-          ) : !locationNeeds || !locationNeeds.needs || locationNeeds.needs.length === 0 ? (
-            <div className="text-center py-12 text-muted-gray">
-              <MapPin className="w-12 h-12 mx-auto mb-4 opacity-40" />
-              <p>No location needs data available</p>
-              <p className="text-sm">Add scenes to your script to see location requirements</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {/* Summary */}
-              <div className="flex items-center gap-4 text-sm">
-                <Badge variant="outline" className="text-bone-white">
-                  {locationNeeds.total_unique_locations} unique locations
-                </Badge>
-                <Badge variant="outline" className="text-green-400">
-                  {locationNeeds.locations_assigned} assigned
-                </Badge>
-                <Badge variant="outline" className="text-orange-400">
-                  {locationNeeds.locations_unassigned} need assignment
-                </Badge>
-              </div>
-
-              {/* Location Cards */}
-              {locationNeeds.needs.map((loc, i) => (
-                <Card key={i} className="bg-charcoal-black border-muted-gray/20">
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-base font-medium text-bone-white flex items-center gap-2">
-                        <MapPin className={cn(
-                          'w-4 h-4',
-                          loc.has_location_assigned ? 'text-green-400' : 'text-orange-400'
-                        )} />
-                        {loc.location_name}
-                      </CardTitle>
-                      <Badge variant="outline">
-                        {loc.scene_count} scene{loc.scene_count !== 1 ? 's' : ''}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="flex flex-wrap gap-4 text-sm text-muted-gray">
-                      <div>
-                        <span className="text-bone-white">{loc.total_pages}</span> pages
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Sun className="w-3 h-3 text-amber-400" />
-                        <span>{loc.day_night_breakdown.day} day</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Moon className="w-3 h-3 text-indigo-400" />
-                        <span>{loc.day_night_breakdown.night} night</span>
-                      </div>
-                      <div>
-                        INT: {loc.int_ext_breakdown.interior}
-                      </div>
-                      <div>
-                        EXT: {loc.int_ext_breakdown.exterior}
-                      </div>
-                    </div>
-
-                    {/* Scene list */}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {loc.scenes.slice(0, 8).map((s) => (
-                        <Badge
-                          key={s.scene_id}
-                          variant="outline"
-                          className={cn(
-                            'text-xs cursor-pointer hover:bg-muted-gray/10',
-                            (COVERAGE_CONFIG[s.coverage_status] || COVERAGE_CONFIG.not_scheduled).color
-                          )}
-                          onClick={() => {
-                            const scene = scenes.find((sc) => sc.id === s.scene_id);
-                            if (scene) onSceneClick?.(scene);
-                          }}
-                        >
-                          {s.scene_number}
-                        </Badge>
-                      ))}
-                      {loc.scenes.length > 8 && (
-                        <span className="text-xs text-muted-gray">+{loc.scenes.length - 8} more</span>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
       </Tabs>
 
       {/* Export Script Modal */}
@@ -1506,15 +1415,6 @@ const ScriptView: React.FC<ScriptViewProps> = ({
                     <p className="text-bone-white font-medium">Notes</p>
                     <p className="text-muted-gray text-xs mt-1">
                       Add production notes, director's notes, and department annotations.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3 p-3 bg-muted-gray/5 rounded-lg border border-muted-gray/10">
-                  <MapPin className="w-5 h-5 text-muted-gray shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-bone-white font-medium">Location Needs</p>
-                    <p className="text-muted-gray text-xs mt-1">
-                      See all locations needed with scene counts, page totals, and day/night breakdown.
                     </p>
                   </div>
                 </div>
