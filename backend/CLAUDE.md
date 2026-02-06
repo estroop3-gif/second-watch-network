@@ -9,17 +9,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 source venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
-# Run a single migration
+# Run a single migration (psql not installed, use Node.js pg client)
 node -e "
 const { Client } = require('pg');
 const fs = require('fs');
-const sql = fs.readFileSync('migrations/076_*.sql', 'utf8');
-const client = new Client({
-  host: 'swn-database.c0vossgkunoa.us-east-1.rds.amazonaws.com',
-  port: 5432, database: 'secondwatchnetwork',
-  user: 'swn_admin', password: 'I6YvLh4FIUj2Wp40XeJ0mJVP',
-  ssl: { rejectUnauthorized: false }
-});
+const sql = fs.readFileSync('migrations/211_*.sql', 'utf8');
+const client = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 client.connect().then(() => client.query(sql)).then(() => console.log('Done')).finally(() => client.end());
 "
 
@@ -39,7 +34,7 @@ sam build && sam deploy
 ### Core Modules (`app/core/`)
 | Module | Purpose |
 |--------|---------|
-| `database.py` | SQLAlchemy connection + Supabase-compatible client wrapper |
+| `database.py` | SQLAlchemy connection + chainable query builder |
 | `auth.py` | AWS Cognito JWT validation |
 | `permissions.py` | Fine-grained permission system (`Permission.BACKLOT_VIEW`, etc.) |
 | `roles.py` | Role types: `SUPERADMIN`, `ADMIN`, `MODERATOR`, `ORDER_MEMBER`, `FILMMAKER`, etc. |
@@ -58,7 +53,7 @@ sam build && sam deploy
 
 ### Two Query Styles
 ```python
-# 1. Supabase-style client (simple CRUD)
+# 1. Query builder (simple CRUD) — chainable API over SQLAlchemy
 from app.core.database import get_client
 client = get_client()
 result = client.table("profiles").select("*").eq("id", user_id).single().execute()
@@ -150,14 +145,14 @@ Key variables in `.env` and Lambda parameters:
 - `AWS_S3_BACKLOT_FILES_BUCKET` - Dailies/review file storage
 - `ANTHROPIC_API_KEY` - AI features
 
-## Supabase-Style Client Limitations
+## Query Builder Limitations
 
-The custom Supabase-compatible query client does NOT support nested joins:
+The chainable query builder does NOT support nested joins:
 ```python
 # WRONG - will fail
 client.table("backlot_clips").select("*, backlot_projects(*)").execute()
 
-# CORRECT - use separate queries
+# CORRECT - use separate queries or raw SQL
 clip = client.table("backlot_clips").select("*").eq("id", clip_id).single().execute()
 project = client.table("backlot_projects").select("*").eq("id", clip.data["project_id"]).single().execute()
 ```

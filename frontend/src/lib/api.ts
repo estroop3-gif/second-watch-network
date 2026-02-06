@@ -124,6 +124,10 @@ class APIClient {
   }
 
   private async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+    return await this._doRequest<T>(endpoint, options)
+  }
+
+  private async _doRequest<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const token = this.getToken()
     const url = `${this.baseURL}${endpoint}`
 
@@ -2094,6 +2098,10 @@ class APIClient {
     return this.request<any>(`/api/v1/backlot/projects/${projectId}`);
   }
 
+  async getBacklotWorkspaceInit(projectId: string) {
+    return this.request<any>(`/api/v1/backlot/projects/${projectId}/workspace-init`);
+  }
+
   async updateBacklotProject(projectId: string, data: {
     title?: string;
     logline?: string | null;
@@ -2133,7 +2141,7 @@ class APIClient {
   async createReviewAsset(projectId: string, data: {
     name: string;
     description?: string | null;
-    video_url: string;
+    video_url?: string;
     video_provider?: string;
     external_video_id?: string | null;
     thumbnail_url?: string | null;
@@ -2289,6 +2297,32 @@ class APIClient {
       `/api/v1/backlot/review/versions/${versionId}/complete-upload`,
       { method: 'POST' }
     )
+  }
+
+  // Dailies browser upload
+  async getDailiesBrowserUploadUrl(projectId: string, filename: string, contentType: string) {
+    return this.request<{
+      upload_url: string;
+      s3_key: string;
+      standalone_asset_id: string;
+      expires_in: number;
+    }>(`/api/v1/backlot/dailies/browser-upload-url`, {
+      method: 'POST',
+      body: JSON.stringify({ project_id: projectId, filename, content_type: contentType }),
+    })
+  }
+
+  async completeDailiesBrowserUpload(data: {
+    standalone_asset_id: string;
+    project_id: string;
+    camera_label?: string;
+    scene_number?: string;
+    take_number?: number;
+  }) {
+    return this.request<{ clip: any }>(`/api/v1/backlot/dailies/complete-browser-upload`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
   }
 
   async getReviewVersionTranscodeStatus(versionId: string) {
@@ -2545,6 +2579,22 @@ class APIClient {
       s3_key: string;
       expires_in: number;
     }>(`/api/v1/backlot/assets/standalone/${assetId}/upload-url`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    })
+  }
+
+  async getAssetUploadUrl(projectId: string, data: {
+    filename: string;
+    content_type: string;
+    folder_id?: string | null;
+  }) {
+    return this.request<{
+      upload_url: string;
+      s3_key: string;
+      asset_id: string;
+      expires_in: number;
+    }>(`/api/v1/backlot/projects/${projectId}/assets/upload-url`, {
       method: 'POST',
       body: JSON.stringify(data),
     })
